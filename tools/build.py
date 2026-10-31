@@ -98,8 +98,8 @@ def build(project: Path, clean: bool, build_type: str = "Debug", test: bool = Fa
         shutil.rmtree(build_dir)
 
     if kind == "zephyr":
-        venv_scripts = DEFAULTS["zephyr_ws"] / ".venv" / "Scripts"
-        west = venv_scripts / "west.exe"
+        venv_scripts = DEFAULTS["zephyr_ws"] / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+        west = venv_scripts / ("west.exe" if os.name == "nt" else "west")
         if not west.exists():
             print(f"Zephyr workspace not found at {DEFAULTS['zephyr_ws']} (set up in lesson 92)")
             return 2
@@ -148,8 +148,8 @@ def check() -> int:
         ("Host C compiler (MinGW gcc, needed from lesson 80 and for pioasm)", find_tool("gcc", DEFAULTS["host_gcc"])),
         ("cppcheck (needed from lesson 83)", shutil.which("cppcheck") or (Path(r"C:\Program Files\Cppcheck\cppcheck.exe") if Path(r"C:\Program Files\Cppcheck\cppcheck.exe").exists() else None)),
         ("Pico SDK", env["PICO_SDK_PATH"] if Path(env["PICO_SDK_PATH"], "pico_sdk_init.cmake").exists() else None),
-        ("Wokwi CLI (optional, for automated checks)", (HOME / ".wokwi" / "bin" / "wokwi-cli.exe") if (HOME / ".wokwi" / "bin" / "wokwi-cli.exe").exists() else shutil.which("wokwi-cli")),
-        ("Rust (cargo, needed for lesson 108; optional)", (HOME / ".cargo" / "bin") if (HOME / ".cargo" / "bin" / "cargo.exe").exists() else shutil.which("cargo")),
+        ("Wokwi CLI (optional, for automated checks)", next((p for p in (HOME / ".wokwi" / "bin" / "wokwi-cli.exe", HOME / ".wokwi" / "bin" / "wokwi-cli") if p.exists()), None) or shutil.which("wokwi-cli")),
+        ("Rust (cargo, needed for lesson 108; optional)", (HOME / ".cargo" / "bin") if any((HOME / ".cargo" / "bin" / c).exists() for c in ("cargo.exe", "cargo")) else shutil.which("cargo")),
         ("Zephyr workspace (needed from lesson 92)", DEFAULTS["zephyr_ws"] if (DEFAULTS["zephyr_ws"] / "zephyr").exists() else None),
     ]
     ok = True

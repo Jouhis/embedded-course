@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CLI = Path.home() / ".wokwi" / "bin" / "wokwi-cli.exe"
+CLI = Path.home() / ".wokwi" / "bin" / ("wokwi-cli.exe" if os.name == "nt" else "wokwi-cli")
 TEMPLATE_EXPECT = {
     "pico-sdk": "LED on",
     "stm32-cmsis": "LED on",

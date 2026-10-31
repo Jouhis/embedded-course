@@ -8,6 +8,7 @@ and check that wokwi.toml points at files that exist.
             The expected serial text is read from a line "// EXPECT: <text>" in main.c or main.rs, if present.
   filter    only projects whose path contains this text (e.g. 0047 or lab02)
 """
+import os
 import re
 import subprocess
 import sys
@@ -40,7 +41,7 @@ def main(argv):
             m = re.search(rf"^{key}\s*=\s*['\"]([^'\"]+)['\"]", toml, re.M)
             if m and rc == 0 and not (d / m.group(1)).exists():
                 problems.append(f"{key} file missing: {m.group(1)}")
-        cli = Path.home() / ".wokwi" / "bin" / "wokwi-cli.exe"
+        cli = Path.home() / ".wokwi" / "bin" / ("wokwi-cli.exe" if os.name == "nt" else "wokwi-cli")
         if cli.exists():
             lint = subprocess.run([str(cli), "lint", str(d)], capture_output=True, text=True, encoding="utf-8", errors="replace")
             for line in (lint.stdout + lint.stderr).splitlines():

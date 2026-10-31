@@ -14,7 +14,7 @@ cd embedded-course
 git submodule update --init
 ```
 
-The last line fetches the libraries in `third_party/` (CMSIS, ST HAL, FreeRTOS, Unity, fff).
+(The setup script below does this for you.) The last line fetches the libraries in `third_party/` (CMSIS, ST HAL, FreeRTOS, Unity, fff).
 Don't use `git clone --recurse-submodules`: it also tries FreeRTOS's own nested submodules, one
 of which fails to clone. The course doesn't need them.
 
@@ -33,9 +33,19 @@ on the index to back up your progress or move it to another browser.
 
 ## Build and simulate the projects
 
-Lesson 1 installs the tools step by step: Arm GCC, CMake, Ninja, the Pico SDK, VS Code with the
-Wokwi extension and, for later parts, a host C compiler, cppcheck, Zephyr and Rust.
-To see what's installed and what's missing:
+One command installs everything (Windows, macOS, Linux). You need Python 3 and Git first.
+
+```sh
+setup.cmd            # Windows (double-click works too)
+./setup.sh           # macOS, Linux
+```
+
+It fetches `third_party/` and installs Arm GCC, CMake, Ninja, a host C compiler, cppcheck
+(winget / Homebrew / apt / dnf), Pico SDK 2.3.1 and the VS Code extensions, then test-builds the
+Pico and STM32 templates. Add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108) or
+`--all`; `--dry-run` shows what it would do. It is safe to run again: it skips what's there.
+
+Lesson 1 explains each tool, if you'd rather install them by hand. To see what's missing:
 
 ```sh
 python tools/build.py --check
