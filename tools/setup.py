@@ -3,6 +3,7 @@
   python tools/setup.py              core tools: enough for every Pico and STM32 lesson
   python tools/setup.py --zephyr     also the Zephyr workspace (lessons 92-96, lab 6; about 1-2 GB)
   python tools/setup.py --rust       also Rust for lesson 108
+  python tools/setup.py --wokwi-cli  also the Wokwi CLI, for automated simulation checks
   python tools/setup.py --all        everything
   python tools/setup.py --portable   no package manager: download portable tools (no admin rights)
   python tools/setup.py --dry-run    show what would be done, change nothing
@@ -344,6 +345,34 @@ def rust():
     run([rustup, "component", "add", "llvm-tools"] + tc)
 
 
+def wokwi_cli():
+    step("Wokwi CLI (optional: automated simulation checks with tools/sim.py)")
+    exe = HOME / ".wokwi" / "bin" / ("wokwi-cli.exe" if WINDOWS else "wokwi-cli")
+    if exe.exists() or shutil.which("wokwi-cli"):
+        say(f"  present: {exe if exe.exists() else shutil.which('wokwi-cli')}")
+        return
+    arm64 = platform.machine().lower() in ("arm64", "aarch64")
+    asset = ("wokwi-cli-win-x64.exe" if WINDOWS else
+             f"wokwi-cli-macos-{'arm64' if arm64 else 'x64'}" if MAC else
+             f"wokwi-cli-linuxstatic-{'arm64' if arm64 else 'x64'}")
+    url = "https://github.com/wokwi/wokwi-cli/releases/latest/download/" + asset
+    if DRY:
+        say(f"  would download {url}")
+        say(f"    to {exe}")
+        return
+    import urllib.request
+    try:
+        exe.parent.mkdir(parents=True, exist_ok=True)
+        say(f"  downloading {asset} ...")
+        urllib.request.urlretrieve(url, exe)
+        if not WINDOWS:
+            exe.chmod(0o755)
+        say(f"  saved: {exe}")
+        say("  It needs a CI token from https://wokwi.com/dashboard/ci in WOKWI_CLI_TOKEN (see lesson 1).")
+    except Exception as e:
+        problems.append(f"Wokwi CLI: {e}  (download {url} and save it as {exe})")
+
+
 def verify():
     step("7. Check")
     py = [sys.executable, "-I", str(ROOT / "tools" / "build.py")]
@@ -363,7 +392,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--zephyr", action="store_true", help="also set up the Zephyr workspace (~1-2 GB)")
     ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 108")
-    ap.add_argument("--all", action="store_true", help="core tools plus Zephyr and Rust")
+    ap.add_argument("--wokwi-cli", action="store_true", help="also download the Wokwi CLI (automated checks)")
+    ap.add_argument("--all", action="store_true", help="core tools plus Zephyr, Rust and the Wokwi CLI")
     ap.add_argument("--portable", action="store_true",
                     help="download portable tools into ~/.embedded-course-tools instead of using a package manager")
     ap.add_argument("--dry-run", action="store_true", help="show what would be done without changing anything")
@@ -381,6 +411,8 @@ def main():
         zephyr()
     if a.rust or a.all:
         rust()
+    if a.wokwi_cli or a.all:
+        wokwi_cli()
     verify()
 
     say("\n== Done" if not problems else "\n== Finished with problems:")

@@ -9,6 +9,8 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   `~/.embedded-course-tools` (no admin rights needed).
 - `tools/build.py` finds tools there; tool paths no longer assume Windows.
 - The `.cmd` launchers work when the system PATH starts with an empty entry.
+- Lesson 1: the Wokwi CLI step moved `wokwi-cli.exe` from Downloads, but the release file is
+  `wokwi-cli-win-x64.exe`; it now downloads straight to `~/.wokwi/bin`. `setup --wokwi-cli` does it on any OS.
 
 ## 0.0.1 (2026-10-31)
 

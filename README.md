@@ -73,7 +73,8 @@ No package manager, or not allowed to install software? It then downloads the of
 archives into `~/.embedded-course-tools` instead, with no admin rights needed (add `--portable` to
 choose this yourself). `tools/build.py` finds tools there automatically.
 
-Optional parts: add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108) or `--all`, for
+Optional parts: add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108), `--wokwi-cli`
+(automated simulation checks) or `--all`, for
 example `./setup.sh --all`. `--dry-run` shows what it would do. It is safe to run again: it skips
 what is already there, so run it again with `--zephyr` when you reach lesson 92.
 
