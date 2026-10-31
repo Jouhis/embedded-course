@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The I2C protocol, decoded with a logic analyzer · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0060">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>The I2C protocol, decoded with a logic analyzer</h1>
+  <p class="subtitle">I2C puts a whole conversation on two wires. A logic analyzer records both wires, and once you can read a START, an address and an ACK in the capture, you can debug any I2C sensor.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read a register from an I2C device with the Pico SDK (register pointer, repeated start, read), and decode the same transaction from a logic-analyzer capture: start, address with R/W, ACK and NACK, data and stop.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    I2C has two wires. SDA carries data and SCL carries the clock, and both are open-drain: a device can only pull a line low, and a pull-up resistor takes it high when nobody pulls it down <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, section 3.1.1</a>. Lesson 16 covers open-drain outputs and pull-ups in general. I2C depends on them, because two devices can drive the same wire without a short: neither can drive it high, so nothing fights.
+  </p>
+  <p>
+    The master starts every transaction and makes the clock. A START is SDA falling while SCL is high, and a STOP is SDA rising while SCL is high <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, section 3.1.4</a>. The RP2040 reference manual describes the same START and STOP conditions for its I2C controller <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.3.6.1</a>.
+    <span class="sidenote">The data line may change only while the clock is low, except for START and STOP. That is what makes the sampling rule simple: the receiver reads SDA on the rising edge of SCL.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 600 170" role="img" aria-label="A timing diagram showing START, an address byte with an ACK, a data byte, and STOP on SDA and SCL" style="max-width:780px">
+      <defs><marker id="ah40" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M50 40 L64 40 L64 70 L96 70 L96 40 L184 40 L184 70 L272 70 L272 40 L294 40 L294 70 L316 70 L316 40 L338 40 L338 70 L382 70 L382 40 L404 40 L404 70 L426 70 L426 40 L448 40 L448 70 L476 70 L476 40 L540 40"/>
+        <path d="M50 110 L72 110 L72 140 L78 140 L78 110 L88 110 L88 140 L100 140 L100 110 L110 110 L110 140 L122 140 L122 110 L132 110 L132 140 L144 140 L144 110 L154 110 L154 140 L166 140 L166 110 L176 110 L176 140 L188 140 L188 110 L198 110 L198 140 L210 140 L210 110 L220 110 L220 140 L232 140 L232 110 L242 110 L242 140 L254 140 L254 110 L264 110 L264 140 L276 140 L276 110 L286 110 L286 140 L298 140 L298 110 L308 110 L308 140 L320 140 L320 110 L330 110 L330 140 L342 140 L342 110 L352 110 L352 140 L364 140 L364 110 L374 110 L374 140 L386 140 L386 110 L396 110 L396 140 L408 140 L408 110 L418 110 L418 140 L430 140 L430 110 L440 110 L440 140 L452 140 L452 110 L462 110 L462 140 L468 140 L468 110 L540 110"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="4" y="44" text-anchor="start" font-size="12">SDA</text>
+        <text x="4" y="114" text-anchor="start" font-size="12">SCL</text>
+        <text x="44" y="24" text-anchor="start" font-size="10">START</text>
+        <text x="149" y="24" text-anchor="middle" font-size="10">addr 0x3C</text>
+        <text x="237" y="24" text-anchor="middle" font-size="10">W</text>
+        <text x="259" y="24" text-anchor="middle" font-size="10">ACK</text>
+        <text x="358" y="24" text-anchor="middle" font-size="10">data 0xA5</text>
+        <text x="457" y="24" text-anchor="middle" font-size="10">ACK</text>
+        <text x="496" y="24" text-anchor="start" font-size="10">STOP</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Simplified bus timing. START and STOP change SDA while SCL is high. Every other change of SDA happens while SCL is low.</figcaption>
+  </figure>
+
+  <h2>Bytes, addresses and ACK</h2>
+  <p>
+    Each byte is eight bits, most significant bit first. After the eighth clock, the receiver pulls SDA low for the ninth clock to acknowledge the byte (ACK), or leaves it high (NACK) <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, sections 3.1.5 and 3.1.6</a>.
+  </p>
+  <p>
+    The first byte after a START carries the target address and the R/W bit. The address is 7 bits, and the eighth bit is 0 for a write and 1 for a read <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, section 3.1.10</a>. So the 7-bit address 0x68 appears on the wire as 0xD0 for a write and 0xD1 for a read.
+  </p>
+  <div class="note">The address is 7 bits, so the wire byte is address × 2 + R/W. Forgetting the shift is the most common mistake in I2C code: the 8-bit value 0xD0 is not the device's address.</div>
+
+  <h2>Reading a register</h2>
+  <p>
+    Most sensors have registers. To read one, the master writes the register number, then reads the value. The write and the read are one transaction, joined by a repeated START: the master does not send a STOP in between, so no other master can take the bus.
+  </p>
+  <pre><code><span class="c">/* 1. START, 0xD0 (write to 0x68), ACK, 0x75 (the register), ACK -- no STOP */</span>
+i2c_write_blocking(i2c0, 0x68, &amp;reg, 1, <span class="k">true</span>);   <span class="c">/* nostop = true */</span>
+<span class="c">/* 2. repeated START, 0xD1 (read from 0x68), ACK, one data byte, NACK, STOP */</span>
+i2c_read_blocking(i2c0, 0x68, &amp;value, 1, <span class="k">false</span>);  <span class="c">/* nostop = false: STOP at the end */</span></code></pre>
+  <p>
+    The SDK's <code>nostop</code> argument selects the join. With <code>true</code>, the write leaves the bus held, and the next call starts with a repeated START <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html">Pico SDK, hardware/i2c.h</a>.
+  </p>
+  <p>
+    The MPU6050 is the device in this lesson. Its WHO_AM_I register is at address 0x75, and its default value is 0x68, which is the device's address with AD0 low <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf">InvenSense RM-MPU-6000A, register map, section 4.34</a>. The device powers up in sleep mode, so the code first writes 0 to PWR_MGMT_1 (register 0x6B) to wake it <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf">RM-MPU-6000A, register 107</a>.
+  </p>
+
+  <h2>Pull-ups and the rise time</h2>
+  <p>
+    The pull-up sets how fast the line rises after a device lets go. The rise time has a limit: 1000 ns for standard mode (100 kbit/s) <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, timing table for standard mode</a>. For a bus of about 100 pF, a 4.7 kΩ pull-up rises in roughly 0.4 µs, which is inside the limit. A larger bus capacitance needs a smaller resistor. The RP2040's internal pull-ups are 50 to 80 kΩ, which is too weak to rely on for a bus, so the diagram adds 4.7 kΩ resistors to 3.3 V <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, Table 625</a>.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0060-the-i2c-protocol</code> wires a Wokwi MPU6050 to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups. A logic analyzer is connected to the same two wires, on channels D0 and D1. The program wakes the sensor, then reads WHO_AM_I once a second. When you stop the simulator, Wokwi writes <code>wokwi.vcd</code> to the project root.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0060-the-i2c-protocol/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: wake the sensor with <code>write_reg(REG_PWR_MGMT_1, 0x00)</code>, and print <code>MPU6050 WHO_AM_I=0x68</code> when the read matches. Then change the pointer write in <code>read_reg()</code> to a repeated start (<code>nostop = true</code>), so the read does not follow a STOP. Stop the simulator, open <code>wokwi.vcd</code> in PulseView, and add the I2C decoder on the two channels.</li>
+    <li>You will know it works when the serial monitor prints <code>MPU6050 WHO_AM_I=0x68</code>, and the decoder shows one START, the address 0x68 with the write bit, the register 0x75, a repeated START, the address with the read bit, the data 0x68, and one STOP.</li>
+  </ol>
+  <details>
+    <summary>Hint for reading the decode</summary>
+    <p>PulseView shows the address byte as 7 bits plus R/W. A write frame reads 0x68 W, and a read frame reads 0x68 R. Find the ACK bits. Each byte should have an ACK after it, except the last read byte, which the master NACKs.</p>
+  </details>
+  <details>
+    <summary>Hint for the repeated start</summary>
+    <p>In the SDK, the write call's last argument is <code>nostop</code>. Set it to <code>true</code> for the register pointer write, and leave the read's <code>nostop</code> as <code>false</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0060-the-i2c-protocol/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You read a register from an I2C device, joined the write and the read with a repeated start, and decoded both from a logic-analyzer capture. You can now check any I2C sensor's address, register and ACK on the wire.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The write address byte on the wire is 0xD0. What is the device's 7-bit address?",
+        "options": ["0x68", "0xD0", "0x34", "0x69"],
+        "answer": 0,
+        "why": "The 7-bit address is the byte shifted right, 0xD0 ÷ 2 = 0x68, and the lowest bit is the R/W flag. The tempting answer, 0x69, is the address with AD0 high, which is a different device on the same board." },
+      { "type": "mc",
+        "prompt": "Which condition joins a register pointer write and the read that follows it?",
+        "options": ["Repeated start", "Stop condition", "Clock stretching", "Hardware reset"],
+        "answer": 0,
+        "why": "A repeated start keeps the bus held between the write and the read. A stop releases the bus, so another master could take it in between. Clock stretching is a slave holding SCL low, and a reset clears the device, neither of which joins two transfers." },
+      { "type": "number",
+        "prompt": "A 4.7 kΩ pull-up is on a 3.3 V bus. When a device pulls the line to 0 V, how many milliamps flow through the pull-up?",
+        "answer": 0.702, "tolerance": 0.01, "unit": "mA",
+        "why": "I = 3.3 V ÷ 4.7 kΩ = 0.702 mA. The tempting answer, 0.07 mA, is off by a factor of ten because the kilohm was not converted." },
+      { "type": "mc",
+        "prompt": "Why does I2C need a pull-up on SDA and SCL?",
+        "options": ["Devices can only pull lines low", "The clock needs a fixed source", "The chips need more supply voltage", "Pull-ups set the maximum bus speed"],
+        "answer": 0,
+        "why": "The lines are open-drain, so the only way to drive them high is the pull-up. The tempting answer is the clock: SCL is also open-drain, so the master does not drive it high either. The supply voltage and the speed are set elsewhere." },
+      { "type": "text",
+        "prompt": "Which SDK function sends the register pointer, and leaves the bus held with nostop set?",
+        "accept": ["i2c_write_blocking", "i2c_write_blocking()"],
+        "why": "i2c_write_blocking() sends the bytes and can keep the bus with nostop. The tempting answer, i2c_read_blocking, reads and does not send the register pointer." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a>: a 50 kΩ internal pull-up sits on 3.3 V and a button shorts it to ground. What current flows, in microamps?",
+        "answer": 66, "tolerance": 0.02, "unit": "µA",
+        "why": "I = 3.3 V ÷ 50 kΩ = 66 µA. The tempting answer, 6.6 µA, moves the decimal point by one place." },
+      { "type": "text",
+        "prompt": "From <a href=\"0046-volatile-const-and-static.html\">lesson 46</a>: which qualifier stops the compiler from caching a memory-mapped read?",
+        "accept": ["volatile"],
+        "why": "volatile makes every access happen. The tempting answer, const, forbids writing the object, which does not stop caching a read." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why does I2C need pull-up resistors, and why can two devices drive the same wire without damage?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I2C lines are open-drain. A device can pull a line low, but it cannot drive it high, so the pull-up is the only source of the high level. Two devices can drive the same wire because neither can connect it to the supply: pulling low is always safe. The pull-up value trades rise time against current, and the bus capacitance limits the usable resistor.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204, I2C-bus specification and user manual (NXP)</a>: read section 3.1.4 for START and STOP, 3.1.5 and 3.1.6 for the byte format and ACK, 3.1.10 for the address and R/W bit, and section 7.1 for pull-up sizing.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the PulseView I2C decoder output for this capture, byte by byte, and tell me where a NACK would show up if the address were wrong."
+    Related: <a href="0016-logic-levels-pull-ups-open.html">Lesson 16: Logic levels, pull-ups, open-drain</a>, <a href="0057-interrupts-in-practice.html">Lesson 57: Interrupts in practice</a>, and <a href="../reference/glossary.html#pull-up-resistor">Glossary: Pull-up resistor</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

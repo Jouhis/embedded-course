@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logging, tracing and field diagnostics · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0085">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Logging, tracing and field diagnostics</h1>
+  <p class="subtitle">A device in the field cannot be debugged with a cable. Its logs and its reset reason are often the only evidence you get, so design them before the first crash.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>keep the last few log lines in no-init RAM, read the reset reason from RCC_CSR, and print both after a software reset</strong>.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>Log levels and compile-time filtering</h2>
+  <p>
+    Logs have levels: error, warning, info, debug and trace. A level says how much to keep, and the filter decides what is compiled in. Compile-time filtering is the important part on a small chip. A <code>#if</code> around a debug call removes the string and the call from the image, so it costs no flash and no time, unlike a run-time check that still stores the string.
+  </p>
+  <pre><code>#define LOG_LEVEL_ERROR  1
+#define LOG_LEVEL_INFO   3
+#define LOG_LEVEL        LOG_LEVEL_INFO   /* release build: info and above */
+
+#if LOG_LEVEL >= 4                        /* debug and trace are compiled out below this */
+#define LOG_DEBUG(msg) uart_puts(msg)
+#else
+#define LOG_DEBUG(msg) ((void)0)
+#endif</code></pre>
+  <div class="warning">
+    A <code>printf</code> in an interrupt handler can take milliseconds at 115200 baud. Logs in a handler that has a deadline change the behaviour you are trying to observe. Log from the main loop, or into a buffer that the main loop prints.
+  </div>
+
+  <h2>Binary and deferred logging</h2>
+  <p>
+    Text logs are expensive: every line carries its format string. Binary logging sends a small numeric ID and the raw arguments, and a host program turns them back into text using a table built at compile time. Systems in this family include defmt (Rust) and Trice (C). This course has not checked their current APIs, so read their own documentation before you adopt one. The idea is what matters in an interview: the device sends bytes, the PC does the formatting, and the format strings never cost flash on the device.
+  </p>
+
+  <h2>A log that survives a reset</h2>
+  <p>
+    A ring of the last few lines is worth more than a long log, because a crash is almost always at the end. The ring must live in RAM that the startup code does not clear. <a href="0078-memory.html">Lesson 78</a> shows where that RAM sits among the static data, the heap and the stack. The startup clears only <code>.bss</code> (lesson 42), so a variable in a separate section keeps its value across a reset. In GCC that is an attribute:
+  </p>
+  <pre><code>static crash_log_t g_crash_log __attribute__((section(".noinit")));</code></pre>
+  <p>
+    Our linker script has no <code>.noinit</code> output section. GCC emits an orphan <code>.noinit</code> section, and the linker places it after <code>.bss</code>. The build's map file in this project confirms it: <code>.noinit</code> starts at <code>0x200001bc</code>, which is the same address as <code>_ebss</code>, so the clear loop (which stops at <code>_ebss</code>) does not touch it. A production linker script would give it an explicit <code>NOLOAD</code> output section, so the placement does not depend on the linker's orphan rules.
+  </p>
+  <div class="warning">
+    A power-on reset leaves RAM with random contents, and so the log might look valid by chance. The sample stores a magic number and checks the ring indices before trusting the contents. A checksum is stronger if the log must survive a brown-out.
+  </div>
+
+  <h2>Reset reason: RCC_CSR on the STM32F1</h2>
+  <p>
+    The STM32F1 reports why it last reset in the RCC control/status register, <code>RCC_CSR</code> (RM0008, the RCC chapter). The flags are set by the reset, and they stay set until you write the RMVF bit to clear them. Read the flags once, at the start of <code>main()</code>, before anything else. The bit names come from the device header (<code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>):
+  </p>
+  <table>
+    <thead><tr><th>Flag</th><th>Bit</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>LPWRRSTF</td><td>31</td><td>Low-power management reset</td></tr>
+      <tr><td>WWDGRSTF</td><td>30</td><td>Window watchdog reset</td></tr>
+      <tr><td>IWDGRSTF</td><td>29</td><td>Independent watchdog reset</td></tr>
+      <tr><td>SFTRSTF</td><td>28</td><td>Software reset (NVIC_SystemReset)</td></tr>
+      <tr><td>PORRSTF</td><td>27</td><td>Power-on or power-down reset</td></tr>
+      <tr><td>PINRSTF</td><td>26</td><td>Reset pin (NRST)</td></tr>
+      <tr><td>RMVF</td><td>24</td><td>Write 1 to clear the flags above</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <span class="sidenote">The header defines each flag's mask as <code>0x1UL &lt;&lt; RCC_CSR_..._Pos</code>. The mask for SFTRSTF is 0x10000000, which is what a number quiz in this lesson asks for.</span>
+    Software reset is the reset you request with <code>NVIC_SystemReset()</code>. It is the one the crash log depends on.
+  </p>
+
+  <h2>Crash dumps, trace and debug output</h2>
+  <p>
+    A crash dump is the state at the fault: the eight stacked words (lesson 84), the fault registers, and the last log lines. The device prints it or stores it, and the PC decode from lesson 84 turns it into source lines.
+  </p>
+  <p>
+    <strong>SWO and ITM</strong> (concept, not simulated in Wokwi) let the Cortex-M core send trace bytes over a single pin to the debugger, through the Instrumentation Trace Macrocell. You need a debug probe that supports SWO. <strong>Segger RTT</strong> (concept, not simulated in Wokwi) is a log buffer in RAM that the debugger reads over the debug link, without a UART. Both need hardware that this course does not have, so the hands-on uses the UART and a no-init buffer.
+  </p>
+
+  <!-- ===== 2. Skill: hands-on ===== -->
+  <h2>Try it: a crash log that survives a reset</h2>
+  <p>
+    The project has two parts. The crash log logic is a pure C module (<code>src/crash_log.c</code>) with host tests. The firmware (<code>main.c</code>) places the log in no-init RAM, reads the reset reason, and crashes once on purpose with an assertion.
+  </p>
+  <ol class="steps">
+    <li>Run the host tests from the workspace root: <code>python -I tools/build.py projects/0085-logging-tracing-and-field-diagnostics/starter/host-tests --test</code>. Two of six fail. Look at the failing lines: they show the wrong line order after the ring wraps.</li>
+    <li>Your task: fix <code>crash_log_line()</code> in <code>starter/src/crash_log.c</code>. The comment marked TODO(learner) explains the slot formula. Rebuild and rerun the tests until the summary reads <em>6 Tests 0 Failures</em>.</li>
+    <li>Your task: in <code>starter/main.c</code>, at the TODO(learner) comment, call <code>crash_assert_failed(__FILE__, __LINE__)</code> on the third tick of the first boot only. Build the firmware with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. On the first boot you should see ticks 1 to 3, then <em>ASSERT main.c</em> and <em>resetting</em>. On the second boot you should see <em>software-reset</em> in the reason line, and the log lines. The solution's second boot prints the line <em>previous reset: log from the last run follows</em>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The oldest kept line sits at slot <code>(head + LINES - count) % LINES</code>. Line <code>i</code> is at slot <code>(oldest + i) % LINES</code>. Write the formula in one line, then test it with the failing test.</p>
+  </details>
+  <div class="warning">
+    The simulator run has not been checked for this lesson. Two things are unverified for Wokwi: whether its Blue Pill model sets the RCC_CSR reset flags after NVIC_SystemReset, and whether it keeps RAM across that reset. If the second boot prints <em>no valid log in RAM</em>, the simulator clears RAM, and the logic is still tested by the host tests. Say so in your own notes, and use the host tests as the evidence.
+  </div>
+
+  <p>
+    What the host tests printed before the fix, from a real run of the starter:
+  </p>
+  <pre><code>test_crash_log.c:50:test_ring_keeps_the_newest_lines:FAIL: Expected 'line 2' Was 'line 8'
+test_crash_log.c:64:test_line_order_after_wrap:FAIL: Expected 'line 1' Was 'line 8'
+6 Tests 2 Failures 0 Ignored
+FAIL</code></pre>
+  <p>
+    And the solution's host tests print <em>6 Tests 0 Failures 0 Ignored</em>. The memory layout check, from the solution's <code>blink.map</code>: <code>.noinit</code> at <code>0x200001bc</code>, and <code>_ebss</code> at <code>0x200001bc</code>. The log is outside the zeroed range.
+  </p>
+
+  <div class="win">You can build a log that the startup code does not clear, read the reset reason before it is cleared, and check the layout in the map file. A field report can now say why the device restarted.</div>
+
+  <!-- ===== 3. Retrieval practice ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which section keeps a variable's value across a software reset on the Blue Pill?",
+        "options": [".noinit", ".bss", ".data", ".rodata"],
+        "answer": 0,
+        "why": ".noinit is not cleared by the startup code, so the value survives. .bss is zeroed at every boot, and .data is copied from flash at every boot. .rodata is constant. The tempting answer, .bss, is the section most people use for static variables." },
+      { "type": "mc",
+        "prompt": "Which RCC_CSR flag tells you the last reset was a software reset?",
+        "options": ["SFTRSTF bit", "PORRSTF bit", "PINRSTF bit", "IWDGRSTF bit"],
+        "answer": 0,
+        "why": "SFTRSTF is bit 28, set by NVIC_SystemReset. PORRSTF is set by power-on, which is the tempting answer when the device was just switched on. The others name the watchdog and the reset pin." },
+      { "type": "number",
+        "prompt": "The SFTRSTF flag is bit 28 of RCC_CSR. Give its mask as a decimal number.",
+        "answer": 268435456, "tolerance": 0, "unit": "",
+        "why": "The mask is 1 shifted left 28 places, which is 0x10000000, or 268435456 in decimal. The tempting answer, 28, is the bit number, not the mask." },
+      { "type": "mc",
+        "prompt": "Why does the crash log store a magic number?",
+        "options": ["To tell valid RAM from junk", "To speed up each log call", "To count the resets so far", "To hash each log line now"],
+        "answer": 0,
+        "why": "RAM after a power-on reset holds random values, so the magic number tells the firmware whether the contents are trustworthy. The count of resets is the boot counter's job, which is the tempting answer." },
+      { "type": "text",
+        "prompt": "In the template linker script, which symbol marks the end of .bss?",
+        "accept": ["_ebss"],
+        "why": "The startup code zeroes from _sbss up to _ebss, so anything placed after _ebss survives. The tempting answer, _estack, is the top of the stack, at the other end of RAM." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 4. Spaced review ===== -->
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 72: which NVIC priority value is the most urgent on the Cortex-M3?",
+        "options": ["Priority 0", "Priority 15", "Priority 255", "Priority 1"],
+        "answer": 0,
+        "why": "On the Cortex-M3 a lower number is more urgent, so 0 wins. The tempting answer, 255, is the largest value an 8-bit field can hold, and it is the least urgent." },
+      { "type": "text",
+        "prompt": "From lesson 42: what does word 0 of the STM32F103 vector table hold?",
+        "accept": ["_estack", "initial stack pointer"],
+        "why": "Word 0 is the initial stack pointer, which the linker sets to _estack. Word 1 is Reset_Handler, the tempting answer, because it is the first code the core runs." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 5. Interview drill ===== -->
+  <div class="interview">
+    <p><strong>"A customer reports that a device restarted on its own last week. How do you find out why?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary>
+      <p>First I ask the device for its reset reason: the RCC flags tell me software, watchdog, power-on or pin. A watchdog reset points at a hang, so I look for the last check-in and the task that did not report. A software reset points at an assertion or a fault handler, so I read the crash log that survived in no-init RAM: the file and line, the last log lines, and the HardFault dump if there is one. I decode any stacked PC with addr2line, using the .elf from exactly that release. If the logs are not enough, I ask for a reproduction with a debug build, and I make sure the next release logs more where the customer's device failed.</p>
+    </details>
+  </div>
+
+  <!-- ===== 6. Source ===== -->
+  <div class="source">
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, the RCC chapter</a>: the RCC_CSR register and its reset flags. For the Pico side, the SDK's <code>sections.h</code> defines <code>__uninitialized_ram</code>, in the <a href="https://github.com/raspberrypi/pico-sdk">pico-sdk repository</a> at tag 2.3.1.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Explain why the crash log's ring formula is (head + LINES - count) modulo LINES, with a worked example of a ring that has wrapped."
+    Related: <a href="0084-robustness.html">Lesson 84: robustness</a>, <a href="0042-startup-code-and-the-vector.html">Lesson 42: startup code</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

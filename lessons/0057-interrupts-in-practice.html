@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interrupts in practice · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0057">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Interrupts in practice</h1>
+  <p class="subtitle">An interrupt lets a button press reach the CPU without a polling loop. The handler must finish fast, and the data it shares with main must be read in a way that cannot be interrupted halfway.</p>
+
+  <div class="goal">
+    By the end of this lesson you can register a GPIO falling-edge callback on the Pico SDK, keep an interrupt service routine (ISR) short and free of <code>printf</code>, and read and clear a shared counter in <code>main</code> inside a critical section.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    An interrupt is a hardware event that makes the core stop what it is doing, save a few registers on the stack and run a handler (lesson 34). On the RP2040 the event goes through the NVIC, which has 32 interrupt inputs. Only the lower 26 are connected to anything, and inputs 26 to 31 are tied to zero, so they never fire <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.3.2</a>.
+    <span class="sidenote">The M0+ core has its own exception vector table. Lesson 42 covers how that table gets its addresses from the startup code.</span>
+  </p>
+  <p>
+    All GPIO pins share one interrupt line per bank. The GPIO bank 0 interrupt is IRQ 13 (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, Table 80</a>). When a pin event happens, the single handler for bank 0 checks which pins had events, then calls the callback you registered. The SDK's <code>gpio_set_irq_enabled_with_callback()</code> installs that callback and enables one edge event on one pin <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_gpio">Pico SDK, GPIO reference</a>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 460 130" role="img" aria-label="Main loop runs; a button edge raises the interrupt, the ISR sets a flag and returns, and the main loop later reads the flag">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="10" y="20" width="120" height="40"/><rect x="170" y="20" width="120" height="40"/>
+        <rect x="330" y="20" width="120" height="40"/>
+        <path d="M130 40 H170 M290 40 H330"/>
+        <path d="M70 60 V100 H390 V60" stroke-dasharray="3 2"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle">
+        <text x="70" y="44">main loop</text>
+        <text x="230" y="44">ISR: set flag</text>
+        <text x="390" y="44">main: read and clear</text>
+        <text x="230" y="120">the ISR runs in the gap; main resumes where it left off</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The ISR runs between two instructions of <code>main</code>. Anything it shares with <code>main</code> has to survive that gap.</figcaption>
+  </figure>
+
+  <h2>Rules for an ISR</h2>
+  <p>
+    Three rules follow from the fact that the ISR preempts <code>main</code> at an arbitrary instruction:
+  </p>
+  <ol class="steps">
+    <li><strong>Keep it short.</strong> While the ISR runs, the interrupt that calls it is held off, and so are any others at the same or lower priority. Set a flag and return.</li>
+    <li><strong>Do not block and do not call <code>printf</code>.</strong> <code>printf</code> writes to a UART that may be full, and it is not reentrant: if <code>main</code> was inside <code>printf</code> when the ISR runs, the two calls can corrupt each other's buffer.</li>
+    <li><strong>Share data with <code>volatile</code>, and make multi-step updates atomic.</strong> <code>volatile</code> stops the compiler from caching the flag (lesson 46). It does not stop an interrupt from landing between a read and a clear.</li>
+  </ol>
+
+  <h2>Critical sections</h2>
+  <p>
+    A critical section is a short stretch of code that runs with interrupts disabled. The SDK provides <code>save_and_disable_interrupts()</code>, which returns the old interrupt state, and <code>restore_interrupts()</code>, which puts it back <a href="https://www.raspberrypi.com/documentation/pico-sdk/high_level.html">Pico SDK, hardware/sync.h</a>. On the Cortex-M0+ the disable is a write to PRIMASK, one bit that masks all configurable interrupts.
+    <span class="sidenote">Use the save-and-restore pair, not a plain disable. Code that is already inside a critical section should not turn interrupts back on when it finishes.</span>
+  </p>
+  <pre><code><span class="c">/* main loop: read and clear the flag and count as one step */</span>
+<span class="k">uint32_t</span> saved = save_and_disable_interrupts();
+<span class="k">bool</span> pending = press_pending;     <span class="c">/* 1. read the flag */</span>
+<span class="k">uint32_t</span> total = press_count;     <span class="c">/* 2. read the count */</span>
+press_pending = <span class="k">false</span>;             <span class="c">/* 3. clear the flag */</span>
+restore_interrupts(saved);</code></pre>
+  <p>
+    Without the critical section, an ISR could run between steps 2 and 3. It would increment the count and set the flag, and then <code>main</code> would clear the flag and report a count that misses the new press. Each single 32-bit load or store is atomic on this core, but three of them in a row are not.
+  </p>
+
+  <div class="warning"><code>volatile</code> is not a lock. It stops the compiler from caching a variable, and nothing more. A <code>count++</code> in the ISR and a read-and-clear in <code>main</code> still need the critical section above.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0057-interrupts-in-practice</code> wires a pushbutton to GP14 with the internal pull-up enabled, as in lesson 16. Pressing the button pulls the pin low, so the press is a falling edge. The starter has three problems: its ISR calls <code>printf</code>, its shared flag is not <code>volatile</code>, and the main loop does not yet register the callback or read the flag safely.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0057-interrupts-in-practice/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: call <code>gpio_set_irq_enabled_with_callback()</code> in <code>main</code>. Delete the <code>printf</code> from the ISR. Fix the shared variables, and read and clear the flag inside <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>. Then print <code>presses=N</code> when a press is pending. You will know it works when a press prints <code>presses=1</code>, and the next press prints <code>presses=2</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint for the callback</summary>
+    <p>The callback signature is <code>void f(uint gpio, uint32_t events)</code>. Pass <code>GPIO_IRQ_EDGE_FALL</code> for the event and <code>true</code> to enable it. The SDK calls your function, so you do not register it with the NVIC yourself.</p>
+  </details>
+  <details>
+    <summary>Hint for the volatile qualifier</summary>
+    <p>Look at the declarations: the flag and the count are written in the ISR and read in <code>main</code>. Lesson 46 explains why that needs <code>volatile</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0057-interrupts-in-practice/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You registered a hardware callback, kept the handler to one flag and one counter, and read the shared state in a critical section. That is the pattern behind most interrupt-driven firmware.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which qualifier must a flag shared between an ISR and <code>main</code> have?",
+        "options": ["volatile", "const", "register", "extern"],
+        "answer": 0,
+        "why": "volatile makes every access reload the flag, so the loop sees the ISR's write. const forbids the ISR from writing it at all, and register is only a hint about where the compiler keeps a value. The tempting answer, const, reads like a safety word but blocks the write." },
+      { "type": "mc",
+        "prompt": "Why should an ISR avoid <code>printf</code>?",
+        "options": ["It can block and reenter", "It bloats the stack size", "It slows the system clock", "It disables the interrupt bus"],
+        "answer": 0,
+        "why": "printf can wait on a full UART and is not reentrant, so the ISR can deadlock or corrupt output that main was writing. The tempting answer is stack size, which matters less than blocking here, and the clock and bus options are not caused by printf." },
+      { "type": "number",
+        "prompt": "The RP2040 NVIC has 32 interrupt inputs, but only the lower 26 are connected. How many interrupt numbers are tied to zero?",
+        "answer": 6, "tolerance": 0, "unit": "",
+        "why": "Inputs 26 to 31 are tied to zero, which is six inputs (RP2040 datasheet, section 2.3.2). The tempting answer is 26, which counts the connected inputs instead." },
+      { "type": "text",
+        "prompt": "Which SDK call disables interrupts and returns the previous state?",
+        "accept": ["save_and_disable_interrupts", "save_and_disable_interrupts()"],
+        "why": "save_and_disable_interrupts() returns the old state, so restore_interrupts() can put it back. The tempting answer is a plain disable call, which cannot be undone safely when the code is already inside a critical section." },
+      { "type": "mc",
+        "prompt": "Why does a read-and-clear of a shared flag need a critical section?",
+        "options": ["An ISR could run between them", "Two cores would race on it", "The flag needs a volatile cast", "The compiler would drop the read"],
+        "answer": 0,
+        "why": "An ISR can run between the read and the clear, set the flag again, and lose that press. The tempting answer is the two-core race, but this lesson's program runs on one core, and the cast and the compiler are not the risk here." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 16: which Pico SDK call enables the internal pull-up on a pin?",
+        "accept": ["gpio_pull_up", "gpio_pull_up()"],
+        "why": "gpio_pull_up() turns on the internal pull-up of about 50 to 80 kOhm. The tempting answer, gpio_disable_pulls, turns the pulls off, which leaves the button pin floating." },
+      { "type": "mc",
+        "prompt": "From lesson 25: which 74HC595 pin latches the outputs?",
+        "options": ["DS", "STCP", "SHCP"],
+        "answer": 1,
+        "why": "STCP is the storage (latch) clock, which copies the shift register to the outputs. SHCP shifts the bits, and DS carries the data. The tempting answer, SHCP, is the shift clock." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why must an ISR be short, and what goes wrong if you call <code>printf</code> from one?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>While the ISR runs, the interrupt that called it and any at the same or lower priority wait, so a long ISR adds latency to everything else. printf can block on a full UART and is not reentrant, so calling it from an ISR can deadlock or corrupt output that main was writing. The usual pattern is to set a flag or push data to a buffer in the ISR and do the slow work in main.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.3.2 (Interrupts) and Table 80</a>: read which IRQ numbers are connected, and where IO_IRQ_BANK0 sits. Then read the GPIO section of the <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_gpio">Pico SDK GPIO reference</a> for <code>gpio_set_irq_enabled_with_callback</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me what <code>save_and_disable_interrupts()</code> compiles to on the Cortex-M0+, and explain why a single 32-bit store is atomic but three stores are not."
+    Related: <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: exceptions and interrupt entry</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html#interrupt-service-routine-isr">Glossary: Interrupt service routine</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

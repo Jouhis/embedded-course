@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Setting up the STM32 toolchain · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0066">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Setting up the STM32 toolchain</h1>
+  <p class="subtitle">Your ARM GCC from lesson 1 can build for an STM32, but the chip's register names, startup code and clock setup come from a few folders in <code>third_party/</code>. This lesson shows what each one is, and how a project pulls them together.</p>
+
+  <div class="goal">
+    By the end of this lesson you can build and simulate the STM32 CMSIS template on the Blue Pill, name the four <code>third_party/</code> folders and where each comes from, and change the blink rate and the serial message in the project.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    On the RP2040, the Pico SDK arrives as one package that you point CMake at. The STM32 world splits the same job into layers. The compiler is generic Arm GCC, and it knows nothing about your chip. The chip's own facts come from the <em>vendor</em> and from Arm: register names, interrupt numbers, the startup file and the clock code.
+    <span class="sidenote">You already have the compiler from lesson 1. What this lesson adds is the chip layer on top of it.</span>
+  </p>
+  <p>
+    The Blue Pill has an STM32F103C8: an ARM Cortex-M3 with 64 KB of flash and 20 KB of RAM. The Wokwi simulator runs that same firmware on a model of it. The part page lists which peripherals the model implements. Its table shows USART, EXTI, RCC and AFIO as simulated, and DMA, the watchdog IWDG, PWR and RTC as not implemented.
+    <a href="https://docs.wokwi.com/parts/board-stm32-bluepill">Wokwi: STM32 Blue Pill part</a>
+  </p>
+
+  <h2>What is in third_party/</h2>
+  <p>
+    Four folders hold the chip layer. They are copies of public repositories, not code this course wrote, and the lessons never change them. Your project finds them through the shared CMake file, so you can build without installing anything else.
+  </p>
+  <table>
+    <thead><tr><th>Folder</th><th>What it gives you</th><th>Where it comes from</th></tr></thead>
+    <tbody>
+      <tr><td><code>CMSIS_5/CMSIS/Core/Include</code></td><td>The Cortex-M core headers: <code>core_cm3.h</code> (NVIC, SysTick, the <code>__IO</code> macro), and <code>cmsis_gcc.h</code> (intrinsics such as <code>__disable_irq</code>).</td><td><a href="https://github.com/ARM-software/CMSIS_5">ARM-software/CMSIS_5</a>, a sparse checkout of one folder</td></tr>
+      <tr><td><code>cmsis-device-f1</code></td><td>The STM32F1 device headers: <code>stm32f103xb.h</code> (every register struct, base address and bit name), <code>stm32f1xx.h</code>, the startup file <code>startup_stm32f103xb.s</code>, and <code>system_stm32f1xx.c</code> (<code>SystemInit</code> and <code>SystemCoreClock</code>).</td><td><a href="https://github.com/STMicroelectronics/cmsis-device-f1">STMicroelectronics/cmsis-device-f1</a></td></tr>
+      <tr><td><code>stm32f1xx-hal-driver</code></td><td>The HAL: <code>Inc/</code> and <code>Src/</code> for every STM32F1 peripheral. Used from lesson 69.</td><td><a href="https://github.com/STMicroelectronics/stm32f1xx-hal-driver">STMicroelectronics/stm32f1xx-hal-driver</a></td></tr>
+      <tr><td><code>FreeRTOS-Kernel</code></td><td>The FreeRTOS kernel, used by the <code>stm32-freertos</code> template from Part 7. Pinned to tag V11.2.0.</td><td><a href="https://github.com/FreeRTOS/FreeRTOS-Kernel">FreeRTOS/FreeRTOS-Kernel</a></td></tr>
+    </tbody>
+  </table>
+  <p>
+    Check where a folder came from with <code>git -C third_party/&lt;folder&gt; remote -v</code>. Each one shows its <code>origin</code> URL. The snapshot this course was built from is the commit at the head of each repository (<code>git log -1</code>).
+  </p>
+
+  <h2>How to recreate third_party/</h2>
+  <p>
+    You should not need these commands, because the folders are already here. Keep them for a fresh clone of the course, or if a folder goes missing. Run them from the workspace's <code>third_party/</code> folder.
+  </p>
+  <pre><code><span class="c"># run from third_party/</span>
+git clone --depth 1 https://github.com/STMicroelectronics/cmsis-device-f1
+git clone --depth 1 https://github.com/STMicroelectronics/stm32f1xx-hal-driver
+git clone --depth 1 --filter=blob:none --sparse https://github.com/ARM-software/CMSIS_5 CMSIS_5
+git -C CMSIS_5 sparse-checkout set CMSIS/Core/Include
+git clone --depth 1 -b V11.2.0 https://github.com/FreeRTOS/FreeRTOS-Kernel</code></pre>
+  <p>
+    The sparse checkout gets only the folder the build needs from CMSIS_5, which keeps the download small. <code>--depth 1</code> keeps only the newest commit, which is all a build uses.
+    <span class="sidenote">Pin a version when you need repeatable builds. For the FreeRTOS clone, the <code>-b V11.2.0</code> does that. The other three follow the default branch, so the course records the commit it was built from.</span>
+  </p>
+
+  <h2>The shared CMake files</h2>
+  <p>
+    Every STM32 project in the course uses three files from <code>templates/common/</code>. Read them once, and the rest of Part 5 will make sense.
+  </p>
+  <table>
+    <thead><tr><th>File</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td><code>arm-none-eabi.cmake</code></td><td>The toolchain file. It names the Arm GCC programs (<code>arm-none-eabi-gcc</code>, <code>objcopy</code>, <code>size</code>) and tells CMake this is a bare-metal target.</td></tr>
+      <tr><td><code>stm32f1.cmake</code></td><td>The chip settings: the Cortex-M3 flags (<code>-mcpu=cortex-m3 -mthumb</code>), <code>STM32F103xB</code>, the include paths, the default startup and <code>system</code> files, the linker script, and <code>stm32_postbuild()</code> that writes the <code>.hex</code>. It also defines <code>stm32_use_hal()</code>.</td></tr>
+      <tr><td><code>stm32f103c8.ld</code></td><td>The linker script: where flash, RAM, the vector table, code and variables go (lesson 41). Lesson 68 writes a smaller one.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    A project's <code>CMakeLists.txt</code> is short. It sets the toolchain, includes <code>stm32f1.cmake</code>, and lists its sources.
+  </p>
+  <pre><code>cmake_minimum_required(VERSION 3.20)
+set(CMAKE_TOOLCHAIN_FILE ${CMAKE_CURRENT_SOURCE_DIR}/../../../templates/common/arm-none-eabi.cmake)
+project(blink C ASM)
+include(../../../templates/common/stm32f1.cmake)
+
+add_executable(blink main.c ${STM32_STARTUP})
+stm32_postbuild(blink)</code></pre>
+  <p>
+    <code>${STM32_STARTUP}</code> is the list set in <code>stm32f1.cmake</code>: the vendor startup file and the system file. Lesson 68 replaces that list.
+  </p>
+
+  <h2>How tools/build.py builds it</h2>
+  <p>
+    You do not usually type the CMake commands. <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> runs <code>tools/build.py</code>, which looks at the project and picks a path. A project whose <code>CMakeLists.txt</code> calls <code>pico_sdk_init()</code> goes to the Pico SDK. Any other project with a <code>CMakeLists.txt</code> goes to plain CMake with the Arm toolchain, which is every STM32 project.
+  </p>
+  <ol class="steps">
+    <li>If <code>build/build.ninja</code> is missing, run <code>cmake -S project -B build -G Ninja</code>. This is the configure step, and it finds the compiler and writes the build rules.</li>
+    <li>Run <code>cmake --build build</code>. That compiles each source, links <code>blink.elf</code>, and runs the post-build step that writes <code>blink.hex</code>.</li>
+    <li>The output always lands in <code>build/</code>, because <code>wokwi.toml</code> looks for <code>build/blink.hex</code> and <code>build/blink.elf</code>.</li>
+  </ol>
+  <p>
+    The build also prints the section sizes: <code>text</code> (code and constants in flash), <code>data</code> (initialised variables, which take flash and RAM), and <code>bss</code> (zeroed variables, RAM only). Keep an eye on these as the projects grow.
+  </p>
+
+  <h2>The Wokwi Blue Pill part</h2>
+  <p>
+    The diagram names the part <code>board-stm32-bluepill</code>. Its onboard LED is on PC13, and the LED is active low: a 0 on the pin lights it. The serial monitor connects to <code>A9</code> and <code>A10</code>. Pin A9 is USART1 TX, and the simulator shows what it sends. Pin A10 is USART1 RX, and the characters you type in the monitor arrive there. Lesson 70 uses that receive path.
+  </p>
+  <div class="warning">The simulator's clock and the course's clock are different things. The Wokwi docs say the Blue Pill runs at 72 MHz. The templates keep the default 8 MHz internal oscillator (HSI), which is what <code>SystemCoreClock</code> reports. Your baud rate and delay values depend on the clock the code really sets up, not on the chip's maximum.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    Build and simulate the template, then make two changes: a 250 ms half period, and a message printed once at startup.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0066-stm32-toolchain/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The LED blinks and the monitor shows <code>LED on</code> and <code>LED off</code>.</li>
+    <li>Your task, marked <code>TODO(learner)</code> in <code>main.c</code>: print <code>STM32 TOOLCHAIN OK</code> once, before the loop. Then change the half period from 500 ms to 250 ms. The solution uses a named constant, so the blink rate is one edit.</li>
+    <li>You will know it works when the monitor's first line is <code>STM32 TOOLCHAIN OK</code>, and the LED blinks twice as fast as before.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The message goes after <code>uart_init()</code>, because <code>uart_puts()</code> writes to USART1 and USART1 must be enabled first. Put it just before the <code>while (1)</code> loop.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0066-stm32-toolchain/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You built an STM32 firmware from source, found the four vendor folders it depends on, and changed the timing and the output of a running program in the simulator.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which folder holds <code>stm32f103xb.h</code>, the file with every STM32F103 register struct and bit name?",
+        "options": ["cmsis-device-f1/Include", "CMSIS_5/CMSIS/Core/Include", "stm32f1xx-hal-driver/Inc", "FreeRTOS-Kernel/include"],
+        "answer": 0,
+        "why": "The device header for the chip is in cmsis-device-f1/Include. CMSIS_5/CMSIS/Core/Include is the tempting answer, but it holds the Cortex-M core headers (core_cm3.h), which know the NVIC and SysTick and not the STM32's peripherals." },
+      { "type": "number",
+        "prompt": "The core clock is 8 MHz. What value of <code>SysTick-&gt;LOAD</code> gives a 1 ms period? Use the template's formula, <code>SystemCoreClock / 1000 - 1</code>.",
+        "answer": 7999, "tolerance": 0, "unit": "",
+        "why": "8 000 000 / 1000 = 8000, and the reload is one less, so 7999. The tempting answer, 8000, is the count of cycles, not the value SysTick reloads with." },
+      { "type": "mc",
+        "prompt": "The project has no <code>build/build.ninja</code> yet. What does <code>tools/build.py</code> run first?",
+        "options": ["configure CMake with Ninja", "compile the main file", "lint the diagram file"],
+        "answer": 0,
+        "why": "Configure runs first: cmake -S and -B with the Ninja generator write the build rules that the compile step needs. The tempting answer is to compile main.c directly, but no compiler command exists until configure has run." },
+      { "type": "text",
+        "prompt": "Which shared CMake file adds the Cortex-M3 flags, the <code>STM32F103xB</code> define and the <code>.hex</code> post-build step to every STM32F1 project? Give its file name.",
+        "accept": ["stm32f1.cmake", "templates/common/stm32f1.cmake", "common/stm32f1.cmake"],
+        "why": "stm32f1.cmake holds the chip settings. arm-none-eabi.cmake is the tempting answer, but it only names the toolchain programs and marks the target as bare metal." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 41: which output file holds the symbols and the debug information, and is read by GDB and by Wokwi? Give its short name.",
+        "accept": ["ELF", ".elf"],
+        "why": "The ELF file holds symbols and debug information. The HEX file, which the simulator loads, has only the bytes to program. The tempting answer, HEX, is the file you flash, not the one with the symbols." },
+      { "type": "number",
+        "prompt": "From lesson 20: what is 0xF0 AND 0x3C, in decimal?",
+        "answer": 48, "tolerance": 0, "unit": "",
+        "why": "0xF0 AND 0x3C keeps the bits set in both: 0x30, which is 48. The tempting answer, 0xFC (252), is the OR of the two values, and OR keeps a bit set if either operand has it." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Walk me through what the build needs to turn your C file into firmware for an STM32."</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>A generic Arm GCC compiles the C and assembly, with the Cortex-M3 flags. The device header gives the register names and the interrupt numbers, and the startup file gives the vector table and the reset handler. The linker script places code, constants and variables in flash and RAM, and the post-build step converts the ELF to a HEX file that the programmer or simulator loads. CMake ties those steps together through a toolchain file and a chip file.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.wokwi.com/parts/board-stm32-bluepill">Wokwi: STM32 Blue Pill part</a>: read the description (the chip, the flash and RAM sizes, the onboard LED) and the simulation features table. Its table is the source of the limits in this course's notes. The register facts for later lessons come from the vendor headers, which you can read in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me what <code>cmake -S</code> writes into <code>build/</code>, and which line of <code>stm32f1.cmake</code> sets the compiler flags."
+    Related: <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, <a href="0002-first-blink-in-wokwi.html">Lesson 2: First blink in Wokwi</a>, and <a href="../reference/stm32-registers.html">STM32F1 register cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

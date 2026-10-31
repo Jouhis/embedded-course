@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab 5: Move Lab 4 onto FreeRTOS · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="lab05">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Lab 5: Move Lab 4 onto FreeRTOS</h1>
+  <p class="subtitle">The Lab 4 monitor runs in one super-loop. In this lab you split it into four tasks with deadlines, share the I2C bus with a mutex, move the buttons to an interrupt and a queue, and let one logger task own the UART. The application modules stay the same; the structure changes.</p>
+
+  <div class="goal">
+    By the end of this lab you can turn a super-loop into FreeRTOS tasks with <code>vTaskDelayUntil()</code>, feed an interrupt into a task through a queue, protect a shared bus with a mutex, route all output through one logger task, and read each task's stack high-water mark.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    Lesson 86 showed the problem: in Lab 4, a 90 ms display redraw can make the 200 ms sensor sample miss its window. Lab 5 fixes that by giving the sensor its own higher-priority task. The UI task owns the display and the menu. A logger task owns the UART, so two tasks never write to the serial line at once. The I2C bus is shared by the sensor and the UI, so it has a mutex (lesson 90).
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 620 260" role="img" aria-label="Four tasks and their shared objects. sensor_task (priority 3) and ui_task (priority 2) share the I2C mutex. The button ISR sends events to ui_queue. ui_task and sensor_task send log lines to log_queue, which logger_task (priority 1) drains to the UART." style="max-width:806px">
+      <defs><marker id="ah77" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="20" width="160" height="40" rx="3"/>
+        <rect x="230" y="20" width="160" height="40" rx="3"/>
+        <rect x="440" y="20" width="160" height="40" rx="3"/>
+        <rect x="230" y="110" width="160" height="40" rx="3"/>
+        <rect x="440" y="110" width="160" height="40" rx="3"/>
+        <rect x="230" y="200" width="160" height="40" rx="3"/>
+        <rect x="20" y="200" width="160" height="40" rx="3"/>
+        <rect x="440" y="200" width="160" height="40" rx="3"/>
+        <path d="M180 40 H230" stroke-dasharray="4 3"/>
+        <path d="M390 40 H440" stroke-dasharray="4 3"/>
+        <path d="M170 60 L240 110" marker-end="url(#ah77)"/>
+        <path d="M470 60 L390 110" marker-end="url(#ah77)"/>
+        <path d="M520 200 V150" marker-end="url(#ah77)"/>
+        <path d="M520 110 V60" marker-end="url(#ah77)"/>
+        <path d="M310 150 V200" marker-end="url(#ah77)"/>
+        <path d="M230 220 H180" marker-end="url(#ah77)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="100" y="36.85" text-anchor="middle" font-size="11">sensor_task (3)</text>
+        <text x="100" y="50.85" text-anchor="middle" font-size="11">every 200 ms</text>
+        <text x="310" y="43.85" text-anchor="middle" font-size="11">I2C mutex</text>
+        <text x="520" y="43.85" text-anchor="middle" font-size="11">ui_task (2)</text>
+        <text x="310" y="133.85" text-anchor="middle" font-size="11">log_queue</text>
+        <text x="520" y="133.85" text-anchor="middle" font-size="11">ui_queue</text>
+        <text x="310" y="223.85" text-anchor="middle" font-size="11">logger_task (1)</text>
+        <text x="100" y="223.85" text-anchor="middle" font-size="11">UART (hal_log)</text>
+        <text x="520" y="223.85" text-anchor="middle" font-size="11">button ISR</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Four tasks. The sensor and the UI share the I2C mutex. The button interrupt and the sensor send events into the UI task's queue. Only the logger writes to the UART.</figcaption>
+  </figure>
+
+  <h2>The project</h2>
+  <p>
+    The project is <code>projects/lab05-move-lab-4-onto-freertos</code>. The unchanged modules are in <code>app/</code>: the sensor, the display, the SSD1306 driver, the font and the formatting. Two shared files change, <code>app/hal.h</code> (it gains a button callback) and <code>app/ui.c</code> (buttons arrive as events and are debounced by time). Each folder has its own RTOS layer and board file.
+  </p>
+  <ol class="steps">
+    <li><code>solution/</code>: complete. <code>app.c</code> holds the tasks, <code>hal_bluepill.c</code> the board file, and <code>main.c</code> the start-up. It prints <code>LAB5 OK</code>.</li>
+    <li><code>starter/</code>: the same files with <code>TODO(learner)</code> in three places: the sensor's poll, the button callback, and the UI's sample handling. It also has a <code>TODO(learner)</code> in the button interrupt in <code>hal_bluepill.c</code>.</li>
+    <li>In VS Code, open the folder you are working in, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The wiring is the Lab 4 Blue Pill wiring: the OLED and the sensor on PB6 and PB7, the buttons on PB12 and PB13.</li>
+  </ol>
+  <div class="note">Blue Pill only. The Pico is not part of this lab; Lab 4 keeps the Pico build of the same <code>app/</code> modules, and this lab does not change Lab 4.</div>
+
+  <h2>Requirements</h2>
+  <ol>
+    <li>Build <code>starter/</code> and <code>solution/</code> for the Blue Pill. The modules in <code>app/</code> are shared by both folders, so you do not copy them: you change only <code>app.c</code> and <code>hal_bluepill.c</code> in your folder.</li>
+    <li>Create four tasks: <code>sensor</code> (priority 3), <code>ui</code> (priority 2), <code>logger</code> (priority 1) and <code>stats</code> (priority 1, deleted after its second report).</li>
+    <li>The sensor task samples every 200 ms with <code>vTaskDelayUntil()</code>, so its period does not drift when the bus is busy.</li>
+    <li>The ui task draws the screen every 500 ms, and immediately when a button changes the screen. It waits on <code>ui_queue</code> with a timeout of one draw period.</li>
+    <li>A button press is an interrupt on PB12 or PB13 (falling edge). The interrupt sends an event into <code>ui_queue</code> with <code>xQueueSendFromISR()</code> and requests a switch with <code>portYIELD_FROM_ISR()</code>. The interrupt does no printing and no I2C.</li>
+    <li>The I2C bus is protected by <code>i2c_mutex</code>. Both the sensor and the display flush take it, and neither holds it across a delay.</li>
+    <li>Only <code>logger_task</code> calls <code>hal_log()</code>. The ui task and the sensor task send lines to <code>log_queue</code>. The single exception is <code>LAB5 OK</code>, which <code>main()</code> prints before the scheduler starts.</li>
+    <li><code>hal_millis()</code> returns the FreeRTOS tick count, and <code>vApplicationTickHook()</code> calls <code>HAL_IncTick()</code> so that the HAL's I2C timeouts keep counting.</li>
+    <li>At start-up and again 5 seconds later, the stats task prints each task's stack high-water mark as <code>LAB5 stack &lt;name&gt; free=N words</code>.</li>
+    <li>Print <code>LAB5 OK</code> once, after the sensor and the display have both initialised.</li>
+  </ol>
+
+  <h2>Acceptance criteria</h2>
+  <ul>
+    <li>The serial monitor prints <code>LAB5 OK</code> once, then the four stack lines, then one <code>LAB5 T=...</code> line per second. Five seconds after start, the four stack lines appear a second time, and then the stats task is gone.</li>
+    <li>The OLED shows the temperature on LIVE, and the same value appears in the log within one second.</li>
+    <li>Button A cycles LIVE, MINMAX and SETPOINT, and the screen changes within 50 ms of the press, not within 500 ms.</li>
+    <li>On SETPOINT, button B raises the threshold from 28 to 35, then wraps to 20. The log shows <code>ALARM=1</code> when the reading is above the threshold.</li>
+    <li>One click produces one screen change, even if the switch bounces.</li>
+    <li>Every stack keeps at least 16 free words in the second report. A smaller margin means the stack is too small.</li>
+    <li>You changed no file in <code>app/</code>. The shared modules are the Lab 4 modules, updated only in the two places this lab describes (<code>hal.h</code> and <code>ui.c</code>).</li>
+  </ul>
+
+  <h2>Milestones</h2>
+  <ol class="steps">
+    <li><strong>Milestone 1: the board boots.</strong> Start the scheduler with the four tasks, and see <code>LAB5 OK</code> and the stack lines. The sensor and display tasks may do nothing yet.</li>
+    <li><strong>Milestone 2: the sensor task.</strong> Implement the periodic sample under the I2C mutex. The log line shows a temperature.</li>
+    <li><strong>Milestone 3: the buttons.</strong> Implement the button callback and the UI event. A press changes the screen.</li>
+    <li><strong>Milestone 4: the whole device.</strong> Check every acceptance criterion, including the stack margins in the second report.</li>
+  </ol>
+
+  <h2>Hints</h2>
+  <details>
+    <summary>Hint for the sensor task</summary>
+    <p>Take <code>i2c_mutex</code> with <code>portMAX_DELAY</code>, call <code>sensor_poll()</code>, and give the mutex back before you queue the result. Queue an <code>EV_SAMPLE</code> for a new sample, and <code>EV_SENSOR_ERR</code> for an error. Do not hold the mutex while you send to the queue: a full queue would then block the bus.</p>
+  </details>
+  <details>
+    <summary>Hint for the button interrupt</summary>
+    <p>The EXTI handler checks the pending flag of each line, clears it, and calls the callback for that pin. The callback fills an <code>ui_event_t</code> with <code>EV_BUTTON</code>, the pin, and <code>xTaskGetTickCountFromISR()</code> as the time, then calls <code>xQueueSendFromISR()</code>. Clear the flag first; if you clear it last, the interrupt fires again at once.</p>
+  </details>
+  <details>
+    <summary>Hint if the screen does not change</summary>
+    <p>The UI task uses the press time to debounce, so a press with a bad timestamp can be treated as a bounce. Check that the event's <code>now</code> field holds the tick from the interrupt. Then check that <code>ui_on_button()</code> returns true, and that the UI task calls <code>draw_frame()</code> when it does.</p>
+  </details>
+  <details>
+    <summary>Hint if the system hangs or resets</summary>
+    <p>A hang with no output is usually a heap or stack problem. Check that <code>configTOTAL_HEAP_SIZE</code> is large enough for four tasks and two queues, and that the stats lines print the stack margins. A reset with output stopping is often a stack overflow: the hook loops forever, so attach the debugger and read the task name in <code>vApplicationStackOverflowHook</code>. If the EXTI interrupt fires but the callback never runs, check that <code>hal_set_button_callback()</code> is called before the scheduler starts, and that the interrupt priority is 5 or lower urgency (a number of 5 or more), as <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code> requires.</p>
+  </details>
+  <details>
+    <summary>Hint for the stack margins</summary>
+    <p>A stack is in words. The high-water mark is the fewest words that were ever free. If a stack is too small, shrink nothing: raise the stack depth in the <code>xTaskCreate()</code> call by a power of two, and read the second report again. Keep the margin, because the simulator's run may not exercise the worst path.</p>
+  </details>
+
+  <h2>Expected output</h2>
+  <p>The solution prints about this. The numbers depend on the simulator; the shape should match.</p>
+<pre><code>LAB5 OK
+LAB5 stack sensor free=... words
+LAB5 stack ui free=... words
+LAB5 stack logger free=... words
+LAB5 stack stats free=... words
+LAB5 T=23.50 MIN=23.50 MAX=23.50 SET=28 SCREEN=LIVE
+...</code></pre>
+
+  <div class="win">You turned a super-loop into four tasks, moved the buttons to an interrupt that feeds a queue, shared the I2C bus with a mutex, and checked every stack with a high-water mark.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why does the lab give the sensor task priority 3, above the UI task?",
+        "options": ["Its deadline is much tighter", "It draws the whole screen", "It owns the UART logger"],
+        "answer": 0,
+        "why": "The sensor samples every 200 ms, and its window is short, so it needs the CPU first. The UI draws every 500 ms and can wait a little. The tempting answer is that the sensor draws the screen, which it does not: the UI task owns the display." },
+      { "type": "mc",
+        "prompt": "Why does only the logger task call hal_log()?",
+        "options": ["One task owns the UART", "The UART is then faster", "It saves some stack RAM"],
+        "answer": 0,
+        "why": "Two tasks writing one UART would interleave their characters, so one task owns it and the others queue their lines. The tempting answer, speed, is not the reason: the UART is no faster. Stack memory is unchanged." },
+      { "type": "mc",
+        "prompt": "What does the mutex on the I2C bus stop?",
+        "options": ["It serialises two bus users", "It stops the tick counting", "It stops the button interrupt"],
+        "answer": 0,
+        "why": "The mutex serialises the sensor and the display on the bus. The tick keeps running, and the button interrupt is not blocked by a mutex, because interrupts never take one. The tempting answer, the tick, is a common mistake." },
+      { "type": "number",
+        "prompt": "The sample period is 200 ms and the sensor task runs at priority 3. A 500 ms draw takes 90 ms of bus time. What is the worst-case wait for the bus, in ms, that a sample can see with the mutex, if the draw holds it at once?",
+        "answer": 90, "tolerance": 0, "unit": "ms",
+        "why": "If the draw takes the mutex first, the sensor waits for the 90 ms transfer, which is the bound on the wait. The tempting answer is 500 ms, the draw period, which is how often the draw happens, not how long it holds the bus." },
+      { "type": "text",
+        "prompt": "Which FreeRTOS call gives a stack's free space, which the stats task prints?",
+        "accept": ["uxTaskGetStackHighWaterMark", "high water mark", "highwatermark"],
+        "why": "uxTaskGetStackHighWaterMark returns the fewest free words since the task started. The tempting answer is xTaskGetTickCount, which returns the time, not the stack." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 73: the tick is 1 kHz. The HAL's I2C timeout is 100 ms. How many ticks is the timeout?",
+        "answer": 100, "tolerance": 0,
+        "why": "At 1 kHz one tick is 1 ms, so 100 ms is 100 ticks. The tempting answer is 1000, which is the number of ticks in a second." },
+      { "type": "text",
+        "prompt": "From lesson 57: must an ISR ever take a mutex? Answer yes or no.",
+        "accept": ["no", "n"],
+        "why": "An ISR may not take a mutex, because a mutex can block. The tempting answer, yes, comes from thinking of a mutex as just a lock." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    The FreeRTOS kernel book, <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, for the task, queue and mutex patterns, and the kernel source in <code>third_party/FreeRTOS-Kernel</code>. For the HAL's I2C and EXTI functions, read UM1850 (the STM32F1 HAL description), as in Lab 4.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "The sensor task and the UI task both use the I2C mutex. Explain what would happen with a binary semaphore instead, and show it with the timeline from lesson 90."
+    Related: <a href="lab04-port-lab-3-to-the.html">Lab 4: Port Lab 3 to the STM32 behind a HAL</a>, <a href="0086-why-use-an-rtos.html">Lesson 86: Why use an RTOS</a>, <a href="0089-queues-semaphores-and-event-groups.html">Lesson 89: Queues, semaphores and event groups</a>, and <a href="0090-mutexes-priority-inversion-and-deadlock.html">Lesson 90: Mutexes, priority inversion and deadlock</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

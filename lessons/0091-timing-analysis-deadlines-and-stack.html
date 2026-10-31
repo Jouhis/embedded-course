@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timing analysis, deadlines and stack sizing · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0091">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Timing analysis, deadlines and stack sizing</h1>
+  <p class="subtitle">An RTOS design is correct only if every task meets its deadline and every stack is big enough. You can check both: measure the stacks with the kernel's high-water mark, measure the time with a timer, and check the schedule with a utilisation bound.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read a task's stack high-water mark, enable the stack-overflow hook, time a code section with a hardware timer, assign rate-monotonic priorities, and check a task set against the Liu and Layland utilisation bound n(2^(1/n) − 1).
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    Lesson 78 introduced the stack and stack overflow. An RTOS task has a fixed stack, chosen when the task is created, and overflow of that stack writes over another task's data without any error from the CPU. So the question is how much of the stack a task really uses. FreeRTOS answers it with a <strong>high-water mark</strong>: at creation the kernel fills the stack with a known pattern, and <code>uxTaskGetStackHighWaterMark()</code> returns the fewest words that were ever still unused. The function's definition is in <code>tasks.c</code> near line 6362, enabled by <code>INCLUDE_uxTaskGetStackHighWaterMark</code>.
+  </p>
+  <p>
+    The high-water mark is a lower bound on the free space, and it covers only the paths that ran. A rarely taken branch that uses a deep call chain can still overflow after the test passed. Size the stack for the worst path you can reason about, then check it with the mark.
+  </p>
+
+  <h2>Catching an overflow</h2>
+  <p>
+    Set <code>configCHECK_FOR_STACK_OVERFLOW</code> to 2 (the template does) and FreeRTOS checks, at each switch, whether the stack pointer has gone below the stack's start. It also checks a pattern near the bottom. If the check fails, the kernel calls <code>vApplicationStackOverflowHook(TaskHandle_t, char *)</code>. The template defines that hook, and it stops in an infinite loop, so a debugger can show which task failed. A hook that does nothing hides the bug.
+  </p>
+  <div class="warning">The check runs at task switches. A task that overflows and then blocks in a way that does not switch can still corrupt memory before the hook runs. The high-water mark and the hook catch most overflows, not every one.</div>
+
+  <h2>Measuring execution time</h2>
+  <p>
+    The most accurate local timer is a hardware counter. The Cortex-M3 has the DWT cycle counter (<code>DWT-&gt;CYCCNT</code>), and Wokwi's documentation lists DWT as implemented for the Blue Pill; we have not verified its counts against silicon, so this lesson uses <strong>TIM2</strong> instead. TIM2 is a 16-bit counter on the APB1 clock, and the project sets its prescaler so that one count is one microsecond. Take the counter before and after the work, and subtract. The subtraction in 16-bit unsigned arithmetic is correct across one wrap, as long as one measurement is shorter than 65 ms.
+  </p>
+<pre><code><span class="k">static void</span> timed_work(uint32_t loops, <span class="k">volatile</span> uint32_t *max_us) {
+    uint16_t start = (uint16_t)TIM2-&gt;CNT;
+    do_work(loops);
+    uint32_t elapsed = (uint16_t)((uint16_t)TIM2-&gt;CNT - start);   <span class="c">/* wrap-safe */</span>
+    <span class="k">if</span> (elapsed &gt; *max_us) *max_us = elapsed;                    <span class="c">/* keep the worst case */</span>
+}</code></pre>
+  <p>
+    Keep the worst case, not the average. The deadline is about the worst case, and an average hides exactly the bursts that miss a deadline.
+  </p>
+
+  <h2>Rate-monotonic priorities</h2>
+  <p>
+    For periodic tasks with fixed priorities, the standard assignment is <strong>rate-monotonic</strong>: the shorter the period, the higher the priority. Liu and Layland proved in 1973 that for independent periodic tasks with deadlines equal to periods, this order is optimal among fixed-priority schemes, and that a set of <code>n</code> tasks is schedulable if its total utilisation <code>U</code> (the sum of execution time over period) satisfies</p>
+<pre><code>U = Σ (C<sub>i</sub> / T<sub>i</sub>)  ≤  n · (2<sup>1/n</sup> − 1)
+
+n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</code></pre>
+  <p>
+    The bound is sufficient, not necessary: a set above it may still be schedulable, and you need an exact response-time analysis to decide. But a set below it is always schedulable under rate-monotonic priorities, so it is the check you do first. The project's three tasks use periods of 10 ms, 100 ms and 1000 ms, and the bound applies to them.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Task</th><th>Period T</th><th>Work C</th><th>C / T</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>fast (priority 3)</td><td>10 ms</td><td>about 1 ms</td><td>0.10</td></tr>
+      <tr><td>slow (priority 2)</td><td>100 ms</td><td>about 5 ms</td><td>0.05</td></tr>
+      <tr><td>report (priority 1)</td><td>1000 ms</td><td>about 1 ms</td><td>0.001</td></tr>
+    </tbody>
+  </table>
+  <p>The total is about 0.15, well below the three-task bound of 0.780, so the set is schedulable by construction. The measurement in the project confirms the work times.</p>
+
+  <h2>Try it: measure and check the stacks</h2>
+  <p>
+    The project <code>projects/0091-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms, and a report task every second. The report prints each task's stack use, the free words and the worst measured time in microseconds, then <code>STACK OK</code> if every free margin is at least 16 words.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0091-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>In <code>report_one()</code>, find the <code>TODO(learner)</code>. Replace the placeholder with the call that returns the high-water mark for the task handle, and remove the placeholder value.</li>
+    <li>In <code>main()</code>, set the priorities by rate-monotonic order: fast 3, slow 2, report 1. The starter sets them all to 2 on purpose.</li>
+    <li>Simulate again and check the report. The line should read <code>STACK OK</code>, and the worst time for <code>fast</code> should be about a millisecond. Compare with <code>projects/0091-stack-and-timing/solution/main.c</code>.</li>
+  </ol>
+  <div class="note">The report task measures nothing and runs at the lowest priority, so it cannot delay the other two. Its own stack is still reported, because a stack overflow in the report task would also corrupt memory.</div>
+
+  <div class="win">You read the stack high-water mark of each task, timed a code section with TIM2 in microseconds, assigned rate-monotonic priorities, and checked the task set against the utilisation bound.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "Three periodic tasks are scheduled rate-monotonically. What is the utilisation bound for n = 3, to three decimal places?",
+        "answer": 0.780, "tolerance": 0.01,
+        "why": "n(2^(1/n) − 1) for n = 3 is 3 × (1.2599 − 1) = 0.7798, which is 0.780. The tempting answer is 0.693, which is the limit as n grows, not the value for three tasks." },
+      { "type": "number",
+        "prompt": "Tasks use 1 ms every 10 ms, and 5 ms every 100 ms. What is their total utilisation? Give a decimal.",
+        "answer": 0.15, "tolerance": 0.01,
+        "why": "1/10 is 0.10 and 5/100 is 0.05, which sum to 0.15. The tempting answer is 0.5, which divides 5 by 10 instead of by 100." },
+      { "type": "mc",
+        "prompt": "Which period gets the highest priority under rate-monotonic assignment?",
+        "options": ["The shortest period first", "The longest period first", "The middle period first"],
+        "answer": 0,
+        "why": "Rate-monotonic gives the shortest period the highest priority, because that job is the one that needs the CPU most often. The tempting answer is the longest period, which is the reverse of the rule." },
+      { "type": "mc",
+        "prompt": "What does uxTaskGetStackHighWaterMark return?",
+        "options": ["Fewest free words ever", "Words used right now", "Total stack size bytes"],
+        "answer": 0,
+        "why": "It returns the minimum free space seen since the task started, which is the high-water mark. The tempting answer, words used right now, is the current depth, which changes and does not show the worst case." },
+      { "type": "text",
+        "prompt": "Which configuration option makes FreeRTOS call the stack-overflow hook? Give the name.",
+        "accept": ["configCHECK_FOR_STACK_OVERFLOW", "configCHECK_FOR_STACK_OVERFLOW=2"],
+        "why": "configCHECK_FOR_STACK_OVERFLOW enables the check, and the hook is the function you define. The tempting answer is configUSE_MALLOC_FAILED_HOOK, which is a different hook for failed allocations." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 58: an ADC has 12 bits. How many counts is its full scale?",
+        "answer": 4096, "tolerance": 0,
+        "why": "2 to the power 12 is 4096 counts, from 0 to 4095. The tempting answer is 4095, which is the largest count and not the number of counts." },
+      { "type": "text",
+        "prompt": "From lesson 78: stack overflow on a Cortex-M typically corrupts which kind of data first, in a RAM-only system? Name the region in one word.",
+        "accept": ["neighbour", "neighbor", "adjacent", "another task", "the next task", "other data", "data"],
+        "why": "A stack overflow writes into the memory next to it, which is often another task's stack or global data, and nothing reports it at once. The tempting answer is the code, which is in flash and cannot be written this way." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You have three periodic tasks and a deadline on each. How do you assign priorities, and how do you know the design is schedulable?"</strong> Answer out loud in 90 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Use rate-monotonic priorities: the shortest period gets the highest priority. Measure the worst-case execution time C of each task, and compute the utilisation sum of C over T. If the sum is below n(2^(1/n) − 1), which is 0.780 for three tasks, the set is schedulable under fixed priorities with deadlines equal to periods. If it is above the bound, do not conclude that it fails: run an exact response-time analysis. Also say that the bound assumes independent tasks, so a mutex or a blocking call must be added to the analysis, and that the worst case, not the average, is what you measure. For the stacks, read the high-water mark after a long run, add a margin, enable the overflow check, and say that the mark covers only the paths that ran.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://doi.org/10.1145/321738.321743">Liu and Layland, "Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment", <em>Journal of the ACM</em> 20(1), 1973</a>: the utilisation bound. Read the FreeRTOS kernel book's chapter on stack overflow and run-time statistics, and the kernel source: <code>tasks.c</code> line 130 (the stack-check conditions) and line 6362 (<code>uxTaskGetStackHighWaterMark</code>). The bound is the Liu and Layland result; check the paper's theorem before you rely on it in a review.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Take a task set with periods 20, 50 and 80 ms and work times 4, 10 and 12 ms. Is it schedulable by the utilisation bound, and what would an exact response-time analysis add?"
+    Related: <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup, tasks and scheduling</a>, <a href="0090-mutexes-priority-inversion-and-deadlock.html">Lesson 90: Mutexes, priority inversion and deadlock</a>, <a href="0078-memory.html">Lesson 78: Memory, stack vs heap and stack overflow</a>, and <a href="lab05-move-lab-4-onto-freertos.html">Lab 5: Move Lab 4 onto FreeRTOS</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

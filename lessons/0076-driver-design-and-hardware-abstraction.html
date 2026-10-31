@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Driver design and hardware abstraction layers · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0076">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Driver design and hardware abstraction layers</h1>
+  <p class="subtitle">A good driver hides the chip from the code that uses it. Then the same logic runs on two boards, and on your PC, without changes. This lesson shows where to draw that line, and it critiques the HAL from Lab 4.</p>
+
+  <div class="goal">
+    By the end of this lesson you can split an LED into an interface and two backends, choose one backend at link time, and name three weaknesses of a HAL header with the change that fixes each one.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea: layers and one direction</h2>
+  <p>
+    Firmware has layers. The top is the <strong>application</strong>, which says what the product does. Below it are <strong>services</strong>, which are reusable logic such as a filter, a menu or a protocol. Below those are <strong>drivers</strong>, which run one device, such as a sensor or a display. At the bottom is the <strong>HAL</strong> (hardware abstraction layer), or board support package, which talks to the chip and the board through the vendor SDK or the registers. The chip itself is the last layer.
+    <span class="sidenote">Elecia White's book is a practical overview of the profession, and its chapters on architecture cover this layering. <a href="https://www.oreilly.com/library/view/making-embedded-systems/9781098151539/">Making Embedded Systems, 2nd ed. (O'Reilly)</a></span>
+  </p>
+  <p>
+    The rule that makes the layers useful is the <strong>dependency direction</strong>. An upper layer includes the header of the layer below it. A lower layer never includes anything above it. So the application can be tested on a PC with a fake HAL, and the HAL can be replaced for a new board without touching the application.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 440 210" role="img" aria-label="Five stacked layers: application, services, drivers, HAL and hardware. Arrows point down, showing that each layer only calls the layer below it.">
+      <defs>
+        <marker id="arrLayers" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+          <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="60" y="10" width="320" height="32"/>
+        <rect x="60" y="52" width="320" height="32"/>
+        <rect x="60" y="94" width="320" height="32"/>
+        <rect x="60" y="136" width="320" height="32"/>
+        <rect x="60" y="178" width="320" height="26"/>
+        <line x1="220" y1="42" x2="220" y2="52" marker-end="url(#arrLayers)"/>
+        <line x1="220" y1="84" x2="220" y2="94" marker-end="url(#arrLayers)"/>
+        <line x1="220" y1="126" x2="220" y2="136" marker-end="url(#arrLayers)"/>
+        <line x1="220" y1="168" x2="220" y2="178" marker-end="url(#arrLayers)"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="13" text-anchor="middle">
+        <text x="220" y="31">Application: what the product does</text>
+        <text x="220" y="73">Services: filter, menu, protocol</text>
+        <text x="220" y="115">Drivers: one device each (sensor, OLED)</text>
+        <text x="220" y="157">HAL or BSP: the board and the SDK</text>
+        <text x="220" y="195">Hardware: the chip and the pins</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Each layer calls only the layer under it. The arrow between two layers is the only dependency that is allowed to exist.</figcaption>
+  </figure>
+
+  <p>
+    A HAL is a seam, and the seam has two faces. For the application it is an interface: a header with function declarations and no pins. For the board it is an implementation: a file, or a set of files, that defines those functions with one SDK or one register map. Lab 4 used exactly this split (<a href="lab04-port-lab-3-to-the.html">Lab 4</a>), with <code>hal.h</code> on one side and a board file per board on the other.
+  </p>
+
+  <!-- ===== Interface pattern ===== -->
+  <h2>Interface, handle and error return</h2>
+  <p>
+    A driver interface follows three habits. First, the header names what the driver does, not how. Second, the object the caller works on is an <strong>opaque handle</strong>: a pointer to a struct whose fields are hidden in the implementation file, so the caller cannot reach into it. Third, every call that can fail returns a status, so the caller can check it. The next code block is the LED interface you will build in the hands-on task.
+  </p>
+  <pre><code><span class="c">/* led.h: the whole interface. No pins, no SDK calls, no printf. */</span>
+<span class="k">#ifndef</span> LED_H
+<span class="k">#define</span> LED_H
+<span class="k">#include</span> <span class="s">&lt;stdbool.h&gt;</span>
+
+<span class="k">void</span> led_init(<span class="k">void</span>);        <span class="c">/* call once, first; leaves the LED off */</span>
+<span class="k">void</span> led_set(<span class="k">bool</span> on);      <span class="c">/* true lights the LED */</span>
+<span class="k">bool</span> led_get(<span class="k">void</span>);         <span class="c">/* the level the driver last applied */</span>
+<span class="k">#endif</span></code></pre>
+  <p>
+    The LED interface has no handle, because there is only one LED in the program. A sensor with two instances needs one. The handle form is the same idea with a struct pointer as the first argument, and it is the pattern used by the HAL in the critique below.
+    <span class="sidenote">C has no classes, so "opaque" is a convention: the header forward-declares the struct, and the .c file defines it. Lab 4 meets the same idea in the STM32 HAL's <code>UART_HandleTypeDef</code> (see the <a href="../reference/glossary.html#hal-handle">HAL handle</a> entry).</span>
+  </p>
+  <div class="note">Keep the return type honest. A <code>void</code> init hides a failed bus. Lesson 84 covers how to report and recover from such failures in the field.</div>
+
+  <!-- ===== Link-time backend ===== -->
+  <h2>Choosing a backend at link time</h2>
+  <p>
+    The application needs an LED that works on the board, and a fake for a test or for a board that has no LED. Both backends define the same three functions. Only one of them is linked into the program. That choice is made by the build, not by the code, so the cost at run time is zero: the call goes straight to the chosen function. This is <strong>link-time substitution</strong>.
+  </p>
+  <p>
+    CMake makes the choice from a cache variable, and it compiles one source file into the program:
+  </p>
+  <pre><code><span class="k">set</span>(LED_BACKEND <span class="s">"gpio"</span> CACHE STRING <span class="s">"LED backend: gpio or fake"</span>)
+<span class="k">if</span>(LED_BACKEND STREQUAL <span class="s">"gpio"</span>)
+    <span class="k">set</span>(LED_SOURCE led_gpio.c)
+<span class="k">elseif</span>(LED_BACKEND STREQUAL <span class="s">"fake"</span>)
+    <span class="k">set</span>(LED_SOURCE led_fake.c)
+<span class="k">endif</span>()
+<span class="k">add_executable</span>(blink main.c <span class="s">${LED_SOURCE}</span>)</code></pre>
+  <p>
+    If you add both files, the linker stops with <em>multiple definition</em> errors, because two functions share one name. That error is useful: it proves that the program has one backend, and it tells you which name to look for.
+    <span class="sidenote">The duplicate-symbol error is the linker enforcing the rule that each global name has one definition. Lesson 41 shows the link step that does this.</span>
+  </p>
+
+  <!-- ===== Ops table ===== -->
+  <h2>Ops tables: choosing at run time</h2>
+  <p>
+    The other way is an <strong>ops table</strong>: a struct of function pointers, plus a context pointer that the functions receive. The caller picks the table at run time, and each call goes through one pointer. Function pointers are lesson 49's callbacks; here they form the whole interface.
+  </p>
+  <pre><code><span class="k">typedef struct</span> {
+    <span class="k">void</span> (*init)(<span class="k">void</span> *ctx);
+    <span class="k">void</span> (*set)(<span class="k">void</span> *ctx, <span class="k">bool</span> on);
+} led_ops_t;
+
+<span class="k">typedef struct</span> {
+    <span class="k">const</span> led_ops_t *ops;   <span class="c">/* which backend: gpio or fake */</span>
+    <span class="k">void</span> *ctx;               <span class="c">/* the backend's own data, such as a pin number */</span>
+} led_t;
+
+<span class="k">static inline void</span> led_set(led_t *l, <span class="k">bool</span> on) {
+    l-&gt;ops-&gt;set(l-&gt;ctx, on);            <span class="c">/* one indirect call: a load and a branch */</span>
+}</code></pre>
+  <p>
+    The ops table can change the backend while the program runs, it can hold two LEDs with two different backends, and a test can pass in a fake without relinking. Its costs are one indirect call on every use, a context pointer for every object, and the table itself in flash. Most firmware uses link-time choice for a single board, and an ops table when one program must drive several devices of the same kind.
+  </p>
+
+  <div class="warning">An ops table is not free polymorphism. If the caller can be given any table, the compiler cannot inline the call, and a missing field in the table is a null-pointer crash found on the device. Check every entry at init, or fill every entry in a <code>static const</code> table so the compiler checks the count.</div>
+
+  <!-- ===== Critique ===== -->
+  <h2>Critique: the Lab 4 HAL header</h2>
+  <p>
+    Lab 4's <code>hal.h</code> is a good first HAL. It has one interface, two board files, and logical pin levels that hide wiring. Read it again with a reviewer's eye, and five weaknesses show up.
+  </p>
+  <ol class="steps">
+    <li><strong>The address unit is not written consistently.</strong> The header calls the I2C address <code>addr7</code>, a 7-bit value, and <code>hal_pico.c</code> passes it to the Pico SDK, which takes the 7-bit address (<a href="https://www.raspberrypi.com/documentation/pico-sdk/">Pico SDK API documentation</a>). Lab 4's quiz and hint say the HAL takes an 8-bit value such as <code>0x78</code>. The code is correct and that text is not. A header comment that is wrong is a bug.</li>
+    <li><strong><code>hal_init()</code> returns <code>void</code>.</strong> A failed clock or bus start is invisible to the caller, so the application starts anyway.</li>
+    <li><strong>Unknown pins fail silently.</strong> <code>hal_gpio_read()</code> returns 0 for a pin it does not know, and a typo in the pin enum gives the same answer as a released button.</li>
+    <li><strong>Output and input pins share one enum.</strong> <code>hal_gpio_write(HAL_PIN_BTN_A, 1)</code> compiles. Split the enum into output and input pins so the compiler rejects the call.</li>
+    <li><strong>The state is global.</strong> Every function uses one board, with no context. Two I2C buses, or a host test with a fake board next to the real one, cannot coexist.</li>
+  </ol>
+
+  <h3>The improved header</h3>
+  <p>
+    The fix for items 2 to 5 is an opaque handle with a status enum. The board file defines <code>struct hal</code>, and the application never sees its fields. This header compiles with <code>-Wall -Wextra -Werror</code> against a board stub, in this course's check. Lab 4's files are not changed by this lesson.
+  </p>
+  <pre><code><span class="k">typedef enum</span> {
+    HAL_OK = 0,
+    HAL_ERR_ARG,        <span class="c">/* a null pointer or a zero-length transfer */</span>
+    HAL_ERR_PIN,        <span class="c">/* a pin the board does not have */</span>
+    HAL_ERR_BUS,        <span class="c">/* a NACK or an arbitration loss */</span>
+    HAL_ERR_TIMEOUT
+} hal_status_t;
+
+<span class="k">typedef struct</span> hal hal_t;          <span class="c">/* opaque: the board file defines it */</span>
+
+<span class="k">typedef struct</span> {
+    uint8_t  i2c_port;
+    uint32_t i2c_timeout_us;     <span class="c">/* units in the name, so no one guesses */</span>
+} hal_config_t;
+
+hal_status_t hal_init(hal_t **out, <span class="k">const</span> hal_config_t *cfg);
+hal_status_t hal_gpio_read(hal_t *h, hal_pin_t pin, <span class="k">bool</span> *pressed);
+hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, <span class="k">const</span> uint8_t *data, <span class="k">size_t</span> len);</code></pre>
+  <p>
+    Three things changed. The handle is the first argument, which gives each board or test its own instance, and <code>hal_init()</code> hands the handle back. The status is returned, and the value goes out through a pointer, so the caller can check both. The config struct has named fields, with the units in the names, so a call site does not need a comment to be read. The board file can keep its handle in static storage, so nothing is allocated on the heap (lesson 78 covers why that matters).
+    <span class="sidenote">Item 4 asks for two enums, one for output pins and one for input pins. The header above keeps one enum to stay short; splitting it is the exercise in the critique list.</span>
+  </p>
+
+  <!-- ===== Hands-on ===== -->
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0076-led-driver-interface</code>. The starter has the interface and <code>main.c</code>, which blinks the LED three times and reports <code>LED DRIVER OK</code> only if the driver reads back the level it was given. The two backends are empty, marked <code>TODO(learner)</code>.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0076-led-driver-interface/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>LED DRIVER FAIL</code>, because both backends do nothing.</li>
+    <li>Your task, part 1: in <code>led_gpio.c</code>, fill in the three <code>TODO(learner)</code> functions with the GP25 pin. Initialise the pin as an output, drive it with <code>gpio_put()</code>, and read it back with <code>gpio_get_out_level()</code>. Build and run. The LED blinks and the monitor prints <code>LED DRIVER OK</code>.</li>
+    <li>Your task, part 2: in <code>led_fake.c</code>, keep the state in <code>s_on</code> and print <code>LED fake: on</code> or <code>LED fake: off</code> on each change. Then, in <code>CMakeLists.txt</code>, change the default <code>"gpio"</code> to <code>"fake"</code>, and run <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> with the <em>Clean build</em> task. The cache value is read only on a fresh configure, so the clean build is needed.</li>
+    <li>You will know it works when the monitor prints <code>LED fake: init</code>, then six <code>on</code> and <code>off</code> lines, then <code>LED DRIVER OK</code>. The LED does not blink in this mode, because the fake has no pin.</li>
+    <li>Optional: add <code>led_fake.c</code> to the sources while the GPIO backend is selected. Read the linker error. It names the function that is defined twice, which is the point of link-time choice.</li>
+  </ol>
+  <details>
+    <summary>Hint for the GPIO backend</summary>
+    <p>The three functions are <code>gpio_init()</code>, <code>gpio_set_dir()</code> with <code>GPIO_OUT</code>, and <code>gpio_put()</code>. <code>gpio_put()</code> takes 0 or 1, so write <code>on ? 1 : 0</code>. The starter's comments name each function.</p>
+  </details>
+  <details>
+    <summary>Hint if the monitor still prints LED DRIVER FAIL</summary>
+    <p><code>led_get()</code> must report what <code>led_set()</code> applied. A stub that always returns <code>false</code> fails the check after the first <code>led_set(true)</code>. Read the output level, not a constant.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0076-led-driver-interface/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You put the LED behind an interface, wrote two backends, and chose one of them at link time from the build file, without changing <code>main.c</code>.</div>
+
+  <!-- ===== Quiz ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "You switch the LED from the GPIO backend to the fake. Which file must change for the switch?",
+        "options": [
+          "CMakeLists.txt, the build choice",
+          "main.c, the blink function",
+          "led.h, the interface header",
+          "led_gpio.c, the pin driver"
+        ],
+        "answer": 0,
+        "why": "The build selects the backend, so CMakeLists.txt changes. The tempting answer, main.c, is the application, and it never names a backend. led.h is the interface, which both backends share, so it does not change either." },
+      { "type": "number",
+        "prompt": "The solution blinks three times, and each blink calls led_set() twice, once for on and once for off. How many lines does the fake backend print from led_set() in one run, without counting init?",
+        "answer": 6, "tolerance": 0, "unit": "lines",
+        "why": "Three blinks times two calls each gives six calls, and each call prints one line. The tempting answer, 3, counts the blinks and forgets the off step." },
+      { "type": "mc",
+        "prompt": "An ops table lets the program choose its backend at run time. What does it cost on every call, compared with link-time choice?",
+        "options": [
+          "One indirect call on every use",
+          "A larger binary with every backend",
+          "A heap allocation at each startup",
+          "Tests could never use a fake"
+        ],
+        "answer": 0,
+        "why": "Each call loads a pointer and branches through it, which the compiler cannot inline. The tempting answer, a larger binary, is true of both designs, since a backend is compiled in either way. The table itself is static, so it needs no heap, and tests can use a fake." },
+      { "type": "text",
+        "prompt": "Which header file may a caller include to use the LED, and must it name any pin? Give the file name only.",
+        "accept": ["led.h"],
+        "why": "led.h declares the interface and names no pin. The tempting answer, led_gpio.c, is a backend, and including it would tie the caller to one board." },
+      { "type": "mc",
+        "prompt": "Lab 4's hal.h changes so two I2C buses can run at once. Which change does that most directly?",
+        "options": [
+          "Pass a handle to every call",
+          "Return an int error from init",
+          "Split the pin enum in two",
+          "Add units to the timeout name"
+        ],
+        "answer": 0,
+        "why": "A handle selects which instance a call uses, so two buses have two handles. The tempting answer, the error return, reports failures but still uses one global bus. Splitting the pin enum helps type checking, and the unit name helps readers." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 49: a struct of function pointers gets a pointer that tells each function which instance to use. What is that pointer called? Write one word.",
+        "accept": ["context", "ctx"],
+        "why": "The context pointer carries the instance's data to every function in the table. The tempting answer, handle, is the caller's name for the object, not the word the callback pattern uses." },
+      { "type": "text",
+        "prompt": "From lesson 46: which C keyword stops the compiler from caching a register read in a variable? Write it in lower case.",
+        "accept": ["volatile"],
+        "why": "volatile tells the compiler that each read or write must reach the device. The tempting answer, const, promises the value will not change, which is the opposite." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== Interview ===== -->
+  <div class="interview">
+    <p><strong>"How would you structure firmware for a board with a sensor, a display and a radio, so the logic can be tested on a PC?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I would split it into layers: an application that holds the product logic, services for the reusable parts, one driver per device, and a board layer that is the only code that knows the pins and the SDK. Each driver exposes an interface with an opaque handle and status returns. The board layer is one set of files per board, and the PC build links a fake board that records calls. I test the application and the services on the PC with those fakes, and I test the board layer on the target. Dependencies only point downward, so a new board changes one layer.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.oreilly.com/library/view/making-embedded-systems/9781098151539/">Elecia White, Making Embedded Systems, 2nd ed.</a>: read the chapters on architecture and on hardware and software boundaries, to compare with the layer model above. Chapter titles are the reference, since the section numbers were not checked in this session.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me a DS18B20 temperature driver behind the same kind of handle interface, with the one-wire bus hidden, and say what its fake would return in a test."
+    Related: <a href="lab04-port-lab-3-to-the.html">Lab 4: Port Lab 3 to the STM32</a>, <a href="0049-function-pointers-and-callbacks.html">Lesson 49: Function pointers and callbacks</a>, <a href="0080-unit-testing-on-the-host.html">Lesson 80: Unit testing on the host</a>, and <a href="../reference/glossary.html#hal-hardware-abstraction-layer">Glossary: HAL</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

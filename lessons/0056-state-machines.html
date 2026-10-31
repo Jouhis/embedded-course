@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>State machines · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0056">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>State machines: switch-based and table-driven</h1>
+  <p class="subtitle">Most firmware is a set of modes that react to events: a light changes, a door opens, a button is pressed. Writing that as nested <code>if</code> statements works until the fourth mode. A state machine makes the modes and the transitions explicit, so you can check them and print them.</p>
+
+  <div class="goal">
+    By the end of this lesson you can write a traffic-light controller as a table of transitions, feed it debounced button events, and print each transition, such as <code>STATE RED-&gt;GREEN</code>, on the serial monitor.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A state machine has a set of <strong>states</strong>, a set of <strong>events</strong>, and a rule that says, for each state and event, which state comes next. The state is a variable. An event is one thing that happened, such as a timer expiring or a debounced press. Your main loop turns raw inputs into events, and the state machine decides what they mean.
+    <span class="sidenote">The machine sees events, not raw pins. The debouncer from lesson 52 turns a noisy pin into one press event, and the state machine never has to think about bounce.</span>
+  </p>
+  <p>
+    Miro Samek's free video course builds the same idea from bare metal to event-driven designs, and it shows the generated code for each step. Its state-machine material is the source to read after this lesson <a href="https://www.state-machine.com/video-course">(Samek, Modern Embedded Systems Programming)</a>.
+  </p>
+
+  <h2>Switch-based</h2>
+  <p>
+    The switch-based form is one function with a <code>switch</code> on the state, and a second <code>switch</code> or <code>if</code> on the event. It reads like the diagram, and it is the right first step. Each case returns the next state, so the transition is in one place.
+  </p>
+  <pre><code><span class="k">static</span> state_t on_event(state_t s, event_t e) {
+    <span class="k">switch</span> (s) {
+        <span class="k">case</span> ST_RED:
+            <span class="k">if</span> (e == EV_TIMEOUT) <span class="k">return</span> ST_GREEN;
+            <span class="k">return</span> s;                     <span class="c">/* a request in RED is ignored */</span>
+        <span class="k">case</span> ST_GREEN:
+            <span class="k">if</span> (e == EV_TIMEOUT || e == EV_REQUEST) <span class="k">return</span> ST_YELLOW;
+            <span class="k">return</span> s;
+        <span class="k">case</span> ST_YELLOW:
+            <span class="k">if</span> (e == EV_TIMEOUT) <span class="k">return</span> ST_RED;
+            <span class="k">return</span> s;
+    }
+    <span class="k">return</span> s;
+}</code></pre>
+  <p>
+    The weakness shows as the machine grows. Every new event adds a condition to every state, and nothing tells you whether you forgot one. Each state's code is spread across the function, so a reviewer must read the whole thing to see what state RED does.
+  </p>
+
+  <h2>Table-driven</h2>
+  <p>
+    The table-driven form stores the same rules as data. A two-dimensional array indexed by state and event gives the next state, and one dispatch function does the work for every transition. Adding a state means adding a row. A missing cell is easy to see, because the table has a fixed shape.
+  </p>
+  <pre><code><span class="k">static const</span> state_t next_state[ST_COUNT][EV_COUNT] = {
+    <span class="c">/*            TIMEOUT     REQUEST   */</span>
+    <span class="c">/* RED    */</span> { ST_GREEN,  ST_RED    },
+    <span class="c">/* GREEN  */</span> { ST_YELLOW, ST_YELLOW },
+    <span class="c">/* YELLOW */</span> { ST_RED,    ST_YELLOW },
+};
+
+<span class="k">static void</span> dispatch(event_t e, <span class="k">uint32_t</span> now_us) {
+    state_t next = next_state[state][e];
+    <span class="k">if</span> (next == state) <span class="k">return</span>;      <span class="c">/* no change: print nothing */</span>
+    printf(<span class="s">"STATE %s-&gt;%s\n"</span>, state_name[state], state_name[next]);
+    state = next;
+    gpio_put_masked(LIGHT_PINS, light_mask[state]);
+    deadline_us = now_us + state_ms[state] * 1000u;
+}</code></pre>
+  <p>
+    The table is <code>static const</code>, so it lives in flash and costs no RAM, as lesson 46 explains. The per-state data, the duration and the light, are also tables, so the rules for each state sit together. The cost is a less flexible action: an action that depends on more than the table has to go in the dispatch code.
+  </p>
+  <figure>
+    <svg viewBox="0 0 500 200" role="img" aria-label="Three states, RED, GREEN and YELLOW, with arrows for the timeout and request events. A request in GREEN goes to YELLOW early." style="max-width:650px">
+      <defs><marker id="ah36" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <circle cx="90" cy="80" r="34"/>
+        <circle cx="250" cy="80" r="34"/>
+        <circle cx="410" cy="80" r="34"/>
+        <path d="M124 70 Q170 40 216 70" marker-end="url(#ah36)"/>
+        <path d="M284 70 Q330 40 376 70" marker-end="url(#ah36)"/>
+        <path d="M284 92 Q330 120 376 92" marker-end="url(#ah36)"/>
+        <path d="M410 116 Q250 230 90 116" marker-end="url(#ah36)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="90" y="85" text-anchor="middle" font-size="12">RED</text>
+        <text x="250" y="85" text-anchor="middle" font-size="12">GREEN</text>
+        <text x="410" y="85" text-anchor="middle" font-size="12">YELLOW</text>
+        <text x="170" y="34" text-anchor="middle" font-size="12">timeout</text>
+        <text x="330" y="34" text-anchor="middle" font-size="12">timeout</text>
+        <text x="330" y="132" text-anchor="middle" font-size="12">request</text>
+        <text x="250" y="192" text-anchor="middle" font-size="12">timeout</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The traffic-light machine as a graph. Each arrow is one row-and-column cell of the table. A request event adds one more arrow, from GREEN to YELLOW, so the light turns early. In the table, every cell has a meaning, including the ones that do nothing.</figcaption>
+  </figure>
+
+  <h2>Events, not pins</h2>
+  <p>
+    The button is an input with bounce, and the lights are outputs. Keep them out of the transition table. The debounced press from lesson 52 becomes <code>EV_REQUEST</code>, and the timer becomes <code>EV_TIMEOUT</code>. The state machine is then easy to test: you can call it with a list of events and check the transitions, without any hardware (lesson 80 covers host testing).
+  </p>
+  <div class="warning">A state machine that reads GPIO inside its transition code is hard to test and easy to break. Read the pins in the main loop, turn them into events, and pass the events in.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0056-state-machine</code>. Three LEDs on GP2 (red), GP3 (yellow) and GP4 (green) show the light, and a button on GP14 is the pedestrian request. The starter has the switch-based function from above, with <code>TODO(learner)</code> in each case, and a loop that only handles the timer.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0056-state-machine/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Observe the starter. The red light stays on for 3 s and then never changes, because the timeout is not connected to a transition yet.</li>
+    <li>Your task, in two places. First, in <code>on_event()</code>, write the transitions from the table: RED to GREEN on a timeout, GREEN to YELLOW on a timeout or a request, and YELLOW to RED on a timeout. A request in RED or YELLOW returns the same state. Second, in the loop, print <code>STATE old-&gt;new</code> whenever the state changes, and handle the button press as a <code>EV_REQUEST</code>.</li>
+    <li>You will know it works when the serial monitor prints <code>STATE MACHINE OK</code> at startup, then one <code>STATE RED-&gt;GREEN</code>-style line for each change, and the lights follow the lines. Pressing the button during green makes the light turn yellow early.</li>
+  </ol>
+  <details>
+    <summary>Hint for the button</summary>
+    <p>The starter's comments say that a press is an event. The lesson 52 integrator debounce returns <code>true</code> once per confirmed press. Call the state machine with <code>EV_REQUEST</code> when that happens, and keep the timeout check as it is.</p>
+  </details>
+  <details>
+    <summary>Hint for the printed line</summary>
+    <p>Compare the state before and after the call. If they differ, print the old name, an arrow, and the new name. The solution uses <code>state_name[]</code>, an array of strings indexed by the state.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0056-state-machine/solution</code>. Try first, compare after. It uses the table-driven form, so compare its <code>dispatch()</code> with your switch-based version to see what each one buys.</p>
+
+  <div class="win">You turned a set of modes into a table of transitions, connected debounced button events to it, and printed every change. You can read the machine's behaviour from the serial log, which is how you check it.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "A table has 3 states and 2 events. How many cells does it have?",
+        "answer": 6, "tolerance": 0, "unit": "cells",
+        "why": "3 rows times 2 columns is 6 cells. The tempting answer, 5, is the sum of states and events, which is not the size of the table." },
+      { "type": "mc",
+        "prompt": "What is the main advantage of the table-driven form?",
+        "options": [
+          "Missing cells show up fast",
+          "It runs faster than switches",
+          "It needs no state variable",
+          "It works without any timer"
+        ],
+        "answer": 0,
+        "why": "The table has a fixed shape, so a missing cell shows up in review. The tempting answer, speed, is not the point: a table lookup and a switch cost about the same. A state machine still needs a state variable, and it still needs a timer for timeouts." },
+      { "type": "mc",
+        "prompt": "Why should the state machine receive events instead of reading the button pin itself?",
+        "options": [
+          "It can be tested without hardware",
+          "The pin is faster through events",
+          "Events use much less flash memory",
+          "The pin needs an interrupt first"
+        ],
+        "answer": 0,
+        "why": "Events can be fed in from a test, so the machine can be checked on the PC. The tempting answer, speed, is not the reason, since reading a pin is a single load. The machine does not need an interrupt either: a polled event works." },
+      { "type": "number",
+        "prompt": "The traffic light holds RED 3 s, GREEN 3 s and YELLOW 1 s, with no requests. How many seconds is one full cycle?",
+        "answer": 7, "tolerance": 0, "unit": "s",
+        "why": "3 + 3 + 1 = 7 s. The tempting answer, 9 s, counts RED and GREEN twice, or counts the yellow phase as 3 s." },
+      { "type": "text",
+        "prompt": "In the table, what does a cell that returns the same state mean? Write one word.",
+        "accept": ["ignored", "nothing", "stay", "noop"],
+        "why": "The event is ignored in that state, and nothing changes. The tempting answer, error, is wrong: a request during red is a valid event that the design chooses to ignore." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 53: for 115200 baud at 125 MHz, the integer part UARTIBRD is 67. What is the fraction UARTFBRD? Write the number.",
+        "accept": ["52"],
+        "why": "The fraction is 0.817 × 64 + 0.5, which rounds to 52. The tempting answer, 0.817, is the decimal fraction, not the 6-bit field value." },
+      { "type": "number",
+        "prompt": "From lesson 52: at a 1 ms sample period, how many samples does the integrator in the reference solution need to confirm a press?",
+        "answer": 10, "tolerance": 0, "unit": "samples",
+        "why": "The integrator must reach DEBOUNCE_SAMPLES, which is 10, before the press is confirmed. The tempting answer, 1, is the number of samples per millisecond, not the count the integrator needs." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you design a controller with many modes and events, and how would you test it?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I'd list the states and the events first, then write the transitions as a table, one cell per state and event, with an explicit entry for every combination, even the ones that do nothing. Inputs become events in the main loop, so the state machine is pure logic: it takes an event and returns the next state and an action. I'd test it on the host by feeding event sequences and checking the state after each one, including the ignored events. On the target I'd log each transition with a level, so a field problem leaves a trace of the states the device went through.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.state-machine.com/video-course">Miro Samek, Modern Embedded Systems Programming (video course)</a>: the state-machine lectures, which show the code each style compiles to. Watch them after this lesson, and check the state-machine structure in the solution against them. Timestamps are not listed here, so find the module by its title.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me a hierarchical state machine for the traffic light, with a fault state that every state can enter, and say how the table changes."
+    Related: <a href="0052-gpio-input-and-debouncing.html">Lesson 52: GPIO input and debouncing</a>, <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

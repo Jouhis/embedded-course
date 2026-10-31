@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The NVIC: priorities, preemption, latency · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0072">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>The NVIC: priorities, preemption, latency</h1>
+  <p class="subtitle">When two interrupts fire at once, the NVIC decides which one runs first and whether a running handler can be interrupted. Get the priority grouping wrong and your timing bugs will only show up under load.</p>
+
+  <div class="goal">
+    By the end of this lesson you can set the priority grouping and the priority of two interrupt sources with CMSIS, say which one preempts which, and explain the 12-cycle entry cost and tail-chaining, using the Arm and ST sources.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The NVIC (Nested Vectored Interrupt Controller) holds one enable bit and one priority value for each interrupt source. When a source fires, the NVIC picks the highest-priority pending interrupt, and the core starts its handler. Lesson 34 explains the stack frame and the entry sequence. This lesson is about the choice the NVIC makes before that sequence starts.
+  </p>
+  <p>
+    On the Cortex-M3 a <strong>lower number is a higher priority</strong>. Priority 0 is the most urgent configurable interrupt. The STM32F1 implements 4 priority bits, which the device header records as <code>__NVIC_PRIO_BITS 4U</code>, so each priority is a value from 0 to 15 (<code>stm32f103xb.h</code>). Only the top four bits of the 8-bit priority field are used. The lower four bits read as zero.
+    <span class="sidenote">A priority number is not a count of anything. Priority 2 is not "twice as urgent" as priority 4. It only says which one wins when both are pending, and whether one can interrupt the other.</span>
+  </p>
+  <figure>
+    <svg viewBox="0 0 560 165" role="img" aria-label="An 8-bit priority field with the top four bits, preempt and sub-priority, shown for two groupings" style="max-width:728px">
+      <defs><marker id="ah50" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="30" width="260" height="40" rx="3"/>
+        <rect x="280" y="30" width="260" height="40" rx="3"/>
+        <rect x="20" y="110" width="130" height="40" rx="3"/>
+        <rect x="150" y="110" width="130" height="40" rx="3"/>
+        <rect x="280" y="110" width="260" height="40" rx="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="20" y="22" text-anchor="start" font-size="12">Grouping 3: 4 preempt bits, 0 sub</text>
+        <text x="150" y="46.7" text-anchor="middle" font-size="12">bits 7 to 4</text>
+        <text x="150" y="61.7" text-anchor="middle" font-size="12">preempt</text>
+        <text x="410" y="46.7" text-anchor="middle" font-size="12">bits 3 to 0</text>
+        <text x="410" y="61.7" text-anchor="middle" font-size="12">not implemented</text>
+        <text x="20" y="100" text-anchor="start" font-size="12">Grouping 5: 2 preempt, 2 sub</text>
+        <text x="85" y="126.85" text-anchor="middle" font-size="11">bits 7 to 6</text>
+        <text x="85" y="140.85" text-anchor="middle" font-size="11">preempt</text>
+        <text x="215" y="126.85" text-anchor="middle" font-size="11">bits 5 to 4</text>
+        <text x="215" y="140.85" text-anchor="middle" font-size="11">sub-priority</text>
+        <text x="410" y="126.7" text-anchor="middle" font-size="12">bits 3 to 0</text>
+        <text x="410" y="141.7" text-anchor="middle" font-size="12">not implemented</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The priority register has 8 bits, but the device implements only the top 4. The grouping (AIRCR PRIGROUP) splits those 4 bits into preemption and sub-priority.</figcaption>
+  </figure>
+
+  <h2>Preemption and sub-priority</h2>
+  <p>
+    The priority grouping in <code>AIRCR</code> (the <code>PRIGROUP</code> field, bits 10 to 8 of the register) splits the implemented bits into two parts. The preemption part decides whether a new interrupt can interrupt a running handler. The sub-priority part only decides which of two pending interrupts runs first when both have the same preemption value and neither is running. CMSIS sets the grouping with <code>NVIC_SetPriorityGrouping()</code> and builds a value with <code>NVIC_EncodePriority()</code> (<code>core_cm3.h</code>).
+    <a href="https://developer.arm.com/documentation/dui0552/latest/">Arm Cortex-M3 Devices Generic User Guide, the NVIC section</a>
+  </p>
+  <pre><code><span class="c">/* Grouping 3 on this device: 4 preemption bits, 0 sub-priority bits. */</span>
+NVIC_SetPriorityGrouping(<span class="k">3</span>);
+NVIC_SetPriority(TIM2_IRQn,  NVIC_EncodePriority(<span class="k">3</span>, <span class="k">0</span>, <span class="k">0</span>));  <span class="c">/* most urgent: may preempt */</span>
+NVIC_SetPriority(EXTI0_IRQn, NVIC_EncodePriority(<span class="k">3</span>, <span class="k">2</span>, <span class="k">0</span>));  <span class="c">/* lower: can be preempted by TIM2 */</span>
+NVIC_EnableIRQ(TIM2_IRQn);
+NVIC_EnableIRQ(EXTI0_IRQn);</code></pre>
+  <p>
+    A preemption happens only when the new interrupt has a numerically <em>lower</em> preemption value than the one running. Equal values do not preempt each other, even if one has been running for a long time. With grouping 3 there are no sub-priority bits, so two pending interrupts of equal priority run in a fixed hardware order.
+  </p>
+  <div class="warning">The reset value of every priority is 0, which is the highest. If you enable two sources and forget to set their priorities, both run at the top level and neither can preempt the other. Set the grouping and the priorities before you enable the sources, as the solution does.</div>
+
+  <h2>Latency: 12 cycles and tail-chaining</h2>
+  <p>
+    On the Cortex-M3 the entry sequence takes 12 cycles in the usual case: stacking, the vector fetch and the start of the handler. Tail-chaining (a pending exception starts right after the first one returns, with no pop and push in between) and late arrival (a higher-priority exception arrives while the stacking is in progress) change that cost. The timing diagram and the rules are in the Arm TRM.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, section 5.5 (Figure 5-2 for the 12-cycle entry), section 5.6 (tail-chaining) and section 5.7 (late arrival)</a>
+    <span class="sidenote">Latency is the time from the interrupt request to the first instruction of the handler. It excludes the time the CPU spends in a higher-priority handler, and that is the number that matters for a deadline.</span>
+  </p>
+  <p>
+    Latency is not the same as response time. A short handler at a high priority can be delayed by a long handler at a lower priority only if the lower one has no preemption point, which is why the EXTI handler below is written to be preempted. The disabled-interrupt window of a critical section (lesson 57) adds to the latency of every source, so keep it short.
+  </p>
+
+  <h2>Nested interrupts on real hardware and in this course</h2>
+  <p>
+    On the Cortex-M3 a handler can be preempted by a higher-priority exception, and the CPU then runs nested handlers. The course's own teaching CPU (<code>assets/cpusim.js</code>) does not model nesting, and its notes say so. The Wokwi simulator is a different program, and this course has not checked its nesting behaviour in a lesson, so the demo below prints what the hardware should do and says so in its expected output. If a test fails in the simulator, check the real board first.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The button on PB0 raises EXTI0. PB0 is routed to EXTI line 0 through the AFIO external-interrupt register (<code>AFIO-&gt;EXTICR[0]</code>, which the solution sets to the PB value). The pin itself is on the default mapping in the <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf">STM32F103x8/xB datasheet, "Pinouts and pin description" table</a>. The EXTI0 handler is slow: it busy-waits for about 30 ms, at priority 2. A timer on TIM2 raises an update interrupt every 10 ms, at priority 0. The log records every event with a sequence number, so the order is visible on the serial monitor.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0072-the-nvic/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: in <code>nvic_start()</code>, set the grouping to 3, set TIM2 to priority 0 and EXTI0 to priority 2, using <code>NVIC_EncodePriority</code>. Then press the button.</li>
+    <li>You will know it works when the serial monitor shows <code>TIM2 nested in EXTI0</code> between the <code>EXTI0 enter</code> and <code>EXTI0 exit</code> lines. Before you fix the priorities, the starter shows only <code>TIM2 tick</code> lines after the EXTI0 exit.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Call <code>NVIC_SetPriorityGrouping(3)</code> first. Then pass the grouping to <code>NVIC_EncodePriority(3, preempt, 0)</code>. A lower preempt value wins.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0072-the-nvic/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You set a grouping and two priorities, and you can say which interrupt is allowed to preempt the other and why, using the device's implemented priority bits.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The STM32F1 device header sets __NVIC_PRIO_BITS to 4. With grouping 3 (NVIC_SetPriorityGrouping(3)), how many preemption bits are there?",
+        "answer": 4, "tolerance": 0, "unit": "bits",
+        "why": "Grouping 3 leaves 7 − 3 = 4 preemption bits, and the device implements only 4 bits in total, so the sub-priority count is 0. The tempting answer, 3, is the grouping value itself, not the bit count." },
+      { "type": "mc",
+        "prompt": "Which rule decides whether a new interrupt can preempt the running one?",
+        "options": [
+          "Lower number, higher priority",
+          "Higher number, higher priority",
+          "Priority zero is disabled",
+          "Priority fifteen is urgent"
+        ],
+        "answer": 0,
+        "why": "On the Cortex-M3 a lower priority number is more urgent, so a lower preemption value can interrupt a higher one. The tempting answer, the higher number, is the convention in some other systems, and it is backwards here." },
+      { "type": "mc",
+        "prompt": "What does tail-chaining save when one handler returns and a second exception is pending?",
+        "options": [
+          "Skips pop and push of registers",
+          "Raises the interrupt priority level now",
+          "Clears the pending interrupt flags now",
+          "Starts the SysTick timer once again"
+        ],
+        "answer": 0,
+        "why": "Tail-chaining starts the next handler directly, without popping the registers and pushing them again (Arm TRM section 5.6). The other answers are not part of the mechanism. The tempting answer, clearing the flags, sounds like a cleanup step, but the flags are cleared by the handler." },
+      { "type": "text",
+        "prompt": "Which SCB register holds the PRIGROUP field that sets the priority grouping? Write its name.",
+        "accept": ["AIRCR", "SCB->AIRCR", "SCB_AIRCR"],
+        "why": "AIRCR, the Application Interrupt and Reset Control Register, holds PRIGROUP in bits 10 to 8 (core_cm3.h). The tempting answer, SHPR, holds the system handler priorities, not the grouping." },
+      { "type": "mc",
+        "prompt": "Roughly how many cycles does the Cortex-M3 take to enter an interrupt handler in the usual case?",
+        "options": [
+          "About 12 cycles to enter",
+          "About 6 cycles to enter",
+          "About 40 cycles to enter",
+          "About 2 cycles to enter"
+        ],
+        "answer": 0,
+        "why": "The Arm TRM gives 12 cycles for the usual entry (section 5.5, Figure 5-2). The tempting answer, about 6, is the figure that a reader might remember for a different core or from the pipeline, not this entry sequence." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 34: how many 32-bit words does the basic exception frame push onto the stack on entry?",
+        "answer": 8, "tolerance": 0, "unit": "words",
+        "why": "The frame holds R0 to R3, R12, LR, the return address and xPSR, which is 8 words or 32 bytes. The tempting answer, 16, counts the whole register file instead of the frame." },
+      { "type": "text",
+        "prompt": "From lesson 46: which qualifier stops the compiler from keeping a register-mapped flag in a CPU register?",
+        "accept": ["volatile"],
+        "why": "volatile makes each access an observable side effect, so the flag is reloaded each time. The tempting answer, const, forbids writes and does not stop caching." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A 100 Hz timer misses its deadline on a board where a 30 ms handler runs on another interrupt. What do you check first?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>First check the priorities. If the timer and the slow handler share a priority, or the timer is numerically higher, the timer cannot preempt the slow one, and it waits up to 30 ms. Fix the grouping and the priorities so that the timer is the most urgent source. Second, check whether the slow handler does work that belongs in the main loop: an ISR should set a flag or push to a queue, not run 30 ms of code. Third, check for critical sections (PRIMASK or BASEPRI) that stretch the disabled window. Measure the latency with a timestamp at the entry and the exit of the timer handler, because the fix is only real when the measured number changes.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 Technical Reference Manual, DDI0337G (Keil copy)</a>: read section 5.5 for the 12-cycle entry, Figure 5-2, then sections 5.6 and 5.7 for tail-chaining and late arrival. For the register-level view of the priority registers, read PM0056 (the STM32F10xxx Cortex-M3 programming manual), in its NVIC section.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Draw the timeline of a TIM2 interrupt that arrives while EXTI0 is running, and mark the stacking, the tail-chain and the return."
+    Related: <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>, <a href="0040-clock-tree-and-plls.html">Lesson 40: Clock tree and PLLs</a>, and <a href="../reference/glossary.html#nvic-nested-vectored-interrupt-controller">Glossary: NVIC</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

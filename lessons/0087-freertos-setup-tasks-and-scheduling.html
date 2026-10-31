@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FreeRTOS setup, tasks and scheduling · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0087">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>FreeRTOS setup, tasks and scheduling</h1>
+  <p class="subtitle">A FreeRTOS program is a set of tasks, each with a priority, and a kernel that runs the most urgent ready task. On the Blue Pill that means one tick interrupt, one scheduler and a few lines of configuration.</p>
+
+  <div class="goal">
+    By the end of this lesson you can create two or more tasks with <code>xTaskCreate()</code>, choose their priorities, write a periodic task with <code>vTaskDelayUntil()</code>, and explain the difference from <code>vTaskDelay()</code>, the idle task and the tick.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>task</strong> is an infinite loop with its own stack. The kernel keeps a <strong>ready list</strong> of tasks that could run now, and at every decision point it picks the ready task with the highest priority. That selection is the scheduler. FreeRTOS keeps the code for it in <code>tasks.c</code>. The macro that picks the task, <code>taskSELECT_HIGHEST_PRIORITY_TASK()</code>, is at <code>tasks.c</code> line 235 in the kernel version this course uses, V11.2.0 (set in <code>include/task.h</code> line 56).
+  </p>
+  <p>
+    Three things drive the scheduler. A task that waits (for a delay, a queue or a semaphore) moves out of the ready list. The <strong>tick</strong> is a periodic interrupt, here 1 kHz from SysTick, that checks whether a waiting task's time has come. And a task that becomes ready with a higher priority than the running task causes a switch at once: this is <strong>preemption</strong>, and the switch itself is lesson 88.
+    <span class="sidenote">Preemption is set by <code>configUSE_PREEMPTION</code>. With it at 1, a higher-priority task interrupts a lower one. With it at 0, tasks switch only when they block or yield.</span>
+  </p>
+
+  <h2>Creating tasks</h2>
+  <p>
+    <code>xTaskCreate()</code> takes a function, a name, a stack depth <em>in words</em>, an argument, a priority and an optional handle. It allocates the stack and the task control block from the FreeRTOS heap, and makes the task ready. The kernel book describes the parameters; the function is defined at <code>tasks.c</code> line 1740.
+  </p>
+<pre><code><span class="k">static void</span> blink_task(<span class="k">void</span> *arg) {
+    (void)arg;
+    TickType_t last_wake = xTaskGetTickCount();
+    <span class="k">for</span> (;;) {
+        GPIOC-&gt;ODR ^= GPIO_ODR_ODR13;
+        vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(500));   <span class="c">/* a fixed 500 ms period */</span>
+    }
+}
+
+<span class="c">/* in main(), before vTaskStartScheduler(): */</span>
+xTaskCreate(blink_task, <span class="s">"blink"</span>, 128, NULL, 2, NULL);   <span class="c">/* 128 words, priority 2 */</span></code></pre>
+  <p>
+    The stack depth is in words because the stack is a <code>StackType_t</code> array, and on a Cortex-M3 that type is 32 bits. A depth of 128 is 512 bytes. Lesson 91 shows how to size it.
+  </p>
+  <div class="warning">Priority numbers grow upward: 0 is the lowest (the idle task), and <code>configMAX_PRIORITIES − 1</code> is the highest. Many bugs come from reading "priority 1" as the most urgent, which is the opposite of the NVIC rule in lesson 72, where a lower number is more urgent.</div>
+
+  <h2>Two delays: relative and absolute</h2>
+  <p>
+    <code>vTaskDelay(n)</code> blocks the task for <code>n</code> ticks <em>from the moment it is called</em>. If the work before it takes time, the period grows by that time, and it drifts. <code>vTaskDelayUntil(&amp;last, n)</code> keeps an absolute schedule: the next wake-up is <code>last + n</code>, so the period holds even when the work takes time. The FreeRTOS API reference documents <code>vTaskDelay()</code> on its own page (<a href="https://www.freertos.org/a00127.html">freertos.org, vTaskDelay</a>).
+  </p>
+  <table>
+    <thead>
+      <tr><th>Call</th><th>Wake-up time</th><th>Use it for</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>vTaskDelay(n)</code></td><td>now + n ticks</td><td>Waiting a while, where a drift is acceptable</td></tr>
+      <tr><td><code>vTaskDelayUntil(&amp;last, n)</code></td><td>last + n ticks; last is updated</td><td>A periodic job, such as a sensor every 200 ms</td></tr>
+    </tbody>
+  </table>
+
+  <h2>The idle task and the tick</h2>
+  <p>
+    When no task is ready, the kernel runs the <strong>idle task</strong>. The kernel creates it inside <code>vTaskStartScheduler()</code>, at priority 0 (<code>tasks.c</code> near line 3654), so the CPU always has something to run. The idle task frees memory from deleted tasks, and it is the place to put a low-power <code>WFI</code> if you want one. You never write it.
+  </p>
+  <p>
+    The tick is the heartbeat. SysTick fires 1000 times a second (<code>configTICK_RATE_HZ 1000</code> in the template's <code>FreeRTOSConfig.h</code>), and the handler calls <code>xTaskIncrementTick()</code> (<code>tasks.c</code> line 4725). That function moves tasks whose delay has ended back to the ready list. If one of them has a higher priority, the handler asks for a switch through PendSV (lesson 88). Tick resolution therefore limits delays: a 1 ms tick cannot give a 0.5 ms delay.
+  </p>
+  <div class="note">With <code>configUSE_TIME_SLICING</code> set to 1 (the default), tasks of <em>equal</em> priority take turns at each tick. Tasks of different priority never share the CPU this way: the higher one always wins.</div>
+
+  <h2>The task states</h2>
+  <figure>
+    <svg viewBox="0 0 560 290" role="img" aria-label="FreeRTOS task states: Running, Ready, Blocked and Suspended, with arrows for scheduling, preemption, delay expiry, blocking and resume." style="max-width:728px">
+      <defs><marker id="ah59" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="30" y="128" width="130" height="44" rx="6"/>
+        <rect x="215" y="30" width="130" height="44" rx="6"/>
+        <rect x="400" y="128" width="130" height="44" rx="6"/>
+        <rect x="30" y="226" width="130" height="44" rx="6"/>
+        <path d="M150 128 L215 44" marker-end="url(#ah59)"/>
+        <path d="M222 70 L160 136" marker-end="url(#ah59)"/>
+        <path d="M345 70 L425 128" marker-end="url(#ah59)"/>
+        <path d="M400 150 H160" marker-end="url(#ah59)"/>
+        <path d="M75 172 V226" marker-end="url(#ah59)"/>
+        <path d="M115 226 V172" marker-end="url(#ah59)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="95" y="154.2" text-anchor="middle" font-size="12">Ready</text>
+        <text x="280" y="56.2" text-anchor="middle" font-size="12">Running</text>
+        <text x="465" y="154.2" text-anchor="middle" font-size="12">Blocked</text>
+        <text x="95" y="252.2" text-anchor="middle" font-size="12">Suspended</text>
+        <text x="178" y="84" text-anchor="end" font-size="11">scheduled</text>
+        <text x="232" y="104" text-anchor="start" font-size="11">preempted or yields</text>
+        <text x="388" y="92" text-anchor="start" font-size="11">delay, queue, sem</text>
+        <text x="280" y="140" text-anchor="middle" font-size="11">event, timeout or delay ends</text>
+        <text x="66" y="206" text-anchor="end" font-size="11">suspend</text>
+        <text x="122" y="206" text-anchor="start" font-size="11">resume</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A task is Running (on the CPU), Ready (waiting for the CPU), Blocked (waiting for a time or an event) or Suspended (parked until resumed). The scheduler moves a task between Ready and Running; a delay or a blocking call moves it to Blocked; the event or timeout moves it back to Ready.</figcaption>
+  </figure>
+
+  <h2>Try it: three tasks on the Blue Pill</h2>
+  <p>
+    Open the project in VS Code. The starter is <code>projects/0087-freertos-tasks/starter</code>, and the solution is in <code>projects/0087-freertos-tasks/solution</code>. Try the starter first.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0087-freertos-tasks/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>The starter's <code>blink_task</code> uses <code>vTaskDelay(pdMS_TO_TICKS(1))</code>, which is the wrong period on purpose. The LED toggles far too fast. Replace that call with <code>vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS))</code>, and remove the placeholder.</li>
+    <li>In <code>report_task</code>, print <code>TASKS OK</code> once the blink task has toggled the LED, using the same <code>uart_puts()</code> call as the <code>tick=</code> label.</li>
+    <li>Rebuild and simulate. The serial monitor prints a line each second with the tick count. Compare your output with <code>projects/0087-freertos-tasks/solution/main.c</code> after you finish.</li>
+  </ol>
+  <p class="sidenote">The solution prints <code>TASKS OK</code> on the first report, and the LED toggles every 500 ms. Watch the tick count in the serial output: it increases by 1000 per second, because the tick is 1 kHz.</p>
+
+  <div class="win">You created tasks at two priorities, wrote a periodic task with <code>vTaskDelayUntil()</code>, and saw from the serial output that the kernel's tick counts 1000 per second.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Two tasks are both ready. A has priority 3 and B has priority 2. Which runs?",
+        "options": ["Task A, the higher one", "Task B, the lower one", "Both, by turns each tick"],
+        "answer": 0,
+        "why": "FreeRTOS runs the highest priority number, so A (3) runs. The tempting answer is B, which comes from the NVIC rule that a lower number is more urgent (lesson 72). Both alternating is what time slicing does for equal priorities only." },
+      { "type": "mc",
+        "prompt": "A task calls vTaskDelay(100) and the work before it takes 30 ms each time. Over a long run, what happens to its period?",
+        "options": ["It grows to 130 ms", "It stays at 100 ms", "It shrinks to 70 ms"],
+        "answer": 0,
+        "why": "vTaskDelay counts from the call, so each cycle adds the 30 ms of work to the 100 ms delay: a 130 ms period. The tempting answer is 100 ms, which is what vTaskDelayUntil would give, because it counts from the last wake-up." },
+      { "type": "number",
+        "prompt": "With configTICK_RATE_HZ at 1000, how many ticks is vTaskDelay(pdMS_TO_TICKS(500))?",
+        "answer": 500, "tolerance": 0, "unit": "ticks",
+        "why": "At 1 kHz one tick is 1 ms, so 500 ms is 500 ticks, and pdMS_TO_TICKS does that conversion. The tempting answer is 1000, which would be the number of ticks in a second, not in 500 ms." },
+      { "type": "text",
+        "prompt": "Which idle-task priority does FreeRTOS use, as a number?",
+        "accept": ["0", "zero"],
+        "why": "The idle task runs at priority 0, the lowest, so that any ready task preempts it. The tempting answer is the highest priority, which would starve the application tasks." },
+      { "type": "mc",
+        "prompt": "Which setting makes a higher-priority task interrupt a lower one?",
+        "options": ["configUSE_PREEMPTION", "configTOTAL_HEAP_SIZE", "configMINIMAL_STACK_SIZE"],
+        "answer": 0,
+        "why": "configUSE_PREEMPTION turns on preemption by priority. The heap size sets how much memory the kernel can allocate, and the minimal stack size sets the idle task's stack. The tempting answer, the heap size, is a setting every FreeRTOS project has, but it does not decide whether tasks preempt." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 73: the SysTick reload for a 1 ms tick at 72 MHz. What value?",
+        "answer": 71999, "tolerance": 0,
+        "why": "The reload is the cycles per tick minus one: 72 000 − 1 = 71 999. The tempting answer, 72 000, is off by one." },
+      { "type": "text",
+        "prompt": "From lesson 72: a lower NVIC priority number means what, more or less urgent?",
+        "accept": ["more urgent", "urgent", "more"],
+        "why": "A lower number is more urgent on the NVIC. FreeRTOS priorities work the other way round, which is why this lesson warns about it." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is the difference between vTaskDelay and vTaskDelayUntil, and when would you use each?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>vTaskDelay blocks for a number of ticks counted from the call, so the period drifts by the time the work takes. vTaskDelayUntil keeps the wake-up times on an absolute schedule by adding the period to the last wake-up time. Use vTaskDelayUntil for a periodic job that must keep its rate, such as a sensor read every 200 ms. Use vTaskDelay to wait for a while where the drift does not matter, such as a debounce or a status line once a second. Mention that both block the task and put it on the blocked list, so the CPU is free for lower-priority work.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>: the kernel book, on GitHub, covers tasks, states and the scheduler (chapters on tasks and the scheduler). The API reference page for <code>vTaskDelay()</code> is <a href="https://www.freertos.org/a00127.html">freertos.org/a00127</a>. The kernel source in this workspace is <code>third_party/FreeRTOS-Kernel/tasks.c</code>, with <code>xTaskCreate</code> at line 1740, <code>vTaskDelay</code> at 2458, <code>xTaskIncrementTick</code> at 4725 and the time-slicing check at 4861.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace what xTaskIncrementTick does on one tick when a delayed task's time has come and the running task has lower priority. Which list does the task move to, and when does the switch happen?"
+    Related: <a href="0086-why-use-an-rtos.html">Lesson 86: Why use an RTOS</a>, <a href="0088-context-switching-at-the-register.html">Lesson 88: Context switching at the register level</a>, <a href="0073-systick-and-a-millisecond-time.html">Lesson 73: SysTick and a millisecond time base</a>, and <a href="../reference/glossary.html#task">Glossary: Task</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

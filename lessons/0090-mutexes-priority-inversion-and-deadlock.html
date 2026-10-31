@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mutexes, priority inversion and deadlock · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0090">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Mutexes, priority inversion and deadlock</h1>
+  <p class="subtitle">The most famous RTOS bug was a spacecraft that kept resetting on Mars, caused by a high-priority task waiting for a low-priority one while a medium-priority task ran. The fix was a single setting on a mutex. This lesson shows the bug in the simulator, the fix on the Blue Pill, and how to avoid deadlock.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain priority inversion with three tasks, show it in UART output, fix it by using a mutex with priority inheritance, and state a lock-ordering rule that prevents deadlock.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>mutex</strong> is a lock: at most one task holds it, and a task that takes it while it is held waits. FreeRTOS implements a mutex as a semaphore with an owner. The owner is recorded, which lets the kernel do one thing a binary semaphore cannot: <strong>priority inheritance</strong>. While a high-priority task waits on a mutex, the owner runs at the waiter's priority, so no medium task can preempt it. The FreeRTOS kernel book describes mutexes and this inheritance in its chapter on mutexes; the source is <code>queue.c</code>, where the mutex is a queue with a special item size.
+  </p>
+  <p>
+    The bug is <strong>priority inversion</strong>. A high-priority task H waits for a resource held by a low-priority task L. A medium-priority task M is ready and does not need the resource. Because M outranks L, L cannot run, so H waits for M, which has nothing to do with the resource. The higher task is effectively running at the lowest level.
+  </p>
+
+  <h2>Three tasks, one resource</h2>
+  <p>
+    The project <code>projects/0090-priority-inversion</code> reproduces this exactly. Low (priority 1) takes the resource and holds it for 200 ms. Medium (priority 2) starts at 20 ms and burns 300 ms of CPU. High (priority 3) starts at 50 ms and needs the resource for 10 ms. The lock is first a binary semaphore, then a mutex.
+  </p>
+  <figure>
+    <svg viewBox="0 0 600 195" role="img" aria-label="Timelines of the three tasks in phase 1 (binary semaphore): low holds the lock, medium runs from 20 to 320 ms, and high waits until 320 ms. In phase 2 (mutex), low inherits high's priority and releases at 200 ms." style="max-width:780px">
+      <defs><marker id="ah60" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="120" y="30" width="384" height="20" rx="0" fill="currentColor" fill-opacity="0.15"/>
+        <rect x="144" y="80" width="360" height="20" rx="0"/>
+        <path d="M180 150 H504" stroke-dasharray="2 3"/>
+        <rect x="504" y="140" width="12" height="20" rx="0" fill="currentColor"/>
+        <path d="M120 170 H504" stroke-dasharray="3 3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="10" y="44" text-anchor="start" font-size="12">low</text>
+        <text x="10" y="94" text-anchor="start" font-size="12">medium</text>
+        <text x="10" y="144" text-anchor="start" font-size="12">high</text>
+        <text x="312" y="44" text-anchor="middle" font-size="11">holds the lock (phase 1)</text>
+        <text x="324" y="94" text-anchor="middle" font-size="11">runs 300 ms, does not need it</text>
+        <text x="342" y="134" text-anchor="middle" font-size="11">waits for the lock</text>
+        <text x="524" y="154" text-anchor="start" font-size="11">runs</text>
+        <text x="120" y="188" text-anchor="middle" font-size="11">0 ms</text>
+        <text x="312" y="188" text-anchor="middle" font-size="11">160 ms</text>
+        <text x="504" y="188" text-anchor="middle" font-size="11">320 ms</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Phase 1 with a binary semaphore. Low holds the lock while medium runs, and high waits until medium is finished. Times are in milliseconds, and the bars are simplified.</figcaption>
+  </figure>
+
+  <h2>What the UART shows</h2>
+  <p>
+    Run the solution and it prints a timeline for each phase. Expect numbers close to these, and read the high-task wait in each phase; the exact values depend on the tick and the simulator's timing.
+  </p>
+<pre><code>PHASE 1: binary semaphore (no inheritance)
+  t=0   low    start
+  t=0   low    got lock
+  t=20  medium start (no lock)
+  t=50  high   wants lock
+  t=320 medium done
+  t=320 low    release
+  t=320 high   got lock
+  t=320 high   release
+  high waited 270 ms
+PHASE 2: mutex (priority inheritance)
+  ...
+  high waited 150 ms
+PI FIXED: high waited 270 ms with a binary semaphore, 150 ms with a mutex</code></pre>
+  <p>
+    In phase 1, high asks at 50 ms and waits until medium finishes at 320 ms: a wait of 270 ms. In phase 2, low runs at priority 3 from 50 ms and releases at 200 ms, so high waits 150 ms. The fix does not make high run at once; it bounds the wait by the holding time of the resource.
+  </p>
+
+  <h2>The fix: a mutex</h2>
+  <p>
+    Phase 2 changes one line: <code>xSemaphoreCreateMutex()</code> in place of <code>xSemaphoreCreateBinary()</code>. The take and give calls are the same. The owner is recorded, so when high blocks, the kernel raises low's priority to 3 (inheritance), and medium can no longer preempt it.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Question</th><th>Binary semaphore</th><th>Mutex</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Has an owner</td><td>No: any task can give it</td><td>Yes: only the owner gives it back</td></tr>
+      <tr><td>Priority inheritance</td><td>No</td><td>Yes, in FreeRTOS</td></tr>
+      <tr><td>Use it for</td><td>Signals from an ISR or another task</td><td>Protecting shared data or a bus</td></tr>
+      <tr><td>Can be taken from an ISR</td><td>Given from an ISR, yes</td><td>No: a mutex is for tasks</td></tr>
+    </tbody>
+  </table>
+  <div class="warning">Do not use a mutex in an interrupt, and do not use a binary semaphore to protect shared data. The most common interview mistake is "a semaphore is a lock too", which is true in the simplest sense and wrong for priority inversion.</div>
+
+  <h2>The Mars Pathfinder story</h2>
+  <p>
+    In July 1997 the Mars Pathfinder lander began resetting shortly after it started collecting data. Mike Jones, reporting on a talk by Wind River's David Wilner, wrote in the RISKS Digest (volume 19, issue 49, December 1997) that a high-priority bus task was blocked on a mutex held by a low-priority meteorological task, while a medium-priority communications task kept preempting it. The mutex had priority inheritance disabled. Jones also credited earlier work by researchers at Carnegie Mellon for the diagnosis and the fix. Glenn Reeves, who led the Pathfinder software team, replied in the same thread: the team reproduced the failure in the lab, and the fix was a change to the setting that creates that mutex, so that it has priority inheritance.
+  </p>
+  <p class="sidenote">The source is the RISKS Digest post, which is primary; the story is also told in many course notes. Read the original post and Reeves's reply, and note the difference between the account of the talk and the account of the team's work.</p>
+
+  <h2>Deadlock and lock ordering</h2>
+  <p>
+    <strong>Deadlock</strong> is a cycle of waiting. Task 1 holds lock A and waits for B. Task 2 holds B and waits for A. Neither can proceed, and no timeout is involved. Four conditions must hold together: mutual exclusion, hold and wait, no preemption of a lock, and a circular wait. The simplest prevention is to break the last one with a <strong>lock ordering</strong> rule: every task takes locks in the same global order, for example always A before B. If every task obeys it, no cycle can form.
+  </p>
+  <ul>
+    <li>Take locks in a fixed order, and document the order next to the locks.</li>
+    <li>Hold each lock for as short a time as possible; never call a blocking function inside a critical section.</li>
+    <li>Use timeouts on lock takes in code that might be stuck, and handle the timeout as an error, not as a retry loop.</li>
+  </ul>
+
+  <div class="win">You showed priority inversion with three tasks, changed one call to fix it with a mutex, read the wait in the UART timeline, and can state the lock-ordering rule that prevents deadlock.</div>
+
+  <h2>Try it: the priority-inversion project</h2>
+  <ol class="steps">
+    <li>Open <code>projects/0090-priority-inversion/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>The starter's phase 2 still uses a binary semaphore, on purpose. Its output ends with <code>PI NOT FIXED</code>. Find the <code>TODO(learner)</code> in <code>run_phase()</code>.</li>
+    <li>Replace the binary semaphore with <code>xSemaphoreCreateMutex()</code>, and delete the give that follows it. Rebuild.</li>
+    <li>Simulate again. The last line should read <code>PI FIXED</code>, with a shorter high-task wait in phase 2. Compare with <code>projects/0090-priority-inversion/solution/main.c</code>.</li>
+  </ol>
+  <div class="note">The tasks do not print. They record events with the tick count, and the controller prints the timeline after each phase. Printing inside a task would take time, and it would change the timing you are trying to measure.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "In priority inversion, which task is the one that is blocked too long?",
+        "options": ["The high-priority task", "The low-priority task", "The medium-priority task"],
+        "answer": 0,
+        "why": "The high-priority task waits for the resource, so it is the one blocked too long. The low-priority task holds the resource, and the medium task is the one that runs. The tempting answer is the low task, which is the cause of the wait, but the damage falls on the high task." },
+      { "type": "mc",
+        "prompt": "What does priority inheritance change?",
+        "options": ["The owner's priority rises", "The waiter's stack grows", "The tick rate changes"],
+        "answer": 0,
+        "why": "While a high-priority task waits on a mutex, the owner runs at the waiter's priority. The tempting answer, the waiter's stack, is unrelated: the waiter does not change at all." },
+      { "type": "number",
+        "prompt": "In phase 2, low takes the mutex at 0 ms and holds it for 200 ms. When does the high task get the resource, in ms? Use the timeline in the lesson.",
+        "answer": 200, "tolerance": 0, "unit": "ms",
+        "why": "Low finishes its 200 ms critical section at 200 ms, and high gets the mutex then. The tempting answer is 320 ms, which is phase 1, where medium blocks low." },
+      { "type": "mc",
+        "prompt": "Two tasks take locks A and B. Task 1 takes A then B, and task 2 takes B then A. What is the fix?",
+        "options": ["Take locks in fixed order", "Use a longer lock timeout", "Give both tasks more priority"],
+        "answer": 0,
+        "why": "A fixed global order removes the circular wait, which is the cause of deadlock. A longer timeout only hides the deadlock until it happens under load. Raising priorities does not change the order of the locks, so the cycle remains." },
+      { "type": "text",
+        "prompt": "Which FreeRTOS call creates the lock that gives priority inheritance?",
+        "accept": ["xSemaphoreCreateMutex", "xSemaphoreCreateMutex()"],
+        "why": "xSemaphoreCreateMutex creates the mutex with an owner and inheritance. The tempting answer is xSemaphoreCreateBinary, which creates a semaphore without an owner." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 57: may an ISR take a mutex? Answer yes or no.",
+        "accept": ["no", "n"],
+        "why": "A mutex is for tasks, so an ISR must not take one. The tempting answer, yes, comes from thinking of a mutex as a lock, but it blocks and needs a task context." },
+      { "type": "number",
+        "prompt": "From lesson 71: a timer counts at 1 MHz. How many counts is 2.5 ms?",
+        "answer": 2500, "tolerance": 0,
+        "why": "At 1 MHz one count is 1 µs, so 2.5 ms is 2500 counts. The tempting answer is 250, which uses 10 µs per count." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Explain priority inversion, and how a mutex with priority inheritance fixes it. What is the difference from a binary semaphore?"</strong> Answer out loud in 90 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Priority inversion happens when a high-priority task waits for a resource held by a low-priority task, and a medium-priority task that does not need the resource preempts the low one. The high task then waits for the medium task's whole run. A mutex records its owner. When a high task blocks on it, the kernel raises the owner to the waiter's priority, so the medium task cannot preempt the owner, and the waiting time is bounded by the owner's critical section. A binary semaphore has no owner, so the kernel cannot raise anyone's priority; any task can give it, and it is for signalling. The Mars Pathfinder resets in 1997 were this bug on a VxWorks mutex with inheritance turned off. A good answer also mentions lock ordering against deadlock.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://catless.ncl.ac.uk/Risks/19/49">Mike Jones, "What really happened on Mars Rover Pathfinder", The RISKS Digest, volume 19, issue 49 (December 1997)</a>: the primary account of the priority inversion and the inheritance fix, with Glenn Reeves's reply in the same thread. Also read <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, the chapter on mutexes and priority inheritance.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Draw the phase-1 timeline again, but with a medium task that runs only 50 ms. Does high still wait, and for how long?"
+    Related: <a href="0089-queues-semaphores-and-event-groups.html">Lesson 89: Queues, semaphores and event groups</a>, <a href="0070-usart-and-exti-interrupts-with.html">Lesson 70: USART and EXTI interrupts</a>, and <a href="0091-timing-analysis-deadlines-and-stack.html">Lesson 91: Timing analysis, deadlines and stack sizing</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

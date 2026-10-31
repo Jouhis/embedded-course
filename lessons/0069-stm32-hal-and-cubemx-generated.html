@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STM32 HAL and CubeMX-generated code · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0069">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>STM32 HAL and CubeMX-generated code</h1>
+  <p class="subtitle">Most STM32 jobs use ST's Hardware Abstraction Layer, and most HAL projects start from CubeMX. This lesson shows what the HAL asks of you, what CubeMX writes, and how to decide between HAL, LL and registers.</p>
+
+  <div class="goal">
+    By the end of this lesson you can use HAL handles and check <code>HAL_StatusTypeDef</code> results, override a weak HAL callback, read the structure of CubeMX-generated code, and name the trade-off between HAL, LL and direct register access for a given task.
+  </div>
+
+  <div class="note">CubeMX cannot be installed in this workspace: it needs an ST account to download. This lesson describes what it generates and how to read that code, and it does not show generated output that was not produced here. The HAL code you build below is the same kind that CubeMX writes around your own code.</div>
+
+  <h2>The idea</h2>
+  <p>
+    The HAL is a C library that ST publishes for each STM32 family. Each peripheral has an init function, such as <code>HAL_UART_Init()</code>, that takes a handle and returns a status. The handle holds the peripheral's instance and its configuration, so a call reads like an action on an object. The HAL then writes the registers underneath. Its user manual, UM1850, describes the functions and their callbacks.
+    <a href="https://www.st.com/resource/en/user_manual/um1850-description-of-stm32f1-hal-and-lowlayer-drivers-stmicroelectronics.pdf">UM1850, Description of STM32F1 HAL and low-layer drivers</a>
+  </p>
+  <figure>
+    <svg viewBox="0 0 460 225" role="img" aria-label="Layers: your code, HAL with handles, LL inline functions, then registers and the peripheral" style="max-width:598px">
+      <defs><marker id="ah47" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="130" y="20" width="310" height="36" rx="3"/>
+        <rect x="130" y="72" width="310" height="36" rx="3"/>
+        <rect x="130" y="124" width="310" height="36" rx="3"/>
+        <rect x="130" y="176" width="310" height="36" rx="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="10" y="34" text-anchor="start" font-size="11">more code,</text>
+        <text x="10" y="50" text-anchor="start" font-size="11">more checks</text>
+        <text x="10" y="186" text-anchor="start" font-size="11">less code,</text>
+        <text x="10" y="202" text-anchor="start" font-size="11">more detail</text>
+        <text x="285" y="42.2" text-anchor="middle" font-size="12">Your code (main.c)</text>
+        <text x="285" y="94.2" text-anchor="middle" font-size="12">HAL: handles, status codes, callbacks</text>
+        <text x="285" y="146.2" text-anchor="middle" font-size="12">LL: thin inline functions (LL_GPIO_*)</text>
+        <text x="285" y="198.2" text-anchor="middle" font-size="12">Registers: USART1-&gt;DR, GPIOC-&gt;BSRR</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Each layer calls the one below it. The HAL and LL are both optional: a project can call the registers directly, as lessons 66 to 67 did.</figcaption>
+  </figure>
+
+  <h2>Handles and status codes</h2>
+  <p>
+    The UART has a handle, <code>UART_HandleTypeDef</code>. You fill in its <code>Instance</code> and <code>Init</code> fields, then call <code>HAL_UART_Init()</code>. The function returns <code>HAL_StatusTypeDef</code>, which is <code>HAL_OK</code>, <code>HAL_ERROR</code>, <code>HAL_BUSY</code> or <code>HAL_TIMEOUT</code>. A failed init that you do not check leaves the program running with a half-configured peripheral.
+  </p>
+  <pre><code>static UART_HandleTypeDef huart1;
+
+huart1.Instance = USART1;
+huart1.Init.BaudRate = 115200;
+huart1.Init.Mode = UART_MODE_TX;
+if (HAL_UART_Init(&amp;huart1) != HAL_OK) {
+    Error_Handler();          <span class="c">/* never continue with a failed peripheral */</span>
+}</code></pre>
+  <p>
+    Each peripheral's clock and pins are set up in its MSP function, which the HAL calls from the init. The MSP is the MCU-specific part: the clock enable for the peripheral and the GPIO alternate function. Lesson 67 did those steps by hand. In HAL code, <code>__HAL_RCC_USART1_CLK_ENABLE()</code> is the macro for the clock enable, and <code>HAL_GPIO_Init()</code> takes a <code>GPIO_InitTypeDef</code> for the pin.
+  </p>
+
+  <h2>The time base: HAL_Init, SysTick and HAL_Delay</h2>
+  <p>
+    <code>HAL_Init()</code> sets the interrupt priority grouping, and it starts SysTick as a 1 ms tick through <code>HAL_InitTick()</code>. The tick count is then read with <code>HAL_GetTick()</code>, and <code>HAL_Delay()</code> waits on it. The count only moves if your SysTick interrupt calls <code>HAL_IncTick()</code>. The HAL's own functions are weak, so your project supplies the handler:
+  </p>
+  <pre><code>void SysTick_Handler(void) { HAL_IncTick(); }   <span class="c">/* without this, the startup's default handler stops the program */</span></code></pre>
+  <p>
+    The HAL source shows <code>HAL_InitTick</code>, <code>HAL_IncTick</code>, <code>HAL_GetTick</code> and <code>HAL_Delay</code> as <code>__weak</code>, which means a project can replace any of them.
+    <a href="https://www.st.com/resource/en/user_manual/um1850-description-of-stm32f1-hal-and-lowlayer-drivers-stmicroelectronics.pdf">UM1850</a>, and <code>third_party/stm32f1xx-hal-driver/Src/stm32f1xx_hal.c</code>.
+    <span class="sidenote">Lesson 73 builds a millisecond time base from SysTick without the HAL. Compare the two when you reach it.</span>
+  </p>
+
+  <h2>Weak callbacks</h2>
+  <p>
+    The HAL's interrupt code calls a callback when something finishes. <code>HAL_UART_TxCpltCallback()</code> runs when a transmit completes, and <code>HAL_GPIO_EXTI_Callback()</code> runs from the EXTI handler with the pin number. The HAL defines each callback as weak with an empty body, so your code overrides it by defining a function with the same name:
+  </p>
+  <pre><code><span class="c">/* in your main.c: replaces the weak empty callback in the HAL */</span>
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == GPIO_PIN_0) {
+        button_pressed = 1;        <span class="c">/* keep it short, as in any ISR (lesson 57) */</span>
+    }
+}</code></pre>
+  <p>
+    Do not edit the HAL's own file to add your code. The next HAL update, or a CubeMX regeneration, would overwrite the edit. The weak override lives in your own file, and it survives updates.
+  </p>
+
+  <h2>What CubeMX generates</h2>
+  <p>
+    CubeMX is ST's configurator. You pick the chip, set each pin's function, enable the peripherals, and set the clocks in a graphical tool, and it writes the C code. The generated layout is typical of the STM32F1 HAL projects it makes, and the exact file names and comments depend on the CubeMX version. Read the code for your version, rather than trusting this list.
+  </p>
+  <ul>
+    <li><strong><code>main.c</code></strong>: <code>main()</code> calls <code>HAL_Init()</code>, then <code>SystemClock_Config()</code>, then one <code>MX_*_Init()</code> function for each peripheral you enabled, such as <code>MX_GPIO_Init()</code> and <code>MX_USART1_UART_Init()</code>. Each init function fills a handle and calls the HAL.</li>
+    <li><strong>The USER CODE blocks</strong>: your code goes between <code>/* USER CODE BEGIN 2 */</code> and <code>/* USER CODE END 2 */</code>, and between other pairs like them. CubeMX keeps the text inside those markers when it regenerates. Code outside the markers is overwritten, so never put your logic there.</li>
+    <li><strong><code>stm32f1xx_hal_msp.c</code></strong>: <code>HAL_MspInit()</code> and a <code>HAL_UART_MspInit()</code> for each UART. They enable the clocks and configure the alternate-function pins, which is the lesson 67 work done by generated code.</li>
+    <li><strong><code>stm32f1xx_it.c</code></strong>: the interrupt handlers, including <code>SysTick_Handler()</code>, which calls <code>HAL_IncTick()</code>, and the HAL's <code>HAL_UART_IRQHandler()</code> calls.</li>
+    <li><strong><code>stm32f1xx_hal_conf.h</code></strong>: which HAL modules are compiled in. The course's <code>stm32-hal</code> template already has this file, with the modules enabled.</li>
+    <li><strong><code>Error_Handler()</code></strong>: the function the generated code calls when an init fails. It is usually an infinite loop, so a failure stops the program where you can see it.</li>
+  </ul>
+  <div class="warning">The workflow is: CubeMX regenerates, then you read the diff. Put your code inside USER CODE blocks, or in your own files, and check every generated change in version control before you commit it.</div>
+
+  <h2>HAL, LL or registers</h2>
+  <p>
+    Three ways to drive the same peripheral, and each one trades readability, portability and control. Pick the lowest layer you can justify, and keep the reason in a comment.
+  </p>
+  <table>
+    <thead><tr><th>Question</th><th>Registers (CMSIS)</th><th>LL (low-layer)</th><th>HAL</th></tr></thead>
+    <tbody>
+      <tr><td>Who checks the arguments and the states?</td><td>You</td><td>You, with a few inline functions</td><td>The HAL returns a status you can check</td></tr>
+      <tr><td>How much of the register sequence is visible?</td><td>All of it</td><td>Most of it, named</td><td>Hidden in the calls</td></tr>
+      <tr><td>Code size and call overhead</td><td>Smallest</td><td>Small, inlined</td><td>Largest, with the full driver linked</td></tr>
+      <tr><td>Portable across STM32 families</td><td>No</td><td>Partly, per family</td><td>Partly, per family, with the same API</td></tr>
+      <tr><td>Best for</td><td>Startup, timing-critical code, learning the chip</td><td>Performance-critical drivers that still want named functions</td><td>Applications that need quick, checked setup, and CubeMX projects</td></tr>
+    </tbody>
+  </table>
+  <p>
+    For the course, the rule is simple. Lessons 66 to 68 use registers so you see every step. Lesson 69 uses the HAL because most industry STM32 code does. Lesson 76 returns to this choice when it designs a driver layer.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project rebuilds lesson 67's two LEDs with the HAL. It adds a push button on PA0, which the code reads and reports over the serial monitor. The starter gives you the PC13 LED, the UART and the time base, and four <code>TODO(learner)</code> steps for the rest.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0069-stm32-hal-blink/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>HAL OK</code>, and PC13 blinks.</li>
+    <li>Your task. Step 1: initialise PB0 as a push-pull output. Step 2: initialise PA0 as an input with the pull-up. Step 3: toggle PB0 when its deadline passes, every 150 ms. Step 4: print <code>button pressed</code> on a falling edge of PA0, with the 20 ms lockout the solution uses.</li>
+    <li>You will know it works when the external LED blinks faster than PC13, and clicking the button in the diagram prints <code>button pressed</code> once for each click.</li>
+  </ol>
+  <details>
+    <summary>Hint for step 2</summary>
+    <p>A pull-up input is <code>GPIO_MODE_INPUT</code> with <code>GPIO_PULLUP</code>. The button pulls the pin low when pressed, so the idle level is high.</p>
+  </details>
+  <details>
+    <summary>Hint for step 4</summary>
+    <p>Read the pin with <code>HAL_GPIO_ReadPin()</code>. A press is a change from <code>GPIO_PIN_SET</code> to <code>GPIO_PIN_RESET</code>. Keep <code>last_button</code> up to date at the end of each loop, or you will print on every loop instead of on each press.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0069-stm32-hal-blink/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You rebuilt a two-LED blink with the HAL, checked its status codes, and added a button that reports over UART, all without touching a register except through the HAL's handles.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "What type do HAL init functions such as <code>HAL_UART_Init()</code> return? Give the type name.",
+        "accept": ["HAL_StatusTypeDef"],
+        "why": "They return HAL_StatusTypeDef, an enum of HAL_OK, HAL_ERROR, HAL_BUSY and HAL_TIMEOUT. The tempting answer, HAL_Status, is not the name in the headers." },
+      { "type": "number",
+        "prompt": "HAL_GetTick() reads 1200 at one call and 1450 at a later call, with a 1 ms tick. How many milliseconds passed?",
+        "answer": 250, "tolerance": 0, "unit": "ms",
+        "why": "1450 − 1200 = 250 ticks, and each tick is 1 ms. The tempting answer, 1450, is the later reading, not the difference between two readings." },
+      { "type": "mc",
+        "prompt": "You want code to run when a UART transmit finishes. Which is the right way?",
+        "options": ["Override HAL_UART_TxCpltCallback in your code", "Edit the HAL's stm32f1xx_hal_uart.c file", "Call HAL_UART_Transmit a second time"],
+        "answer": 0,
+        "why": "The HAL calls its weak callback when the transmit completes, and your override replaces it. Editing the vendor file is lost on the next update. A second transmit starts another send and does not report that the first one finished." },
+      { "type": "mc",
+        "prompt": "Compared with the HAL, what does the LL layer trade away?",
+        "options": ["less code and more register knowledge", "more checks and slower code overall", "same code on every vendor part"],
+        "answer": 0,
+        "why": "LL keeps the register sequence visible, so you need more register knowledge but less code. The tempting answer, more checks, describes the HAL, which adds them. Neither layer runs unchanged on any other vendor's chip." },
+      { "type": "mc",
+        "prompt": "Which statement describes the HAL's millisecond tick correctly?",
+        "options": ["The SysTick handler calls HAL_IncTick", "HAL_Delay calls the SysTick register", "main calls HAL_Init every loop"],
+        "answer": 0,
+        "why": "HAL_Init starts SysTick, but the count moves only when your SysTick_Handler calls HAL_IncTick. The tempting answer, HAL_Delay driving SysTick, has it backwards: HAL_Delay only reads the tick." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 47: which BSRR bit resets PC13? Give the bit number.",
+        "answer": 29, "tolerance": 0, "unit": "",
+        "why": "PC13 is bit 13 in the set half, and the reset half is 13 + 16 = 29. The tempting answer, 13, sets the pin high, which turns the active-low LED off." },
+      { "type": "text",
+        "prompt": "From lesson 42: which handler is word 1 of the STM32F103 vector table, the first code the core runs after reset?",
+        "accept": ["Reset_Handler", "Reset Handler"],
+        "why": "Word 1 is the reset handler. The tempting answer, SystemInit, is called by the reset handler, so it runs later." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"When would you use the HAL, LL or direct registers on an STM32?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The HAL is the default for application code: its handles and status codes make setup checkable, its callbacks are easy to override, and CubeMX can generate it. LL is for a driver where performance or code size matters, and where the team wants named functions with the register sequence visible. Direct registers are for startup, clock setup, tight timing, and any case where the HAL's overhead or hidden sequence gets in the way. A good answer also says that the choice is per peripheral, and that the team should write it down.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/user_manual/um1850-description-of-stm32f1-hal-and-lowlayer-drivers-stmicroelectronics.pdf">UM1850, Description of STM32F1 HAL and low-layer drivers</a>: read the HAL overview and the description of the init functions, the status type and the callbacks. Then open <code>third_party/stm32f1xx-hal-driver/Src/stm32f1xx_hal.c</code> and find <code>HAL_Init</code>, <code>HAL_IncTick</code> and <code>HAL_Delay</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the difference in the registers written by <code>HAL_GPIO_Init</code> and by my lesson 67 code for the same PC13 output, and which one I would see in the debugger."
+    Related: <a href="0067-bare-metal-blink-with-cmsis.html">Lesson 67: Bare-metal blink with CMSIS only</a>, <a href="0068-writing-your-own-linker-script.html">Lesson 68: Writing your own linker script and startup file</a>, and <a href="../reference/stm32-registers.html">STM32F1 register cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

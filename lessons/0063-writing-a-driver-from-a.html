@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Writing a driver from a datasheet · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0063">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Writing a driver from a datasheet: the "mystery sensor"</h1>
+  <p class="subtitle">Most firmware jobs start with a datasheet and a part number on the desk. This lesson gives you a short datasheet for an unknown I2C sensor, and asks you to write the driver from it, without guessing.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>find the address, register map, data format and data-ready rule in a datasheet, and write the three driver functions that use them</strong>, checking the part with its WHO_AM_I register first.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>driver</strong> is the code that turns device operations (start measuring, read the temperature) into bus transactions. Your application calls <code>mystery_read_celsius()</code>. Only the driver knows that this means a write to a control register, a poll of a status register and a two-byte read.
+    <span class="sidenote">The layers are the same as in a CPU. An instruction becomes a bus transfer, and the bus transfer becomes a register write. The driver is the layer that does that translation for one device.</span>
+  </p>
+  <p>
+    A datasheet answers five questions for a register-based sensor. Find each answer before you write any code:
+  </p>
+  <ol>
+    <li><strong>Address:</strong> the 7-bit I2C address. Here it is <code>0x48</code>.</li>
+    <li><strong>Register map:</strong> which register holds what, and which bits are which.</li>
+    <li><strong>Protocol:</strong> how the register pointer works, and whether reads auto-increment.</li>
+    <li><strong>Data format:</strong> the scale, the sign and the byte order.</li>
+    <li><strong>Timing:</strong> when a new sample is ready, and what reading the data does to the flags.</li>
+  </ol>
+  <p>
+    The I2C bus carries the protocol. A register read is two transactions in one bus cycle: the master writes the register number, then sends a <em>repeated start</em> and reads the bytes. The RP2040 generates these START, STOP and RESTART conditions in hardware <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet, section 4.3.7)</a>. The Pico SDK call <code>i2c_write_blocking</code> with <code>nostop = true</code> leaves the bus claimed, so that the read becomes that repeated start <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html">(Pico SDK, hardware_i2c)</a>.
+  </p>
+
+  <h2>Read the datasheet first</h2>
+  <p>
+    The sensor for this lesson is the <strong>MYS-1</strong>. It is fictional, but its datasheet is laid out like a real one. Open it in a second window, and keep it open while you work:
+    <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">MYS-1 datasheet</a>.
+  </p>
+  <p>
+    Look for these three facts first. Each one is a bug if you get it wrong:
+  </p>
+  <ul>
+    <li><strong>WHO_AM_I</strong> is at <code>0x0F</code> and reads <code>0xA7</code>. If that check fails, nothing else you read matters.</li>
+    <li><strong>Start measuring</strong> means setting bit 0 of CTRL (<code>0x20</code>). Until you do, no sample ever arrives.</li>
+    <li><strong>Data-ready</strong> is bit 0 of STATUS (<code>0x27</code>). A new sample arrives every 500 ms, so read the temperature only after <code>DRDY</code> is set.</li>
+  </ul>
+
+  <figure>
+    <svg viewBox="0 0 520 160" role="img" aria-label="Timeline of one temperature read: write the pointer 0x28 and restart, then read two bytes" style="max-width:676px">
+      <defs><marker id="ah43" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="30" width="70" height="36" rx="3"/>
+        <rect x="100" y="30" width="90" height="36" rx="3"/>
+        <rect x="200" y="30" width="70" height="36" rx="3"/>
+        <rect x="280" y="30" width="70" height="36" rx="3"/>
+        <rect x="360" y="30" width="50" height="36" rx="3"/>
+        <rect x="420" y="30" width="50" height="36" rx="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="55" y="51.85" text-anchor="middle" font-size="11">addr + W</text>
+        <text x="145" y="51.85" text-anchor="middle" font-size="11">pointer 0x28</text>
+        <text x="235" y="51.85" text-anchor="middle" font-size="11">RESTART</text>
+        <text x="315" y="51.85" text-anchor="middle" font-size="11">addr + R</text>
+        <text x="385" y="51.85" text-anchor="middle" font-size="11">LSB</text>
+        <text x="445" y="51.85" text-anchor="middle" font-size="11">MSB</text>
+        <text x="20" y="96" text-anchor="start" font-size="12">One transaction: no STOP between the pointer and the read,</text>
+        <text x="20" y="112" text-anchor="start" font-size="12">so the bus stays claimed.</text>
+        <text x="20" y="134" text-anchor="start" font-size="12">The sensor latches the sample on the LSB read, so LSB and</text>
+        <text x="20" y="150" text-anchor="start" font-size="12">MSB come from the same sample.</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A temperature read as one repeated-start transaction. The boxes mark the bus phases; the traces are schematic, not timed.</figcaption>
+  </figure>
+
+  <h2>Turn the bytes into degrees</h2>
+  <p>
+    The temperature is a signed 16-bit number in units of 1/64 degC. The low byte comes first on the wire, at <code>0x28</code>, and the high byte is at <code>0x29</code>. Read them in one burst, then combine them. Cast to a signed type before you divide: a negative value stored as unsigned is about 65,000, not a small negative number.
+    <span class="sidenote">The datasheet's example is <code>0x05A0</code>. That is 1440, and 1440 ÷ 64 = 22.5 degC. Lesson 45 explains why the cast has to come first.</span>
+  </p>
+  <pre><code><span class="c">/* raw[0] is TEMP_L (0x28), raw[1] is TEMP_H (0x29) */</span>
+int16_t counts = (int16_t)(((uint16_t)raw[1] &lt;&lt; 8) | raw[0]);
+float celsius = (float)counts / 64.0f;</code></pre>
+
+  <div class="warning">Real sensors often have a latch. The MYS-1 latches the sample when you read TEMP_L and releases the data-ready flag when you read TEMP_H. If you read the two bytes in separate transactions, the sample can change between them. Read them in one burst.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The MYS-1 is a <strong>Wokwi custom chip</strong>: C code compiled to WebAssembly, which the simulator runs as if it were a real part on the I2C bus. Its source is <code>projects/0063-mystery-sensor/chip/mystery.chip.c</code>. Try not to open it until you have finished. It is the datasheet written as code, so it gives the answers away.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0063-mystery-sensor/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Right now every line says that a step failed.</li>
+    <li>Your task: in <code>mystery.c</code>, replace the three <code>TODO(learner)</code> functions. <code>mystery_init</code> brings up I2C0 on GP4 and GP5, turns on the pulls, and starts measuring. <code>mystery_whoami</code> reads WHO_AM_I. <code>mystery_read_celsius</code> polls DRDY with a timeout, reads TEMP_L and TEMP_H in one burst, and converts the value.</li>
+    <li>You will know it works when the serial monitor prints <code>MYSTERY id=0xA7 temp=22.50 C</code> every second, with the temperature changing slowly.</li>
+  </ol>
+  <details>
+    <summary>Hint for the init function</summary>
+    <p>The same steps as lesson 60: <code>i2c_init</code>, then <code>gpio_set_function</code> on both pins, then the pulls. The last step is one <code>reg_write</code> to CTRL with bit 0 set. The datasheet names that bit <code>MEAS_EN</code>.</p>
+  </details>
+  <details>
+    <summary>Hint for the read function</summary>
+    <p>Poll STATUS in a loop. Break out when bit 0 is set. Return <code>false</code> if <code>time_reached(deadline)</code> is true first. Then use <code>reg_read(REG_TEMP_L, raw, 2)</code>, and do the conversion from the section above.</p>
+  </details>
+  <p>
+    The reference solution is in <code>projects/0063-mystery-sensor/solution</code>. Try first, compare after. The diagram adds 4.7 kΩ pull-ups on SDA and SCL, which a real board would also need.
+  </p>
+
+  <div class="win">You turned a three-page datasheet into a driver. You checked the identity register, enabled measurement, waited for data-ready, and read a signed value from two registers. That is the job, and it works the same way for any register-based sensor.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which write starts measurement on the MYS-1?",
+        "options": [
+          "Write 0x01 to CTRL",
+          "Write 0x01 to STATUS",
+          "Write 0x01 to TEMP_L",
+          "Write 0x0F to CTRL"
+        ],
+        "answer": 0,
+        "why": "CTRL (0x20) bit 0 is MEAS_EN, so 0x01 to CTRL starts measurement. STATUS is read-only, so writing to it does nothing. The tempting wrong answer is 0x0F to CTRL: 0x0F is the WHO_AM_I address, not a value that CTRL uses." },
+      { "type": "mc",
+        "prompt": "Which bus sequence reads one register without releasing the bus?",
+        "options": [
+          "START, pointer, RESTART, read, STOP",
+          "START, pointer, STOP, START, read",
+          "START, read, STOP, pointer, write"
+        ],
+        "answer": 0,
+        "why": "A RESTART between the pointer and the read keeps the bus claimed. The second option releases the bus with a STOP, so another master can act in between. The third option reads before it sets the pointer, which returns whatever the sensor had left." },
+      { "type": "number",
+        "prompt": "TEMP_L and TEMP_H together read 1440 (0x05A0). What is the temperature in degrees Celsius?",
+        "answer": 22.5, "tolerance": 0.001, "unit": "degC",
+        "why": "1440 ÷ 64 = 22.5 degC. The tempting wrong answer is 1440, which forgets the 1/64 scale." },
+      { "type": "number",
+        "prompt": "TEMP_H is 0xFF and TEMP_L is 0xC0. Read them as a signed 16-bit value. What is the temperature in degrees Celsius?",
+        "answer": -1, "tolerance": 0.001, "unit": "degC",
+        "why": "0xFFC0 as int16_t is −64, and −64 ÷ 64 = −1.0 degC. Read as unsigned, the same bytes give 65472 ÷ 64 = 1023, which is the signed-cast bug." },
+      { "type": "text",
+        "prompt": "Which bit number of STATUS is the data-ready flag? Type the number.",
+        "accept": ["0", "bit0"],
+        "why": "STATUS bit 0 is DRDY. The tempting answer is 1, which is the bit value (2 to the power 0), not the bit number." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 46: which keyword stops the compiler from caching a value that changes outside the loop? One word.",
+        "accept": ["volatile"],
+        "why": "volatile makes every access an observable side effect, so the compiler reloads the value. The tempting answer is const, which forbids writes and does not affect reads." },
+      { "type": "number",
+        "prompt": "From lesson 45: what is the value of (uint8_t)300?",
+        "answer": 44, "tolerance": 0,
+        "why": "An unsigned 8-bit store wraps modulo 256, so 300 − 256 = 44. The tempting answer is 300, which a uint8_t cannot hold." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A sensor driver returns 65,472 when the room is cold. The datasheet says the register is signed. What went wrong, and how would you prevent it?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The driver treated the 16-bit value as unsigned. Negative values in two's complement become large unsigned numbers: 0xFFC0 is 65472. The fix is to combine the bytes into a uint16_t and then cast to int16_t before scaling. The prevention is a unit test with a negative raw value, such as 0xFFC0, that must produce −1.0 degC, and a rule that every signed register is read through an int16_t.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">UM10204: I2C-bus specification (NXP)</a>: read the sections on the START, STOP and repeated START conditions, and on addressing and acknowledge. Then check how the RP2040 generates those conditions in its datasheet, section 4.3.7. The Wokwi I2C chip API is at <a href="https://docs.wokwi.com/chips-api/i2c">docs.wokwi.com/chips-api/i2c</a> if you want to see how a simulated device is built.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the bus traffic for one temperature read, byte by byte, and show what happens if I read TEMP_H before TEMP_L."
+    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and overflow</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const and static</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

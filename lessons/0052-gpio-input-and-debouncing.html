@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPIO input and debouncing · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0052">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>GPIO input and debouncing</h1>
+  <p class="subtitle">A mechanical button does not make one clean edge. It makes a burst of them over a few milliseconds. If your code counts every edge, one press becomes ten. Debouncing turns the burst back into one event.</p>
+
+  <div class="goal">
+    By the end of this lesson you can enable the internal pull-up from C, explain why a raw button count is wrong, and count presses correctly with an integrator debounce that you wrote yourself.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    <code>gpio_get()</code> reads the pad level through the SIO input register <code>GPIO_IN</code> at <code>0x004</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §2.3.1.7)</a>. It returns what the pin is at right now, not what your program last wrote. An input must always be at a defined level. A pull-up resistor gives it one when the button is open, so the RP2040's internal pull-up (50 to 80 kΩ) is the simplest choice <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.4 and Table 625)</a>. Lesson 16 explains why a floating input is a bug.
+    <span class="sidenote">With the pull-up, the released button reads 1, and a press connects the pin to ground and reads 0. That is an active-low input. Its current is at most 3.3 V ÷ 50 kΩ = 66 µA, so pressing the button wins easily.</span>
+  </p>
+
+  <h2>Why a button bounces</h2>
+  <p>
+    A tactile switch is a spring that closes a contact. When the contact meets, it does not stop cleanly. It hits, separates, and hits again for a short time. The Wokwi pushbutton models this on purpose, following Horowitz and Hill's description of contacts that separate and reconnect many times over about 1 ms. Its <code>bounce</code> attribute is on by default, and setting it to <code>"0"</code> turns the effect off <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">(Wokwi pushbutton part)</a>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 175" role="img" aria-label="A timing diagram: the raw input falls, bounces many times, then settles low. The debounced output is one clean falling edge after the bounce ends." style="max-width:676px">
+      <defs><marker id="ah34" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M110 40 H200 V70 H207 V40 H213 V70 H220 V40 H226 V70 H470"/>
+        <path d="M110 110 H290 V140 H470" stroke-dasharray="5 4"/>
+        <path d="M110 160 H470"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="10" y="36" text-anchor="start" font-size="12">raw pin</text>
+        <text x="10" y="122" text-anchor="start" font-size="12">debounced</text>
+        <text x="176" y="94" text-anchor="start" font-size="12">bouncing</text>
+        <text x="476" y="164" text-anchor="start" font-size="12">time</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Raw pin (solid): the contact chatters for a few milliseconds before it settles. Debounced output (dashed): one edge, after the bounce has stopped. The exact times depend on the switch.</figcaption>
+  </figure>
+
+  <h2>Three ways to debounce</h2>
+  <p>
+    <strong>Wait after the edge</strong> is the simplest: on an edge, <code>sleep_ms(20)</code> and read again. It works, but it blocks the super-loop for 20 ms, and it is blind during the wait. That is why it does not fit a loop with other work (lesson 55 covers blocking).
+  </p>
+  <p>
+    <strong>An integrator</strong> keeps a small counter that climbs while the pin reads pressed and falls while it reads released. The counter is clamped to a range. The stable state changes only when the counter reaches an end of its range. A bounce is shorter than the window, so the counter never gets there. This is the method in this lesson, and the project uses it.
+  </p>
+  <p>
+    <strong>A timestamp</strong> records when the pin last changed, and accepts a new level only after it has been steady for a set time. It is the same idea on a clock, and lesson 55 uses time-based checks in the same loop.
+  </p>
+
+  <pre><code><span class="k">static bool</span> debounce_press(<span class="k">bool</span> raw_pressed) {
+    <span class="k">static uint8_t</span> integrator = 0;
+    <span class="k">static bool</span> stable_pressed = false;
+
+    <span class="c">/* climb while pressed, fall while released, clamped to 0..DEBOUNCE_SAMPLES */</span>
+    <span class="k">if</span> (raw_pressed) { <span class="k">if</span> (integrator &lt; DEBOUNCE_SAMPLES) integrator++; }
+    <span class="k">else</span>            { <span class="k">if</span> (integrator &gt; 0) integrator--; }
+
+    <span class="k">if</span> (!stable_pressed &amp;&amp; integrator == DEBOUNCE_SAMPLES) {
+        stable_pressed = true;      <span class="c">/* confirmed press: report it once, here */</span>
+        <span class="k">return true</span>;
+    }
+    <span class="k">if</span> (stable_pressed &amp;&amp; integrator == 0) {
+        stable_pressed = false;     <span class="c">/* confirmed release: re-arm */</span>
+    }
+    <span class="k">return false</span>;
+}</code></pre>
+  <p>
+    The window is the choice you make. At one sample per millisecond, 10 samples is a 10 ms window. It must be longer than the bounce, and shorter than the fastest press you need to catch. Wokwi's bounce lasts about 1 ms, so 10 ms is generous in the simulator. A real switch's datasheet gives its own figure, and you should check it before you choose the window.
+  </p>
+  <div class="warning">A plain edge detector on the raw pin is the most common bug in button code. It works on a bench with a good switch and fails on a cheap one. Always count presses after the debounce, and count raw edges only to show the bounce.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0052-gpio-input-debounce</code>. One pushbutton sits between GP14 and GND, with bounce on. The starter counts raw edges and prints a line for each one. That is the wrong count, and you will see it.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0052-gpio-input-debounce/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Click the button once. The serial monitor prints several <code>press</code> lines for one click.</li>
+    <li>Your task, in two places marked <code>TODO(learner)</code>. First, configure GP14 as an input with the pull-up enabled, so the released button reads 1 and the starter's inverted read is correct. Second, replace the naive <code>debounce_press()</code> with the integrator above.</li>
+    <li>You will know it works when the serial monitor prints <code>DEBOUNCE OK</code> at startup, and each click gives one <code>press</code> line. The raw-edge count may still climb, which is correct: it counts the bounce.</li>
+  </ol>
+  <details>
+    <summary>Hint for the pull-up</summary>
+    <p>An input needs three calls, in this order: <code>gpio_init()</code> for the SIO function, <code>gpio_set_dir()</code> with <code>GPIO_IN</code>, then <code>gpio_pull_up()</code>. Without the pull-up, the released pin floats, and the count is random.</p>
+  </details>
+  <details>
+    <summary>Hint for the integrator</summary>
+    <p>Keep <code>integrator</code> and <code>stable_pressed</code> as <code>static</code> variables inside the function, so they survive between calls. Return <code>true</code> only on the step where the integrator reaches the top while the stable state is still released. The release branch must reset the stable state when the integrator returns to 0.</p>
+  </details>
+  <details>
+    <summary>Optional experiment</summary>
+    <p>In <code>diagram.json</code>, add <code>"bounce": "0"</code> to the <code>attrs</code> of <code>btn1</code>, then run the starter again. With no bounce, the raw count and the press count agree. Remove the line afterwards, so the bounce is back for the real test.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0052-gpio-input-debounce/solution</code>. Try first, compare after. It prints <code>DEBOUNCE OK</code> at startup, then one line per press with the raw count beside it.</p>
+
+  <div class="win">You read a button through a pull-up, showed that a raw edge count is wrong, and replaced it with a debounce you can explain line by line. That is the same check you need on every mechanical input.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why is it wrong to count every falling edge on the raw pin as one press?",
+        "options": [
+          "Bounce makes extra edges",
+          "Edges arrive too slowly",
+          "The pull-up hides edges",
+          "The CPU makes edges"
+        ],
+        "answer": 0,
+        "why": "A mechanical contact bounces for a few milliseconds, so one click produces several falling edges. The tempting answer, that edges arrive too slowly, is the opposite problem: bounce makes them too many. The pull-up does not hide edges, and the CPU does not make the button's edges." },
+      { "type": "mc",
+        "prompt": "In the integrator debounce, when is a press reported?",
+        "options": [
+          "When the counter tops",
+          "On first raw edge",
+          "After a fixed delay",
+          "Whenever pin reads low"
+        ],
+        "answer": 0,
+        "why": "The press is reported when the integrator reaches the top while the stable state is released. A bounce shorter than the window never reaches the top. The first raw edge is the naive method that bounces, and reading 0 on every sample reports each bounce. The sleep_ms version blocks the loop, so it is a different method." },
+      { "type": "number",
+        "prompt": "A 1 ms sample period and 10 samples form the window. How long is the window, in milliseconds?",
+        "answer": 10, "tolerance": 0, "unit": "ms",
+        "why": "The window is 10 samples × 1 ms = 10 ms. The tempting answer, 1 ms, is the period of one sample, not the whole window the input must hold." },
+      { "type": "number",
+        "prompt": "The internal pull-up is 50 kΩ on a 3.3 V pin. What is the current through it when the button is pressed, in microamps?",
+        "answer": 66, "tolerance": 0.03, "unit": "µA",
+        "why": "I = 3.3 V ÷ 50 kΩ = 66 µA. The tempting answer, 66 mA, is off by a factor of 1000 from the kilo-ohm to milliamp conversion." },
+      { "type": "mc",
+        "prompt": "What does gpio_pull_up() change?",
+        "options": [
+          "The pad's pull-up resistor",
+          "The pin's output level",
+          "The GPIO_IN read path",
+          "The pin's function select"
+        ],
+        "answer": 0,
+        "why": "gpio_pull_up() sets the pull-up enable bit in the pad control register, so the pad pulls up when no driver sets the level. The output level is GPIO_OUT, GPIO_IN is the read path, and the function select is a separate register." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 5: 3.3 V across a 10 kΩ pull-up with the button shorting it to ground. What is the current, in microamps?",
+        "answer": 330, "tolerance": 0.02, "unit": "µA",
+        "why": "I = 3.3 V ÷ 10 kΩ = 330 µA. The tempting answer, 3.3 mA, is off by a factor of ten because it uses 1 kΩ." },
+      { "type": "text",
+        "prompt": "From lesson 46: which qualifier stops the compiler from caching a value that an ISR changes? Write one word.",
+        "accept": ["volatile"],
+        "why": "volatile forces each access to reload the value. The tempting answer, const, forbids writes, so it cannot fix a value the hardware changes." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A button counter sometimes counts two presses for one click. How do you find and fix it?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The usual cause is bounce, so I'd count raw edges first and see whether the count is much higher than the clicks. Then I'd check that the pin has a defined level, which means a pull-up or pull-down, and an intended input direction. The fix is to debounce in software: an integrator or a timestamp that accepts a level only after it is steady for a window longer than the bounce, then report the edge once. I'd test it with the bounce turned off and on in the simulator, and with a noisy real switch, because the two results should differ only in the raw count.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">Wokwi pushbutton part</a>: read the Bounce section and the <code>bounce</code> attribute. Then read RP2040 datasheet Table 625 for the pull-up range, and the Pico SDK <code>gpio_pull_up</code> in <code>src/rp2_common/hardware_gpio/gpio.c</code> to see what it writes.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Compare the integrator debounce with a timestamp debounce. Which one uses less CPU, and which one is easier to get wrong?"
+    Related: <a href="0016-logic-levels-pull-ups-open.html">Lesson 16: Logic levels, pull-ups, and open-drain outputs</a>, <a href="0051-gpio-output.html">Lesson 51: GPIO output</a>, <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking loops</a>, and <a href="../reference/glossary.html#pull-up-resistor">Glossary: pull-up resistor</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SPI: displays and shift registers · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0062">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>SPI: displays and shift registers</h1>
+  <p class="subtitle">Lesson 25 shifted a byte into a 74HC595 by toggling two pins in software. SPI does the same job in hardware: the peripheral shifts the bits, and the CPU is free until the byte has gone out.</p>
+
+  <div class="goal">
+    By the end of this lesson you can set the SPI clock polarity and phase for a device, compute the SPI bit rate from the SDK's divider, drive a 74HC595 with <code>spi_write_blocking()</code> and a chip select pin, and compare bit-bang and hardware timing in a logic-analyzer capture.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    SPI uses four wires: a clock (SCK), the master's output (MOSI), the device's output (MISO), and a chip select (CS) that is low while the device is addressed. A master shifts one byte out on MOSI and reads one in on MISO at the same time, one bit per clock edge. The RP2040's SPI controllers are the PL022 design, which the datasheet describes in section 4.4 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.4</a>.
+    <span class="sidenote">The lesson-25 shift register uses the same pattern: data on one pin, a clock on another, and a separate latch. SPI is that pattern with the clock and data driven by the peripheral.</span>
+  </p>
+
+  <h2>Clock polarity and phase</h2>
+  <p>
+    Two settings define the clock. CPOL is the clock's idle level: 0 means the clock is low when idle. CPHA is the clock edge on which data is sampled: 0 means the first edge, and 1 means the second. Together they give four modes, 0 to 3 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, sections 4.4.3.9.1 (SPO, clock polarity) and 4.4.3.9.2 (SPH, clock phase)</a>.
+  </p>
+  <ul>
+    <li><strong>Mode 0</strong> (CPOL 0, CPHA 0): idle low, sample on the rising edge. The default in <code>spi_init()</code>.</li>
+    <li><strong>Mode 1</strong> (CPOL 0, CPHA 1): idle low, sample on the falling edge.</li>
+    <li><strong>Mode 2</strong> (CPOL 1, CPHA 0): idle high, sample on the falling edge.</li>
+    <li><strong>Mode 3</strong> (CPOL 1, CPHA 1): idle high, sample on the rising edge.</li>
+  </ul>
+  <p>
+    The 74HC595 shifts its register on the rising edge of its shift clock, so it needs mode 0. A device with the other mode reads each bit half a clock late, which shifts the whole byte into the wrong place. The chip select is separate: it goes low before the first clock and high after the last, and many devices use the rising edge of CS as their latch, as the 74HC595 does.
+  </p>
+
+  <h2>The bit rate</h2>
+  <p>
+    The SPI clock is the peripheral clock divided by two integers. The SDK's <code>spi_set_baudrate()</code> finds a prescale (even, from 2 to 254) and a post-divide (from 1 to 256), so the rate is clk_peri ÷ (prescale × postdiv). It takes the smallest prescale that gives a usable post-divide, then the largest post-divide that does not exceed the requested rate <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_spi/spi.c">pico-sdk, hardware_spi/spi.c, lines 42 to 64</a>. The function returns the rate it actually set.
+  </p>
+  <pre><code><span class="c">/* from spi.c: baud = clk_peri / (prescale * postdiv), prescale even 2..254, postdiv 1..256 */</span>
+uint actual_hz = spi_init(spi0, 1000000);    <span class="c">/* returns what was set, not what was asked */</span></code></pre>
+
+  <h2>Bit-bang and hardware, side by side</h2>
+  <p>
+    Bit-bang drives each pin with a GPIO write, and it takes a few CPU cycles per edge plus any delay you add. Hardware SPI loads a byte into the transmit FIFO once, and the peripheral shifts it out with no CPU work per bit. The CPU then waits for the transfer to end, which <code>spi_is_busy()</code> reports.
+  </p>
+  <figure>
+    <svg viewBox="0 0 460 210" role="img" aria-label="Two timing traces for one byte: bit-bang has irregular gaps set by software delays, and hardware SPI has evenly spaced clock edges" style="max-width:598px">
+      <defs><marker id="ah42" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M60 70 L110 70 L110 40 L140 40 L140 70 L200 70 L200 40 L250 40 L250 70 L300 70 L300 40 L330 40 L330 70 L380 70 L380 40 L420 40"/>
+        <path d="M60 140 L80 140 L80 110 L98 110 L98 140 L116 140 L116 110 L134 110 L134 140 L152 140 L152 110 L170 110 L170 140 L188 140 L188 110 L206 110 L206 140 L224 140 L224 110 L242 110 L242 140 L260 140 L260 110 L278 110 L278 140 L296 140 L296 110 L314 110 L314 140 L332 140 L332 110 L350 110 L350 140 L370 140"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="10" y="28" text-anchor="start" font-size="12">bit-bang SCK</text>
+        <text x="10" y="98" text-anchor="start" font-size="12">SPI SCK</text>
+        <text x="60" y="176" text-anchor="start" font-size="12">bit-bang: gaps set by the code</text>
+        <text x="60" y="196" text-anchor="start" font-size="12">hardware SPI: evenly spaced clock edges</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The shape of the two clocks. Bit-bang edges come from software timing. Hardware SPI edges come from the peripheral's divider, which is even, and the CPU does not touch them.</figcaption>
+  </figure>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0062-spi</code> uses the lesson 25 74HC595 with the SPI0 pins. SCK is GP18, MOSI is GP19, and GP17 is the latch, driven by hand as chip select. A logic analyzer records the three lines on D0, D1 and D2. The solution first runs the chase with bit-bang, then with hardware SPI at 1 MHz, and prints both times.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0062-spi/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: write <code>hw_byte()</code>, so it lowers the latch, sends one byte with <code>spi_write_blocking()</code>, waits with <code>spi_is_busy()</code>, and raises the latch. The starter sets the SPI mode to CPHA 1, which is wrong for the 74HC595. Fix it, and explain the edge in a comment. Then stop the simulator and open <code>wokwi.vcd</code> in PulseView with the SPI decoder, using CS on D2.</li>
+    <li>You will know it works when the LEDs chase on the hardware path, and the serial monitor prints <code>SPI OK</code>. In PulseView, the MOSI bytes should match the chase: 0x01, 0x02, and so on, MSB first.</li>
+  </ol>
+  <details>
+    <summary>Hint for the mode</summary>
+    <p>The 74HC595 samples its data on the rising edge of SHCP, which is SCK here. Work out which mode samples on the first, rising edge with the clock idle low.</p>
+  </details>
+  <details>
+    <summary>Hint for the timing</summary>
+    <p>Compare the two times the solution prints. Bit-bang has two 1 µs delays per bit, so a byte takes at least 16 µs. Hardware SPI at 1 MHz takes about 8 µs per byte. The times are computed from the design, not from a measured run.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0062-spi/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You chose the SPI clock mode from the device's edge, derived the bit rate from the SDK source, drove a 74HC595 through a chip select, and compared the software and hardware timing on a logic analyzer. Any SPI display or sensor uses the same steps.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which SPI mode is idle low and samples on the rising edge?",
+        "options": ["Mode 0", "Mode 1", "Mode 2", "Mode 3"],
+        "answer": 0,
+        "why": "Mode 0 has CPOL 0 and CPHA 0: idle low, sampled on the first, rising edge. The tempting answer, mode 1, is also idle low, but it samples on the second, falling edge." },
+      { "type": "number",
+        "prompt": "clk_peri is 125 MHz, the prescale is 2 and the post-divide is 1. What is the SPI bit rate, in megahertz?",
+        "answer": 62.5, "tolerance": 0.01, "unit": "MHz",
+        "why": "The rate is 125 MHz ÷ (2 × 1) = 62.5 MHz. The tempting answer, 125 MHz, forgets the prescale, which is always at least 2." },
+      { "type": "number",
+        "prompt": "clk_peri is 125 MHz, the prescale is 2 and the post-divide is 50. What is the SPI bit rate, in kilohertz?",
+        "answer": 1250, "tolerance": 0.01, "unit": "kHz",
+        "why": "The rate is 125 MHz ÷ (2 × 50) = 1.25 MHz, which is 1250 kHz. The tempting answer, 125 kHz, drops a factor of ten." },
+      { "type": "mc",
+        "prompt": "Which GPIO pin does this lesson use as the 74HC595 latch and chip select?",
+        "options": ["GP17", "GP18", "GP19", "GP16"],
+        "answer": 0,
+        "why": "GP17 is the latch and chip select in this project. GP18 is SCK and GP19 is MOSI. The tempting answer, GP16, is SPI0 RX, which is not used here." },
+      { "type": "text",
+        "prompt": "Which SDK function reports whether the SPI peripheral is still shifting a byte?",
+        "accept": ["spi_is_busy", "spi_is_busy()"],
+        "why": "spi_is_busy() is true while the byte is still being shifted, so the latch must wait for it. The tempting answer, spi_write_blocking, returns after the bytes are queued, which can be before the last bit has left." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0008-voltage-dividers.html\">lesson 8</a>: two equal resistors divide 5 V. What is the midpoint voltage, in volts?",
+        "answer": 2.5, "tolerance": 0.01, "unit": "V",
+        "why": "Equal resistors split the supply in half: 5 V ÷ 2 = 2.5 V. The tempting answer, 5 V, is the supply itself." },
+      { "type": "number",
+        "prompt": "From <a href=\"0047-pointers-to-registers-and-struct.html\">lesson 47</a>: GPIOC starts at 0x40011000 and ODR is at offset 0x0C. What is the ODR address in decimal?",
+        "answer": 1073811468, "tolerance": 0, "unit": "",
+        "why": "0x40011000 + 0x0C = 0x4001100C, which is 1073811468 in decimal. The tempting answer, 0x40011010, is BSRR at offset 0x10." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"When would you bit-bang a protocol instead of using the hardware SPI peripheral, and what does bit-banging cost?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Bit-banging is the fallback when the pins or peripheral are not available, or when a device needs a timing that the hardware cannot produce, such as an unusual frame or a mode the peripheral does not support. It costs CPU time for every edge, makes timing depend on interrupts and other code, and is hard to keep steady. Hardware SPI shifts the byte with no CPU work per bit and keeps the clock even, but it must be configured with the right mode and rate, and the CPU still has to wait for the transfer to finish before it lowers or raises chip select.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.4 (SPI)</a>: read 4.4.3.9.1 and 4.4.3.9.2 for the clock polarity and phase, and the GPIO function table (Table 279) for the SPI0 pins. Then read <code>spi.c</code> in the Pico SDK for the rate calculation.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the PulseView SPI decoder settings for this capture, and tell me how to tell a mode 0 frame from a mode 3 frame by looking at the clock idle level."
+    Related: <a href="0025-registers-counters-shift-registers.html">Lesson 25: Registers, counters, shift registers</a>, <a href="0060-the-i2c-protocol.html">Lesson 60: The I2C protocol</a>, and <a href="../reference/glossary.html#shift-register">Glossary: Shift register</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

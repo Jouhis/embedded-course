@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>volatile, const, and static · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0046">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>volatile, const, and static</h1>
+  <p class="subtitle">Three keywords decide where a value lives and whether the compiler may skip a read. Getting <code>volatile</code> wrong is the most common cause of firmware that works at -O0 and hangs at -O2.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain why a flag shared with an interrupt needs <code>volatile</code>, show the difference in the compiler's output with and without it, and say where <code>const</code> and <code>static</code> data is stored.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The compiler is allowed to assume that nothing outside the current function changes a variable between two reads, unless the code shows otherwise. That assumption is what makes an optimised loop fast. It is wrong for two kinds of memory: a <strong>memory-mapped register</strong>, whose value the hardware changes, and a variable that an <strong>interrupt service routine</strong> (ISR) writes while <code>main</code> reads it.
+    <span class="sidenote">A timer or a UART can change a register between two of your reads, with no C statement in between. The ISR can run at any point in the loop.</span>
+  </p>
+  <p>
+    <code>volatile</code> tells the compiler that every access to the object is an observable side effect. It must be performed in the order the abstract machine says, and it cannot be removed or merged with another read.
+    <a href="https://en.cppreference.com/w/c/language/volatile">cppreference, volatile</a>
+  </p>
+  <div class="warning"><code>volatile</code> is not a synchronisation primitive. The same page says volatile variables are not suitable for communication between threads: they give no atomicity, no synchronisation and no memory ordering. A flag can still be lost if the ISR writes between your read and your clear, and a read-modify-write such as <code>count++</code> can still interleave. Lesson 57 covers the fix, a critical section, and the rules for ISRs.</div>
+
+  <h2>The loop that compiles away</h2>
+  <p>
+    Here are two wait loops. The first reads a plain <code>static</code> flag, and the second reads a <code>volatile</code> flag. Each was compiled with <code>arm-none-eabi-gcc -mcpu=cortex-m3 -mthumb -O2 -S</code>, using the toolchain in <code>C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\14.2 rel1\bin</code>. This is the real output, trimmed to the loops:
+  </p>
+  <pre><code><span class="c">/* void wait_nv(void) { while (gflag == 0) { } }   -- gflag is a plain uint32_t */</span>
+wait_nv:
+        ldr     r3, .L5
+        ldr     r3, [r3]          <span class="c">/* the flag is loaded ONCE */</span>
+        cbz     r3, .L3
+        bx      lr
+.L3:
+        b       .L3               <span class="c">/* then the loop branches to itself: it never reads again */</span>
+
+<span class="c">/* void wait_v(void) { while (flag == 0) { } }    -- flag is volatile uint32_t */</span>
+wait_v:
+        ldr     r2, .L11
+.L8:
+        ldr     r3, [r2]          <span class="c">/* the flag is loaded on EVERY pass */</span>
+        cmp     r3, #0
+        beq     .L8
+        bx      lr</code></pre>
+  <p>
+    The non-volatile loop has no read inside it. The compiler has proved, from its own point of view, that the value cannot change, so it removed the read from the loop. An ISR that sets the flag will never be seen. The volatile loop keeps the load inside the loop, and that is the behaviour you wanted.
+    <span class="sidenote">The output above is from GCC 14.2.1 for Cortex-M3 (<code>-mcpu=cortex-m3 -mthumb</code>). Your toolchain may name the labels differently, but the shape of the loop is the point.</span>
+  </p>
+
+  <h2>Memory-mapped registers need it too</h2>
+  <p>
+    A hardware register is a fixed address. Reading it can have a side effect, for example clearing a flag, and the value can change without any write from your code. The pattern for a register is <code>(*(volatile uint32_t *)address)</code>, which lesson 47 uses in full. The same reasoning applies to the RP2040 and the STM32: any location the hardware can change needs <code>volatile</code>.
+  </p>
+
+  <h2>const: data in flash</h2>
+  <p>
+    A <code>const</code> object cannot be changed through its own name. That promise lets the linker put it in read-only memory. In the STM32 linker script used in this course (<code>templates/common/stm32f103c8.ld</code>), the output section <code>.rodata</code> is placed in <code>FLASH</code>, which starts at <code>0x08000000</code>, so a <code>const</code> table costs flash and no RAM.
+    <span class="sidenote">Initialised writable globals are the opposite case. Their starting values sit in flash, and the startup code copies them to RAM at boot. That is the <code>.data</code> section, and it is why RAM use is not the same as the size of your initialised data.</span>
+  </p>
+
+  <h2>static: two meanings</h2>
+  <p>
+    At file scope, <code>static</code> gives a variable <strong>internal linkage</strong>: other files cannot refer to it. Inside a function, <code>static</code> gives <strong>static storage duration</strong>: the object exists for the whole run of the program, is initialised once before <code>main</code>, and keeps its value between calls.
+    <a href="https://en.cppreference.com/w/c/language/storage_duration">cppreference, storage duration and linkage</a>
+  </p>
+  <pre><code><span class="k">static</span> <span class="k">volatile</span> <span class="k">bool</span> tick_seen = false;   <span class="c">/* file scope: this file only, and volatile for the ISR */</span>
+
+<span class="k">void</span> count_calls(void) {
+    <span class="k">static</span> <span class="k">uint32_t</span> n = 0;    <span class="c">/* initialised once; keeps its value between calls */</span>
+    n++;
+}</code></pre>
+
+  <div class="note">A <code>static</code> local is not volatile. If an ISR reads or writes it, it needs <code>volatile</code> too, for the same reason as any shared flag.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0046-volatile-flag</code> has a repeating timer that sets a flag every 100 ms. Its callback runs in interrupt context, and <code>main</code> waits for the flag. The starter has one missing qualifier.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0046-volatile-flag/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build uses <code>-O2</code>, so the compiler can optimise the wait.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>waiting for the first tick</code>. The starter then never prints anything more: the first wait loop runs forever.</li>
+    <li>Your task: find the one qualifier that <code>tick_seen</code> needs, and add it. The variable is shared with an ISR, so the compiler must reload it on every pass. You will know it works when the serial monitor prints <code>VOLATILE FLAG OK</code>, and then a <code>tick</code> line every 100 ms while the LED toggles.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Look at the declaration: the comment next to <code>tick_seen</code> names it. The keyword is one that the earlier examples in this lesson used.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0046-volatile-flag/solution</code>. Try first, compare after. You can also see the difference in the build output: the solution's wait loop reloads the flag, and the starter's does not.</p>
+
+  <div class="win">You found a missing <code>volatile</code>, showed from the compiler output why the loop hangs without it, and confirmed the fix in the solution. The same check works on any flag shared with an ISR.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which change stops the compiler keeping a shared flag in a register across a polling loop?",
+        "options": [
+          "Add the volatile keyword",
+          "Declare the flag const",
+          "Declare the flag static",
+          "Store flag in flash"
+        ],
+        "answer": 0,
+        "why": "volatile makes every access an observable side effect, so the compiler reloads the flag each pass. const forbids writes, so it cannot be the fix. static gives internal linkage and does not force a reload. The flash option is a placement, not a rule about reads." },
+      { "type": "mc",
+        "prompt": "Is volatile alone enough to share a counter between an ISR and main on a Cortex-M?",
+        "options": [
+          "No, it is not atomic",
+          "Yes, it is always atomic",
+          "Yes, for any single read",
+          "Yes, it adds a lock"
+        ],
+        "answer": 0,
+        "why": "volatile gives no atomicity or synchronisation. A read-modify-write such as count++ can still be interrupted in the middle. The tempting answer is the third: one read may be fine, but the increment is not one read. Lesson 57 covers critical sections." },
+      { "type": "mc",
+        "prompt": "What does a <code>static</code> local variable do?",
+        "options": [
+          "Keeps its value between calls",
+          "Lives on the call stack",
+          "Is visible to other files",
+          "Is copied into flash memory"
+        ],
+        "answer": 0,
+        "why": "A static local has static storage duration: it is initialised once and keeps its value between calls. The tempting answer is the second, which describes an ordinary automatic local. The third describes file-scope static linkage, which a local static does not have." },
+      { "type": "text",
+        "prompt": "In the STM32 linker script, which output section holds <code>const</code> globals in flash?",
+        "accept": [".rodata", "rodata"],
+        "why": ".rodata is the read-only data section, placed in FLASH by the course linker script. The tempting answer is .data, which holds initialised writable globals: their starting values are in flash, but the variables themselves live in RAM." },
+      { "type": "number",
+        "prompt": "A repeating timer sets the flag every 100 ms. How many times per second does the callback run?",
+        "answer": 10, "tolerance": 0.01, "unit": "Hz",
+        "why": "The period is 0.1 s, so the rate is 1 ÷ 0.1 s = 10 Hz. The tempting answer is 100, which mixes up milliseconds with the rate per second." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 9: a 3.3 V GPIO drives a red LED with Vf = 2.0 V at 4 mA. What is the exact series resistance, in ohms?",
+        "answer": 325, "tolerance": 0.01, "unit": "Ω",
+        "why": "R = (3.3 V − 2.0 V) ÷ 0.004 A = 325 Ω. The tempting answer, 330 Ω, is the E12 value you round up to, not the exact value." },
+      { "type": "text",
+        "prompt": "From lesson 2: in <code>wokwi.toml</code>, which key names the ELF file the simulator loads?",
+        "accept": ["elf"],
+        "why": "elf = 'build/blink.elf' tells the simulator which firmware to run. gdbServerPort is the debug port, and firmware is the hex file, which is a different format." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A variable is set in an ISR and read in a polling loop. The code works at -O0 and hangs at -O2. Why, and what do you change?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>At -O2 the compiler sees that nothing in the loop writes the variable, so it loads it once and keeps the value in a register. The ISR's writes never reach the loop. The fix is to declare the variable volatile, so every read reloads it. volatile is not enough for a shared counter or any read-modify-write: those need a critical section or an atomic type, because the ISR can run between the read and the write.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://en.cppreference.com/w/c/language/volatile">cppreference: volatile</a>: read the sections on accesses and side effects, and the note that volatile is not suitable for communication between threads. The output in this lesson was produced by the Arm GNU toolchain, so you can reproduce it on your own machine.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how to make the flag and the counter safe together, and explain why the critical section is needed for count++."
+    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and overflow</a>, <a href="0009-diodes-leds-and-current-limiting.html">Lesson 9: Diodes and LEDs</a>, and <a href="../reference/glossary.html">Glossary: Interrupt service routine</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

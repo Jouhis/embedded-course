@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MYS-1 digital temperature sensor: datasheet (fictional) · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../../assets/course.css">
+</head>
+<body>
+<main>
+  <p class="lesson-meta">Lesson 63 · Teaching datasheet</p>
+  <h1>MYS-1 digital temperature sensor</h1>
+  <p class="subtitle">A fictional I2C sensor for lesson 63. Its behaviour is what this page says, and the Wokwi chip in <code>chip/mystery.chip.c</code> implements exactly that.</p>
+
+  <div class="note"><strong>Teaching part.</strong> The MYS-1 is invented for this course. It is not a real product, so you cannot buy it. The layout follows the style of a real datasheet, so that you practise reading one.</div>
+
+  <h2>1. Overview</h2>
+  <p>
+    The MYS-1 measures temperature with an on-chip sensor and reports it as a signed 16-bit number over I2C. It has one identity register, a control register that starts measurement, a status register with a data-ready flag, and a pair of temperature registers.
+  </p>
+  <ul>
+    <li>Supply: 3.3 V (VCC), ground (GND).</li>
+    <li>Interface: I2C, standard mode (100 kHz) and fast mode (400 kHz). The MYS-1 is a target device, so the master starts every transaction.</li>
+    <li>Temperature: −40 °C to +85 °C, resolution 1/64 °C.</li>
+  </ul>
+
+  <h2>2. I2C interface</h2>
+  <table>
+    <thead><tr><th>Parameter</th><th>Value</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>7-bit address</td><td><code>0x48</code></td><td>Fixed. The part does not have an address pin.</td></tr>
+      <tr><td>Maximum clock</td><td>400 kHz</td><td>Fast mode. Standard mode (100 kHz) also works.</td></tr>
+      <tr><td>Pull-ups on SDA and SCL</td><td>4.7 kΩ to 3.3 V</td><td>Required on the board. Internal MCU pulls are too weak for real bus lengths.</td></tr>
+      <tr><td>Pointer behaviour</td><td>Auto-increment</td><td>See section 3.2.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>3. Register map</h2>
+  <h3>3.1 Registers</h3>
+  <table>
+    <thead><tr><th>Address</th><th>Name</th><th>Access</th><th>Reset</th><th>Function</th></tr></thead>
+    <tbody>
+      <tr><td><code>0x0F</code></td><td>WHO_AM_I</td><td>R</td><td><code>0xA7</code></td><td>Fixed identity value. Use it to check that the right part answers at the address.</td></tr>
+      <tr><td><code>0x20</code></td><td>CTRL</td><td>R/W</td><td><code>0x00</code></td><td>Bit 0, <code>MEAS_EN</code>: 1 starts periodic measurement, 0 stops it. Bits 7 to 1 are not implemented and read 0.</td></tr>
+      <tr><td><code>0x27</code></td><td>STATUS</td><td>R</td><td><code>0x00</code></td><td>Bit 0, <code>DRDY</code>: 1 means a new temperature sample is ready and has not been read yet.</td></tr>
+      <tr><td><code>0x28</code></td><td>TEMP_L</td><td>R</td><td>undefined</td><td>Low byte of the temperature. Reading it latches the newest sample (see section 4).</td></tr>
+      <tr><td><code>0x29</code></td><td>TEMP_H</td><td>R</td><td>undefined</td><td>High byte of the latched temperature. Reading it clears <code>DRDY</code>.</td></tr>
+    </tbody>
+  </table>
+  <p>Any other register address reads <code>0x00</code>. Writes to read-only registers are ignored.</p>
+
+  <h3>3.2 Transactions and the register pointer</h3>
+  <p>
+    The MYS-1 has a register pointer. It is set by the first byte the master writes in a transaction. After that, every byte is data for the register at the pointer, and the pointer increments after each byte. A read returns the byte at the pointer, and the pointer increments too.
+  </p>
+  <table>
+    <thead><tr><th>Operation</th><th>Bus sequence</th></tr></thead>
+    <tbody>
+      <tr><td>Write one register</td><td>START, address + W, pointer, data, STOP</td></tr>
+      <tr><td>Read one register</td><td>START, address + W, pointer, RESTART, address + R, data, STOP</td></tr>
+      <tr><td>Read TEMP_L and TEMP_H</td><td>START, address + W, <code>0x28</code>, RESTART, address + R, low byte, high byte, STOP</td></tr>
+    </tbody>
+  </table>
+  <div class="warning">The read must use a RESTART (repeated start) after the pointer, not a STOP followed by a new START. The MYS-1 accepts both, but a STOP lets another master use the bus in between, and it costs time.</div>
+
+  <h2>4. Temperature data and timing</h2>
+  <h3>4.1 Data format</h3>
+  <p>
+    The temperature is a <strong>signed 16-bit two's-complement</strong> value in units of 1/64 °C. TEMP_L is the low byte and TEMP_H is the high byte. To convert:
+  </p>
+  <pre><code>temperature (°C) = (int16_t)((TEMP_H &lt;&lt; 8) | TEMP_L) / 64.0</code></pre>
+  <p>Examples:</p>
+  <table>
+    <thead><tr><th>TEMP_H</th><th>TEMP_L</th><th>Raw (decimal)</th><th>Temperature</th></tr></thead>
+    <tbody>
+      <tr><td><code>0x05</code></td><td><code>0xA0</code></td><td>1440</td><td>22.50 °C</td></tr>
+      <tr><td><code>0xFF</code></td><td><code>0xC0</code></td><td>−64</td><td>−1.00 °C</td></tr>
+    </tbody>
+  </table>
+  <div class="note">Convert with a signed type. If you divide the unsigned value <code>0xFFC0</code> by 64, you get 1023.0, not −1.0. Lesson 45 explains why.</div>
+
+  <h3>4.2 Timing</h3>
+  <ul>
+    <li>Measurement starts when CTRL bit 0 (<code>MEAS_EN</code>) is set. Before that, <code>DRDY</code> stays 0 and the temperature registers hold the reset value.</li>
+    <li>A new sample is produced every <strong>500 ms</strong> while measurement is enabled. The first sample appears 500 ms after <code>MEAS_EN</code> is set.</li>
+    <li>Each sample sets <code>DRDY</code>. Reading TEMP_L latches the newest sample, so TEMP_L and TEMP_H always come from the same sample. Reading TEMP_H clears <code>DRDY</code>.</li>
+    <li>If you do not read a sample before the next one arrives, the older value is lost. Samples are not queued.</li>
+  </ul>
+  <div class="warning">A driver that reads the temperature without checking <code>DRDY</code> may read the same sample twice, or read a value that was not yet ready. Wait for <code>DRDY</code>, and time out so that a missing sensor does not hang the firmware.</div>
+
+  <h2>5. Typical usage</h2>
+  <ol class="steps">
+    <li>Read WHO_AM_I (<code>0x0F</code>). Expect <code>0xA7</code>. If you get anything else, the part is missing or is not a MYS-1.</li>
+    <li>Write CTRL (<code>0x20</code>) with <code>0x01</code> to enable measurement.</li>
+    <li>Wait for <code>DRDY</code>. Poll STATUS (<code>0x27</code>) every few milliseconds, and give up after about 2 s.</li>
+    <li>Read TEMP_L and TEMP_H (<code>0x28</code>, two bytes, one burst). Reading TEMP_H clears <code>DRDY</code>.</li>
+    <li>Convert the value with the formula in section 4.1.</li>
+    <li>Repeat from step 3 for the next sample.</li>
+  </ol>
+
+  <h2>6. Revision</h2>
+  <p>Rev A, written for the course. This sheet and the chip in <code>chip/</code> describe the same behaviour.</p>
+</main>
+</body>
+</html>

@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PWM: dimming, servos, tones · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0059">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>PWM: dimming, servos, tones</h1>
+  <p class="subtitle">A pin cannot output 1.6 V, but it can switch fast enough that the average looks like 1.6 V. PWM does that with a counter, a wrap value and a compare. The same three numbers give you a dimmed LED, a 50 Hz servo signal and a buzzer tone.</p>
+
+  <div class="goal">
+    By the end of this lesson you can compute the PWM frequency and duty cycle of an RP2040 slice from the system clock, the clock divider and the wrap value, and set up a dimmed LED, a 50 Hz servo signal and a 440 Hz tone with the Pico SDK.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A PWM slice is a 16-bit counter that counts from 0 up to a wrap value TOP and then starts again. An output goes high while the counter is below a compare value and low after that. The fraction of each period spent high is the duty cycle <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.5.2.1</a>.
+    <span class="sidenote">The duty cycle is the fraction of time high, and the average voltage of a filtered PWM signal is that fraction times the supply. That is why a dimmed LED looks dim, and why a motor speed control works.</span>
+  </p>
+  <p>
+    The RP2040 has eight slices. Each slice has two outputs, A and B, so there are 16 PWM channels. They map to GPIO pins in order: GP0 is slice 0 A, GP1 is slice 0 B, and the mapping repeats from GP16 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, Table 515</a>. Two outputs in the same slice share one counter, so they share one period. Two outputs on different slices can have different periods.
+  </p>
+
+  <h2>The three numbers</h2>
+  <p>
+    The clock divider DIV slows the counter. It is an 8-bit integer with a 4-bit fraction, so it can divide by 1.0 to 255.9375 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.5.2.4</a>. With TOP and DIV, the period in clock cycles is (TOP + 1) × DIV, and the frequency follows from the system clock <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.5.2.6</a>. The Pico SDK's header states the same rule: the counter runs at clk_sys ÷ DIV <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_pwm/include/hardware/pwm.h">pico-sdk, hardware/pwm.h</a>.
+  </p>
+  <pre><code><span class="c">/* frequency = clk_sys / (DIV * (TOP + 1)) */</span>
+<span class="c">/* duty cycle = compare / (TOP + 1)        */</span>
+<span class="c">/* example: 125 MHz, DIV 125, TOP 19999 gives 125e6 / (125 * 20000) = 50 Hz */</span></code></pre>
+  <div class="note">Read the system clock with <code>clock_get_hz(clk_sys)</code> instead of assuming 125 MHz. The code in this lesson does that.</div>
+
+  <h2>Dimming, a servo, and a tone</h2>
+  <p>
+    <strong>Dimming.</strong> Choose a frequency high enough that the eye does not see flicker, such as 1 kHz. Then set the compare to a fraction of TOP + 1 with the potentiometer.
+  </p>
+  <p>
+    <strong>Servo.</strong> A hobby servo expects a 20 ms frame, that is 50 Hz, and reads the pulse width. A 1 ms pulse is the 0-degree end, and 2 ms is the 180-degree end <a href="https://docs.wokwi.com/parts/wokwi-servo">Wokwi, servo part</a>. With a 1 MHz tick, one count is 1 µs, so the compare is the pulse width in microseconds, and TOP is 19,999 for a 20,000-tick frame.
+  </p>
+  <p>
+    <strong>Tone.</strong> A buzzer makes a tone at the PWM frequency, and a 50 % duty cycle gives a clean square wave. Wokwi's buzzer part is driven by the pin's signal <a href="https://docs.wokwi.com/parts/wokwi-buzzer">Wokwi, buzzer part</a>. For 440 Hz, a DIV of 8 keeps TOP inside 16 bits: 125 MHz ÷ (8 × 440) − 1 = 35,510.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 480 190" role="img" aria-label="A counter ramps from 0 to TOP and wraps, while the output is high below the compare value" style="max-width:624px">
+      <defs><marker id="ah39" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M60 30 H430" stroke-dasharray="3 4"/>
+        <path d="M60 70 H430" stroke-dasharray="3 4"/>
+        <path d="M60 110 L150 30 L150 110 L240 30 L240 110 L330 30 L330 110 L420 30 L420 110"/>
+        <path d="M60 150 H105 V170 H150 V150 H195 V170 H240 V150 H285 V170 H330 V150 H375 V170 H420"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="14" y="34" text-anchor="start" font-size="12">TOP</text>
+        <text x="14" y="74" text-anchor="start" font-size="12">compare</text>
+        <text x="430" y="164" text-anchor="start" font-size="12">output</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The counter ramps and wraps. The output is high while the counter is below the compare value, so a higher compare means a longer high time.</figcaption>
+  </figure>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0059-pwm</code> has a potentiometer on GP26, an LED on GP18 (slice 1, A), a servo on GP16 (slice 0, A) and a buzzer on GP22 (slice 3, A). The three outputs use three slices, because each slice has only one period. The solution sets the LED to 1 kHz, the servo to 50 Hz and the buzzer to 440 Hz.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0059-pwm/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: check the LED's TOP and explain it in a comment. Fix the servo's TOP (the starter has a planted 2 ms period, which gives 500 Hz). Compute the buzzer's TOP from <code>sys_hz</code> and set its level to half of TOP + 1. Set the LED and servo levels from the potentiometer reading. You will know it works when the servo arm moves with the pot, the LED dims, and the serial monitor prints <code>PWM OK</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint for the servo</summary>
+    <p>The servo wants 20,000 ticks per frame at 1 µs each. Count the ticks in one frame, and the TOP is that count minus one.</p>
+  </details>
+  <details>
+    <summary>Hint for the levels</summary>
+    <p>The level is a count of ticks, not a percentage. For the servo that is microseconds, from 1000 to 2000. For the LED it is a fraction of TOP + 1.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0059-pwm/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You set up three PWM slices from the clock, the divider and the wrap value, and checked each frequency with the formula. You can now produce any PWM frequency the 16-bit counter reaches.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which register sets how many counter ticks make one PWM period?",
+        "options": ["TOP", "CC", "DIV", "CSR"],
+        "answer": 0,
+        "why": "TOP is the wrap value, so the period is (TOP + 1) times DIV. The tempting answer, DIV, slows the counter, but it does not set how many ticks the period has." },
+      { "type": "number",
+        "prompt": "The system clock is 125 MHz, DIV is 125 and TOP is 19999. What is the PWM frequency, in hertz?",
+        "answer": 50, "tolerance": 0.01, "unit": "Hz",
+        "why": "f = 125 MHz ÷ (125 × 20,000) = 50 Hz. The tempting answer, 500 Hz, uses 1999 for TOP, which is the bug in the starter." },
+      { "type": "number",
+        "prompt": "A servo frame is 20 ms and the pulse is 1.5 ms. What is the duty cycle, in percent?",
+        "answer": 7.5, "tolerance": 0.01, "unit": "%",
+        "why": "1.5 ms ÷ 20 ms = 0.075, which is 7.5 %. The tempting answer, 1.5 %, forgets the ratio and reads the pulse width as a percentage." },
+      { "type": "mc",
+        "prompt": "Which GPIO pin is PWM channel 0A?",
+        "options": ["GP16", "GP17", "GP18"],
+        "answer": 0,
+        "why": "GP16 is 0A, GP17 is 0B and GP18 is 1A (Table 515). The tempting answer, GP17, is slice 0 but channel B." },
+      { "type": "text",
+        "prompt": "Which Pico SDK function returns the PWM slice that drives a GPIO?",
+        "accept": ["pwm_gpio_to_slice_num", "pwm_gpio_to_slice_num()"],
+        "why": "pwm_gpio_to_slice_num() maps a pin to its slice. The tempting answer, pwm_gpio_to_channel, returns A or B within the slice." },
+      { "type": "number",
+        "prompt": "The LED runs at TOP 999 with DIV 125 on 125 MHz. What is its frequency, in hertz?",
+        "answer": 1000, "tolerance": 0.01, "unit": "Hz",
+        "why": "f = 125 MHz ÷ (125 × 1000) = 1 kHz. The tempting answer, 100 Hz, drops a factor of ten from the TOP." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0009-diodes-leds-and-current-limiting.html\">lesson 9</a>: a 3.3 V pin drives a red LED with Vf = 2.0 V at 6.5 mA. What series resistance, in ohms, does the exact calculation give?",
+        "answer": 200, "tolerance": 0.01, "unit": "Ω",
+        "why": "R = (3.3 V − 2.0 V) ÷ 0.0065 A = 200 Ω. The tempting answer, 220 Ω, is the next E12 value up, not the exact result." },
+      { "type": "text",
+        "prompt": "From <a href=\"0025-registers-counters-shift-registers.html\">lesson 25</a>: which 74HC595 pin is the latch clock?",
+        "accept": ["STCP"],
+        "why": "STCP copies the shift register to the outputs. The tempting answer, SHCP, is the shift clock." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You have a 16-bit PWM counter and a 125 MHz clock. How do you make a 50 Hz signal, and what limits the duty cycle resolution?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Pick a divider so the counter ticks at a convenient rate, for example 1 MHz with DIV 125. Then set TOP to 19,999, which gives 20,000 ticks, or 50 Hz. The duty resolution is the number of levels between 0 and TOP + 1, so at TOP 19,999 you have 20,000 steps, and a wider TOP gives finer control at a lower frequency. A higher frequency needs a smaller TOP, which means fewer steps.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.5 (PWM)</a>: read 4.5.2.1 for the duty cycle, 4.5.2.4 for the clock divider, 4.5.2.6 for the period, and Table 515 for the pin map. The period equation in 4.5.2.6 is an image in the PDF, so check it against the SDK's <code>pwm.h</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Explain why a servo's pulse width is 1 to 2 ms, and what the servo does with a pulse that is 2.5 ms long."
+    Related: <a href="0058-adc.html">Lesson 58: ADC</a>, <a href="0025-registers-counters-shift-registers.html">Lesson 25: Registers and counters</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Function pointers and callbacks · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0049">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Function pointers and callbacks</h1>
+  <p class="subtitle">A callback lets a driver call your code without knowing your code. The same mechanism puts the reset handler and every interrupt handler into the vector table.</p>
+
+  <div class="goal">
+    By the end of this lesson you can declare a function pointer type, register a callback in a table, dispatch an event safely with a NULL check, and explain the vector table as an array of function pointers.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A function has an address, and a <strong>function pointer</strong> stores that address. The declaration reads from the inside out: <code>void (*handler)(int)</code> is a pointer named <code>handler</code> to a function that takes an <code>int</code> and returns nothing. A <code>typedef</code> makes the type readable.
+    <span class="sidenote">Calling through a pointer is an indirect branch. The CPU loads an address from memory and jumps there. That is one more load than a direct call, and it is the reason a table of handlers is cheap.</span>
+  </p>
+  <pre><code><span class="k">typedef void</span> (*Handler)(Event ev);     <span class="c">/* a type: pointer to a function taking Event, returning void */</span>
+
+<span class="k">static</span> Handler handlers[EV_COUNT];       <span class="c">/* one slot per event; zero-initialised, so each slot is NULL */</span>
+
+<span class="k">void</span> register_handler(Event ev, Handler h) {
+    handlers[ev] = h;                       <span class="c">/* store the address; the function does not run yet */</span>
+}
+
+<span class="k">void</span> dispatch(Event ev) {
+    handlers[ev](ev);                       <span class="c">/* call whatever address is stored for this event */</span>
+}</code></pre>
+  <p>
+    This is a <strong>callback</strong>: the code that owns the event calls a function that someone else registered. The driver does not need to know what the handler does. The application does not need to poll the driver. Each event has a slot, so adding an event is one more entry, not one more <code>if</code>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 580 140" role="img" aria-label="An event arrives, the dispatcher looks up its slot in a table, and calls the handler stored there" style="max-width:754px">
+      <defs><marker id="ah32" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="62" width="160" height="30" rx="3"/>
+        <rect x="230" y="30" width="160" height="80" rx="3"/>
+        <rect x="420" y="28" width="140" height="30" rx="3"/>
+        <rect x="420" y="82" width="140" height="30" rx="3"/>
+        <path d="M170 77 H230" marker-end="url(#ah32)"/>
+        <path d="M390 43 H420" marker-end="url(#ah32)"/>
+        <path d="M390 97 H420" marker-end="url(#ah32)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="90" y="81.2" text-anchor="middle" font-size="12">event EV_TICK</text>
+        <text x="310" y="66.7" text-anchor="middle" font-size="12">dispatch()</text>
+        <text x="310" y="81.7" text-anchor="middle" font-size="12">handlers[ev]</text>
+        <text x="490" y="47.2" text-anchor="middle" font-size="12">on_tick()</text>
+        <text x="490" y="100.85" text-anchor="middle" font-size="11">NULL: check first</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The table holds addresses. The dispatcher loads one and calls it. A slot that is still NULL must be checked before the call.</figcaption>
+  </figure>
+
+  <h2>The NULL check</h2>
+  <p>
+    A slot that nobody registered holds NULL. Calling NULL does not do nothing: it jumps to address 0, which is not your code, and the result is a crash or worse. Check the slot before calling it. If the event has no handler, count it or ignore it, and say so in the design.
+  </p>
+  <div class="warning">A callback runs later than its registration, often from an interrupt. Do not pass a pointer to a local variable as the user data of a callback. The stack frame it points into is gone by the time the callback runs.</div>
+
+  <h2>The vector table is a table of function pointers</h2>
+  <p>
+    When an interrupt or exception happens, the core does not search for a handler. It reads an array in memory, the <strong>vector table</strong>, at an index given by the exception number. The first word is the initial stack pointer. The next words are the addresses of the reset handler, NMI, HardFault and the peripheral interrupts. Each entry is a function pointer in all but name.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 programming manual</a>
+    <span class="sidenote">Lesson 42 builds the startup file and the vector table itself. The table in the startup code is an array of addresses, placed at a fixed location the core reads on reset and on each exception.</span>
+  </p>
+  <p>
+    That is why the dispatcher in this lesson and the vector table are the same design. Your code registers an address in a table, and something later reads it and jumps there. The difference is that the vector table is read by the hardware, which has no NULL check, so a missing entry must be filled with a safe default handler by the startup code.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0049-callback-dispatcher</code> has a two-event dispatcher. Only the tick event is registered, and the starter dispatches an event for the button with no handler.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0049-callback-dispatcher/starter</code> in VS Code, build, and start the simulator.</li>
+    <li>Watch the serial monitor. You should see <code>tick</code> twice, but the line <code>done</code> never appears: the dispatch for the button calls a NULL entry.</li>
+    <li>Your task: make <code>dispatch</code> skip an event that has no handler, so the program reaches the end. Count the ignored events, and print the summary.</li>
+    <li>You will know it works when the serial monitor prints <code>tick</code>, <code>tick</code>, then <code>DISPATCH OK handled=2 ignored=1</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Before the call in <code>dispatch</code>, compare the slot with NULL. If it is NULL, return early. The register function also has a range check you can add, but the crash comes from the NULL slot.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0049-callback-dispatcher/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You built a callback table, dispatched events through it, and guarded the one call that can jump to address 0. The same table idea is the vector table the core uses for every interrupt.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "What must dispatch check before calling a handler from the table?",
+        "options": [
+          "That the handler is not NULL",
+          "That the event has a name",
+          "That the queue is full yet",
+          "That the timer has now expired"
+        ],
+        "answer": 0,
+        "why": "An empty slot holds NULL, and calling it jumps to address 0. The tempting answer is the second: the name is only a debugging label, and it does not affect the call. The last two are unrelated to the table lookup." },
+      { "type": "number",
+        "prompt": "A table has 4 handler slots, and each slot is a function pointer on the RP2040. How many bytes is the table?",
+        "answer": 16, "tolerance": 0, "unit": "B",
+        "why": "The RP2040 is a 32-bit core, so each pointer is 4 bytes, and 4 slots × 4 bytes = 16 bytes. The tempting answer is 4, which counts the slots and ignores their size." },
+      { "type": "mc",
+        "prompt": "In the Cortex-M vector table, what does entry 0 hold?",
+        "options": [
+          "The initial stack pointer value",
+          "The address of main function",
+          "The count of all interrupts",
+          "The current priority level now"
+        ],
+        "answer": 0,
+        "why": "Word 0 is the initial stack pointer, and word 1 is the reset handler. main is called by the reset handler, so its address is not in the table. The tempting answer is main, which is the code you wrote, but the core never jumps there directly." },
+      { "type": "text",
+        "prompt": "What word must you check for in a callback slot before calling it? One word.",
+        "accept": ["NULL", "null"],
+        "why": "An empty slot holds NULL. The tempting answer is zero, which is the same value, but the code should name the null pointer, since a zero check and a NULL check mean the same thing only for pointers." },
+      { "type": "mc",
+        "prompt": "Why must a callback's user data outlive its registration?",
+        "options": [
+          "Runs later, often from an ISR",
+          "The compiler then drops the pointer",
+          "The table lacks space for it",
+          "The handler must be declared const"
+        ],
+        "answer": 0,
+        "why": "A callback runs after registration, often in an interrupt, so any pointer it uses must still be valid then. A local variable's storage ends when its function returns. The tempting answer is the second, which is not a rule of C." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 5: write Ohm's law rearranged to find the resistance R.",
+        "accept": ["R=V/I", "R=V÷I", "V/I", "V÷I"],
+        "why": "R = V ÷ I, from V = I × R. The tempting answer is R = V × I, which has the units of power, not resistance." },
+      { "type": "text",
+        "prompt": "From lesson 2: which Ctrl+Shift+B action builds the project, or starts the simulator? Write the word for the action it takes.",
+        "accept": ["build", "compile"],
+        "why": "Ctrl+Shift+B builds the firmware. Starting the simulator is a separate command, F1 then Wokwi: Start Simulator. The tempting answer is simulate, which is the other step." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is a vector table, and how does the CPU use it when an interrupt fires?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>It is an array at a fixed address, with one word per exception. Word 0 is the initial stack pointer and the rest are handler addresses. When an exception is taken, the core reads the entry for that exception number and jumps to it, after saving registers on the stack. The table is data, so it can be relocated, and it is set up by the startup code. Unused entries must point at a safe default handler, because the hardware does not check for NULL.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056: STM32F10xxx Cortex-M3 programming manual</a>: read the sections on exceptions and the vector table, and find where the first two entries are described. Then open the startup file in the course's <code>third_party</code> folder and count the entries.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how a vector table entry is laid out in the startup file, and what the linker does with it."
+    Related: <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html">Glossary: Vector table</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Exceptions and interrupt entry · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0034">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Exceptions and interrupt entry</h1>
+  <p class="subtitle">An interrupt does not ask the program for permission. The core saves eight registers on the stack by itself, and the handler runs before the next line of your main loop. Watching that happen is the best way to understand interrupts.</p>
+
+  <div class="goal">
+    By the end of this lesson you can list the eight words the core stacks on interrupt entry, trigger an interrupt in the simulator, and read the saved frame and the restored registers after the return.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    An <strong>exception</strong> is an event that makes the core stop its current code and run a handler. An <strong>interrupt</strong> is an exception raised by a peripheral or a pin. On entry the core does three things in hardware: it pushes a frame of eight words onto the stack, it loads LR with a special value that tells it how to return, and it jumps to the handler. Your code does none of this.
+  </p>
+  <p>
+    Arm's TRM gives the frame: "the processor automatically stores the following eight registers to the SP", which are the program counter, xPSR, R0 to R3, R12 and LR (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §5.5.1</a>). The TRM's Figure 5-1 shows the order on the stack. The simulator uses the usual layout, with R0 at the lowest address and xPSR at the highest. Check that against Figure 5-1 when you use the TRM.
+    <span class="sidenote">The TRM describes a configuration bit, STKALIGN, that can insert one padding word so that the stack is 8-byte aligned before the frame is stacked (§5.5.1). The simulator never adds that word.</span>
+  </p>
+
+  <h2>Latency, return and the other cases</h2>
+  <p>
+    The TRM's exception entry timing figure shows a <strong>twelve-cycle</strong> latency from asserting the interrupt to the first instruction of the ISR (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §5.5 and Figure 5-2</a>). That is the entry timing for the standard case. The three cases below change the sequence.
+  </p>
+  <ul>
+    <li><strong>Tail-chaining (§5.6):</strong> when one handler finishes and another interrupt is already pending, the core starts the next handler without restoring and saving the frame again. The TRM calls it "back-to-back interrupt processing without the overhead of state saving and restoration".</li>
+    <li><strong>Late arrival (§5.7):</strong> a higher-priority interrupt that arrives while the core is still stacking takes over. The stacking is kept, and the new handler runs first.</li>
+    <li><strong>Return:</strong> the handler returns with a special EXC_RETURN value in LR, using <code>BX LR</code> or a <code>POP {..., PC}</code>. The core then unstacks the frame and restores the registers. The TRM's exit section (§5.8) says that when the stacked IPSR's active-interrupt bits [8:0] are zero, the processor returns to thread mode.</li>
+  </ul>
+  <p>
+    Exceptions always stack on the main stack (§2.2.1, and lesson 35). The frame lives in memory, so anything the handler changes in R0 to R3 is restored on return. This is the most useful fact of the lesson, and you will see it in the simulator below.
+  </p>
+
+  <div class="warning">Handler changes to R0 to R3 are undone on return, because the frame restores them. A handler that wants to pass information back must write to memory, such as a variable, a buffer or a peripheral register. Writing to R0 in the handler is lost.</div>
+
+  <h2>Try it in the CPU simulator</h2>
+  <p>
+    The program loops, adding 1 to R1. Its interrupt handler adds 1 to a counter in RAM at <code>0x20000000</code>. Press <em>IRQ ⚡</em> while the loop runs. The button only appears because the program defines a label called <code>IRQ_Handler</code>.
+  </p>
+  <ol class="steps">
+    <li>Press <em>Run</em>, then <em>Pause</em> after a moment. Note the stack pointer and R1. Predict the SP value after the interrupt is taken.</li>
+    <li>Press <em>IRQ ⚡</em>, then <em>Step</em> until the message says the interrupt was taken. Check the stack view: eight words are now on the stack. Find the saved PC, which is the address of the loop instruction that was about to run.</li>
+    <li>Press <em>Instruction</em> until the handler returns to the loop. Check that the counter at <code>0x20000000</code> is now 1, while R2 and R3 are back to 0 and the SP is back at its starting value.</li>
+  </ol>
+  <div class="widget cpusim" data-title="A counter driven by an interrupt" data-show="regs,stack,mem,phases">
+    <script type="text/plain">
+    main:   MOV  R0, #0
+            MOV  R1, #0
+    loop:   ADD  R1, R1, #1          @ the main work: count up
+            B    loop
+
+    IRQ_Handler:                     @ runs on each interrupt
+            MOV  R2, #0x20000000     @ address of the counter in RAM
+            LDR  R3, [R2]            @ read the counter
+            ADD  R3, R3, #1          @ count this interrupt
+            STR  R3, [R2]            @ write it back to memory
+            BX   LR                  @ return from the handler
+    </script>
+  </div>
+  <details>
+    <summary>Hint</summary>
+    <p>The starting SP is 0x20000100, and an eight-word frame is 32 bytes, so the SP after entry is 0x200000E0. The counter lives in memory, which is why it survives the return even though R2 and R3 do not.</p>
+  </details>
+  <p>
+    The simulator is a teaching model of interrupt entry, and it differs from a real Cortex-M in the following ways. It has one interrupt, no priorities and no NVIC. It has no vector table, so the handler address is simply a label. It does not model tail-chaining or late arrival, and it does not model the twelve-cycle latency. The stacked frame and the return are the parts that match the real core.
+  </p>
+
+  <div class="win">You triggered an interrupt, read the eight-word frame on the stack, and showed that a handler's register changes are undone while its memory writes are kept.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "How many words does the core push onto the stack when it takes an interrupt?",
+        "answer": 8, "tolerance": 0,
+        "why": "The core stacks eight words: PC, xPSR, R0 to R3, R12 and LR (DDI0337G §5.5.1). The tempting answer is 16, which counts both the saved registers and the restored copies." },
+      { "type": "mc",
+        "prompt": "Which register sits at the lowest address of the stacked frame?",
+        "options": ["R0", "xPSR", "LR"],
+        "answer": 0,
+        "why": "In the usual layout, which the simulator uses, R0 is at the lowest address and xPSR at the highest (check Figure 5-1 in DDI0337G). The tempting answer is xPSR, because it is the last register in the frame, which does not decide its address." },
+      { "type": "number",
+        "prompt": "On a Cortex-M3, how many cycles pass from asserting the interrupt to the first instruction of the ISR?",
+        "answer": 12, "tolerance": 0,
+        "why": "The TRM's exception entry figure gives a twelve-cycle latency (DDI0337G §5.5, Figure 5-2). The tempting answer is 1, which is the cost of a single instruction, not the entry sequence." },
+      { "type": "mc",
+        "prompt": "A handler finishes, and a second interrupt is already pending. The core starts the second handler without restoring and saving the frame again. What is this?",
+        "options": ["Tail-chaining", "Late-arrival", "Pre-emption"],
+        "answer": 0,
+        "why": "That is tail-chaining (DDI0337G §5.6). Late arrival is a higher-priority interrupt that comes in during the stacking, and pre-emption is a higher-priority handler interrupting a running one. The tempting answer is late-arrival, which sounds similar but happens during entry." },
+      { "type": "text",
+        "prompt": "In the simulator's IRQ_Handler, which instruction returns to the interrupted code?",
+        "accept": ["BX LR", "bxlr", "BX LR "],
+        "why": "BX LR branches to the address in LR, which holds the EXC_RETURN value in a handler, so the core unstacks the frame. The tempting answer is B loop, which jumps to a fixed label and skips the unstacking." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In lesson 6, a 5 V supply feeds 20 mA into a load. What is the power, in milliwatts?",
+        "answer": 100, "tolerance": 0.02, "unit": "mW",
+        "why": "P = V × I = 5 V × 0.020 A = 0.100 W, which is 100 mW. The tempting answer is 10 mW, which moves the decimal point the wrong way." },
+      { "type": "text",
+        "prompt": "In lesson 2, what does the sleep_ms call do to the CPU while it waits?",
+        "accept": ["blocks", "blocking", "waits", "it blocks"],
+        "why": "sleep_ms is a blocking call: the CPU does nothing else until the time has passed. The tempting answer is runs in the background, which describes a timer interrupt, not sleep_ms." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Walk me through what the Cortex-M does between an interrupt line going high and the first line of the ISR running."</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The core finishes or abandons the current instruction, then stacks eight words (PC, xPSR, R0 to R3, R12, LR) onto the stack. It loads LR with the EXC_RETURN value and fetches the handler address from the vector table. On the M3 this takes twelve cycles to the first ISR instruction. Tail-chaining and late arrival change that sequence when interrupts pile up. The handler then runs, and a return through EXC_RETURN unstacks the frame.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §5.5.1 (stacking), §5.5 and Figure 5-2 (the twelve-cycle entry timing), §5.6 (tail-chaining) and §5.7 (late arrival). Yiu's <em>The Definitive Guide to ARM Cortex-M3 and Cortex-M4 Processors</em> covers exception entry and return at chapter level.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does the simulator's handler change R2 and R3 but leave the counter in memory, and what would a real handler that uses R0 look like?"
+    Related: <a href="0033-the-stack-and-the-aapcs.html">Lesson 33: The stack and the AAPCS calling convention</a>, <a href="0035-privilege-modes.html">Lesson 35: Privilege modes</a>, <a href="../reference/glossary.html#interrupt-service-routine-isr">Glossary: Interrupt service routine</a>, and <a href="../reference/glossary.html#nvic-nested-vectored-interrupt-controller">Glossary: NVIC</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+<script src="../assets/cpusim.js"></script>
+</body>
+</html>

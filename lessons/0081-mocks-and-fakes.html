@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mocks and fakes · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0081">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Mocks and fakes</h1>
+  <p class="subtitle">Your driver talks to a bus you do not have on the PC. A fake bus lets you test it anyway, and check every byte it sends.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>test a sensor driver on the PC by faking <code>i2c_write</code> and <code>i2c_read</code> with FFF</strong>, and check the calls the driver made.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea</h2>
+  <p>
+    A unit test runs one piece of code, so the code's neighbours must be replaced. For firmware, the neighbours are the hardware: the I2C bus, a GPIO, a timer. A replacement is a <em>test double</em>. Gerard Meszaros named five kinds, and Martin Fowler explains them in
+    <a href="https://martinfowler.com/articles/mocksArentStubs.html">Mocks Aren't Stubs</a> (section "The Difference Between Mocks and Stubs").
+    <span class="sidenote">Fowler's article is the best short source for the vocabulary. Use his words when an interviewer asks what a mock is.</span>
+  </p>
+
+  <table>
+    <thead><tr><th>Double</th><th>What it does (Fowler's wording, paraphrased)</th><th>Driver test example</th></tr></thead>
+    <tbody>
+      <tr><td>Dummy</td><td>Passed along to fill a parameter, never used</td><td>a <code>NULL</code> logger</td></tr>
+      <tr><td>Fake</td><td>A working but simplified implementation</td><td>a bus that keeps a register array</td></tr>
+      <tr><td>Stub</td><td>Returns prepared answers to calls</td><td>"the read returns 0xA7"</td></tr>
+      <tr><td>Spy</td><td>A stub that also records how it was called</td><td>"the bus saw two writes"</td></tr>
+      <tr><td>Mock</td><td>Preloaded with the calls it expects, and checks them</td><td>"fail if the pointer write sends a STOP"</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    The words matter less than the habit: decide what your test checks. A test of return values needs a stub. A test of the bytes on the wire needs a spy. In C, a fake function that records its arguments often plays both the stub and the spy role, so the labels blur in practice.
+  </p>
+
+  <h2>FFF: fake functions in C</h2>
+  <p>
+    FFF (Fake Function Framework, in <code>third_party/fff</code>) is one header with macros. <code>FAKE_VALUE_FUNC(int, i2c_read, uint8_t, uint8_t *, size_t)</code> writes a function named <code>i2c_read</code> that returns <code>int</code> and records its arguments. Each call updates a struct named <code>i2c_read_fake</code>:
+  </p>
+  <table>
+    <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>call_count</code></td><td>How many times the function was called</td></tr>
+      <tr><td><code>arg0_val</code>, <code>arg1_val</code>…</td><td>The last value of each argument</td></tr>
+      <tr><td><code>arg0_history[i]</code></td><td>Every value of argument 0, in call order</td></tr>
+      <tr><td><code>return_val</code></td><td>What the fake returns (a stub answer)</td></tr>
+      <tr><td><code>return_val_seq</code></td><td>An array of answers, one per call (set with <code>SET_RETURN_SEQ</code>)</td></tr>
+      <tr><td><code>custom_fake</code></td><td>A function pointer: when set, the fake calls it instead of returning <code>return_val</code></td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <code>RESET_FAKE(i2c_read)</code> clears all of these. Call it in <code>setUp()</code> so one test cannot leak state into the next. The FFF README and examples are in <code>third_party/fff</code>.
+  </div>
+  <div class="warning">
+    If <code>custom_fake</code> is set, <code>return_val</code> and <code>return_val_seq</code> are ignored. The test in <code>test_mys1.c</code> clears <code>custom_fake</code> before it sets a return sequence, for this reason.
+  </div>
+
+  <h2>CMock: generating the fake from the header</h2>
+  <p>
+    CMock is a generator. You give it a header, and it writes a mock source file. For the header line <code>int DoesSomething(int a, int b);</code>, the CMock summary lists generated functions such as <code>DoesSomething_ExpectAndReturn(int a, int b, int toReturn)</code> and <code>DoesSomething_IgnoreAndReturn(int toReturn)</code>, and a <code>_Verify</code> function to call after each test (<a href="https://github.com/ThrowTheSwitch/CMock/blob/master/docs/CMock_Summary.md">CMock Summary</a>).
+    In CMock's style, the test declares the calls it expects, in order, with their arguments. The mock fails the test when a call is missing, extra, or has the wrong arguments. That is a mock in Fowler's sense.
+  </p>
+  <p>
+    <span class="sidenote">CMock is written in Ruby. This workspace has no Ruby, so you cannot run it here. The course uses FFF for the hands-on work, which needs only a C compiler.</span>
+    Choose between the two styles by what you want to check. FFF records calls and lets you inspect them, which suits a driver that must send exact bytes. CMock enforces the expected sequence, which suits interaction-heavy code.
+  </p>
+
+  <h2>The driver under test</h2>
+  <p>
+    The driver is the MYS-1 sensor from lesson 63 (<a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">datasheet</a>). Its functions call only <code>i2c_write(addr, data, len, stop)</code> and <code>i2c_read(addr, data, len)</code>, declared in <code>src/i2c_bus.h</code>. On the target these wrap the SDK. In the tests, FFF replaces them. This is the hardware seam from <a href="0076-driver-design-and-hardware-abstraction.html">lesson 76</a>: the driver depends on an interface, and the test chooses what sits behind it. The Unity and test-first habits come from <a href="0080-unit-testing-on-the-host.html">lesson 80</a>.
+  </p>
+  <p>
+    The test file also has a small fake sensor: an array of registers and a register pointer, which the fake bus updates on every call. It follows the datasheet's pointer rule (section 3.2). The fake ignores the STOP flag, so only the test that checks <code>arg3_val</code> would catch a driver that sends a STOP before its read.
+  </p>
+
+  <!-- ===== 2. Skill: hands-on ===== -->
+  <h2>Try it on the PC</h2>
+  <ol class="steps">
+    <li>Open <code>projects/0081-mocks-and-fakes/starter</code> in VS Code, then press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The default task builds the host tests and runs them with ctest. No simulator is needed.</li>
+    <li>Read <code>test/test_mys1.c</code>. Find the test that asserts <code>i2c_write_fake.arg3_val</code> is false, and say which driver line it protects.</li>
+    <li>Your task: write the three functions marked <code>TODO(learner)</code> in <code>src/mys1.c</code>: <code>mys1_start</code>, <code>mys1_whoami</code> and <code>mys1_read_celsius</code>. The helpers <code>reg_write</code> and <code>reg_read</code> are already written.</li>
+    <li>You will know it works when the summary line reads <em>9 Tests 0 Failures</em>. Before you start, it reads <em>9 Tests 7 Failures</em>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Start with <code>mys1_start</code>, one line. Then <code>mys1_whoami</code>, one line. For <code>mys1_read_celsius</code>, loop over <code>reg_read(MYS1_REG_STATUS, ...)</code> with <code>MYS1_MAX_POLLS</code>, then read two bytes and cast to <code>int16_t</code> before dividing by 64. The test with a timeout counts the polls.</p>
+  </details>
+  <p>
+    What the starter prints, from a real run of <code>python -I tools/build.py projects/0081-mocks-and-fakes/starter --test</code>:
+  </p>
+  <pre><code>test_mys1.c:66:test_start_sets_measurement_enable:FAIL: Expected TRUE Was FALSE
+test_mys1.c:85:test_whoami_returns_identity:FAIL: Expected TRUE Was FALSE
+...
+9 Tests 7 Failures 0 Ignored
+FAIL</code></pre>
+  <p>
+    The two tests that pass in the starter check failure paths (a NACK, and no read after a failed pointer write). They pass because the starter returns <code>false</code> everywhere. A test that passes for the wrong reason is a warning sign, and the lesson's interview drill returns to this.
+    The reference solution is in <code>projects/0081-mocks-and-fakes/solution</code>. It prints <em>9 Tests 0 Failures 0 Ignored OK</em>.
+  </p>
+
+  <div class="win">You faked a bus with FFF, and wrote a driver that passes nine tests with no sensor attached. You can also check what the driver put on the wire, which a hardware test cannot show.</div>
+
+  <!-- ===== 3. Retrieval practice ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "In Meszaros's terms, which test double records the calls it receives, so the test can check them afterwards?",
+        "options": ["A spy", "A stub", "A dummy", "A fake"],
+        "answer": 0,
+        "why": "A spy is a stub that also records its calls (Fowler). A stub only returns prepared answers, which is the tempting answer. A dummy is never used, and a fake is a simplified working implementation." },
+      { "type": "mc",
+        "prompt": "In FFF, which field of <code>i2c_read_fake</code> counts how many times the driver called <code>i2c_read</code>?",
+        "options": ["call_count", "return_val", "arg0_val", "custom_fake"],
+        "answer": 0,
+        "why": "call_count is incremented on every call. return_val is the stub answer, arg0_val is the last first argument, and custom_fake is a function pointer. The tempting answer is return_val, because the name sounds like a counter of results." },
+      { "type": "mc",
+        "prompt": "A test sets both <code>i2c_write_fake.custom_fake</code> and <code>i2c_write_fake.return_val_seq</code>. What does the fake return?",
+        "options": ["The custom fake wins", "The sequence value wins", "Always returns zero here", "A random value returned"],
+        "answer": 0,
+        "why": "When custom_fake is set, the generated fake calls it and returns its result, so the sequence is ignored. The tempting answer is the sequence, because it looks like the more specific setting. Zero and random are not FFF behaviour." },
+      { "type": "mc",
+        "prompt": "Which check is in <code>test_whoami_pointer_write_has_no_stop</code>?",
+        "options": ["It checks stop equals false", "It checks stop equals true", "It checks the value read", "It checks call count only"],
+        "answer": 0,
+        "why": "The test asserts arg3_val is false, so the pointer write sends no STOP and the read is a repeated start (datasheet section 3.2). The tempting answer is true, which is what a normal register write does." },
+      { "type": "number",
+        "prompt": "The driver's <code>MYS1_MAX_POLLS</code> is 5. The fake sensor reports DRDY only on the fifth STATUS read. How many STATUS reads does <code>mys1_read_celsius</code> make?",
+        "answer": 5, "tolerance": 0, "unit": "reads",
+        "why": "Five reads, and the loop breaks on the fifth. The tempting answer is 4, which counts from zero, but the reads are counted from one." },
+      { "type": "text",
+        "prompt": "Which FFF macro clears a fake's call history and settings between tests?",
+        "accept": ["RESET_FAKE", "RESET_FAKE()"],
+        "why": "RESET_FAKE(fn) resets the fake struct. DEFINE_FFF_GLOBALS only declares the shared globals once, so it is not the reset." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 4. Spaced review ===== -->
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 63: the MYS-1 answers at I2C address 0x48. What is that in decimal?",
+        "answer": 72, "tolerance": 0, "unit": "",
+        "why": "0x48 is 4 times 16 plus 8, which is 72. The tempting answer, 15, is the WHO_AM_I register (0x0F), not the address." },
+      { "type": "text",
+        "prompt": "From lesson 42: which function does Reset_Handler call first, before it copies .data?",
+        "accept": ["SystemInit", "SystemInit()"],
+        "why": "The clock is set first, so the copy runs at the final clock. The tempting answer, __libc_init_array, runs later, after .data and .bss are ready." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 5. Interview drill ===== -->
+  <div class="interview">
+    <p><strong>"How do you unit-test a driver for a sensor that is only reachable over I2C, when you have no board on your desk?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary>
+      <p>Put the bus behind a small interface, here <code>i2c_write</code> and <code>i2c_read</code>, and make the driver call only that interface. Compile the driver on the PC. Replace the two functions with fakes: one that records every call, and one that acts like the device, with a register array and a pointer. Then assert on the bytes sent, their order, the stop flag, and the error paths: a NACK, a timeout, and no read after a failed write. Keep a small hardware test for the real bus, because the fake only knows the datasheet you wrote it from.</p>
+    </details>
+  </div>
+
+  <!-- ===== 6. Source ===== -->
+  <div class="source">
+    <a href="https://martinfowler.com/articles/mocksArentStubs.html">Martin Fowler, "Mocks Aren't Stubs"</a>: read "The Difference Between Mocks and Stubs" for the five definitions. The FFF macros are documented in <code>third_party/fff/README.md</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how custom_fake and return_val_seq interact in test_mys1.c, and what would change if I set custom_fake to NULL first."
+    Related: <a href="../reference/glossary.html">Glossary</a>, and <a href="0063-writing-a-driver-from-a.html">Lesson 63: writing a driver</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

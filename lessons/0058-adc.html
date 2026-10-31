@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ADC: thermistors and oversampling · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0058">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>ADC: thermistors and oversampling</h1>
+  <p class="subtitle">A printer's heater temperature is a voltage on one pin. The ADC turns that voltage into a 12-bit number, a divider and a formula turn the number into degrees, and averaging several samples takes the jitter out of the answer.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read a 12-bit ADC channel with the Pico SDK, convert a thermistor divider reading to degrees with Wokwi's beta formula, and explain why averaging 16 conversions reduces noise.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The RP2040 has one successive-approximation ADC shared by four pins. It converts one channel at a time and returns a 12-bit result from 0 to 4095 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.9</a>. Pins GP26 to GP29 are ADC inputs 0 to 3, and input 4 is the internal temperature sensor. A single conversion takes 96 ADC clock cycles, which is 2 µs at 48 MHz, so the ADC can make 500,000 samples per second <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.9.2</a>.
+    <span class="sidenote">The internal temperature sensor in the RP2040 reads 0 in the Wokwi simulator, so this lesson uses an external NTC thermistor instead.</span>
+  </p>
+  <p>
+    One code step is the reference voltage divided by 4096. With the 3.3 V supply the ADC uses, one step is 3.3 V ÷ 4096 = 0.806 mV. The SDK's own example uses the same factor, <code>3.3f / (1 &lt;&lt; 12)</code> <a href="https://github.com/raspberrypi/pico-examples/blob/master/adc/adc_console/adc_console.c">pico-examples, adc_console</a>.
+  </p>
+
+  <h2>A thermistor is a divider</h2>
+  <p>
+    An NTC thermistor's resistance falls as it warms. Put it in series with a fixed 10 kΩ resistor, and the midpoint voltage tracks temperature. This is the divider from lesson 8. The NTC sits on the ground side, and the fixed resistor sits on the supply side.
+  </p>
+  <figure>
+    <svg viewBox="0 0 380 200" role="img" aria-label="A 3.3 volt supply, a fixed 10 kilohm resistor, the output node going to the ADC pin, and the NTC thermistor to ground" style="max-width:494px">
+      <defs><marker id="ah38" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M150 20 V40"/>
+        <rect x="136" y="40" width="28" height="48" rx="0"/>
+        <path d="M150 88 V100"/>
+        <rect x="136" y="100" width="28" height="48" rx="0"/>
+        <path d="M134 146 L166 102"/>
+        <path d="M150 148 V160"/>
+        <path d="M136 160 H164"/>
+        <path d="M141 165 H159"/>
+        <path d="M146 170 H154"/>
+        <path d="M150 94 H300 V44 H310"/>
+      </g>
+      <g fill="currentColor">
+        <circle cx="150" cy="94" r="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="150" y="14" text-anchor="middle" font-size="12">3V3</text>
+        <text x="176" y="166" text-anchor="start" font-size="12">GND</text>
+        <text x="176" y="68" text-anchor="start" font-size="12">10 kΩ fixed</text>
+        <text x="176" y="128" text-anchor="start" font-size="12">NTC</text>
+        <text x="316" y="48" text-anchor="start" font-size="12">ADC pin</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The NTC is the lower arm, so a warmer NTC pulls the ADC pin down. The formula below assumes this arrangement.</figcaption>
+  </figure>
+  <p>
+    The ADC pin sees the fraction <i>a</i>/4095 = R<sub>NTC</sub> / (R<sub>fixed</sub> + R<sub>NTC</sub>). Solving for the NTC resistance gives R<sub>NTC</sub> = R<sub>fixed</sub> × (4095/<i>a</i> − 1). Wokwi's documentation gives the conversion from the reading to degrees directly, with a beta coefficient of 3950 by default <a href="https://docs.wokwi.com/parts/wokwi-ntc-temperature-sensor">Wokwi, NTC temperature sensor</a>.
+  </p>
+  <pre><code><span class="c">/* Wokwi's formula, with the full-scale constant changed from 1023 (10-bit) to 4095 (12-bit) */</span>
+<span class="k">float</span> celsius = 1 / (log(1 / (4095 / a - 1)) / BETA + 1 / 298.15) - 273.15;</code></pre>
+  <p>
+    The formula is written for a 10-bit reading in Wokwi's own Arduino example. The Pico gives 12 bits, so the constant changes from 1023 to 4095. The formula divides by <i>a</i> − 1 and takes a log, so a raw reading of 0 or 4095 is not valid and the code must reject it.
+    <span class="sidenote">The expected raw value is computed, not yet simulated. With the NTC at 24 °C (about 10.46 kΩ) and a 10 kΩ fixed resistor, the ratio is 0.511, so the raw value is about 2093. Check your simulator's reading against this.</span>
+  </p>
+
+  <h2>Noise and oversampling</h2>
+  <p>
+    Every reading carries noise, and a 12-bit ADC does not give 12 clean bits. The RP2040 datasheet measures an effective number of bits of 8.7 at a typical 997 Hz test input <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.9.3, Table 566</a>. The lowest bits of a single reading are partly noise.
+  </p>
+  <p>
+    Averaging N readings reduces random noise by about the square root of N. Sixteen readings cut the noise by a factor of four. Averaging helps only while the noise is larger than one code step. If the signal is perfectly steady, extra samples give the same number every time.
+  </p>
+  <pre><code><span class="k">static</span> uint16_t read_averaged(<span class="k">uint</span> input) {
+    adc_select_input(input);     <span class="c">/* AINSEL: the input number, 0 for GP26 */</span>
+    <span class="k">uint32_t</span> sum = 0;                  <span class="c">/* 16 results of 12 bits fit easily in 32 bits */</span>
+    <span class="k">for</span> (<span class="k">int</span> i = 0; i &lt; 16; i++) {
+        sum += adc_read();       <span class="c">/* blocks for one conversion, about 2 us */</span>
+    }
+    <span class="k">return</span> (<span class="k">uint16_t</span>)(sum / 16);
+}</code></pre>
+
+  <div class="warning">The ADC pin and the GPIO function are separate settings. Call <code>adc_gpio_init()</code> on the pin before you read it. It disables the digital input, so the pin does not fight the analogue level.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0058-adc</code> wires an NTC thermistor to GP26 and a potentiometer to GP27. It reads both channels every half second, averages 16 conversions each, and prints the temperature and the pot voltage.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0058-adc/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: make <code>read_averaged()</code> average <code>OVERSAMPLE</code> conversions, set <code>OVERSAMPLE</code> to 16, and change <code>ADC_FULL_SCALE</code> from 1023 to 4095. The starter uses the 10-bit value, so its temperature is wrong. Then print <code>ADC OK</code> once, after a valid reading.</li>
+  </ol>
+  <details>
+    <summary>Hint for the wrong temperature</summary>
+    <p>At 24 °C the raw value should be near the middle of the range, about 2093 on the 12-bit scale. If your temperature is far off, compare the constant in the formula with the number of codes the ADC returns.</p>
+  </details>
+  <details>
+    <summary>Hint for the average</summary>
+    <p>Add up the conversions in a <code>uint32_t</code> and divide once at the end. Divide each reading first and the rounding error adds up.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0058-adc/solution</code>. Try first, compare after. The serial monitor prints <code>ADC OK</code> once, then a line every half second.</p>
+
+  <div class="win">You turned a divider into a temperature with a formula, you made the formula match the 12-bit ADC, and you averaged the readings to steady them. The same three steps work for any analogue sensor on the Pico.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "With a 3.3 V reference and 4096 codes, what is the size of one ADC step, in millivolts?",
+        "answer": 0.806, "tolerance": 0.01, "unit": "mV",
+        "why": "3.3 V ÷ 4096 = 0.8057 mV, which is 0.806 mV. The tempting answer, 0.8 V, uses the whole range instead of one step." },
+      { "type": "mc",
+        "prompt": "Which change makes Wokwi's 10-bit formula correct for a 12-bit reading?",
+        "options": ["Use 4095 not 1023", "Use 1023 not 4095", "Shift the raw right", "Scale raw by four"],
+        "answer": 0,
+        "why": "The full-scale constant must match the number of codes, so 4095 replaces 1023. The tempting answer, dividing by 2, shifts the reading by one bit and gives the wrong ratio, not the right one." },
+      { "type": "number",
+        "prompt": "You average 16 readings of noise that is 4 codes RMS. About how many codes RMS remain after averaging?",
+        "answer": 1, "tolerance": 0.05, "unit": "codes",
+        "why": "Noise falls by the square root of N, so 4 ÷ √16 = 4 ÷ 4 = 1 code. The tempting answer, 0.25 codes, divides by 16 instead of its square root." },
+      { "type": "mc",
+        "prompt": "Why does the code reject a raw reading of 4095?",
+        "options": ["The log of zero is undefined", "The pin is set as output", "The temperature is far too high", "The reference is set too low"],
+        "answer": 0,
+        "why": "At 4095 the term 4095 ÷ a − 1 is zero, and the formula takes the log of its reciprocal, which diverges. The tempting answer, too high a temperature, is a real condition, but the formula itself breaks at the limit, not the sensor." },
+      { "type": "text",
+        "prompt": "Which SDK call selects an ADC input by its AINSEL number?",
+        "accept": ["adc_select_input", "adc_select_input()"],
+        "why": "adc_select_input() chooses which channel the next conversion reads. The tempting answer, adc_gpio_init, only sets the pin's digital input off and does not choose a channel." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0008-voltage-dividers.html\">lesson 8</a>: a 10 kΩ resistor and a 10 kΩ resistor divide 3.3 V. What is the output voltage at the midpoint, in volts?",
+        "answer": 1.65, "tolerance": 0.01, "unit": "V",
+        "why": "Two equal resistors split the supply in half: 3.3 V ÷ 2 = 1.65 V. The tempting answer, 3.3 V, is the supply itself, which needs no divider." },
+      { "type": "mc",
+        "prompt": "From <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a>: what does a floating analogue input do?",
+        "options": ["Drifts with the noise", "Reads a fixed value", "Shorts the supply rail"],
+        "answer": 0,
+        "why": "A floating input has no defined voltage and wanders with noise, so its reading changes from one conversion to the next. The tempting answer, a fixed value, is what a pulled input does, which is why a divider or pull is needed." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is the resolution of a 12-bit ADC at 3.3 V, and what limits the number of useful bits?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>One code is 3.3 V ÷ 4096, about 0.8 mV, so the ideal resolution is 12 bits. The useful number is lower because noise, reference error and the converter's own nonlinearity take bits away. The RP2040 datasheet measures 8.7 effective bits at a typical test input. Averaging reduces random noise, but cannot remove a systematic error such as a wrong reference or a wrong divider ratio.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.9 (ADC and temperature sensor)</a>: read 4.9.2 for the 96-cycle conversion and the input pins, and 4.9.3 with Table 566 for the effective number of bits. Then read the <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html">Pico SDK ADC reference</a> for <code>adc_read</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does the beta formula need an absolute temperature, and what happens if I use 273 instead of 298.15?"
+    Related: <a href="0008-voltage-dividers.html">Lesson 8: Voltage dividers</a>, <a href="0016-logic-levels-pull-ups-open.html">Lesson 16: Logic levels and pull-ups</a>, and <a href="../reference/electronics-formulas.html">Electronics formulas</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

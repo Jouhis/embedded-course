@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Registers, counters, shift registers · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0025">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Registers, counters, shift registers</h1>
+  <p class="subtitle">A CPU register is a row of flip-flops with a shared clock. A counter adds one to it on every edge, and a shift register moves its bits along one place. You will drive a 74HC595 from the Pico to light eight LEDs one bit at a time, which is the same pattern as an SPI transfer in lesson 62.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain how a register, a counter and a shift register are built from flip-flops, and write the two C functions that shift a byte into a 74HC595 and latch it, so that the eight LEDs show the pattern the Pico sends.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>register</strong> is <em>n</em> flip-flops that share a clock and an enable, so they load <em>n</em> bits in one edge. This is the storage behind every register in the CPU (lesson 31) and every peripheral register.
+    <a href="https://www.sciencedirect.com/book/9780128000564/digital-design-and-computer-architecture">Harris and Harris, chapter 3 (Sequential Logic Design)</a> covers registers, counters and shift registers in the same chapter as the flip-flops.
+  </p>
+  <p>
+    A <strong>counter</strong> is a register whose input is its own output plus one. On each clock edge it moves to the next value. A 3-bit counter goes 000, 001, 010, and so on up to 111, then wraps to 000, because there is no fourth bit to carry into.
+  </p>
+  <p>
+    A <strong>shift register</strong> is a chain of flip-flops where each one takes the output of the previous one. On each clock edge every bit moves one place along the chain, and a new bit enters at one end. Eight shifts move one byte in, one bit at a time. That is serial communication on the inside: the same data path an SPI master drives on MOSI.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 480 108" role="img" aria-label="Four D flip-flops in a chain: the serial input enters the first, each output feeds the next, and all share one clock" style="max-width:624px">
+      <defs><marker id="ah21" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M40 38 H64"/>
+        <rect x="64" y="20" width="56" height="36" rx="0"/>
+        <rect x="150" y="20" width="56" height="36" rx="0"/>
+        <rect x="236" y="20" width="56" height="36" rx="0"/>
+        <rect x="322" y="20" width="56" height="36" rx="0"/>
+        <path d="M120 38 H150"/>
+        <path d="M206 38 H236"/>
+        <path d="M292 38 H322"/>
+        <path d="M378 38 H420"/>
+        <path d="M30 76 H350" stroke-dasharray="4 3"/>
+        <path d="M92 56 V76" stroke-dasharray="4 3"/>
+        <path d="M178 56 V76" stroke-dasharray="4 3"/>
+        <path d="M264 56 V76" stroke-dasharray="4 3"/>
+        <path d="M350 56 V76" stroke-dasharray="4 3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="6" y="34" text-anchor="start" font-size="12">SER</text>
+        <text x="92" y="42" text-anchor="middle" font-size="12">D Q</text>
+        <text x="178" y="42" text-anchor="middle" font-size="12">D Q</text>
+        <text x="264" y="42" text-anchor="middle" font-size="12">D Q</text>
+        <text x="350" y="42" text-anchor="middle" font-size="12">D Q</text>
+        <text x="428" y="42" text-anchor="start" font-size="12">out</text>
+        <text x="2" y="80" text-anchor="start" font-size="12">CLK</text>
+        <text x="190" y="100" text-anchor="middle" font-size="12">shared clock (dashed)</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A 4-bit shift register. Each flip-flop's Q feeds the next D. On every rising clock edge, each bit moves one place right.</figcaption>
+  </figure>
+
+  <h2>The 74HC595: a shift register with a latch</h2>
+  <p>
+    The 74HC595 is an eight-bit shift register with a second register, a <strong>storage latch</strong>, on its outputs. The shift register takes bits on one pin and the shift clock on another. The storage register copies the shift register to the output pins only when the latch clock rises. So the outputs change all at once, and you can shift the next byte in while the LEDs still show the old one.
+    <a href="https://docs.wokwi.com/parts/wokwi-74hc595">Wokwi's 74HC595 page</a> lists the pins as used in this course: <code>DS</code> (serial data), <code>SHCP</code> (shift clock), <code>STCP</code> (latch clock), <code>MR</code> (reset, active low), <code>OE</code> (output enable, active low), and <code>Q0</code> to <code>Q7</code> (the outputs), plus <code>Q7S</code> to chain several chips.
+    <span class="sidenote">The datasheet of the real chip uses other names for some of these pins. The Wokwi names are the ones in this lesson's diagram.</span>
+  </p>
+
+  <div class="warning">MR is active low, so tie it to 3.3 V to keep the register running. OE is also active low, so tie it to GND to enable the outputs. Leaving either floating can hold the outputs off, and the LEDs stay dark even though the code is right.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project in <code>projects/0025-shift-register-595</code> wires DS to GP2, SHCP to GP3 and STCP to GP4. The 74HC595 outputs drive eight LEDs through 220 Ω resistors. The C code is written in two layers: <code>shift_out_msb_first()</code> sends eight bits, most significant bit first, and <code>latch_outputs()</code> copies them to the LEDs. The program then runs a chase, from Q0 to Q7, and a fixed pattern.
+  </p>
+  <ol class="steps">
+    <li>Open the <code>starter</code> folder, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>LEDS=0x..</code> lines, but the LEDs stay dark.</li>
+    <li>In <code>shift_out_msb_first()</code>, loop from bit 7 down to bit 0. For each bit, put it on DS, then make a rising edge on SHCP: high, a short delay, low, a short delay.</li>
+    <li>In <code>latch_outputs()</code>, make one rising edge on STCP.</li>
+    <li>Rebuild and restart the simulator. You will know it works when the LEDs chase from one side to the other, and the serial monitor prints <code>SHIFT OK</code> after each full cycle.</li>
+  </ol>
+  <details>
+    <summary>Hint for the bit order</summary>
+    <p>The first bit shifted in is pushed to Q7 by the later shifts. Sending bit 7 first therefore lights Q7 for a 1 in bit 7. Sending bit 0 first would put it in the wrong LED, which is the classic bug in shift-out code.</p>
+  </details>
+  <details>
+    <summary>Hint for the edge</summary>
+    <p>A shift happens on the rising edge of SHCP, and so does a latch on STCP. A pulse that stays high does not count. Set the line low again before the next edge, as the comments say.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0025-shift-register-595/solution</code>. Try first, compare after.</p>
+
+  <div class="note">Shifting out a byte on two GPIOs and a latch is the same idea as SPI, with the clock and the data each on one pin. Lesson 62 uses the Pico's SPI peripheral to do this in hardware, so the CPU does not toggle each pin by hand.</div>
+
+  <div class="win">You built a shift register from flip-flops in your head, then used the 74HC595 to show a byte on eight LEDs with two separate clocks. You also know why the latch exists: the outputs change together, not bit by bit.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which 74HC595 pin takes the serial data bit?",
+        "options": ["DS (serial data)", "STCP (latch clock)", "OE (output enable)"],
+        "answer": 0,
+        "why": "DS is the serial data input, and it is sampled on each SHCP rising edge. The tempting answer, STCP, is the latch clock, which copies the register to the outputs and does not carry data." },
+      { "type": "number",
+        "prompt": "How many SHCP pulses shift one byte into the 74HC595?",
+        "answer": 8, "tolerance": 0,
+        "why": "One pulse shifts in one bit, so a byte needs eight. The tempting answer, 1, comes from thinking the whole byte moves in one edge, which only the latch does." },
+      { "type": "mc",
+        "prompt": "Why does the 74HC595 have a separate latch clock, STCP?",
+        "options": ["to latch outputs together", "to speed up shifting", "to reset the outputs"],
+        "answer": 0,
+        "why": "STCP copies all eight bits to the outputs at one edge, so the LEDs never show a half-shifted byte. The tempting answer, faster shifting, is wrong because SHCP does the shifting, and STCP does not change the shift speed." },
+      { "type": "mc",
+        "prompt": "A 3-bit counter holds <code>0b111</code>. What is its next value?",
+        "options": ["0b000 again", "0b1000 next", "0b110 next"],
+        "answer": 0,
+        "why": "A 3-bit counter has no fourth bit, so the carry out of the top bit is lost and the value wraps to 000. The tempting answer, 0b1000, needs four bits, which the counter does not have." },
+      { "type": "text",
+        "prompt": "Which 74HC595 pin is output enable, active low, in the Wokwi part?",
+        "accept": ["OE"],
+        "why": "OE enables the outputs when it is low. The tempting answer, MR, is reset, which is a different pin with the same active-low style." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "In lesson 23, which gate makes the carry of a half adder?",
+        "options": ["an AND gate", "an OR gate", "an XOR gate"],
+        "answer": 0,
+        "why": "The carry is 1 only when both inputs are 1, which is AND. The tempting answer, XOR, makes the sum, not the carry." },
+      { "type": "number",
+        "prompt": "In lesson 9, what exact resistor, in ohms, does a green LED need on 3.3 V with Vf = 2.1 V at 5 mA?",
+        "answer": 240, "tolerance": 0.01, "unit": "Ω",
+        "why": "R = (3.3 − 2.1) ÷ 0.005 = 1.2 ÷ 0.005 = 240 Ω, which is an E12 value. The tempting answer, 330 Ω, is a common E12 pick, but it is not the value this calculation gives." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How does a shift register relate to SPI, and why does the 74HC595 need a separate latch?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>An SPI master shifts a byte out on MOSI, one bit per SCK edge, so the slave's shift register is filled serially. The 74HC595 does the same thing, with DS as the data and SHCP as the clock. The separate latch exists so that the outputs change all at once, after the whole byte has been shifted in, instead of showing a partly-filled value.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.wokwi.com/parts/wokwi-74hc595">Wokwi documentation: 74HC595 shift register</a>: the pin names and the behaviour of the reset and output-enable pins used in this lesson. Read the part's description, then compare it with the pin table in the project's <code>diagram.json</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "How would I chain two 74HC595 chips to drive 16 LEDs, and what would the C code change to?"
+    Related: <a href="0024-sequential-logic.html">Lesson 24: Sequential logic</a>, <a href="0026-the-alu-and-status-flags.html">Lesson 26: The ALU and status flags</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

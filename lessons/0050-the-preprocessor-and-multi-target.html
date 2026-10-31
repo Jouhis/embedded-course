@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The preprocessor and multi-target builds · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0050">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>The preprocessor and multi-target builds</h1>
+  <p class="subtitle">One code base can run on a Pico and on an STM32 if the build tells the code which board it is for. The preprocessor does the selection, and it also causes the bugs that interviewers like to ask about.</p>
+
+  <div class="goal">
+    By the end of this lesson you can write a board header with an include guard and <code>#if defined</code> selection, choose a board with <code>target_compile_definitions</code> in CMake, and replace a dangerous function-like macro with a <code>static inline</code> function.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The preprocessor runs before the compiler proper. It handles <code>#include</code>, <code>#define</code> and the <code>#if</code> family, and it replaces text. The compiler never sees the directives. So a <code>#define</code> is a substitution, not a variable, and a <code>#if</code> removes code before it is compiled.
+    <span class="sidenote">Preprocessor errors often appear far from their cause, because the compiler reports the expanded text. Run the preprocessor by hand with <code>-E</code> when a message does not make sense.</span>
+  </p>
+  <p>
+    A function-like macro replaces each invocation with its replacement list, substituting the arguments for the parameters. The replacement is textual.
+    <a href="https://en.cppreference.com/w/c/preprocessor/replace">cppreference, replacement of macros</a>. That is the source of the most common macro bug.
+  </p>
+
+  <h2>Include guards and board selection</h2>
+  <p>
+    A header can be included more than once in one file, through different paths. An <strong>include guard</strong> makes the second inclusion do nothing. Board selection uses the same directives: the build defines a macro, and the header picks the matching pin.
+  </p>
+  <pre><code><span class="c">/* board.h */</span>
+<span class="k">#ifndef</span> BOARD_H
+<span class="k">#define</span> BOARD_H
+
+<span class="k">#if defined</span>(BOARD_PICO)
+    <span class="k">#define</span> LED_PIN  25u          <span class="c">/* on-board LED of the Pico */</span>
+<span class="k">#elif defined</span>(BOARD_BLUEPILL)
+    <span class="k">#define</span> LED_PIN  13u          <span class="c">/* PC13 on the Blue Pill */</span>
+<span class="k">#else</span>
+    <span class="k">#error</span> "Define BOARD_PICO or BOARD_BLUEPILL"
+<span class="k">#endif</span>
+
+<span class="k">#endif</span> <span class="c">/* BOARD_H */</span></code></pre>
+  <p>
+    The <code>#error</code> line is a deliberate safety net. If someone builds without choosing a board, the build stops with a clear message, rather than compiling a pin that does not exist on their hardware.
+  </p>
+  <p>
+    The STM32 template already defines <code>STM32F103xB</code> for every target (<code>templates/common/stm32f1.cmake</code>), which is why CMSIS headers select the right device. You can use the same pattern: <code>#if defined(STM32F103xB)</code> for device code, and <code>#if defined(BOARD_PICO)</code> for the board.
+  </p>
+
+  <h2>Choosing the board in CMake</h2>
+  <p>
+    The build, not the source, decides which board the code is for. <code>target_compile_definitions</code> adds a definition to one target. <code>PRIVATE</code> keeps it to that target, and <code>NAME=VALUE</code> sets the value.
+    <a href="https://cmake.org/cmake/help/latest/command/target_compile_definitions.html">CMake documentation, target_compile_definitions</a>
+  </p>
+  <pre><code><span class="c"># CMakeLists.txt for the Pico</span>
+target_compile_definitions(blink PRIVATE BOARD_PICO=1)
+
+<span class="c"># A Blue Pill folder would say instead:</span>
+<span class="c"># target_compile_definitions(blink PRIVATE BOARD_BLUEPILL=1)</span></code></pre>
+
+  <h2>Dangerous macros, and the static inline alternative</h2>
+  <p>
+    Consider a square written as a macro, with no parentheses:
+  </p>
+  <pre><code><span class="k">#define</span> SQUARE(x) x * x
+
+<span class="k">int</span> a = SQUARE(2 + 1);    <span class="c">/* expands to 2 + 1 * 2 + 1, which is 5, not 9 */</span></code></pre>
+  <p>
+    Parentheses around the parameter, as in <code>((x) * (x))</code>, fix this case, but the macro still has no types and no single evaluation. An argument with side effects, such as <code>SQUARE(i++)</code>, is evaluated twice. A <code>static inline</code> function fixes all of these: the argument is evaluated once, it follows the usual conversion rules, and the compiler can still inline it.
+  </p>
+  <div class="warning">Do not use a macro to hide a function call with side effects. <code>SQUARE(i++)</code> has undefined behaviour in C, because the argument is used twice without a sequence point between. Write a <code>static inline</code> function instead.</div>
+
+  <h2>X-macros: one list, many uses</h2>
+  <p>
+    An <strong>X-macro</strong> keeps one list of names in a macro. You pass the list a different macro each time to generate the enum, the string table and anything else that must match. The list cannot drift out of step, because every use reads it.
+  </p>
+  <pre><code><span class="k">#define</span> EVENT_LIST(X)  X(OK)  X(TIMEOUT)  X(BAD_CRC)
+<span class="k">#define</span> AS_ENUM(name)   EV_##name,          <span class="c">/* ## joins the prefix and the name */</span>
+<span class="k">#define</span> AS_STRING(name) #name,              <span class="c">/* # turns the name into a string */</span>
+
+<span class="k">typedef enum</span> { EVENT_LIST(AS_ENUM) EV_COUNT } Event;
+<span class="k">static const char *const</span> event_names[] = { EVENT_LIST(AS_STRING) };</code></pre>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0050-multi-target</code> is a Pico program with a board header, an X-macro list and a <code>SQUARE</code> macro that is wrong for its argument.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0050-multi-target/starter</code> in VS Code, build, and start the simulator.</li>
+    <li>Read the printed value for <code>square(2+1)</code>. The starter prints it next to the value you expect, which is 9.</li>
+    <li>Your task: replace <code>SQUARE</code> with a <code>static inline</code> function, and print the same line with the function. Then check that the LED still blinks, which the board header controls.</li>
+    <li>You will know it works when the serial monitor prints <code>MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Look at what the macro expands to for the argument <code>2 + 1</code>. Then write a function that takes one <code>int</code> and returns its square. The call site stays almost the same.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0050-multi-target/solution</code>. Try first, compare after. To see the other board, change <code>BOARD_PICO=1</code> to <code>BOARD_BLUEPILL=1</code> in <code>CMakeLists.txt</code>, and the same source compiles against the Blue Pill's pin.</p>
+
+  <div class="win">You chose the board in the build, not in the source, and replaced a macro that mis-evaluated its argument with a function that does not. You also wrote an X-macro list that keeps the enum and the names in step.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "With <code>#define SQUARE(x) x * x</code>, what is <code>SQUARE(2 + 1)</code>?",
+        "answer": 5, "tolerance": 0,
+        "why": "The text becomes 2 + 1 * 2 + 1, so the multiplication happens first: 2 + 2 + 1 = 5. The tempting answer is 9, which is what a function gives, but a macro substitutes the text and does not evaluate the argument first." },
+      { "type": "mc",
+        "prompt": "What is the best fix for the macro <code>SQUARE</code>?",
+        "options": [
+          "Use a static inline function",
+          "Add a semicolon after it",
+          "Move the macro into main",
+          "Rename the macro in lowercase"
+        ],
+        "answer": 0,
+        "why": "A static inline function takes its argument as a value, so 2 + 1 is evaluated first and the result is 9. Adding a semicolon changes nothing about the expansion, and the other two options change where or how it is named, not how it expands." },
+      { "type": "text",
+        "prompt": "Which CMake command adds a compile definition to one target?",
+        "accept": ["target_compile_definitions"],
+        "why": "target_compile_definitions sets the definition for one target, with PRIVATE, PUBLIC or INTERFACE. The tempting answer is add_compile_definitions, which applies to every target in the directory, so it would affect both boards." },
+      { "type": "mc",
+        "prompt": "What does an include guard in a header prevent?",
+        "options": [
+          "Double definitions when a header repeats",
+          "Any header from calling another header",
+          "A macro from using its arguments",
+          "Every compile error in the header"
+        ],
+        "answer": 0,
+        "why": "When the header is included twice, the guard makes the second include empty, so the macros and types are not defined twice. The tempting answer is the last option, which is wrong: an include guard does not stop compile errors, it prevents one specific one." },
+      { "type": "text",
+        "prompt": "Which preprocessor operator joins two tokens into one, as in <code>EV_##name</code>?",
+        "accept": ["##", "token pasting", "tokenpasting"],
+        "why": "## is the token-pasting operator, which makes one token from its two sides. The tempting answer is #, the stringizing operator, which turns a name into a string literal and does not join tokens." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 2: which key in wokwi.toml names the ELF file the simulator loads?",
+        "accept": ["elf"],
+        "why": "elf = 'build/blink.elf' is the firmware file the simulator runs. gdbServerPort is the debug port, and the tempting answer, firmware, is a different format." },
+      { "type": "number",
+        "prompt": "From lesson 9: a 3.3 V GPIO drives a red LED with Vf = 2.0 V at 4 mA. What is the exact series resistance, in ohms?",
+        "answer": 325, "tolerance": 0.01, "unit": "Ω",
+        "why": "R = (3.3 V − 2.0 V) ÷ 0.004 A = 325 Ω. The tempting answer, 330 Ω, is the E12 value you round up to, not the exact value." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"When would you write a macro, and when a <code>static inline</code> function? Give one example of each."</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Use a macro for things the compiler cannot express as a function: a token-pasting list such as an X-macro, a compile-time constant, or a stringizing name. Use a <code>static inline</code> function for any computation with arguments: it is typed, evaluates each argument once, and the compiler can still inline it. A macro such as SQUARE(x) x * x gives 5 for SQUARE(2 + 1), and a function gives 9.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://en.cppreference.com/w/c/preprocessor/replace">cppreference: Replacement of macros</a>: read the function-like macro section for the textual replacement rule, then compare the example with your own SQUARE. For the board selection, read the CMake page for <code>target_compile_definitions</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the preprocessed output of the multi-target project, and point at the line where SQUARE expands."
+    Related: <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and promotion</a>, and <a href="0002-first-blink-in-wokwi.html">Lesson 2: First blink in Wokwi</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

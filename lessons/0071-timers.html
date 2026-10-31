@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timers: PWM, input capture, encoder mode · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0071">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Timers: PWM, input capture, encoder mode</h1>
+  <p class="subtitle">A timer is a counter that the hardware advances for you. The CPU sets a few registers once, and then the counter times pulses, measures edges and counts rotation while your code does other work.</p>
+
+  <div class="goal">
+    By the end of this lesson you can compute a timer's prescaler and reload value for a target frequency, configure PWM output and input capture on the Blue Pill's TIM2 to TIM4 through CMSIS registers, and read a rotary encoder in encoder mode.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A general-purpose timer has a counter, <code>CNT</code>, that counts up on a clock. The clock is first divided by the prescaler <code>PSC</code>, so the counter ticks at <code>f_clk ÷ (PSC + 1)</code>. When the counter reaches the auto-reload value <code>ARR</code>, it wraps to zero and raises an update event. The update rate is therefore <code>f = f_clk ÷ ((PSC + 1)(ARR + 1))</code>.
+    <span class="sidenote">The counter runs in hardware, next to the bus. A load of <code>TIM2-&gt;CNT</code> reads a register, and the CPU is not involved in the counting itself. That is why a timer can time a pulse more precisely than a delay loop.</span>
+  </p>
+  <p>
+    The Blue Pill runs from the 8 MHz HSI oscillator in these projects (lesson 40). With <code>PSC = 7</code> the counter ticks at 1 MHz, so one count is one microsecond. Every number in this lesson is a count of microseconds, and the arithmetic stays easy to check.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 580 230" role="img" aria-label="A counter counts from 0 to ARR. Output compare toggles at CCR, and an update event at ARR." style="max-width:754px">
+      <defs><marker id="ah49" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M60 20 V150 H520"/>
+        <path d="M60 30 H520" stroke-dasharray="4 4"/>
+        <path d="M60 90 H520" stroke-dasharray="4 4"/>
+        <path d="M60 150 L175 30 V150 L290 30 V150 L405 30 V150 L520 30"/>
+        <path d="M60 180 H117.5 V200 H175 V180 H232.5 V200 H290 V180 H347.5 V200 H405 V180 H462.5 V200 H520"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="50" y="34" text-anchor="end" font-size="12">ARR</text>
+        <text x="50" y="94" text-anchor="end" font-size="12">CCR</text>
+        <text x="66" y="16" text-anchor="start" font-size="12">CNT</text>
+        <text x="44" y="154" text-anchor="end" font-size="12">0</text>
+        <text x="530" y="184" text-anchor="start" font-size="12">output</text>
+        <text x="520" y="222" text-anchor="end" font-size="12">time</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. In PWM mode 1 the output is high while CNT is below CCR, and low after that. The period is set by ARR, and the high time by CCR.</figcaption>
+  </figure>
+
+  <h2>PWM: an output that the timer draws for you</h2>
+  <p>
+    Output compare mode drives a pin from the comparison between <code>CNT</code> and a compare register <code>CCRx</code>. In PWM mode 1 the pin is active while <code>CNT &lt; CCR</code>. The duty cycle is <code>CCR ÷ (ARR + 1)</code>. For the LED in this lesson, <code>ARR = 999</code> and <code>CCR = 250</code> give a 1 kHz signal at 25 % duty.
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, chapter "General-purpose timers (TIM2 to TIM5)", PWM mode description</a>
+  </p>
+  <p>
+    A hobby servo expects a 50 Hz frame (a 20 ms period) with a pulse of about 1 to 2 ms, and the centre position is near 1.5 ms. This is the usual convention for hobby servos, not a figure from this course's sources: check your servo's datasheet before you rely on the end points. Here <code>PSC = 7</code> and <code>ARR = 19999</code> give 50 Hz, and <code>CCR = 1500</code> gives the centre.
+  </p>
+
+  <div class="warning">Setting the preload bit (OC1PE) and the auto-reload preload bit (ARPE) makes a new ARR or CCR take effect at the next update event. Without them, a write during a period can give one short or long cycle. Always set the preload bits before you start the counter.</div>
+
+  <h2>Input capture: time the edges</h2>
+  <p>
+    An input channel records the value of <code>CNT</code> when an edge arrives on its pin. Two captures give the pulse width, and the subtraction does the timing. The subtraction must use the counter's width: with a 16-bit counter, <code>(uint16_t)(fall - rise)</code> is correct even if the counter wrapped between the two edges.
+    <span class="sidenote">Input capture is interrupt-free timing. The hardware latches the count at the edge, and the CPU reads it later. This is the reason a pulse-width measurement can be accurate even when the main loop is busy.</span>
+  </p>
+  <p>
+    Channels 3 and 4 of a timer can both capture the same input, one at the rising edge and one at the falling edge. The solution uses this on TIM3 (CH3 at PB0, CH4 for the falling edge), because the same timer's CH1 is already the servo output. Using CH1 for the input would conflict with the output.
+  </p>
+
+  <h2>Encoder mode: count rotation</h2>
+  <p>
+    A quadrature encoder has two outputs, A and B, that are 90 degrees out of phase. The order of the edges shows the direction. Encoder mode (<code>SMS = 011</code> in <code>SMCR</code>) makes the counter count up or down by itself from these two signals, so the CPU reads only <code>CNT</code>. Mode 3 counts edges on both channels, which gives about four counts per detent on a typical mechanical encoder. Check the count with your own encoder before you rely on the figure.
+  </p>
+  <p>
+    The Wokwi <code>wokwi-ky-040</code> part has pins CLK (A), DT (B), SW (push button) and the supply pins VCC and GND. Its docs say each detent sends a low pulse on both CLK and DT, and the direction is set by which pin falls first. It has 20 steps per revolution. <a href="https://docs.wokwi.com/parts/wokwi-ky-040">Wokwi part: KY-040 rotary encoder</a>
+  </p>
+
+  <h2>Which pins, which timer</h2>
+  <p>
+    Each timer channel has a fixed pin on the default mapping, and this lesson uses only that mapping. TIM2 CH1 is on PA0, TIM3 CH1 is on PA6, TIM3 CH3 is on PB0, and TIM4 CH1 and CH2 are on PB6 and PB7. These are checked against the pinout table of the datasheet. Remapping with AFIO would move them, and the course does not remap.
+    <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf">STM32F103x8/xB datasheet, "Pinouts and pin description" table, alternate-function column</a>
+  </p>
+  <div class="note">The Wokwi docs list TIM1 to TIM4 as simulated on the Blue Pill. They do not say whether encoder mode is simulated, so the encoder line in the solution is not checked by the simulator in this course. Treat it as the reference for the register setup, and test the encoder on hardware when you can.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <ol class="steps">
+    <li>Open <code>projects/0071-timers/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: fill in the three <code>TODO(learner)</code> blocks. Set TIM2 to 1 kHz PWM, TIM3 to the 50 Hz servo signal with input capture on TI3, and TIM4 to encoder mode 3.</li>
+    <li>You will know it works when the serial monitor prints <code>CAPTURE pulse_us=1500 ENC count=0</code>, and the LED is dimmed to about a quarter of its full brightness.</li>
+  </ol>
+  <details>
+    <summary>Hint for the LED timer</summary>
+    <p>With <code>PSC = 7</code>, set <code>ARR</code> so that <code>1 MHz ÷ (ARR + 1) = 1000 Hz</code>. Then choose PWM mode 1 in <code>OC1M</code>, which is <code>110</code> in binary, and set the preload bit.</p>
+  </details>
+  <details>
+    <summary>Hint for the capture</summary>
+    <p>Channel 3 captures the rising edge, and channel 4 captures the falling edge on the same input. The register <code>CCMR2</code> chooses the input for each channel, and <code>CCER</code> chooses the edge. Channel 4 uses the falling-edge polarity bit <code>CC4P</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0071-timers/solution</code>. It has the wire from PA6 to PB0 and the encoder on PB6 and PB7. Try first, compare after.</p>
+
+  <div class="win">You turned one counter into a 1 kHz PWM output, a 50 Hz servo signal, a microsecond pulse measurement and a rotary encoder, and you computed every frequency from the prescaler and the reload value.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "A timer with PSC = 7 and ARR = 999 runs from an 8 MHz clock. What is its update frequency, in Hz?",
+        "answer": 1000, "tolerance": 0, "unit": "Hz",
+        "why": "f = 8 MHz ÷ ((7 + 1) × (999 + 1)) = 8 000 000 ÷ 8000 = 1000 Hz. The tempting answer, 1001 Hz, comes from forgetting the +1 on ARR." },
+      { "type": "mc",
+        "prompt": "Which single change turns the LED timer's period into 20 ms?",
+        "options": [
+          "Set ARR to 19999",
+          "Set ARR to 999",
+          "Set PSC to 19999",
+          "Set CCR1 to 1500"
+        ],
+        "answer": 0,
+        "why": "With PSC = 7 the tick is 1 µs, so ARR + 1 = 20 000 counts gives 20 ms. ARR = 999 gives 1 ms. PSC = 19999 changes the tick, not the count, and CCR1 only moves the pulse edge inside the period." },
+      { "type": "mc",
+        "prompt": "Which register holds the high time of a PWM pulse in PWM mode 1?",
+        "options": [
+          "CCR1, the compare value",
+          "ARR, the auto-reload value",
+          "PSC, the prescaler value",
+          "CNT, the counter value"
+        ],
+        "answer": 0,
+        "why": "In PWM mode the output is active while CNT is below CCR1, so CCR1 sets the high time. ARR sets the period. The tempting answer, ARR, is the other half of the same calculation." },
+      { "type": "text",
+        "prompt": "Which three-bit SMS value selects encoder mode 3 in TIM4_SMCR? Write the value in binary.",
+        "accept": ["011", "0b011"],
+        "why": "SMS = 011 selects encoder mode 3, which counts on both edges of both channels. The tempting answer, 001, selects mode 1, which counts only on one channel." },
+      { "type": "number",
+        "prompt": "A servo pulse is captured as CCR4 = 2500 and CCR3 = 1000 on a timer at 1 MHz. What is the pulse width in microseconds?",
+        "answer": 1500, "tolerance": 0, "unit": "µs",
+        "why": "Pulse width = falling-edge capture − rising-edge capture = 2500 − 1000 = 1500 µs. The tempting answer, 2500, is the falling-edge time, not the width." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 40: the HSI oscillator runs at what frequency, in MHz, straight after reset?",
+        "answer": 8, "tolerance": 0, "unit": "MHz",
+        "why": "After reset the STM32F1 runs from HSI at 8 MHz, as lesson 40 explains. The tempting answer, 72, is the PLL output that the code must set up first." },
+      { "type": "number",
+        "prompt": "From lesson 47: the offset of the ODR register from the GPIO base address, in decimal bytes?",
+        "answer": 12, "tolerance": 0, "unit": "bytes",
+        "why": "ODR is the fourth register of the port, at offset 0x0C, which is 12 bytes. The tempting answer, 16, is the BSRR offset." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You need a 1 kHz PWM with at least 1 % duty resolution, from an 8 MHz clock. How do you set the prescaler and the reload?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Work out the resolution first. A 1 % duty step needs at least 100 counts in one period. With PSC = 0 the 8 MHz clock gives 8000 counts per millisecond, so ARR = 7999 gives exactly 1 kHz, and the duty step is 8000 ÷ 100 counts. A smaller prescaler gives more steps per period, and the only limit is that ARR must fit in the 16-bit register. Here PSC = 0 already does that, so it is the right choice. The check is ARR = f_clk ÷ ((PSC + 1) × f) − 1. For 1 % steps, CCR = 80 gives 1 % of (ARR + 1). The tempting mistake is a large prescaler that leaves fewer than 100 steps per period, for example PSC = 999, which gives only 8 counts per period.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, STM32F101/102/103 reference manual</a>: read the chapter "General-purpose timers (TIM2 to TIM5)" for the counter, the prescaler, PWM mode, input capture and encoder mode. The section numbers were not checked in this session, so use the chapter titles to find them. The register names and bits in this lesson are checked against <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the register writes that start a PWM output on TIM2 CH1, and explain why the preload bits come first."
+    Related: <a href="0040-clock-tree-and-plls.html">Lesson 40: Clock tree and PLLs</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, and <a href="../reference/glossary.html#interrupt">Glossary: Interrupt</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

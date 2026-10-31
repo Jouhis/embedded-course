@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab 3: Environment monitor · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="lab03">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Lab 3: Environment monitor</h1>
+  <p class="subtitle">Put Part 4 together in one device: a temperature sensor on I2C, an OLED screen, two debounced buttons with interrupts, a menu state machine, non-blocking timing, and a UART log. Each piece is a lesson you have done. This lab is the first time they run at the same time.</p>
+
+  <div class="goal">
+    By the end of this lab you can <strong>build a super-loop that reads a sensor, draws a menu on an OLED, reacts to two interrupt-driven buttons, and logs the state over UART, with no call that blocks the loop</strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The device has one loop. The loop never waits for hardware. It checks three deadlines: take a sensor sample every 200 ms, redraw the screen every 500 ms, and print a log line every second. The buttons work differently. Their interrupts only record a press, and the loop acts on the record. That split keeps the loop short, which is the rule from lesson 57 and the timing rule from lesson 55.
+    <span class="sidenote">The sensor and the OLED share one I2C bus, I2C0 on GP4 and GP5. Two devices on one bus is normal in industry. Each has its own address, and the bus has only one set of pull-ups. The bus is covered in <a href="0060-the-i2c-protocol.html">lesson 60</a>, and the OLED driver is <a href="0061-an-i2c-oled-display-and.html">lesson 61</a>'s, which this lab reuses unchanged except for six extra glyphs. <a href="0062-spi.html">Lesson 62</a> shows the same kind of panel on SPI, which you can compare with this I2C version.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 480 190" role="img" aria-label="Block diagram: the sensor and the OLED share I2C0. The buttons raise interrupts that set flags. The main loop reads the flags, updates the menu, and writes to the display and the UART log.">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="10" y="20" width="120" height="40"/>
+        <rect x="10" y="130" width="120" height="40"/>
+        <rect x="180" y="75" width="120" height="50"/>
+        <rect x="350" y="20" width="120" height="40"/>
+        <rect x="350" y="130" width="120" height="40"/>
+        <line x1="130" y1="40" x2="180" y2="90"/>
+        <line x1="130" y1="150" x2="180" y2="110"/>
+        <line x1="300" y1="100" x2="350" y2="40"/>
+        <line x1="300" y1="110" x2="350" y2="150"/>
+        <line x1="240" y1="75" x2="240" y2="50" stroke-dasharray="3 3"/>
+      </g>
+      <g font-family="sans-serif" font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="70" y="44">MYS-1 sensor</text>
+        <text x="70" y="154">SSD1306 OLED</text>
+        <text x="240" y="98">Main loop</text>
+        <text x="240" y="114">deadlines</text>
+        <text x="410" y="44">Buttons A and B</text>
+        <text x="410" y="154">UART log</text>
+        <text x="240" y="40">flags from ISR</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. One loop, three deadlines. The sensor and OLED are on the same I2C bus. The buttons reach the loop through flags, and the log leaves through UART.</figcaption>
+  </figure>
+
+  <h2>Requirements</h2>
+  <ol>
+    <li>Read the sensor every 200 ms. Each read must return at once: if no new sample is ready, the loop goes on.</li>
+    <li>Redraw the OLED every 500 ms. The LIVE screen shows the current temperature. The screen says <code>NO DATA</code> until the first sample, and <code>SENSOR ERR</code> if the sensor stops answering.</li>
+    <li>Button A (GP14) moves to the next screen, in the order LIVE, MINMAX, SETPOINT, then back to LIVE.</li>
+    <li>On MINMAX, button B resets the minimum and maximum. The screen shows both values since the last reset.</li>
+    <li>On SETPOINT, button B raises the alarm threshold by 1 °C. It wraps from 35 back to 20. The threshold starts at 28 °C.</li>
+    <li>The alarm is on when the newest reading is above the threshold. The LIVE screen then shows <code>ALARM</code>, and the log prints <code>ALARM=1</code>.</li>
+    <li>Both buttons are interrupt-driven. The interrupt handler records a press and nothing more. Presses closer than 30 ms apart on the same button count as one press (debounce).</li>
+    <li>Print one log line every second over UART: <code>LAB3 T=22.50 MIN=21.90 MAX=23.10 ALARM=0 SET=28 SCREEN=LIVE</code>. Print <code>LAB3 T=none ...</code> before the first sample.</li>
+    <li>After sensor, display and buttons have all initialised, print <code>LAB3 OK</code> once.</li>
+  </ol>
+
+  <h2>Acceptance criteria</h2>
+  <ul>
+    <li>The log shows <code>LAB3 OK</code> once, after startup, and the temperature changes slowly over the next few seconds.</li>
+    <li>The OLED shows the temperature on LIVE, and the same value appears in the log within one second.</li>
+    <li>Pressing button A three times returns the screen to LIVE, and the log shows each screen name in turn.</li>
+    <li>On MINMAX, the minimum is less than or equal to the maximum, and button B resets both (the screen shows <code>NO DATA</code> until the next sample).</li>
+    <li>On SETPOINT, pressing B repeatedly takes the threshold from 28 to 35, then to 20. Set it to 22: the log shows <code>ALARM=1</code>, and the LIVE screen shows <code>ALARM</code>.</li>
+    <li>A single click on a button produces one screen change, not two. Pressing a button a second time within 30 ms counts as the same press.</li>
+    <li>Remove the sensor's SDA wire in the diagram. Within about 1 s the LIVE screen shows <code>SENSOR ERR</code>, and the buttons and the log keep working.</li>
+  </ul>
+
+  <h2>Milestones</h2>
+  <ol class="steps">
+    <li><strong>M1: sensor and log.</strong> Implement <code>sensor_init</code>, <code>sensor_poll</code> and <code>ui_on_sample</code>. The log shows <code>T=</code> values.</li>
+    <li><strong>M2: display.</strong> Implement <code>display_init</code>, <code>display_flush</code> and <code>ui_draw</code> for LIVE. The OLED shows the temperature.</li>
+    <li><strong>M3: buttons.</strong> Implement <code>ui_init</code>, the interrupt handler, and <code>ui_poll_buttons</code>. Button A changes the screen.</li>
+    <li><strong>M4: min, max and alarm.</strong> Finish MINMAX and SETPOINT, including button B, the alarm and the wrap.</li>
+    <li><strong>M5: the whole device.</strong> Check every acceptance criterion, then the error case.</li>
+  </ol>
+
+  <h2>Try it in Wokwi</h2>
+  <ol class="steps">
+    <li>Open <code>projects/lab03-environment-monitor/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, and it prints a note that the subsystems are not initialised while the TODO(learner) comments remain.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Work through the milestones, rebuilding after each one.</li>
+    <li>The diagram has the sensor and the OLED on I2C0, two pull-up resistors, and two pushbuttons. Click the buttons in the simulator, or use the keys <kbd>A</kbd> and <kbd>B</kbd> set in the diagram.</li>
+  </ol>
+  <p>
+    The reference solution is in <code>projects/lab03-environment-monitor/solution</code>. Try each milestone yourself first. The solution's modules are <code>sensor.c</code>, <code>display.c</code>, <code>ui.c</code> and <code>main.c</code>, and the headers match the starter, so you can copy one function at a time.
+  </p>
+
+  <details>
+    <summary>Hint 1: the sensor poll (M1)</summary>
+    <p>Lesson 63's driver waited for data-ready. This lab's <code>sensor_poll</code> checks once. Read STATUS, and if bit 0 is clear, return <code>SENSOR_IDLE</code>. If it is set, read TEMP_L and TEMP_H in one burst, and convert them the way lesson 63 did.</p>
+  </details>
+  <details>
+    <summary>Hint 2: the display init and flush (M2)</summary>
+    <p>The OLED driver is the lesson 61 code, copied into this folder as <code>ssd1306.c</code> and <code>font.c</code>. Your <code>display_init</code> calls <code>ssd1306_init</code> with the I2C0 bus, and your <code>display_flush</code> calls <code>ssd1306_flush</code>. Both are one line. Check the lesson 61 explanation of the control bytes if the screen does not change.</p>
+  </details>
+  <details>
+    <summary>Hint 3: the interrupt handler (M3)</summary>
+    <p>The handler runs with the press. Read the pin's edge from the <code>events</code> argument, and check that it is <code>GPIO_IRQ_EDGE_FALL</code>. Keep the time of the last accepted press for each button. A press that comes less than 30 ms after that is a bounce. Set a bit in <code>pending_events</code>, and nothing else.</p>
+  </details>
+  <details>
+    <summary>Hint 4: the events in the main loop (M3)</summary>
+    <p>Take the events with interrupts off, then clear them, then restore the interrupts. That ordering keeps a press that arrives during the clear. Button A advances the screen with <code>(screen + 1) % UI_SCREEN_COUNT</code>.</p>
+  </details>
+  <details>
+    <summary>Hint 5: the deadlines (main loop)</summary>
+    <p>Compare with <code>(int32_t)(now - deadline) &gt;= 0</code>, and add the period to the deadline, not to <code>now</code>. Adding to <code>now</code> drifts, and the drift grows with every late iteration.</p>
+  </details>
+
+  <div class="warning">If the screen stays blank, check the wiring and the address first: the OLED must answer at 0x3C on GP4 and GP5. The lesson 61 driver does not report a missing acknowledge, so a blank screen with no log line is the usual symptom.</div>
+
+  <div class="win">You built a device that runs several jobs in one loop. The sensor, the display, the buttons and the log each use one of the techniques from Part 4, and no job blocks the others. That is the structure most firmware products use.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why must <code>sensor_poll</code> return at once when no sample is ready?",
+        "options": [
+          "So the loop can keep going",
+          "So the next sample is sooner",
+          "So the bus is never used",
+          "So the sensor clears its flags"
+        ],
+        "answer": 0,
+        "why": "A blocking poll would stall the loop, so the buttons, the display and the log would wait for the sensor. The sample rate is set by the sensor, not by how often you poll, so the tempting answer, faster samples, is wrong. The bus is used on every poll, so the third option is false." },
+      { "type": "mc",
+        "prompt": "Why does the button interrupt only set a flag?",
+        "options": [
+          "Keep the handler short and fast",
+          "Drawing the display is very slow",
+          "Flags use much less memory here",
+          "The compiler forbids all function calls"
+        ],
+        "answer": 0,
+        "why": "Lesson 57's rule is that the handler runs in the middle of other code, so it must be short. Drawing is slow, but that is a reason to keep it out of the handler, not the whole reason. The compiler does allow calls, so the fourth option is false." },
+      { "type": "number",
+        "prompt": "The loop reads the sensor every 200 ms. The sensor makes a new sample every 500 ms. At most how many new samples per second does the log see?",
+        "answer": 2, "tolerance": 0.01, "unit": "samples per second",
+        "why": "One new sample every 500 ms is 2 per second, and the loop cannot see more than the sensor makes. The tempting answer is 5, which is the poll rate, 1000 ÷ 200. Polling faster than the sensor only sees the same sample twice, and the data-ready flag stops that." },
+      { "type": "text",
+        "prompt": "Which GPIO pin is button A on? Type the number.",
+        "accept": ["14", "GP14"],
+        "why": "Button A is on GP14 and button B is on GP15, as the requirements and the diagram say. The tempting answer is 15, which is button B." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html">Pico SDK hardware APIs (GPIO, I2C)</a>: read the GPIO interrupt callback and the I2C blocking calls. Then compare the timing with your own notes from lesson 55, and the datasheet of the sensor in <code>projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace one button press from the bounce on the pin to the screen change, and tell me which function runs at each step."
+    Related: <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">MYS-1 datasheet</a>, <a href="0060-the-i2c-protocol.html">Lesson 60: The I2C protocol</a>, <a href="0061-an-i2c-oled-display-and.html">Lesson 61: An I2C OLED display</a>, <a href="0062-spi.html">Lesson 62: SPI</a>, <a href="0057-interrupts-in-practice.html">Lesson 57: Interrupts in practice</a>, <a href="0063-writing-a-driver-from-a.html">Lesson 63: Writing a driver from a datasheet</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

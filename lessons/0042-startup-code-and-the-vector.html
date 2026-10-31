@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Startup code and the vector table · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0042">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Startup code and the vector table</h1>
+  <p class="subtitle">Before your <code>main()</code> runs, a short piece of assembly prepares RAM, zeroes your globals and calls the clock setup. You can read every step of it in the files this course uses.</p>
+
+  <div class="goal">
+    By the end of this lesson you can list what happens between reset and <code>main()</code> on an STM32F103 and an RP2040, and find the vector table entries and the copy and clear loops in the startup source.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    On reset the core reads two words from the start of memory: the initial stack pointer and the address of the reset handler. The <strong>vector table</strong> is the array of such addresses, one per <a href="../reference/glossary.html#exception">exception</a>, and the core reads it at its base address. The table is just data at a fixed place, so the startup code and the linker script have to agree on where it is.
+    <span class="sidenote">The reset handler runs in Thread mode with the main stack, as the ST startup file's header says. The architecture course's exception model (lesson 34) explains why these two words are enough to start the core.</span>
+  </p>
+  <p>
+    Nothing runs until the core jumps to the reset handler. Your C variables are then in an unknown state: <code>.data</code> is still in flash, and <code>.bss</code> still holds whatever was in RAM before. The startup code fixes both before it calls <code>main()</code>.
+  </p>
+
+  <h2>The STM32F103 vector table</h2>
+  <p>
+    The startup file is <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code>. Its table begins with two entries, then the handlers in numeric order:
+  </p>
+  <pre><code>g_pfnVectors:
+  .word _estack            <span class="c">/* word 0: initial stack pointer */</span>
+  .word Reset_Handler      <span class="c">/* word 1: first code to run */</span>
+  .word NMI_Handler
+  .word HardFault_Handler
+  .word MemManage_Handler
+  .word BusFault_Handler
+  .word UsageFault_Handler</code></pre>
+  <p>
+    The file is long because it lists every interrupt the part can take, and the unused entries are <code>.word 0</code> or the default handler. The last entry is <code>BootRAM</code>, which the comment places at offset <code>0x108</code>. The linker placed the table at <code>0x08000000</code> with a size of <code>0x10C</code> bytes in the lab 2 build (<code>blink.map</code>), which is 67 words.
+  </p>
+  <p>
+    The dumped words in the same build confirm the layout. Word 0 is <code>0x20005000</code>, the top of the 20 kB RAM. Word 1 is <code>0x080002F1</code>, which is <code>Reset_Handler</code> at <code>0x080002F0</code> with the Thumb bit set. Other handler words point at <code>Default_Handler</code>, an infinite loop. The Thumb bit is why an address that is even in the map appears odd in the table: an instruction address in Thumb state has bit 0 set.
+  </p>
+
+  <h2>What Reset_Handler does</h2>
+  <p>
+    The reset handler in the same file does four things, in this order, before it calls the C library and your code:
+  </p>
+  <ol class="steps">
+    <li><strong>Call <code>SystemInit</code>.</strong> The clock setup from lesson 40 runs first, so the chip is at its final clock before any data is copied.</li>
+    <li><strong>Copy <code>.data</code> from flash to RAM.</strong> A loop copies from <code>_sidata</code> (the load address) to <code>_sdata</code>, until <code>_edata</code>. This is where the initial values of your initialised globals come from.</li>
+    <li><strong>Zero <code>.bss</code>.</strong> A loop writes 0 from <code>_sbss</code> up to <code>_ebss</code>, so every zero-initialised global starts at 0, as C requires.</li>
+    <li><strong>Call <code>__libc_init_array</code>, then <code>main</code>.</strong> The C library runs the static constructors, and then your program starts.</li>
+  </ol>
+  <p>
+    The symbols <code>_sidata</code>, <code>_sdata</code>, <code>_edata</code>, <code>_sbss</code> and <code>_ebss</code> come from the linker script. The startup file does not know the addresses. It reads them, and the linker script places them. That is the link between lesson 41 and this lesson.
+  </p>
+
+  <div class="warning">If the copy loop used the wrong load address, every initialised global would start with garbage, and the bug would show before <code>main()</code> runs. This is why the startup file and the linker script must be written together, and why you check <code>_sidata</code> in the map file when a global has an odd starting value.</div>
+
+  <h2>The RP2040 version</h2>
+  <p>
+    The RP2040 has the same job, done in the Pico SDK's <code>crt0.S</code> (pico-sdk 2.3.1, <code>src/rp2_common/pico_crt0/crt0.S</code>). Its vector table starts with <code>__StackTop</code> and <code>_reset_handler</code>. On the RP2040, the table's reserved slots for MemManage, BusFault and UsageFault are <code>isr_invalid</code>, because the M0+ has only HardFault. The reset handler copies the data sections from a table of source and destination addresses, zeroes <code>__bss_start__</code> to <code>__bss_end__</code>, then calls <code>runtime_init</code>, <code>main</code> and <code>exit</code>.
+  </p>
+  <p>
+    One difference matters for interviews. The SDK's <code>runtime_init</code> does not call <code>__libc_init_array</code>. In the newlib interface it runs the preinit and init arrays itself, and the comment there says the full <code>__libc_init_array</code> also runs steps such as <code>register_tm_clones</code>, which earlier SDKs did not run. The STM32 startup calls <code>__libc_init_array</code> directly.
+  </p>
+  <p>
+    The RP2040 also boots through the bootrom and the second-stage bootloader before any of this. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8.1 (Processor Controlled Boot Sequence)</a> lists the steps the bootrom takes before it jumps into your image.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0042-startup-code</code> is a single demo. Its two globals are <code>volatile</code>, so the compiler cannot fold their values into constants. The demo prints what it finds at <code>main()</code>, and the linker symbols.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0042-startup-code</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F5</kbd> to debug.</li>
+    <li>Set a breakpoint on <code>Reset_Handler</code>, and continue. Step over <code>SystemInit</code> to see the data copy begin.</li>
+    <li>Let the program run to <code>main</code>. The serial output should show <code>g_copied at main(): 0x0000CAFE</code> and <code>g_cleared at main(): 0x00000000</code>.</li>
+    <li>Compare the linker symbol lines with the map file. <code>_sidata</code> should be <code>0x080004E0</code> in this build, <code>_sdata</code> is <code>0x20000000</code>, and <code>_ebss</code> is <code>0x20000028</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>If the breakpoint on <code>Reset_Handler</code> does not stop, look up its address with <code>arm-none-eabi-nm -n build/blink | grep Reset_Handler</code>. The debugger should stop at <code>0x080002F0</code>.</p>
+  </details>
+
+  <div class="win">You traced a reset from the vector table through the copy and clear loops to <code>main()</code>, and you confirmed the values the loops produce.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which handler is word 1 of the STM32F103 vector table, the first code the core runs after reset?",
+        "options": ["Reset_Handler", "SystemCoreClock", "SysTick_Handler", "Default_Handler"],
+        "answer": 0,
+        "why": "The startup file's table is .word _estack, then .word Reset_Handler. SystemCoreClock is a variable, not a handler, and the tempting answer because it is the clock that SystemInit sets. Default_Handler is the infinite loop that fills unused slots." },
+      { "type": "text",
+        "prompt": "On the STM32F103 startup, which function does Reset_Handler call first, before copying .data?",
+        "accept": ["SystemInit", "SystemInit()"],
+        "why": "Reset_Handler calls SystemInit first, so the clock is set before the copy. The tempting answer, __libc_init_array, runs much later, after .data and .bss are ready." },
+      { "type": "number",
+        "prompt": "The STM32 vector table is 0x10C bytes long. How many 4-byte words does it have?",
+        "answer": 67, "tolerance": 0, "unit": "",
+        "why": "0x10C is 268 bytes, and 268 ÷ 4 = 67 words. The tempting answer, 66, is the index of BootRAM at offset 0x108, which is the last word's position, not its count." },
+      { "type": "mc",
+        "prompt": "In the Pico SDK's startup, which function runs the preinit and init arrays before main?",
+        "options": ["runtime_init", "SystemInit", "bss_fill_loop"],
+        "answer": 0,
+        "why": "With the default newlib interface, runtime_init runs the preinit and init arrays itself. The tempting answer is __libc_init_array, which the STM32 startup calls, but the SDK comments it out. bss_fill_loop only clears .bss." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 7: which law says the voltages around a closed loop add up to zero?",
+        "accept": ["KVL", "Kirchhoff's voltage law", "Kirchhoffs voltage law"],
+        "why": "KVL is Kirchhoff's voltage law. KCL is the current law about nodes, the tempting answer, and it is a different statement." },
+      { "type": "number",
+        "prompt": "From lesson 5: a current of 2 A flows through a 5 Ω resistor. What is the voltage across it, in volts?",
+        "answer": 10, "tolerance": 0.02, "unit": "V",
+        "why": "V = I × R = 2 A × 5 Ω = 10 V. The tempting answer, 2.5 V, divides the current by the resistance, which is the wrong way round." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What happens between reset and main() on a Cortex-M microcontroller?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The core loads the initial stack pointer and the reset vector from the start of the vector table, then jumps to Reset_Handler. The handler calls SystemInit to set the clock, copies the initial values of the .data section from flash to RAM, zeroes .bss, and calls the C library's initialisers. Only then does it call main. The copy and clear use symbols from the linker script, so the startup code and the script must match.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read sections 2.7 (Boot Sequence) and 2.8.1 (Processor Controlled Boot Sequence). They list the steps before your code runs on the RP2040, which the Pico SDK's crt0.S then continues.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me where _sidata comes from in the linker script, and what happens if I move the .data section to a different address."
+    Related: <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, <a href="0039-the-mpu-and-how-faults.html">Lesson 39: The MPU and how faults happen</a>, and <a href="../reference/glossary.html#vector-table">Glossary: Vector table</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

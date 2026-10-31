@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bare-metal blink with CMSIS only · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0067">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bare-metal blink with CMSIS only</h1>
+  <p class="subtitle">Lesson 47 used a register struct you wrote yourself. Now you use the vendor's CMSIS names, and you add the two things the STM32 needs before a pin does anything: a clock on the port, and a mode in CRL or CRH.</p>
+
+  <div class="goal">
+    By the end of this lesson you can enable a GPIO port's clock, set a pin's mode in CRL or CRH, drive two LEDs at different rates from the SysTick counter without a blocking delay, and explain why <code>BSRR</code> is safer than <code>ODR</code> for a shared pin.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    Three things happen before a pin can drive an LED on the STM32F1. The clock of its port must run. The pin's mode must be set, which for the F1 means a 4-bit field in a configuration register. Then you drive the level with a write to a data register. Lesson 47 covered the last step. This lesson adds the first two, and the timing.
+  </p>
+
+  <h2>Step 1: the clock is off until you enable it</h2>
+  <p>
+    The STM32F1 gates the clock to each peripheral. A peripheral whose bit in an <code>RCC</code> enable register is 0 ignores your reads and writes. The GPIO ports are on APB2, so their enables are in <code>RCC-&gt;APB2ENR</code>. The header gives each bit a name:
+  </p>
+  <pre><code><span class="c">/* from stm32f103xb.h: the bit positions */</span>
+RCC_APB2ENR_AFIOEN    <span class="c">/* bit 0 */</span>
+RCC_APB2ENR_IOPAEN    <span class="c">/* bit 2 */</span>
+RCC_APB2ENR_IOPBEN    <span class="c">/* bit 3 */</span>
+RCC_APB2ENR_IOPCEN    <span class="c">/* bit 4 */</span>
+RCC_APB2ENR_USART1EN  <span class="c">/* bit 14 */</span>
+
+RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;   <span class="c">/* now GPIOC accepts writes */</span></code></pre>
+  <div class="warning">A missing clock enable does not fault. The write is ignored, the pin stays where reset left it, and the LED never lights. When a register write seems to do nothing, check the clock before anything else.</div>
+  <p>
+    On the Pico, the SDK's <code>gpio_init()</code> does this step for you. On the STM32 you write it, and the code that sets a pin always starts with the clock.
+    <span class="sidenote">The enable bits are the clock gating from the RCC section of the reference manual. Lesson 40 introduced the clock tree, which is the source of the clock that these gated peripherals receive.</span>
+  </p>
+
+  <h2>Step 2: CRL and CRH, the F1's odd pin configuration</h2>
+  <p>
+    On the RP2040, a pin's function is one field, and its direction and drive are separate registers. The F1 is different. Each pin owns a 4-bit field, and the fields are split between two registers by pin number. Pins 0 to 7 are in <code>CRL</code>, and pins 8 to 15 are in <code>CRH</code>. Pin <em>n</em> starts at bit <code>(n mod 8) × 4</code>. Inside a field, two bits set the mode and two bits set the configuration.
+  </p>
+  <figure>
+    <svg viewBox="0 0 480 120" role="img" aria-label="CRH register: pins 15 to 8, four bits each, with PC13 highlighted at bits 23 to 20">
+      <g font-size="11" fill="currentColor" text-anchor="middle">
+        <text x="40" y="18">31-28</text><text x="100" y="18">27-24</text><text x="160" y="18">23-20</text><text x="220" y="18">19-16</text><text x="280" y="18">15-12</text><text x="340" y="18">11-8</text><text x="400" y="18">7-4</text><text x="450" y="18">3-0</text>
+      </g>
+      <g stroke="currentColor" fill="none">
+        <rect x="10" y="24" width="60" height="40"/><rect x="70" y="24" width="60" height="40"/>
+        <rect x="130" y="24" width="60" height="40" stroke-width="3"/>
+        <rect x="190" y="24" width="60" height="40"/><rect x="250" y="24" width="60" height="40"/>
+        <rect x="310" y="24" width="60" height="40"/><rect x="370" y="24" width="60" height="40"/><rect x="430" y="24" width="40" height="40"/>
+      </g>
+      <g font-size="12" fill="currentColor" text-anchor="middle">
+        <text x="40" y="49">PC15</text><text x="100" y="49">PC14</text><text x="160" y="49" font-weight="bold">PC13</text><text x="220" y="49">PC12</text><text x="280" y="49">PC11</text><text x="340" y="49">PC10</text><text x="400" y="49">PC9</text><text x="450" y="49">PC8</text>
+      </g>
+      <text x="160" y="90" font-size="12" fill="currentColor" text-anchor="middle">PC13: CNF13 bits 23:22, MODE13 bits 21:20</text>
+      <text x="160" y="108" font-size="11" fill="currentColor" text-anchor="middle">Value 0x2 (CNF 00, MODE 10) gives 2 MHz push-pull output</text>
+    </svg>
+    <figcaption>Figure 1. CRH holds pins 8 to 15, four bits each. The rule is <code>start = (pin - 8) × 4</code>, so PC13 starts at bit 20.</figcaption>
+  </figure>
+  <p>
+    The field for a push-pull output at 2 MHz is <code>0x2</code>: configuration 00 (push-pull), mode 10 (2 MHz). The change is a mask and a set, so the other pins in the register keep their settings:
+  </p>
+  <pre><code>GPIOC-&gt;CRH = (GPIOC-&gt;CRH &amp; ~(0xFU &lt;&lt; 20)) | (0x2U &lt;&lt; 20);   <span class="c">/* PC13: push-pull, 2 MHz */</span></code></pre>
+  <p>
+    The header gives the same bit names for every field, for example <code>GPIO_CRH_MODE13</code> and <code>GPIO_CRH_CNF13</code>. The positions are in the header, and the encodings are in the reference manual's GPIO register section. The cheat sheet at the end of this course lists the values in one table.
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, GPIO port configuration registers</a>
+  </p>
+
+  <h2>Step 3: ODR or BSRR</h2>
+  <p>
+    Lesson 47 introduced both. <code>ODR</code> holds the output level of all 16 pins. Setting one pin with <code>ODR |= bit</code> is a read-modify-write: load, change, store. <code>BSRR</code> does the change in one store: bit <em>n</em> sets pin <em>n</em>, and bit <em>n</em> + 16 resets it. A 0 changes nothing.
+  </p>
+  <p>
+    Use <code>BSRR</code> for any pin that an interrupt or another task might touch, and for every pin you change in the loop. The risk is real even on one core, because an interrupt can run between the load and the store, and then its change is lost. Lesson 70 puts an interrupt on a button pin, which is exactly this situation.
+  </p>
+
+  <h2>Timing with SysTick, without blocking</h2>
+  <p>
+    The template's <code>delay_ms()</code> blocks: while it waits, nothing else runs. Two LEDs at different rates cannot share one blocking delay. Instead, let SysTick count milliseconds, and keep a deadline for each LED. SysTick is the 24-bit countdown built into every Cortex-M core. It reloads from <code>LOAD</code> and sets <code>COUNTFLAG</code> when it reaches zero. Reading <code>CTRL</code> clears the flag.
+    <a href="https://developer.arm.com/documentation/dui0552/latest/">Arm Cortex-M3 Devices Generic User Guide</a>, and the SysTick section of PM0056 (ST's programming manual for the STM32F10xxx).
+  </p>
+  <pre><code>SysTick-&gt;LOAD = (SystemCoreClock / 1000U) - 1U;   <span class="c">/* 8000 - 1 at 8 MHz: one millisecond */</span>
+SysTick-&gt;VAL  = 0;
+SysTick-&gt;CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
+
+<span class="c">/* in the loop: one call per millisecond that has passed */</span>
+if (SysTick-&gt;CTRL &amp; SysTick_CTRL_COUNTFLAG_Msk) { now_ms++; }</code></pre>
+  <p>
+    The loop then checks each LED's deadline. A deadline is a millisecond value that the LED changes at. When <code>now_ms</code> reaches it, the code toggles the LED and moves the deadline forward by one half period. A slow LED never holds up a fast one.
+    <span class="sidenote">The loop must poll at least once per millisecond, or it misses a COUNTFLAG. Printing a long line over the serial port can take longer than that, which is why the solution prints only at startup. Lesson 73 covers SysTick in full, with its interrupt.</span>
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The Wokwi diagram has the onboard LED on PC13, and a second LED on PB0 through a 220 Ω resistor. The solution is complete. The starter has four <code>TODO(learner)</code> steps for the PB0 LED.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0067-bare-metal-blink/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Only PC13 blinks, at 500 ms. The monitor prints <code>TWO LED OK</code> once, which only shows that the serial link works.</li>
+    <li>Your task. Step 1: also enable the GPIOB clock. Step 2: set PB0 to a push-pull output at 2 MHz. PB0 is in CRL, so its field starts at bit 0. Step 3: start PB0 low, which is off for an active-high LED. Step 4: copy the PC13 block for PB0, with a 150 ms half period.</li>
+    <li>You will know it works when the external LED on PB0 blinks faster than the onboard one, about every 150 ms, while PC13 keeps its 500 ms rhythm.</li>
+  </ol>
+  <details>
+    <summary>Hint for step 2</summary>
+    <p>PB0 is pin 0, so it is in <code>GPIOB-&gt;CRL</code>, and its field starts at bit 0. The same mask-and-set line as PC13, with the shift changed to zero, does the job.</p>
+  </details>
+  <details>
+    <summary>Hint for step 4</summary>
+    <p>PB0 is active high, so setting bit 0 of <code>BSRR</code> turns it on, and bit 16 turns it off. Use <code>next_external_ms</code>, <code>external_on</code> and <code>LED_EXTERNAL_HALF_MS</code>, the names the PC13 block already uses with its own variables.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0067-bare-metal-blink/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You turned on a port's clock, configured two pins in different registers, and drove two LEDs at different rates from a polled SysTick counter, with no blocking delay anywhere.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "PC13 is pin 13 in the upper configuration register. At which bit does its 4-bit field start in CRH?",
+        "answer": 20, "tolerance": 0, "unit": "",
+        "why": "The field for pin n in CRH starts at (n - 8) × 4 = (13 - 8) × 4 = 20. The tempting answer, 52, multiplies the pin number by four and forgets that CRH starts at pin 8." },
+      { "type": "mc",
+        "prompt": "Which BSRR write turns the active-low PC13 LED on?",
+        "options": ["Write bit 13 of BSRR", "Write bit 16 of BSRR", "Write bit 29 of BSRR"],
+        "answer": 2,
+        "why": "PC13 low lights the LED, and bit 29 (13 + 16) resets PC13. Bit 13 sets it high, which turns the LED off. Bit 16 resets pin 0, which is the external LED on PB0." },
+      { "type": "mc",
+        "prompt": "Why is <code>GPIOC-&gt;ODR |= bit</code> riskier than a BSRR write when an interrupt also uses the port?",
+        "options": ["A load, change and store can lose an update", "The port clock must be on before any write", "It writes to the input data register by mistake"],
+        "answer": 0,
+        "why": "ODR |= bit is three steps, and an interrupt between the load and the store can have its change overwritten. The tempting answer, the clock, is needed for both forms of the write. The input data register is a different register, so writing it by mistake is not the cause." },
+      { "type": "text",
+        "prompt": "Which register holds the 4-bit fields for pins 0 to 7 on the STM32F1? Write its name.",
+        "accept": ["CRL", "GPIOx_CRL", "GPIOC->CRL"],
+        "why": "CRL holds pins 0 to 7 and CRH holds pins 8 to 15. The tempting answer, CRH, is the register for PC13, which is pin 13." },
+      { "type": "number",
+        "prompt": "SysTick LOAD for a 1 ms period on an 8 MHz core, using the template's formula. Give the value.",
+        "answer": 7999, "tolerance": 0, "unit": "",
+        "why": "8 000 000 / 1000 - 1 = 7999. The tempting answer, 8000, is the cycle count, and SysTick reloads one less than the count." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 5: a 3.3 V supply is across a 330 Ω resistor. What current flows, in milliamps?",
+        "answer": 10, "tolerance": 0.02, "unit": "mA",
+        "why": "I = V ÷ R = 3.3 V ÷ 330 Ω = 0.01 A, which is 10 mA. The tempting answer, 100 mA, is off by a factor of ten in the unit conversion." },
+      { "type": "number",
+        "prompt": "From lesson 9: a 5 V supply drives a red LED with a forward voltage of 2.2 V through a 220 Ω resistor. What is the LED current, in milliamps?",
+        "answer": 12.7, "tolerance": 0.02, "unit": "mA",
+        "why": "I = (V_supply − V_f) ÷ R = (5 − 2.2) ÷ 220 = 0.0127 A, about 12.7 mA. The tempting answer, 5 V divided by 220 Ω (about 23 mA), forgets to subtract the LED's forward voltage." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is the difference between ODR and BSRR, and why does it matter for a pin an interrupt also uses?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>ODR holds the output level of all 16 pins, and changing one pin in it means a read, a change and a write. BSRR takes a set bit and a reset bit for each pin and needs only one store, and a 0 changes nothing. If an interrupt changes another pin on the same port between the read and the write, the read-modify-write can undo that change. BSRR cannot lose one, so use it for any pin that more than one piece of code touches.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, STM32F101/102/103 reference manual</a>: read the RCC register description for the APB2 peripheral clock enable register, and the GPIO port configuration and bit set/reset registers. Compare the bit names with <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me what happens to PB0 if I forget <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPBEN</code>, and how I would see it in the debugger."
+    Related: <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers and struct overlays</a>, <a href="0066-setting-up-the-stm32-toolchain.html">Lesson 66: Setting up the STM32 toolchain</a>, and <a href="../reference/stm32-registers.html">STM32F1 register cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

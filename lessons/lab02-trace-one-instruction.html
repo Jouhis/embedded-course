@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lab 2: Trace one instruction · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="lab02">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Lab 2: Trace one instruction</h1>
+  <p class="subtitle">One line of C, <code>GPIOC->BSRR = GPIO_BSRR_BR13;</code>, becomes an address, an instruction, a bus transfer and a bit in a register. You will follow it all the way to the LED, then read the map file that places it.</p>
+
+  <div class="goal">
+    By the end of this lab you can trace <code>GPIOC-&gt;BSRR = GPIO_BSRR_BR13;</code> on the Blue Pill from the preprocessed C to the Thumb-2 encoding, the APB2 bus, the register bit and the LED, using the real disassembly and map file.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    Lessons 36 to 42 covered each layer of this trace on its own. This lab joins them. Read the lab in order: the preprocessor makes the address, the compiler and assembler make the instruction, the bus delivers the store, and the register bit drives a pin. The linker then decides where the instruction sits in flash.
+  </p>
+  <p>
+    The project is <code>projects/lab02-trace-one-instruction</code>. Its starter has the questions as <code>TODO(learner)</code> comments in <code>main.c</code>. Its solution has the answers. Write your answers in your own notes first, then compare.
+  </p>
+
+  <h2>Requirements</h2>
+  <ol>
+    <li>Preprocess <code>main.c</code> and find the full expansion of <code>GPIO_BSRR_BR13</code> and <code>GPIOC</code>.</li>
+    <li>Compute the address of <code>GPIOC-&gt;BSRR</code> from the base and the offset, and check it against the header.</li>
+    <li>Find the store instruction in the disassembly, and decode its encoding (16-bit or 32-bit).</li>
+    <li>Name the bus that carries GPIOC, and the register and bit that the store changes.</li>
+    <li>Explain, with a source in the header or the board, why driving PC13 low lights the LED.</li>
+    <li>Read the map file and report the addresses of <code>main</code>, the vector table and the <code>.data</code> load address.</li>
+  </ol>
+
+  <h2>Milestones</h2>
+  <ol class="steps">
+    <li><strong>M1: preprocess.</strong> Expand the macros and write down the final expression for the BSRR write.</li>
+    <li><strong>M2: disassemble.</strong> Find the <code>str</code> that writes BSRR, and decode the instruction.</li>
+    <li><strong>M3: map.</strong> Find <code>main</code>, <code>g_pfnVectors</code> and <code>_sidata</code> in <code>build/blink.map</code>.</li>
+    <li><strong>M4: simulate.</strong> Start the simulator and watch <code>LED on</code> and <code>LED off</code> alternate.</li>
+  </ol>
+
+  <h2>Step 1: the preprocessor</h2>
+  <p>
+    The macro <code>GPIO_BSRR_BR13</code> is defined in the CMSIS header. Expanding <code>main.c</code> with the compiler's preprocessor (<code>arm-none-eabi-gcc -E</code> with the same defines and include paths) gives this line, copied from the lab's real output:
+  </p>
+  <pre><code>((GPIO_TypeDef *)((0x40000000UL + 0x00010000UL) + 0x00001000UL))-&gt;BSRR = (0x1UL &lt;&lt; (29U));</code></pre>
+  <p>
+    Work the expansion through. <code>GPIOC</code> is <code>GPIO_TypeDef *</code> at <code>GPIOC_BASE</code>, and <code>GPIOC_BASE</code> is <code>APB2PERIPH_BASE + 0x1000</code>. The preprocessor did only text substitution, so the arithmetic is still ahead of the compiler. It folds the constants to <code>0x40011000</code>, and <code>0x1UL &lt;&lt; 29</code> to <code>0x20000000</code>.
+  </p>
+
+  <h2>Step 2: the instruction</h2>
+  <p>
+    Build the solution, then disassemble it with <code>arm-none-eabi-objdump -d -S build/blink</code>. The loop in <code>main</code> contains this, copied from the real output:
+  </p>
+  <pre><code> 8000268:	4c0b      	ldr	r4, [pc, #44]	@ (8000298 &lt;main+0x54&gt;)
+ 800026a:	f04f 5300 	mov.w	r3, #536870912	@ 0x20000000
+ 800026e:	6123      	str	r3, [r4, #16]</code></pre>
+  <p>
+    Three things happen. <code>ldr r4</code> loads <code>0x40011000</code> from a literal pool at <code>0x08000298</code>, which is the GPIOC base. <code>mov.w</code> loads the constant <code>0x20000000</code> into <code>r3</code>. Then <code>str r3, [r4, #16]</code> stores it at <code>r4 + 16</code>, which is <code>0x40011010</code>, the BSRR address.
+  </p>
+  <p>
+    The encoding is the interesting part. The <code>str</code> is the 16-bit Thumb encoding <code>0x6123</code>: the T1 form holds a 5-bit word offset, here <code>4</code>, which is byte offset 16, the base register <code>r4</code>, and the source <code>r3</code>. The <code>mov.w</code> is 32-bit, two halfwords <code>f04f 5300</code>, because a 32-bit "modified immediate" is needed for <code>0x20000000</code>. Check it: the immediate field decodes to a rotated 8-bit value, <code>0x80</code> rotated right by 10, which is <code>0x20000000</code>. The <code>.w</code> suffix on the mnemonic is the assembler's hint that it chose the wide form.
+  </p>
+  <div class="note">The literal pool is data placed after the function. An <code>ldr</code> with a PC-relative address reads it, because Thumb cannot put a 32-bit constant in one instruction. That is why <code>0x40011000</code> appears in the listing as a <code>.word</code> at <code>0x08000298</code>, not in the code.</div>
+
+  <h2>Step 3: the bus and the register bit</h2>
+  <p>
+    The address <code>0x40011010</code> lies in the APB2 region, which starts at <code>0x40010000</code>. The ST header's <code>APB2PERIPH_BASE</code> is <code>PERIPH_BASE + 0x10000</code>, so GPIOC is on the APB2 peripheral bus. The write crosses the core's bus interface, reaches the APB2 bridge, and lands in the GPIOC block at offset <code>0x10</code>. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.3</a> describes the same kind of bridge on another chip, with the cycle cost of each access. The STM32's bus details are in RM0008 and need the vendor text.
+  </p>
+  <p>
+    <code>GPIO_BSRR_BR13</code> is bit 29. BSRR has set bits 0 to 15 and reset bits 16 to 31, so bit 29 resets pin 13. The value <code>0x20000000</code> therefore changes only PC13, and the other pins keep their levels.
+  </p>
+
+  <h2>Step 4: the LED</h2>
+  <p>
+    The template's comment says PC13 is active low, so a low pin lights the LED. The reset bit drives the pin low, and the simulator's board shows the LED on. <code>BS13</code> sets the pin high again, and the LED goes off.
+  </p>
+  <div class="warning">The active-low claim comes from the template's comment, and this lab has not checked it against the Blue Pill schematic. Check the board's schematic or the simulator's LED part before you use this claim in an interview answer.</div>
+
+  <h2>Step 5: the map file</h2>
+  <p>
+    The linker writes <code>build/blink.map</code>. From the solution's real map, these are the lines you need:
+  </p>
+  <pre><code>.isr_vector     0x08000000      0x10c
+                0x08000000                g_pfnVectors
+.text           0x0800010c      0x2d8
+                0x08000244                main
+.data           0x20000000        0x4 load address 0x08000414
+                0x08000414                _sidata = LOADADDR (.data)
+                0x20005000                _estack = (ORIGIN (RAM) + LENGTH (RAM))</code></pre>
+  <p>
+    Read them against the lessons. The vector table is 268 bytes at the start of flash, and its first word is the stack top. <code>main</code> is at <code>0x08000244</code>, which the disassembly confirms. The <code>.data</code> section runs in RAM at <code>0x20000000</code>, but its initial values are loaded from <code>0x08000414</code> in flash. Lesson 41 explains the <code>AT&gt; FLASH</code> that makes this possible.
+  </p>
+  <div class="note">The template's CMake writes the output as <code>build/blink</code>, without the <code>.elf</code> extension, while <code>wokwi.toml</code> names <code>build/blink.elf</code>. If the simulator cannot find the file, ask your teacher before you change any template. It is a known issue for this lab.</div>
+
+  <h2>Acceptance criteria</h2>
+  <ul>
+    <li>You can give the preprocessed expression for <code>GPIO_BSRR_BR13</code>, and it equals <code>(0x1UL &lt;&lt; 29)</code>.</li>
+    <li>You can state the BSRR address <code>0x40011010</code> and derive it from the base and offset.</li>
+    <li>You can identify the <code>str r3, [r4, #16]</code> instruction in your own disassembly and say why it is 16 bits wide.</li>
+    <li>You can name APB2 as the bus, and bit 29 as the bit that resets pin 13.</li>
+    <li>You can read <code>main</code>, <code>g_pfnVectors</code> and the <code>.data</code> load address from your own map file.</li>
+    <li>The simulator shows <code>LED on</code> and <code>LED off</code> in turn, or you can explain why it does not.</li>
+  </ul>
+
+  <details>
+    <summary>Hint for step 1</summary>
+    <p>Run <code>arm-none-eabi-gcc -E -P -DSTM32F103xB -mcpu=cortex-m3 -mthumb</code> with the CMSIS include folders, and search the output for <code>BSRR</code>. The <code>-P</code> option removes the line markers.</p>
+  </details>
+  <details>
+    <summary>Hint for step 2</summary>
+    <p>Look for the <code>str</code> that uses <code>r4</code> as its base. The offset <code>#16</code> is the BSRR offset, which is <code>0x10</code>.</p>
+  </details>
+  <details>
+    <summary>Hint for step 5</summary>
+    <p>Search the map file for <code>main</code>, then for <code>_sidata</code>. The <code>load address</code> text on the <code>.data</code> line is the flash location.</p>
+  </details>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "What is the value of GPIO_BSRR_BR13, in hex? Type it, for example 0x1F.",
+        "answer": 536870912, "tolerance": 0, "unit": "",
+        "why": "GPIO_BSRR_BR13 is 1 shifted left by 29, which is 0x20000000, or 536870912 in decimal. The tempting answer, 0x2000, is GPIO_BSRR_BS13, the set bit for the same pin." },
+      { "type": "mc",
+        "prompt": "Which bus carries GPIOC on the STM32F103?",
+        "options": ["APB2 peripheral bus", "AHB peripheral bus", "APB1 peripheral bus", "core private bus"],
+        "answer": 0,
+        "why": "GPIOC_BASE is APB2PERIPH_BASE plus 0x1000, so GPIOC is on APB2. The tempting answer, AHB, is the bus that carries RCC, the clock controller, not GPIOC." },
+      { "type": "mc",
+        "prompt": "Which instruction in the loop is a 16-bit Thumb encoding?",
+        "options": ["the str instruction", "the mov.w instruction", "the orr.w instruction", "the bl instruction"],
+        "answer": 0,
+        "why": "The str is the halfword 0x6123. The mov.w, orr.w and bl are all 32-bit Thumb-2 encodings, two halfwords each, and the tempting answer is mov.w, because its name has a .w suffix." }
+    ] }
+    </script>
+  </div>
+
+  <div class="win">You traced one GPIO write from the C macro to the Thumb-2 encoding, the APB2 bus, bit 29 of BSRR, and the LED, and you read the addresses that the linker chose for it in the map file.</div>
+
+  <div class="source">
+    <a href="https://developer.arm.com/documentation/ddi0403/latest/">Armv7-M Architecture Reference Manual</a>: the Thumb instruction encodings chapter. Use it to check the 16-bit <code>str</code> encoding and the 32-bit <code>mov.w</code> form against the disassembly.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Decode 0x6123 bit by bit, then decode f04f 5300 and show how 0x20000000 comes out of the modified immediate."
+    Related: <a href="0038-the-memory-map-and-memory.html">Lesson 38: The memory map</a>, <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, and <a href="../reference/glossary.html#linker-script">Glossary: Linker script</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

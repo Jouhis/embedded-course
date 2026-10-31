@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Threads and kernel services · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="0095">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Threads and kernel services</h1>
+  <p class="subtitle">Zephyr's kernel has the same building blocks as FreeRTOS: threads, message queues, semaphores, mutexes and deferred work. The names differ, and the priority numbers run the other way. This lesson builds all five on the Pico and maps each one to its FreeRTOS counterpart.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>define a thread with <code>K_THREAD_DEFINE</code>, pass events with a message queue, guard a counter with a mutex, and explain how a Zephyr priority compares with a FreeRTOS one</strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A thread is a function with its own stack, which the scheduler runs. <code>K_THREAD_DEFINE(name, stack, entry, p1, p2, p3, prio, options, delay)</code> reserves the stack and the thread control block at build time, and starts the thread after <code>delay</code> milliseconds (<code>include/zephyr/kernel.h:1029</code>). A preemptive priority is <code>K_PRIO_PREEMPT(x)</code>, where <code>x</code> counts from 0, the most urgent. A cooperative priority, <code>K_PRIO_COOP(x)</code>, is negative, so a cooperative thread is never preempted by a preemptive one.
+    <span class="sidenote">The numbers run the opposite way to FreeRTOS. In FreeRTOS a larger number is more urgent. In Zephyr a smaller number is more urgent. Check that before you copy a priority from a FreeRTOS project.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 240" role="img" aria-label="The button thread puts events on a message queue. The UI thread takes them off and updates a counter under a mutex. A timer gives a semaphore to the blink thread and submits work to the system work queue." style="max-width:728px">
+      <defs><marker id="ah64" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="20" width="130" height="36" rx="3"/>
+        <rect x="210" y="20" width="130" height="36" rx="3"/>
+        <rect x="400" y="20" width="140" height="36" rx="3"/>
+        <rect x="20" y="120" width="130" height="36" rx="3"/>
+        <rect x="210" y="120" width="130" height="36" rx="3"/>
+        <rect x="400" y="120" width="140" height="36" rx="3"/>
+        <rect x="20" y="190" width="160" height="36" rx="3"/>
+        <path d="M150 38 H210" marker-end="url(#ah64)"/>
+        <path d="M340 38 H400" marker-end="url(#ah64)"/>
+        <path d="M150 138 H210" marker-end="url(#ah64)"/>
+        <path d="M340 138 H400" marker-end="url(#ah64)"/>
+        <path d="M85 156 V190" marker-end="url(#ah64)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="85" y="42.2" text-anchor="middle" font-size="12">button_thread</text>
+        <text x="275" y="42.2" text-anchor="middle" font-size="12">button_q</text>
+        <text x="470" y="42.2" text-anchor="middle" font-size="12">ui_thread (mutex)</text>
+        <text x="85" y="142.2" text-anchor="middle" font-size="12">timer</text>
+        <text x="275" y="142.2" text-anchor="middle" font-size="12">sem</text>
+        <text x="470" y="142.2" text-anchor="middle" font-size="12">blink_thread</text>
+        <text x="100" y="212.2" text-anchor="middle" font-size="12">system work queue</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Data moves through the message queue and the semaphore. The mutex protects the shared counter that the work handler reads.</figcaption>
+  </figure>
+
+  <h2>The five objects in the solution</h2>
+  <ol>
+    <li><strong>Threads</strong>: <code>button_thread</code> (priority 2), <code>ui_thread</code> (5) and <code>blink_thread</code> (7). Lower numbers run first when several are ready.</li>
+    <li><strong>Message queue</strong>: <code>K_MSGQ_DEFINE(button_q, sizeof(struct button_event), 8, 4)</code>. It copies fixed-size messages, so the sender does not share memory with the receiver. <code>k_msgq_put(…, K_NO_WAIT)</code> drops the event when the queue is full, instead of blocking the button thread.</li>
+    <li><strong>Semaphore</strong>: <code>K_SEM_DEFINE(tick_sem, 0, 1)</code>. The timer gives it once a second, and the blink thread takes it. A semaphore is a counter, not a lock.</li>
+    <li><strong>Mutex</strong>: <code>K_MUTEX_DEFINE(stats_lock)</code> guards <code>total_presses</code>. The mutex has priority inheritance, so a low-priority thread holding it is boosted while a higher one waits (<a href="https://docs.zephyrproject.org/4.5.0/kernel/services/synchronization/mutexes.html">Zephyr mutexes</a>, "Priority Inheritance").</li>
+    <li><strong>Timer and work</strong>: <code>K_TIMER_DEFINE(tick_timer, tick_expired, NULL)</code>. The expiry runs in interrupt context, so it only gives the semaphore and submits <code>report_work</code> to the system work queue. The work handler runs in a thread, where it can take the mutex and print (<a href="https://docs.zephyrproject.org/4.5.0/kernel/services/timing/timers.html">Zephyr timers</a>, and <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/threads/workqueue.html">the system workqueue</a>).</li>
+  </ol>
+  <div class="warning">
+    Never take a mutex, or call <code>printk()</code> for long, inside a timer expiry. The expiry is an interrupt handler, and it may not block. The timer docs say the expiry runs in interrupt context and must be kept short.
+  </div>
+
+  <h2>Mapping to FreeRTOS</h2>
+  <p>The table lines up with lessons 87 to 90, which use FreeRTOS. Check the FreeRTOS column against those lessons before you rely on it.</p>
+  <table>
+    <tr><th>Job</th><th>FreeRTOS</th><th>Zephyr</th><th>What differs</th></tr>
+    <tr><td>Create a task or thread</td><td><code>xTaskCreate()</code> (lesson 87)</td><td><code>K_THREAD_DEFINE()</code></td><td>Zephyr reserves stack and control block statically; the macro does both.</td></tr>
+    <tr><td>Priority</td><td>Larger is more urgent</td><td>Smaller is more urgent</td><td>Zephyr also has negative cooperative priorities.</td></tr>
+    <tr><td>Queue</td><td><code>xQueueSend</code>, <code>xQueueReceive</code> (lesson 89)</td><td><code>k_msgq_put</code>, <code>k_msgq_get</code></td><td>Both copy the message; Zephyr takes a timeout as <code>K_NO_WAIT</code>, <code>K_FOREVER</code> or a time.</td></tr>
+    <tr><td>Binary or counting semaphore</td><td><code>xSemaphoreGive</code>, <code>xSemaphoreTake</code> (lesson 89)</td><td><code>k_sem_give</code>, <code>k_sem_take</code></td><td>Zephyr's semaphore has a count limit set at definition.</td></tr>
+    <tr><td>Mutex</td><td><code>xSemaphoreCreateMutex</code> (lesson 90)</td><td><code>k_mutex_lock</code>, <code>k_mutex_unlock</code></td><td>Both inherit priority. A Zephyr mutex is not usable from an interrupt.</td></tr>
+    <tr><td>Software timer</td><td><code>xTimerCreate</code>, runs in the timer task</td><td><code>k_timer</code>, runs in interrupt context</td><td>In Zephyr the expiry must not block, so you defer work.</td></tr>
+    <tr><td>Deferred work</td><td>Timer daemon or a task you write</td><td><code>k_work</code> on the system workqueue</td><td>Zephyr ships the work queue, and you can start your own.</td></tr>
+  </table>
+  <div class="note">
+    FreeRTOS has no equivalent to <code>K_NO_WAIT</code> as a named constant, and it has no negative cooperative priority. Both exist in Zephyr. The priority difference is the one that causes the most bugs when people move code.
+  </div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>The starter has the three threads, the queue, the mutex and the work handler wired up. Four bodies are marked TODO(learner).</p>
+  <ol class="steps">
+    <li>Open <code>projects/0095-threads-and-kernel/starter</code> in VS Code.</li>
+    <li>In <code>button_thread</code>, put the event on <code>button_q</code> with <code>k_msgq_put</code>.</li>
+    <li>In <code>ui_thread</code>, take one event with <code>k_msgq_get(…, K_FOREVER)</code>, add one to <code>total_presses</code> under <code>stats_lock</code>, then print the press. Remove the placeholder <code>k_msleep</code>.</li>
+    <li>In <code>report_handler</code>, copy <code>total_presses</code> under the mutex and print it. In <code>main()</code>, start the timer with <code>k_timer_start</code>.</li>
+    <li>Build, start the simulator, and press button A (the <kbd>a</kbd> key in the diagram). You'll know it works when "press 1 at …" appears on each press and "total presses" appears every second.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The message is a <code>struct button_event</code>, so put the address of a local <code>ev</code>, not the struct itself. <code>k_msgq_get</code> takes a pointer to where it should copy the message.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0095-threads-and-kernel/solution</code>. Try first, compare after.</p>
+  <div class="note">
+    The starter uses a button, not the LED, for the events. The LED still blinks once a second, from the semaphore. We could not run this in the simulator here (no token), so the build and the diagram lint are verified and the behaviour is the one you will check.
+  </div>
+
+  <div class="win">You built three threads that talk through a message queue and a semaphore, shared a counter under a mutex, and deferred the print out of a timer interrupt.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which priority runs first when two Zephyr threads are ready: K_PRIO_PREEMPT(2) or K_PRIO_PREEMPT(5)?",
+        "options": ["Two runs first here", "Five runs first here", "Both share one CPU", "Later one runs first"],
+        "answer": 0,
+        "why": "In Zephyr a smaller number is more urgent, so 2 runs before 5. The tempting answer, five, comes from FreeRTOS, where a larger number is more urgent, and is wrong for Zephyr." },
+      { "type": "mc",
+        "prompt": "The ui thread finds the queue full when it calls k_msgq_put with K_NO_WAIT. What happens?",
+        "options": ["Put returns an error", "Thread waits without end", "Queue grows much larger", "Old message is lost"],
+        "answer": 0,
+        "why": "With K_NO_WAIT the call returns immediately with an error, so the caller decides what to do. The tempting answer, blocking forever, is what K_FOREVER would do, and the queue does not grow or silently drop the oldest message." },
+      { "type": "mc",
+        "prompt": "Why does the timer expiry only give the semaphore and submit work?",
+        "options": ["Expiry runs in interrupts", "Work is quicker here", "Mutexes need timers too", "Printing needs a semaphore"],
+        "answer": 0,
+        "why": "The expiry is an interrupt handler, and an interrupt may not block. The tempting answer, that work is faster, is not the reason: the point is that the handler runs in a thread where blocking is allowed." },
+      { "type": "number",
+        "prompt": "The solution's timer fires every second. How many times does it fire in 10 seconds?",
+        "answer": 10, "tolerance": 0, "unit": "times",
+        "why": "The first expiry is at one second and then every second, so ten expiries in ten seconds. The tempting answer, nine, forgets that the first expiry is at 1 s rather than at 0 s." },
+      { "type": "text",
+        "prompt": "What is the Zephyr name of the priority range that cannot be preempted by a preemptive thread? Write the macro.",
+        "accept": ["K_PRIO_COOP", "K_PRIO_COOP(x)", "k_prio_coop"],
+        "why": "K_PRIO_COOP gives negative priorities, which a preemptive thread never interrupts. The tempting answer, K_PRIO_PREEMPT, is the other range, where preemption is allowed." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 52: a button is debounced by three equal samples. What does a single noisy sample do to the result?",
+        "options": ["It is simply ignored", "It sets the press", "It restarts the count", "It locks the button"],
+        "answer": 2,
+        "why": "A noisy sample breaks the run of equal samples, so the count restarts. The tempting answer, that it is ignored, is wrong, because a debouncer only accepts a level after the count is complete." },
+      { "type": "text",
+        "prompt": "From lesson 57: what does an interrupt handler normally do first with the interrupt flag it serves?",
+        "accept": ["clear it", "clears it", "clear the flag", "clears the flag"],
+        "why": "The handler clears the pending flag so the interrupt does not fire again at once. The tempting answer, enable it, is the step that comes before the interrupt, not during it." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why should an interrupt handler not take a mutex?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>A mutex can block the caller until another thread releases it. An interrupt has no thread to block, and the thread that holds the mutex may be the one the interrupt interrupted, so the system deadlocks. The fix is to make the handler give a semaphore or submit work, and let a thread take the mutex.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/threads/index.html">Zephyr documentation: Threads</a>: read "Thread priorities" and "Thread creation". Then read <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/synchronization/mutexes.html">Mutexes</a> from "Priority Inheritance" onward, and compare with lesson 90.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Explain the difference between K_PRIO_COOP and K_PRIO_PREEMPT with a timeline of two threads."
+    Related: <a href="0094-devicetree.html">Lesson 94: Devicetree</a>, <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup</a>, <a href="0090-mutexes-priority-inversion-and-deadlock.html">Lesson 90: Mutexes and priority inversion</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

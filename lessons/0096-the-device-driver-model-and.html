@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The device driver model, and the GPIO and I2C APIs · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="0096">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>The device driver model, and the GPIO and I2C APIs</h1>
+  <p class="subtitle">Zephyr's drivers are found through the devicetree, and the application talks to them through generic APIs. You will read a real register from a sensor and handle a button with an interrupt, without naming a register or a pin in your C code.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>read WHO_AM_I from the MYS-1 sensor at 0x48 with <code>i2c_write_read_dt</code>, and count button presses from a GPIO interrupt callback, with the sensor and the button both described in an overlay</strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A driver in Zephyr is a struct of function pointers, one per operation, plus its own private data. A <code>struct device</code> is one instance of a driver, and the devicetree says which instances exist. You get a pointer to a device with <code>DEVICE_DT_GET(node)</code> (<code>include/zephyr/device.h:323</code>), and you check it with <code>device_is_ready()</code>. This is the same idea as the HAL in Lab 4, built into the kernel: the application calls <code>gpio_pin_get_dt</code> and the GPIO driver for that chip does the register work.
+    <span class="sidenote">The same pattern appears in Linux (<code>struct device</code> and the driver model), and in the Arm CMSIS-Driver API. Learn it once and the names change less than you expect.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 540 190" role="img" aria-label="The application calls the generic GPIO and I2C APIs. Each API calls the driver for the device found through the devicetree node. The driver writes the chip's registers." style="max-width:702px">
+      <defs><marker id="ah65" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="20" width="180" height="36" rx="3"/>
+        <rect x="230" y="20" width="170" height="36" rx="3"/>
+        <rect x="430" y="62" width="100" height="48" rx="3"/>
+        <rect x="10" y="128" width="180" height="48" rx="3"/>
+        <rect x="230" y="128" width="170" height="48" rx="3"/>
+        <path d="M190 38 H230" marker-end="url(#ah65)"/>
+        <path d="M400 38 L430 74" marker-end="url(#ah65)"/>
+        <path d="M190 152 H230" marker-end="url(#ah65)"/>
+        <path d="M400 152 L430 104" marker-end="url(#ah65)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="100" y="42.2" text-anchor="middle" font-size="12">your code (generic API)</text>
+        <text x="315" y="42.2" text-anchor="middle" font-size="12">struct device (driver)</text>
+        <text x="480" y="82.7" text-anchor="middle" font-size="12">the chip's</text>
+        <text x="480" y="97.7" text-anchor="middle" font-size="12">registers</text>
+        <text x="100" y="148.7" text-anchor="middle" font-size="12">devicetree node</text>
+        <text x="100" y="163.7" text-anchor="middle" font-size="12">(reg, gpios)</text>
+        <text x="315" y="156.2" text-anchor="middle" font-size="12">the driver's own state</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The application names a node; the devicetree gives the device; the driver turns the call into register accesses.</figcaption>
+  </figure>
+
+  <h2>The MYS-1 sensor, from its datasheet</h2>
+  <p>
+    The mystery sensor is the chip from lesson 63. Its datasheet (<code>projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html</code>, section 3.1) says three things we need. Its 7-bit address is <code>0x48</code>. Register <code>0x0F</code> is <code>WHO_AM_I</code>, a read-only identity value that is <code>0xA7</code> after reset. And a read of one register is a write of the register pointer, a repeated start, then a read of one byte (section 3.2).
+  </p>
+  <p>
+    The repeated start matters. <code>i2c_write_read_dt()</code> does exactly that sequence in one call (<code>include/zephyr/drivers/i2c.h:1662</code>). The write phase sends the register number, and the read phase returns the byte, with no stop condition between them, so no other master can take the bus in the middle.
+  </p>
+
+  <h2>Describing the sensor in the overlay</h2>
+  <p>The I2C bus <code>i2c0</code> already exists on the Pico. The overlay adds one child node for the sensor, with its 7-bit address in <code>reg</code>:</p>
+  <pre><code>&amp;i2c0 {
+    clock-frequency = &lt;I2C_BITRATE_FAST&gt;;
+    status = "okay";
+    mystery: mystery@48 {
+        compatible = "vnd,mystery-sensor";
+        reg = &lt;0x48&gt;;
+        label = "MYS-1";
+    };
+};</code></pre>
+  <p>
+    The binding <code>dts/bindings/sensor/vnd,mystery-sensor.yaml</code> says <code>include: i2c-device.yaml</code>. That base binding requires <code>reg</code> and places the node on an I2C bus, and it has no compatible of its own (<code>dts/bindings/i2c/i2c-device.yaml</code>). So our binding only names the device and inherits the rest.
+  </p>
+  <p>
+    In C, one macro gathers the bus and the address from that node. <code>I2C_DT_SPEC_GET(DT_NODELABEL(mystery))</code> gives a struct with the bus device and the 7-bit address (<code>include/zephyr/drivers/i2c.h:180</code>). The I2C subsystem must be on for this to link. Set <code>CONFIG_I2C=y</code> in <code>prj.conf</code>, because the Pico's DesignWare driver lives inside the <code>if I2C</code> block of <code>drivers/i2c/Kconfig</code>.</p>
+  <pre><code>static const struct i2c_dt_spec sensor = I2C_DT_SPEC_GET(DT_NODELABEL(mystery));
+
+uint8_t reg = 0x0F;     /* WHO_AM_I */
+uint8_t id  = 0;
+if (i2c_write_read_dt(&amp;sensor, &amp;reg, 1, &amp;id, 1) == 0 &amp;&amp; id == 0xA7) {
+    printk("MYSTERY WHO_AM_I 0x%02x\n", id);
+}</code></pre>
+
+  <h2>Buttons with an interrupt</h2>
+  <p>
+    Polling a button, as Lab 4 did, wastes time and can miss a short press. A GPIO interrupt calls your function when the pin changes. Three calls set it up: <code>gpio_pin_interrupt_configure_dt(&amp;button, GPIO_INT_EDGE_TO_ACTIVE)</code> chooses the edge (<code>include/zephyr/drivers/gpio.h:1106</code>), <code>gpio_init_callback</code> stores your function and the pin mask, and <code>gpio_add_callback_dt</code> registers it (<code>gpio.h:1935, 1992</code>). <code>GPIO_INT_EDGE_TO_ACTIVE</code> is a logical edge, so it fires when the button becomes pressed, not when the pin changes level (<code>gpio.h:210</code>).
+  </p>
+  <div class="warning">
+    The callback runs in interrupt context. Keep it to an increment, and do the printing in a thread. The solution's callback is one line, <code>presses++</code>, and it is <code>volatile</code> because the main thread reads it.
+  </div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>The starter has the button set up and the sensor missing. You add the sensor node, then read WHO_AM_I.</p>
+  <ol class="steps">
+    <li>Open <code>projects/0096-device-driver-i2c/starter</code> in VS Code.</li>
+    <li>In <code>boards/rpi_pico.overlay</code>, add the <code>mystery</code> node under <code>&amp;i2c0</code> at <code>0x48</code>, as in the snippet above. The binding and the chip files are already in the folder.</li>
+    <li>In <code>prj.conf</code>, add <code>CONFIG_I2C=y</code>.</li>
+    <li>In <code>src/main.c</code>, write the sensor spec, the WHO_AM_I read, and the print. Finish the button callback with the increment.</li>
+    <li>Build, start the simulator, and press the button a few times. You'll know it works when "MYSTERY WHO_AM_I 0xa7" appears once and "button presses" grows with each press.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>If the bus is "not ready", the usual cause is <code>CONFIG_I2C</code>. Check <code>build/zephyr/.config</code> for <code>CONFIG_I2C=y</code>. If the read fails, check the address in <code>reg</code> and the wiring on the diagram: SDA is GP4 and SCL is GP5, with 4.7 kΩ pull-ups to 3V3.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0096-device-driver-i2c/solution</code>. Try first, compare after.</p>
+  <div class="note">
+    The chip in the diagram is the MYS-1 Wokwi chip from lesson 63, which is compiled to WebAssembly (<code>mystery.chip.wasm</code>) and listed in <code>wokwi.toml</code> with <code>[[chip]]</code>. Our lint does not check custom chips, so the wiring was checked by hand against the chip's pin list.
+  </div>
+
+  <div class="win">You read a register from a sensor through the devicetree and the generic I2C API, and counted button presses from a GPIO interrupt, without writing a register address into the button code.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "What should the driver check first on the MYS-1 sensor?",
+        "options": ["Read the WHO_AM_I", "Write the CTRL", "Read the TEMP_H", "Skip the probe"],
+        "answer": 0,
+        "why": "The datasheet says to read WHO_AM_I and expect 0xA7 before anything else. The tempting answer, writing CTRL, starts measurement on a part that may not be the MYS-1." },
+      { "type": "number",
+        "prompt": "The solution's button counts presses. Ten presses happen, and then the main thread prints the count. What is printed?",
+        "answer": 10, "tolerance": 0, "unit": "",
+        "why": "Each press runs the callback once, so the count is 10. The tempting answer, 20, counts both edges, which the GPIO_INT_EDGE_TO_ACTIVE setting does not do." },
+      { "type": "text",
+        "prompt": "What value does the MYS-1's WHO_AM_I register return after reset, in hex?",
+        "accept": ["0xa7", "a7"],
+        "why": "The datasheet gives 0xA7 as the fixed identity value. The tempting answer, 0x0F, is the register address, not its contents." },
+      { "type": "mc",
+        "prompt": "Why does i2c_write_read_dt use a repeated start?",
+        "options": ["Keeps the bus", "Resets the bus", "Ends the bus", "Holds the bus"],
+        "answer": 0,
+        "why": "The repeated start joins the register write and the read into one transaction on the bus. The tempting answer, resetting the bus, would lose the register pointer." },
+      { "type": "text",
+        "prompt": "Which Kconfig symbol must be on for an I2C node to get its driver on the Pico?",
+        "accept": ["CONFIG_I2C", "I2C"],
+        "why": "The DesignWare driver is inside the if I2C block, so CONFIG_I2C turns it on. The tempting answer, CONFIG_I2C_DW, is the driver itself, which only exists when the subsystem is on." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 63: what is the 7-bit I2C address of the MYS-1 sensor, in hex?",
+        "accept": ["0x48", "48"],
+        "why": "The MYS-1 has no address pin, so its address is fixed at 0x48. The tempting answer, 0x90, is the 8-bit write address." },
+      { "type": "text",
+        "prompt": "From lesson 46: which keyword stops the compiler caching a value that an interrupt changes?",
+        "accept": ["volatile"],
+        "why": "volatile tells the compiler that the value can change outside the code it sees. The tempting answer, const, says the value cannot change from the program's side." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What does a device driver model buy you over calling registers directly?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The application depends on a generic API, so the same code runs on another chip when the devicetree changes. The driver owns the registers, the timing and the errors, and the devicetree says which instance is which. The cost is one indirection and some code size, which the build report shows.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.zephyrproject.org/4.5.0/hardware/peripherals/gpio.html">Zephyr documentation: GPIO</a> (the devicetree macros and the interrupt section), and <a href="https://docs.zephyrproject.org/4.5.0/hardware/peripherals/i2c.html">Zephyr documentation: I2C</a> (the <code>i2c_write_read_dt</code> helper). Read both, then compare with the sensor's section 3.2 in the datasheet.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the interrupt path from the button press to my callback, including what the GPIO driver does."
+    Related: <a href="0094-devicetree.html">Lesson 94: Devicetree</a>, <a href="0063-writing-a-driver-from-a.html">Lesson 63: Writing a driver from a datasheet</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

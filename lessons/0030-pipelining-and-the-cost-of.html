@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pipelining and the cost of branches · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0030">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Pipelining and the cost of branches</h1>
+  <p class="subtitle">A pipeline lets the core work on three instructions at once. A branch throws away the work it started on the wrong path, and that is where a loop pays its price.</p>
+
+  <div class="goal">
+    By the end of this lesson you can count the cycles a taken branch costs in the simulator's 3-stage model, and explain why a loop with a conditional branch slows down each time the branch is taken.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>pipeline</strong> splits the fetch-decode-execute loop from lesson 28 into stages that run at the same time. With three stages, while one instruction is executing, the next is being decoded and the one after is being fetched. Each instruction still takes the same number of steps, but the core finishes about one instruction per cycle in steady state.
+    <span class="sidenote">A pipeline is only as good as its guess about what comes next. Straight-line code keeps every stage busy. A branch is the exception, because the instructions fetched after it may be the wrong ones.</span>
+  </p>
+  <p>
+    The Cortex-M3 has a <strong>three-stage pipeline</strong>: fetch, decode and execute (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §1.1 and §1.3</a>). The TRM also describes branch target forwarding (§1.5), a hardware feature that reduces the cost of some branches. The Cortex-M0+ has a <strong>two-stage pipeline</strong> and implements Armv6-M (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ datasheet</a>). A shorter pipeline has less work in flight to throw away, but it also overlaps less.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 150" role="img" aria-label="A three-stage pipeline table. Instruction 1 is fetched in cycle 1, decoded in cycle 2 and executed in cycle 3. Instruction 2 starts one cycle later, and so on. A taken branch in the middle flushes the two instructions behind it." style="max-width:676px">
+      <defs><marker id="ah24" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="172" y="12" width="56" height="24" rx="0"/>
+        <rect x="232" y="12" width="56" height="24" rx="0"/>
+        <rect x="292" y="12" width="56" height="24" rx="0"/>
+        <rect x="352" y="12" width="56" height="24" rx="0"/>
+        <rect x="412" y="12" width="56" height="24" rx="0"/>
+        <rect x="172" y="46" width="56" height="26" rx="0"/>
+        <rect x="232" y="46" width="56" height="26" rx="0"/>
+        <rect x="292" y="46" width="56" height="26" rx="0"/>
+        <rect x="232" y="80" width="56" height="26" rx="0"/>
+        <rect x="292" y="80" width="56" height="26" rx="0"/>
+        <rect x="352" y="80" width="56" height="26" rx="0"/>
+        <rect x="292" y="114" width="56" height="26" rx="0"/>
+        <rect x="352" y="114" width="56" height="26" rx="0"/>
+        <rect x="412" y="114" width="56" height="26" rx="0"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="14" y="29" text-anchor="start" font-size="12">cycle</text>
+        <text x="200" y="28.2" text-anchor="middle" font-size="12">1</text>
+        <text x="260" y="28.2" text-anchor="middle" font-size="12">2</text>
+        <text x="320" y="28.2" text-anchor="middle" font-size="12">3</text>
+        <text x="380" y="28.2" text-anchor="middle" font-size="12">4</text>
+        <text x="440" y="28.2" text-anchor="middle" font-size="12">5</text>
+        <text x="14" y="63" text-anchor="start" font-size="12">instr 1</text>
+        <text x="200" y="63.2" text-anchor="middle" font-size="12">F</text>
+        <text x="260" y="63.2" text-anchor="middle" font-size="12">D</text>
+        <text x="320" y="63.2" text-anchor="middle" font-size="12">E</text>
+        <text x="14" y="97" text-anchor="start" font-size="12">instr 2</text>
+        <text x="260" y="97.2" text-anchor="middle" font-size="12">F</text>
+        <text x="320" y="97.2" text-anchor="middle" font-size="12">D</text>
+        <text x="380" y="97.2" text-anchor="middle" font-size="12">E</text>
+        <text x="14" y="131" text-anchor="start" font-size="12">instr 3</text>
+        <text x="320" y="131.2" text-anchor="middle" font-size="12">F</text>
+        <text x="380" y="131.2" text-anchor="middle" font-size="12">D</text>
+        <text x="440" y="131.2" text-anchor="middle" font-size="12">E</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. In steady state three instructions are in flight, one in each stage. Read the letters as F (fetch), D (decode) and E (execute). A taken branch in instruction 2 would make the two fetches behind it wrong, and the simulator marks them with a cross.</figcaption>
+  </figure>
+
+  <h2>What a taken branch costs</h2>
+  <p>
+    When a branch is taken, the next instruction is not the one that followed it in memory. The core has already fetched the instructions behind the branch, and they are on the wrong path. Those instructions are <strong>flushed</strong>: thrown away without any effect. The cycles spent on them are lost.
+  </p>
+  <p>
+    The simulator uses the simplest model of this. It has a 3-stage pipeline, and each taken branch flushes the two instructions that follow it, so it loses 2 cycles. An untaken branch loses nothing, because the next instruction in memory is the right one. Real Cortex-M cores differ in detail: the exact cost depends on the instruction, the core and the memory, and the TRM's instruction timing chapter (Chapter 18) gives the figures. We did not check those figures for this lesson, so use the TRM before you quote a number.
+  </p>
+
+  <div class="warning">The simulator's halt, <code>B .</code>, counts as a taken branch too, because it jumps to itself. When you count flushes in the program below, do not count the final halt. The pipeline view adds it to the total, so the total on screen is one branch higher than the loop's real cost.</div>
+
+  <h2>Try it in the CPU simulator</h2>
+  <p>
+    The loop below adds 1 to R0 until R0 equals 4. The <code>BNE</code> at the end is taken while R0 is not 4. Turn on the pipeline view and run the program. Before you run it, predict how many times the <code>BNE</code> is taken.
+  </p>
+  <ol class="steps">
+    <li>
+      Predict the number of taken <code>BNE</code> branches before the program reaches the halt. Then predict the cycles lost to them, using the 2-cycle model.
+    </li>
+    <li>
+      Press <em>Run</em>. Watch the cross marks (✕) in the pipeline table. Each taken branch has two of them, one per flushed instruction.
+    </li>
+    <li>
+      Compare the count of taken branches with your prediction. Remember the halt is one more taken branch in the total on screen.
+    </li>
+  </ol>
+  <div class="widget cpusim" data-title="Count to four with a branch" data-show="regs,flags,pipeline">
+    <script type="text/plain">
+            MOV  R0, #0
+    loop:   ADD  R0, R0, #1
+            CMP  R0, #4
+            BNE  loop                @ taken while R0 != 4
+            B    .                   @ halt
+    </script>
+  </div>
+  <details>
+    <summary>Hint</summary>
+    <p>R0 goes 1, 2, 3, 4. The <code>BNE</code> is taken after 1, 2 and 3, and falls through after 4. Count the taken ones, then multiply by 2 for the cycles.</p>
+  </details>
+
+  <div class="win">You counted the taken branches in a loop, converted them to cycles with the 2-cycle flush model, and explained why a branch in a loop is the expensive part of the loop.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In the count-to-four loop, how many times is the BNE taken before the program reaches the halt?",
+        "answer": 3, "tolerance": 0,
+        "why": "R0 goes 1, 2, 3 and then 4. The branch is taken while R0 is not 4, so it is taken three times and falls through once. The tempting answer is 4, which counts the untaken branch too." },
+      { "type": "number",
+        "prompt": "In the simulator's model, how many cycles does each taken branch lose?",
+        "answer": 2, "tolerance": 0,
+        "why": "The model has a 3-stage pipeline, so the two instructions behind a taken branch are flushed, and each costs a cycle. The tempting answer is 1, which counts only the next instruction and forgets the one behind it." },
+      { "type": "number",
+        "prompt": "A loop's back-edge branch is taken 9 times and falls through once. How many cycles does the simulator lose to that branch?",
+        "answer": 18, "tolerance": 0,
+        "why": "Nine taken branches at 2 cycles each lose 18 cycles. The untaken final branch costs nothing. The tempting answer is 9, which counts the branches and not the cycles they cost." },
+      { "type": "mc",
+        "prompt": "Why does a taken branch lose cycles in the simulator?",
+        "options": ["Two fetched instructions get dropped", "Flash needs extra wait states", "Flags must be cleared beforehand"],
+        "answer": 0,
+        "why": "The two instructions behind a taken branch were fetched from the wrong address, so the pipeline flushes them. Memory wait states can slow real hardware, but this model does not use them. The tempting answer is the flash one, because wait states are a common cause of slow code." },
+      { "type": "text",
+        "prompt": "Which Cortex-M core has the two-stage pipeline?",
+        "accept": ["Cortex-M0+", "M0+", "Cortex M0+", "cortex-m0+", "Cortex-M0plus"],
+        "why": "The Cortex-M0+ has a two-stage pipeline in its datasheet. The Cortex-M3 has three stages, so it is the tempting wrong answer." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In lesson 5, a 5 V supply is across a 50 Ω resistor. What current flows, in amperes?",
+        "answer": 0.1, "tolerance": 0.02, "unit": "A",
+        "why": "I = V ÷ R = 5 V ÷ 50 Ω = 0.1 A. The tempting answer is 0.01 A, which divides 50 by 5 instead of 5 by 50." },
+      { "type": "text",
+        "prompt": "In lesson 10, which instrument records digital signal edges on several pins over time?",
+        "accept": ["logic analyzer", "logic analyser", "logicanalyzer"],
+        "why": "A logic analyzer records digital edges on several pins. An oscilloscope records voltage waveforms, which is the tempting wrong answer." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why do branches cost so much in a pipelined core, and what does a shorter pipeline change?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The core fetches and decodes past the branch before it knows the outcome, so a taken branch makes those instructions wrong and flushes them. A longer pipeline has more of them in flight, so it loses more per taken branch. A shorter one, like the M0+'s two stages, loses less per branch but overlaps less work. Real cores add tricks such as branch target forwarding to reduce the cost.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §1.3 (the execution pipeline stages), §1.5 (branch target forwarding) and Chapter 18 (instruction timing). Read Chapter 18 before you quote a branch cost for a real chip.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does the simulator flush two instructions and not one, and what would change for a 5-stage pipeline?"
+    Related: <a href="0028-fetch-decode-execute.html">Lesson 28: Fetch, decode, execute</a>, <a href="0031-core-registers.html">Lesson 31: Core registers</a>, and <a href="../reference/glossary.html#interrupt">Glossary: Interrupt</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+<script src="../assets/cpusim.js"></script>
+</body>
+</html>

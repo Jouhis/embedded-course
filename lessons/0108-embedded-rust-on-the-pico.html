@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embedded Rust on the Pico · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0108">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Embedded Rust on the Pico</h1>
+  <p class="subtitle">The same RP2040 and the same vector table, built by a compiler that checks who may touch each peripheral. Setup first, then the parts of a no_std binary, then the compiler catching a mistake.</p>
+
+  <div class="note">
+    <strong>⭐ Optional.</strong> Skip this lesson if you want to stay on the C path. It is useful if you plan to apply for firmware jobs that list Rust, or if you want to see what the compiler does for you in C. Parts 1 to 4 are enough to follow it.
+  </div>
+
+  <div class="goal">
+    By the end of this lesson you can build the Rust blink project on this machine, name the parts of a <code>no_std</code> binary against their C equivalents, and explain why a call to <code>set_high()</code> on an input pin does not compile.
+  </div>
+
+  <h2>Setup, as done on this machine</h2>
+  <p>
+    Rust is installed with <code>rustup</code>, which manages toolchains and targets. Run these in PowerShell or Git Bash. The first one installs rustup itself; the rest add the parts this course needs.
+  </p>
+  <pre><code>winget install -e --id Rustlang.Rustup
+rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+rustup target add thumbv6m-none-eabi --toolchain stable-x86_64-pc-windows-gnu
+rustup component add llvm-tools --toolchain stable-x86_64-pc-windows-gnu</code></pre>
+  <p>
+    The <code>thumbv6m-none-eabi</code> target is the Armv6-M architecture, which is the Cortex-M0+ core of the RP2040 (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ processor datasheet</a>). The target is a compiler setting: it tells <code>rustc</code> which instructions and ABI to emit, the same job as <code>-mcpu=cortex-m0plus</code> in GCC. <code>llvm-tools</code> gives you the LLVM binary tools, such as <code>llvm-size</code>, to inspect the ELF.
+  </p>
+  <p>
+    <strong>Why the GNU host toolchain.</strong> <code>rustup</code> installs the MSVC toolchain by default on Windows. That toolchain links through Microsoft's linker, which needs Visual Studio. Cargo build scripts (small programs that run on the PC during the build, used by the crates here) are then linked by the same linker, and fail without it. The GNU toolchain (<code>x86_64-pc-windows-gnu</code>) uses MinGW instead, which this machine already has.   </p>
+  <p>
+    <strong>What <code>rust-toolchain.toml</code> does.</strong> The project file pins the toolchain and target, so anyone who runs <code>cargo build</code> in that folder gets the same compiler:
+  </p>
+  <pre><code>[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"
+targets = ["thumbv6m-none-eabi"]</code></pre>
+  <p>
+    Also in the project, <code>.cargo/config.toml</code> sets the default target and the linker flags, so you never type <code>--target</code>. This is the same role as a CMake toolchain file: it fixes the target for the whole project.
+  </p>
+  <p>
+    Build the project from the workspace root with the course build script. It runs <code>cargo build --release</code> (release builds keep debug information, so GDB works):
+  </p>
+  <pre><code>python -I tools/build.py projects/0108-embedded-rust-on-the-pico/starter</code></pre>
+  <p>
+    The output is <code>target/thumbv6m-none-eabi/release/blink</code>, an ELF file with no <code>.elf</code> extension. <code>wokwi.toml</code> points at it, so Wokwi runs the same file that a debugger would load. Open the <code>starter</code> folder in VS Code, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build, then <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. For debugging, start the simulator and press <kbd>F5</kbd>.
+  </p>
+  <div class="warning">Do not install extra Cargo tools such as <code>probe-rs</code>, <code>flip-link</code> or <code>elf2uf2-rs</code> for this lesson. Wokwi runs the ELF directly, and the course build does not need them.</div>
+
+  <h2>The parts of a no_std binary</h2>
+  <p>
+    A normal Rust program starts with the standard library, which assumes an operating system. A microcontroller has none, so the project declares <code>#![no_std]</code> (no standard library) and <code>#![no_main]</code> (no C-style <code>main</code> from a runtime). What is left is the same job you already know from C, split into crates.
+  </p>
+  <figure>
+    <svg viewBox="0 0 460 210" role="img" aria-label="Layers from the application at the top to the hardware at the bottom: main.rs, rp2040-hal, rp2040-pac, cortex-m-rt, and the RP2040 hardware">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="60" y="10" width="340" height="32"/><rect x="60" y="54" width="340" height="32"/>
+        <rect x="60" y="98" width="340" height="32"/><rect x="60" y="142" width="340" height="32"/>
+        <rect x="60" y="178" width="340" height="26"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle">
+        <text x="230" y="30">src/main.rs: your blink, interrupt and main loop</text>
+        <text x="230" y="74">rp2040-hal: HAL (GPIO, clocks, interrupts, UART)</text>
+        <text x="230" y="118">rp2040-pac: PAC (register structs from the SVD)</text>
+        <text x="230" y="162">cortex-m-rt: vector table, reset handler, link.x</text>
+        <text x="230" y="195">RP2040 registers, flash and RAM</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The Rust stack for the Pico, from your code down to the chip. Each layer calls only the layer below it.</figcaption>
+  </figure>
+
+  <h2>The pieces, against C</h2>
+  <p>
+    Each row below has a C counterpart from the course. The Rust name is what you will see in the project.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Rust piece</th><th>What it does</th><th>C counterpart you know</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>#![no_std]</code>, <code>#![no_main]</code></td><td>No standard library; the program supplies its own entry point</td><td>Bare-metal C with no libc <code>main</code> wrapper (lessons 41 and 42)</td></tr>
+      <tr><td><code>cortex-m-rt</code></td><td>Provides the vector table and <code>Reset</code>, which copies <code>.data</code>, zeroes <code>.bss</code> and calls <code>main</code></td><td>The startup file and <code>Reset_Handler</code> (lesson 42). The crate reads <code>__sdata</code>, <code>__sidata</code> and <code>__sbss</code> from the linker script, as the STM32 file reads <code>_sdata</code></td></tr>
+      <tr><td><code>memory.x</code></td><td>Names the MEMORY regions: BOOT2 at <code>0x10000000</code>, FLASH from <code>0x10000100</code>, RAM at <code>0x20000000</code></td><td>The MEMORY block of a linker script (lessons 41 and 68)</td></tr>
+      <tr><td><code>link.x</code></td><td>The default section layout, supplied by <code>cortex-m-rt</code>. The project adds <code>-Tlink.x</code> in <code>.cargo/config.toml</code></td><td>The SECTIONS block, and the <code>-T</code> flag that selects it</td></tr>
+      <tr><td><code>.boot2</code> and <code>BOOT2</code></td><td>A 256-byte second-stage bootloader that the boot ROM runs first. It sets up flash access for execute-in-place, then jumps to the vector table</td><td>The RP2040 boot sequence in lesson 42, before <code>Reset_Handler</code> runs</td></tr>
+      <tr><td>Panic handler (<code>panic-halt</code>)</td><td>Called when code panics. <code>panic-halt</code> loops forever</td><td>A custom <code>HardFault_Handler</code> that halts, as in lesson 84</td></tr>
+      <tr><td>PAC (<code>rp2040-pac</code>)</td><td>Register structs and interrupt numbers generated from the chip's SVD description</td><td>The CMSIS device header, such as <code>stm32f103xb.h</code>, and the register structs in lesson 47</td></tr>
+      <tr><td>HAL (<code>rp2040-hal</code>)</td><td>Safe, typed wrappers over the PAC: pins, clocks, UART, interrupts</td><td>The Pico SDK (<code>gpio_put</code>, <code>uart_init</code>) and lesson 76's hardware abstraction layer</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The PAC is generated by <code>svd2rust</code> from the SVD file that the chip vendor publishes. You do not need the tool: the crate is generated and checked in, as CMSIS headers are. The HAL is a separate crate that depends on the PAC (<a href="https://docs.rs/rp2040-hal/0.11.0/rp2040_hal/">rp2040-hal 0.11.0 docs</a>). The register names come from the <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>.
+  </p>
+  <p>
+    The <code>.boot2</code> section is what the blink program puts first in flash with <code>#[link_section = ".boot2"]</code>. The <code>memory.x</code> file reserves the first 256 bytes for it, so the vector table starts at <code>0x10000100</code>. Lesson 42 explains the boot ROM steps; the RP2040 datasheet names the second-stage bootloader in its boot sequence section (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8</a>).
+  </p>
+  <div class="note">The blink program's <code>main</code> is marked <code>#[hal::entry]</code>. That attribute is the crate's version of <code>int main(void)</code> in C: it puts <code>main</code> behind the reset handler that <code>cortex-m-rt</code> generates.</div>
+
+  <h2>Why Rust matters for embedded jobs</h2>
+  <p>
+    Rust's main benefit on a microcontroller is that many C mistakes become compile errors, with no run-time cost. Three rules do most of the work:
+  </p>
+  <ol class="steps">
+    <li><strong>Ownership of peripherals.</strong> <code>Peripherals::take()</code> returns <code>Some</code> only the first time. A second call returns <code>None</code>, so two parts of the program cannot each hold the GPIO block. The Embedded Rust Book describes this as a singleton (<a href="https://docs.rust-embedded.org/book/peripherals/singletons.html">Embedded Rust Book, Singletons</a>).</li>
+    <li><strong>Type-state pins.</strong> <code>into_push_pull_output()</code> returns a different type, so a write to the pin is only possible in output mode. The book gives the same example: changing the output state of a pin configured as a floating input is a compile error (<a href="https://docs.rust-embedded.org/book/static-guarantees/index.html">Embedded Rust Book, Static Guarantees</a>). In C, the same bug compiles, and the pin does not change, with no warning.</li>
+    <li><strong>No data races without <code>unsafe</code>.</strong> Safe Rust does not let two parts of the program mutate the same static unless the type shows that access is synchronised. Writing <code>unsafe</code> is then the explicit admission that the programmer took responsibility. The code that is still unsafe is local, usually register access inside the PAC and HAL.</li>
+  </ol>
+  <p>
+    The fourth point is portability. The <code>embedded-hal</code> 1.0 crate defines traits such as <code>OutputPin</code>. A sensor driver written against those traits runs on any chip whose HAL implements them. That is the idea behind lesson 76's hardware abstraction layer, enforced by the compiler.
+  </p>
+  <p>
+    <strong>The balance.</strong> Ownership removes whole classes of bugs, but it does not check your datasheet reading or your timing. Ecosystem maturity is the real limit: rp2040-hal is at version 0.11, and many drivers and RTOS integrations are still young. For safety-critical work, Ferrocene is a Rust toolchain from Ferrous Systems that is offered for ISO 26262 and IEC 61508 projects (<a href="https://www.ferrous-systems.com/ferrocene">Ferrous Systems, Ferrocene</a>). Check its current qualification scope with the vendor before you rely on it. In job ads, C is still the default, and Rust is a differentiator for roles that ask for it. That is a judgement from the market, not a measured figure.
+  </p>
+
+  <h2>Interrupts and shared state in Rust</h2>
+  <p>
+    Lesson 57 shared a flag between an interrupt and <code>main</code> with <code>volatile</code>, and protected the read-and-clear with a critical section. In Rust, the same job uses a <code>critical_section::Mutex</code> around a <code>RefCell</code> or a <code>Cell</code>. The Mutex hands out its contents only inside a critical section, and the compiler checks that you did not skip it.
+  </p>
+  <pre><code>// The button pin is owned here, so only the handler can clear its interrupt.
+type ButtonPin = hal::gpio::Pin&lt;Gpio14, FunctionSio&lt;SioInput&gt;, PullUp&gt;;
+static BUTTON: Mutex&lt;RefCell&lt;Option&lt;ButtonPin&gt;&gt;&gt; = Mutex::new(RefCell::new(None));
+
+// Written by the handler, read by main.
+static BLINK_ENABLED: Mutex&lt;Cell&lt;bool&gt;&gt; = Mutex::new(Cell::new(true));</code></pre>
+  <p>
+    The <code>Option</code> starts as <code>None</code>, because the pin does not exist until <code>main</code> configures it. <code>main</code> moves the pin into the Mutex, and the handler takes it back out for each event. Moving a value transfers ownership, so <code>main</code> cannot use the pin afterwards. That is the same rule that rejects the snippet further down.
+  </p>
+  <p>
+    The bank 0 interrupt line is shared by every GPIO in the bank, so the handler checks <code>interrupt_status</code> for its own pin before it acts. The rp2040-hal 0.11 GPIO code defines <code>set_interrupt_enabled</code>, <code>interrupt_status</code> and <code>clear_interrupt</code> on the pin (rp2040-hal 0.11.0, <code>src/gpio/mod.rs</code>, in the crate source under the cargo registry). The interrupt handler is written as <code>#[interrupt] fn IO_IRQ_BANK0()</code>. The attribute comes from the PAC and is the same vector-table entry that lesson 57 used, number 13.
+  </p>
+  <div class="warning">The Mutex is a critical section, not a lock that sleeps. Keep it short, as lesson 57 says for ISRs. Turning interrupts off for long stretches hurts the latency of everything else.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0108-embedded-rust-on-the-pico</code> has the template blink on the onboard LED (GP25). It also has a second LED on GP15 through a 220 Ω resistor, and a pushbutton on GP14 that connects to ground. The button uses the RP2040's internal pull-up, so it needs no resistor.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0108-embedded-rust-on-the-pico/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). The starter builds and blinks the onboard LED.</li>
+    <li>Task (a): find the two <code>TODO(learner)</code> comments in <code>src/main.rs</code>. Add the GP15 LED as a push-pull output and toggle it every 250 ms, while the onboard LED toggles every 500 ms. Use a tick counter and <code>%</code>, as the solution does.</li>
+    <li>Task (b): configure GP14 with <code>into_pull_up_input()</code>, enable a falling-edge interrupt, unmask <code>IO_IRQ_BANK0</code>, and write the handler that flips a shared flag. Keep the pin and the flag in <code>critical_section::Mutex</code>. Main pauses the blinking while the flag is false.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator. You will know it works when pressing the button stops both LEDs, and pressing it again restarts them.</li>
+  </ol>
+  <details>
+    <summary>Hint for the interrupt</summary>
+    <p>Enable the edge on the pin before you move it into the Mutex. The handler needs <code>interrupt_status</code> and <code>clear_interrupt</code> on the same pin, so you must borrow it from the Mutex with <code>borrow_mut()</code> inside <code>critical_section::with</code>.</p>
+  </details>
+  <details>
+    <summary>Hint for unmasking</summary>
+    <p>The NVIC is re-exported as <code>pac::NVIC</code>. <code>unmask</code> is <code>unsafe</code>, because the interrupt can start at once. Wrap the call in an <code>unsafe</code> block, and do it after the pin is in the Mutex.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0108-embedded-rust-on-the-pico/solution</code>. Try first, compare after. The solution is not run in the simulator here, because it needs a Wokwi token. Lint it with <code>~/.wokwi/bin/wokwi-cli.exe lint</code> to check the diagram.</p>
+
+  <h2>The compiler catches it</h2>
+  <p>
+    Take the solution and add one line before the button is used: <code>button.set_high().unwrap();</code>. The pin is an input, so the output methods do not exist on its type. This is the real output of the build, from a scratch copy:
+  </p>
+  <pre><code>error[E0599]: no method named `set_high` found for struct `rp2040_hal::gpio::Pin&lt;I, F, P&gt;` in the current scope
+  --&gt; src\main.rs:71:12
+   |
+71 |     button.set_high().unwrap();   // deliberate: GP14 is an input
+   |            ^^^^^^^^ method not found in `rp2040_hal::gpio::Pin&lt;Gpio14, FunctionSio&lt;SioInput&gt;, PullUp&gt;`</code></pre>
+  <p>
+    In C, the equivalent write to <code>GPIO_OE</code> or <code>gpio_put()</code> on an input pin compiles and runs. Nothing stops it, and the bug shows up as a pin that never changes. Here the type of <code>button</code> says it is an input, and <code>set_high</code> belongs only to output types.
+  </p>
+  <p>
+    Now try the second mistake. Move the button into a variable, then use the original name:
+  </p>
+  <pre><code>error[E0382]: use of moved value: `button`
+  --&gt; src\main.rs:76:28
+   |
+70 |     let button = pins.gpio14.into_pull_up_input();
+   |         ------ move occurs because `button` has type `rp2040_hal::gpio::Pin&lt;Gpio14, FunctionSio&lt;SioInput&gt;, PullUp&gt;`, which does not implement the `Copy` trait
+72 |     let _moved = button;   // deliberate: move
+   |                  ------ value moved here
+76 |     critical_section::with(|cs| BUTTON.borrow(cs).replace(Some(button)));
+   |                            ^^^^ value used here after move</code></pre>
+  <p>
+    The pin cannot be used twice, so two parts of the code cannot both hold it. That is the ownership rule in the table above, applied to a single pin. The compiler reports both errors before the program runs.
+  </p>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "What does <code>Peripherals::take()</code> return on its second call?",
+        "options": ["None, so unwrap() panics", "Another copy of pins", "Some with same pins"],
+        "answer": 0,
+        "why": "The first call returns Some and gives up the only owner, so later calls return None, and unwrap() panics. The tempting answer, a second copy, is what C allows, and it is exactly the duplicate that Rust rules out." },
+      { "type": "mc",
+        "prompt": "What happens when code calls <code>set_high()</code> on a pin configured as a pulled-up input?",
+        "options": ["The compiler rejects the program", "The pin silently goes high", "The program panics at runtime"],
+        "answer": 0,
+        "why": "The output methods exist only on the output pin type, so the call is a compile error, as the E0599 output above shows. The tempting answer, silently going high, is the C behaviour; a panic is also wrong, because the check is at compile time, not at run time." },
+      { "type": "mc",
+        "prompt": "Why can't a handler write to a plain <code>static mut</code> flag without <code>unsafe</code>?",
+        "options": ["Safe Rust forbids unguarded statics", "Linker puts statics in flash", "NVIC clears statics on entry"],
+        "answer": 0,
+        "why": "Safe Rust does not let code mutate a shared static without a type that synchronises access, so the Mutex is the safe way. The tempting answer about flash is wrong: the linker places a static in RAM, and no hardware clears it on entry." },
+      { "type": "number",
+        "prompt": "In the solution, <code>TICK_MS</code> is 50 and <code>LED2_TICKS</code> is 5. How many milliseconds is one half period of LED 2?",
+        "answer": 250, "tolerance": 0, "unit": "ms",
+        "why": "LED 2 toggles every 5 ticks of 50 ms each, so 5 × 50 = 250 ms. The tempting answer, 50, forgets the tick count and gives the loop period instead." },
+      { "type": "text",
+        "prompt": "Which crate supplies the vector table and the reset handler for the Rust Pico project?",
+        "accept": ["cortex-m-rt", "cortex_m_rt"],
+        "why": "cortex-m-rt provides the vector table and Reset, which copies .data and zeroes .bss before main. The tempting answer, rp2040-hal, provides peripherals and the entry attribute, not the startup code." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 57: does <code>volatile</code> make a read-and-clear of a shared flag atomic?",
+        "options": ["No, it only stops caching", "Yes, every access is atomic", "Only with a critical section"],
+        "answer": 0,
+        "why": "volatile forces each access to reload from memory, and nothing more. The tempting answer, only with a critical section, is partly true, but it describes what the critical section adds, not what volatile does." },
+      { "type": "number",
+        "prompt": "From lesson 9: a yellow LED with a forward voltage of 2.1 V is driven from a 3.3 V pin at 3 mA. What resistor value, in ohms, does the calculation give before E12 rounding?",
+        "answer": 400, "tolerance": 0.05, "unit": "Ω",
+        "why": "R = (3.3 − 2.1) ÷ 0.003 = 400 Ω. The nearest E12 value is 390 Ω. The tempting answer, 2.1 V, is the forward voltage, not the resistor value." }
+    ] }
+    </script>
+  </div>
+
+  <div class="win">You built a Rust program for the RP2040 on this machine, mapped each part of the no_std binary to C, and watched the compiler reject a pin used in the wrong mode. That is the feature that makes Rust worth learning for firmware.</div>
+
+  <div class="interview">
+    <p><strong>"What does Rust's ownership model buy you on a microcontroller?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>It moves a class of bugs from run time to compile time, at no run-time cost. Peripheral singletons mean one owner per peripheral, and type-state pins make a wrong-mode call a compile error. Shared statics must go through a synchronised type such as a critical-section Mutex, or sit in an explicit unsafe block. The limits: it does not check the datasheet or the timing, the unsafe code in the PAC and HAL still has to be right, and the ecosystem is younger than the Pico SDK.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.rust-embedded.org/book/peripherals/singletons.html">The Embedded Rust Book, "Singletons"</a>: read the section on <code>Peripherals::take()</code> and the claim that the singleton gives one way to obtain a peripheral. Then read <a href="https://docs.rust-embedded.org/book/static-guarantees/index.html">Static Guarantees</a> for the pin mode example.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the generated code for <code>into_pull_up_input()</code> in rp2040-hal 0.11, and explain what the type parameter PullUp changes at compile time."
+    Related: <a href="0042-startup-code-and-the-vector.html">Lesson 42: startup code and the vector table</a>, <a href="0057-interrupts-in-practice.html">Lesson 57: interrupts in practice</a>, <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

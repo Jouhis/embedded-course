@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CAN bus · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js. data-concept: no simulator task. -->
+<body data-lesson="0098" data-concept>
+<main>
+  <p class="lesson-meta"></p>
+  <h1>CAN bus</h1>
+  <p class="subtitle">CAN joins the engine controller, the brakes and the door modules of a car on one pair of wires. Several nodes can talk at once, and the bus decides who goes first without losing a message. This lesson is concept only, and you work through the bit-level rules by hand.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>predict which node wins CAN arbitration from the identifiers, and explain why bit stuffing and the error states keep a bus with many nodes reliable</strong>.
+  </div>
+
+  <div class="note">
+    <strong>Why this lesson has no simulator task.</strong> Wokwi does not simulate CAN, and the STM32 in the simulator has no CAN or USB device (NOTES.md). The exercise below runs the arbitration rules in the page instead. To see real frames, you need a Blue Pill, a CAN transceiver board and a second node, which is lab-bench work for later.
+  </div>
+
+  <h2>The idea: two wires, dominant and recessive</h2>
+  <p>
+    CAN runs on two wires, CANH and CANL, and carries a bit as a voltage difference between them. In the quiet state both wires sit near 2.5 V. A <em>dominant</em> bit drives CANH up to about 3.5 V and CANL down to about 1.5 V, which is a logic 0. A <em>recessive</em> bit leaves the wires quiet, which is a logic 1. The difference between the wires cancels out common-mode noise, which is why CAN tolerates a noisy car better than a single-ended wire does (<a href="https://www.ti.com/lit/an/sloa101b/sloa101b.pdf">TI SLOA101, section 7 and Figure 7</a>).
+    <span class="sidenote">Dominant is 0 and recessive is 1, the opposite of the pull-up convention you know from lesson 16. A recessive level is what the bus rests at. Any node can make a dominant level, and a dominant level wins the wire.</span>
+  </p>
+  <p>
+    The bus behaves as a wired AND. If one node sends dominant (0) while another sends recessive (1), the bus reads 0. This is the same idea as an open-drain line with a pull-up, and it is the key to arbitration.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 720 200" role="img" aria-label="Three bit levels on CANH and CANL, with the bus level below" style="max-width:936px">
+      <defs><marker id="ah66" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M60 100 L140 100 L140 60 L300 60 L300 100 L380 100 L380 60 L460 60 L460 100 L540 100"/>
+        <path d="M60 100 L140 100 L140 140 L300 140 L300 100 L380 100 L380 140 L460 140 L460 100 L540 100" stroke-dasharray="4 3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="100" y="30" text-anchor="middle" font-size="11">1</text>
+        <text x="180" y="30" text-anchor="middle" font-size="11">0</text>
+        <text x="260" y="30" text-anchor="middle" font-size="11">0</text>
+        <text x="340" y="30" text-anchor="middle" font-size="11">1</text>
+        <text x="420" y="30" text-anchor="middle" font-size="11">0</text>
+        <text x="500" y="30" text-anchor="middle" font-size="11">1</text>
+        <text x="556" y="64" text-anchor="start" font-size="11">CANH: 3.5 V dominant</text>
+        <text x="556" y="104" text-anchor="start" font-size="11">2.5 V recessive</text>
+        <text x="556" y="144" text-anchor="start" font-size="11">CANL: 1.5 V dominant</text>
+        <text x="60" y="190" text-anchor="start" font-size="11">Bits 1, 0, 0, 1, 0, 1 as seen on the wires (CANH solid, CANL dashed)</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Dominant levels pull the two wires apart. Recessive levels leave them together at 2.5 V.</figcaption>
+  </figure>
+
+  <h2>Arbitration: the lowest identifier wins</h2>
+  <p>
+    Several nodes may start a frame in the same bit time. Each transmitter reads the bus while it sends. If it sends a recessive bit and reads a dominant one, another node is sending a dominant bit at that position, so it stops and waits. The message is not destroyed: the winner keeps going, and the loser retries later (<a href="https://www.ti.com/lit/an/sloa101b/sloa101b.pdf">TI SLOA101, section 4.1</a>).
+    <span class="sidenote">Arbitration is on the identifier only, and it happens bit by bit, from the most significant bit down. It costs no extra time, because the identifier is sent anyway.</span>
+  </p>
+  <p>
+    The identifier is the message's priority. Because a dominant bit overwrites a recessive one, the node with the lowest identifier has the most zeros at the first bit where the IDs differ, so it keeps the bus. Work the rule with the exercise below.
+  </p>
+
+  <h2>The frame: what goes on the wire</h2>
+  <p>
+    A standard data frame, in the 11-bit identifier format (CAN 2.0A), has these fields in order: a start-of-frame bit, the 11-bit identifier, the remote-transmission-request bit, the identifier-extension bit, the 4-bit data length code (DLC), 0 to 8 data bytes, a 15-bit CRC followed by its delimiter, an acknowledge slot and its delimiter, and the end of the frame (<a href="https://www.ti.com/lit/an/sloa101b/sloa101b.pdf">TI SLOA101, sections 2 and 3</a>). The TI text gives the lengths of the CRC field and the ACK field, and the Bosch CAN 2.0 specification, which defines the format, is the reference for the rest.
+  </p>
+  <table>
+    <thead><tr><th>Field</th><th>Bits</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>Start of frame (SOF)</td><td>1</td><td>A dominant bit that tells every node a frame has started</td></tr>
+      <tr><td>Identifier</td><td>11</td><td>The message's name and its priority; the lowest value wins arbitration</td></tr>
+      <tr><td>RTR, IDE</td><td>1 each</td><td>Data frame or remote request; standard or extended identifier</td></tr>
+      <tr><td>DLC</td><td>4</td><td>How many data bytes follow (0 to 8 in classic CAN)</td></tr>
+      <tr><td>Data</td><td>0 to 64</td><td>The payload, in whole bytes</td></tr>
+      <tr><td>CRC</td><td>15, plus a delimiter</td><td>Checksum of the frame up to the data (TI: 15 bits plus delimiter)</td></tr>
+      <tr><td>ACK</td><td>1, plus a delimiter</td><td>Every node that received the frame correctly overwrites the recessive ACK bit with a dominant one</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The data field is at most 8 bytes in classic CAN. The ACK slot is the receiver's acknowledgment: a sender that reads a recessive ACK knows nobody received the frame correctly, and it retransmits (TI SLOA101, section 3).
+  </p>
+
+  <h2>Bit stuffing: keeping the clock alive</h2>
+  <p>
+    CAN has no separate clock line. Each node resynchronises on the edges of the bits it receives, so a long run of identical bits would let the clocks drift apart. To prevent that, the transmitter inserts one bit of the opposite level after every five identical bits in a row. The receiver removes those stuff bits. A sixth identical bit in a row is a stuffing error (<a href="https://www.ti.com/lit/an/sloa101b/sloa101b.pdf">TI SLOA101, section 6</a>).
+    <span class="sidenote">Stuffing applies from the start of frame up to the CRC. The CRC delimiter, the ACK field and the end of frame are not stuffed, because they have fixed forms.</span>
+  </p>
+
+  <h2>Errors, and the three error states</h2>
+  <p>
+    CAN checks each frame in five ways (TI SLOA101, section 6): the bit monitor (a node compares what it sent with what it reads), bit stuffing, the CRC, the fixed-form delimiters, and the ACK. An error frame, six dominant bits in a row, breaks the normal pattern on purpose so every node sees the error. Each controller counts its own errors in two counters, the transmit error counter (TEC) and the receive error counter (REC).
+  </p>
+  <p>
+    Those counters move a node through three states: <strong>error-active</strong>, which sends normal error frames; <strong>error-passive</strong>, which may send only passive error flags; and <strong>bus-off</strong>, which takes the node off the bus until it recovers. The thresholds are in the Bosch CAN 2.0 specification. Check the numbers there before you rely on them, because this lesson did not open that document.
+  </p>
+
+  <h2>CAN FD and the transceiver</h2>
+  <p>
+    CAN FD keeps the same arbitration and adds a faster data phase and payloads up to 64 bytes per frame. Its specification is a separate document, and this lesson does not cover its details. The transceiver is the analogue part between the controller and the wires: it turns the controller's logic-level TX and RX into the differential CANH and CANL levels, and it limits the fault current when a wire is shorted. A microcontroller with a CAN peripheral needs one.
+  </p>
+
+  <h2>The STM32F103 bxCAN controller</h2>
+  <p>
+    The Blue Pill's STM32F103 has one CAN controller, bxCAN. The CMSIS header in this workspace gives its base address and its shape. <code>CAN1</code> is at <code>0x40006400</code> (<code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, the <code>CAN1_BASE</code> definition). The <code>CAN_TypeDef</code> structure has three transmit mailboxes, two receive FIFOs and fourteen filter banks. The mailboxes are why the controller can queue three frames and send the one with the lowest identifier first. The reference manual RM0008 describes the bxCAN registers in full.
+  </p>
+  <pre><code><span class="c">/* stm32f103xb.h: the controller's shape, not a driver */</span>
+<span class="k">typedef struct</span> {
+    CAN_TxMailBox_TypeDef sTxMailBox[3];   <span class="c">/* three transmit mailboxes */</span>
+    CAN_FIFOMailBox_TypeDef sFIFOMailBox[2]; <span class="c">/* two receive FIFOs */</span>
+    CAN_FilterRegister_TypeDef sFilterRegister[14];
+} CAN_TypeDef;</code></pre>
+
+  <h2>Try it: who wins arbitration?</h2>
+  <p>
+    The widget below gives you three nodes with 11-bit identifiers. Each node sends its identifier, most significant bit first, and the bus is the wired AND of all sending nodes. Pick the node you think wins, then press <em>Run the bits</em> to see which bit sends each loser home.
+  </p>
+  <div class="widget" id="arb" data-title="Arbitration exercise">
+    <p><button class="btn" type="button" id="arb-new">New identifiers</button></p>
+    <div id="arb-nodes"></div>
+    <p id="arb-prompt"></p>
+    <div id="arb-pick"></div>
+    <p><button class="btn secondary" type="button" id="arb-run" disabled>Run the bits</button></p>
+    <div id="arb-log"></div>
+    <p id="arb-feedback" class="q-feedback"></p>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    var BITS = 11;
+    var box = document.getElementById("arb");
+    if (!box) { return; }
+    var nodesEl = document.getElementById("arb-nodes");
+    var pickEl = document.getElementById("arb-pick");
+    var logEl = document.getElementById("arb-log");
+    var fbEl = document.getElementById("arb-feedback");
+    var promptEl = document.getElementById("arb-prompt");
+    var runBtn = document.getElementById("arb-run");
+    var ids = [];
+    var picked = -1;
+
+    function binary(v) {
+      var s = v.toString(2);
+      while (s.length < BITS) { s = "0" + s; }
+      return s;
+    }
+    function hex(v) {
+      var s = v.toString(16).toUpperCase();
+      while (s.length < 3) { s = "0" + s; }
+      return "0x" + s;
+    }
+    function randomIds() {
+      var out = [];
+      while (out.length < 3) {
+        var v = Math.floor(Math.random() * 2048);
+        if (out.indexOf(v) < 0) { out.push(v); }
+      }
+      return out;
+    }
+    /* The rule the bus applies: a node that sends 1 while the bus reads 0 leaves.
+     * The bus is the wired AND of all nodes still sending. Returns the winner index. */
+    function arbitrate(list) {
+      var active = list.map(function () { return true; });
+      var rows = [];
+      for (var b = BITS - 1; b >= 0; b--) {
+        var sent = list.map(function (id, i) { return active[i] ? (id >> b) & 1 : 1; });
+        var bus = sent.indexOf(0) >= 0 ? 0 : 1;
+        var wasActive = active.slice();      /* who was still sending during this bit */
+        list.forEach(function (id, i) {
+          if (active[i] && sent[i] === 1 && bus === 0) { active[i] = false; }
+        });
+        rows.push({ bit: BITS - 1 - b, sent: sent, bus: bus, wasActive: wasActive, active: active.slice() });
+      }
+      var winner = -1;
+      active.forEach(function (on, i) { if (on && winner < 0) { winner = i; } });
+      return { winner: winner, rows: rows };
+    }
+    function lowestIndex(list) {
+      var best = 0;
+      list.forEach(function (id, i) { if (id < list[best]) { best = i; } });
+      return best;
+    }
+
+    function render() {
+      nodesEl.textContent = "";
+      ids.forEach(function (id, i) {
+        var p = document.createElement("p");
+        p.textContent = "Node " + String.fromCharCode(65 + i) + ": identifier " + hex(id) + "  =  " + binary(id);
+        nodesEl.appendChild(p);
+      });
+      promptEl.textContent = "Which node keeps the bus?";
+      pickEl.textContent = "";
+      ids.forEach(function (id, i) {
+        var b = document.createElement("button");
+        b.className = "btn secondary";
+        b.type = "button";
+        b.textContent = "Node " + String.fromCharCode(65 + i);
+        b.addEventListener("click", function () {
+          picked = i;
+          Array.prototype.forEach.call(pickEl.querySelectorAll("button"), function (x) { x.classList.remove("correct", "wrong"); });
+          b.classList.add("correct");
+          runBtn.disabled = false;
+          fbEl.className = "q-feedback";
+          fbEl.textContent = "You picked node " + String.fromCharCode(65 + i) + ". Press Run the bits to check.";
+        });
+        pickEl.appendChild(b);
+      });
+      logEl.textContent = "";
+      runBtn.disabled = true;
+      picked = -1;
+      fbEl.className = "q-feedback";
+      fbEl.textContent = "";
+    }
+
+    function run() {
+      var result = arbitrate(ids);
+      var table = document.createElement("table");
+      var head = document.createElement("tr");
+      ["Bit", "Sent by A, B, C", "Bus", "Still in"].forEach(function (t) {
+        var th = document.createElement("th"); th.textContent = t; head.appendChild(th);
+      });
+      table.appendChild(head);
+      result.rows.forEach(function (r) {
+        var tr = document.createElement("tr");
+        var cells = [
+          String(r.bit + 1),
+          r.sent.map(function (s, i) { return r.wasActive[i] ? String(s) : "-"; }).join(" "),
+          String(r.bus),
+          r.active.map(function (on, i) { return on ? String.fromCharCode(65 + i) : ""; }).filter(Boolean).join(" ")
+        ];
+        cells.forEach(function (c) {
+          var td = document.createElement("td"); td.textContent = c; tr.appendChild(td);
+        });
+        table.appendChild(tr);
+      });
+      logEl.textContent = "";
+      logEl.appendChild(table);
+
+      var winnerName = String.fromCharCode(65 + result.winner);
+      var lowest = lowestIndex(ids);
+      var correct = picked === result.winner && result.winner === lowest;
+      fbEl.className = "q-feedback show " + (correct ? "good" : "bad");
+      fbEl.textContent = (correct ? "Correct. " : "Node " + winnerName + " wins. ") +
+        "Node " + winnerName + " has the lowest identifier, " + hex(ids[result.winner]) + ". " +
+        "At the first bit where the identifiers differ, its bit is 0 and the others send 1, so the bus reads 0 and the others leave.";
+    }
+
+    document.getElementById("arb-new").addEventListener("click", function () {
+      ids = randomIds();
+      render();
+    });
+    runBtn.addEventListener("click", run);
+    ids = randomIds();
+    render();
+  })();
+  </script>
+
+  <div class="win">You can predict arbitration from the identifiers, name the field that sets the priority, and explain why bit stuffing and the error counters keep a multi-node bus working.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Three nodes start a frame in the same bit time with identifiers 0x0F0, 0x120 and 0x1A0. Which one keeps the bus?",
+        "options": ["The node sending 0x0F0", "The node sending 0x120", "The node sending 0x1A0", "Whichever node starts first"],
+        "answer": 0,
+        "why": "The lowest identifier has the most dominant bits from the top down, and a dominant bit overwrites a recessive one. The tempting answer, the highest identifier, is wrong: the higher number loses at the first differing bit." },
+      { "type": "mc",
+        "prompt": "A node sends a recessive bit but reads dominant during arbitration. What does it do?",
+        "options": ["It stops sending and waits", "It keeps sending the frame", "It resets the whole bus", "It sends the frame again"],
+        "answer": 0,
+        "why": "Reading a dominant bit where it sent recessive means another node is winning, so the loser stops and waits without corrupting the winner. The tempting answer, sending again at once, would collide with the winner's frame." },
+      { "type": "number",
+        "prompt": "A transmitter has just sent five identical bits in a row. How many identical bits in a row may the bus carry before the transmitter must insert a stuff bit?",
+        "answer": 5, "tolerance": 0, "unit": "bits",
+        "why": "Five identical bits are allowed, and the sixth is replaced by a stuff bit of the opposite level. The tempting answer, four, is one short: the rule counts five." },
+      { "type": "mc",
+        "prompt": "Which frame field tells the receivers how many data bytes follow?",
+        "options": ["The data length code field", "The identifier field 11 bits", "The CRC delimiter bit field", "The acknowledge slot bit field"],
+        "answer": 0,
+        "why": "The 4-bit DLC gives the byte count. The tempting answer, the identifier, sets priority and says nothing about length. The ACK slot only confirms receipt." },
+      { "type": "text",
+        "prompt": "Which bus level is logic 1 on CAN: dominant or recessive? One word.",
+        "accept": ["recessive"],
+        "why": "A recessive level is 1, and the bus rests there. The tempting answer, dominant, is logic 0 and is what a node drives to win the wire." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 16: a line is pulled high by a resistor and devices only pull it low. Which output type do they use?",
+        "options": ["Open-drain output driver", "Push-pull output driver", "Analog output driver", "Tristate input driver"],
+        "answer": 0,
+        "why": "An open-drain driver only pulls low, so a pull-up gives the recessive state. The tempting answer, push-pull, drives both levels and would fight the other nodes." },
+      { "type": "number",
+        "prompt": "From lesson 53: at 115200 baud with 8N1, how many bit times does one UART byte take on the wire?",
+        "answer": 10, "tolerance": 0, "unit": "bits",
+        "why": "A start bit, eight data bits and a stop bit make ten bit times. The tempting answer, eight, counts only the data bits." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Two ECUs start transmitting at the same time. How does CAN decide who wins, and what happens to the loser?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The bus is a wired AND: a dominant 0 overwrites a recessive 1. Each transmitter compares what it reads with what it sends, bit by bit, starting with the identifier's most significant bit. The node with the lowest identifier never sees a dominant bit overwrite its own zero, so it keeps the bus. A node that sends a 1 and reads a 0 stops at once and retries later, without corrupting the winner's frame. The identifier is therefore also the priority.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.ti.com/lit/an/sloa101b/sloa101b.pdf">TI SLOA101: Introduction to the Controller Area Network</a>: read section 4.1 (Arbitration) and Figure 5 for the bit-by-bit picture, then section 6 for stuffing and the five error checks. The Bosch CAN 2.0 specification, which defines the frame format, is the reference for the thresholds and field details this lesson leaves out.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through arbitration for identifiers 0x3FF and 0x3FE bit by bit, and tell me which node sends its last bit first."
+    Related: <a href="0016-logic-levels-pull-ups-open.html">Lesson 16: Logic levels, pull-ups and open-drain</a>, <a href="../reference/protocols.html">Protocol comparison</a>, <a href="../reference/glossary.html#arbitration">Glossary: arbitration</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

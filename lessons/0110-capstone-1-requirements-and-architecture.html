@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 1: requirements and architecture for a filament dryer · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0110">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 1: requirements and architecture for a filament dryer</h1>
+  <p class="subtitle">Your QIDI Q2 prints from spools that absorb water from the air. A dryer that holds a chamber at 45, 65 or 80 °C is a real product, and this capstone builds one. The first step is not code: it is the list of what the box must do and how it must fail.</p>
+
+  <div class="goal">
+    By the end of this lesson you can write numbered requirements with acceptance criteria, draw a state machine with its transition table, sketch a layered architecture, justify RTOS task priorities with rate-monotonic reasoning, and build a skeleton that prints <code>DRYER SKELETON OK</code>.
+  </div>
+
+  <p class="note"><strong>Why a dryer.</strong> Nylon, PETG and PLA absorb moisture, and wet filament prints with bubbles and weak layers. Dedicated dryers hold a fixed temperature for hours. The controller is an ordinary embedded design: a sensor, a heater with a power switch, a display, buttons, and safety rules that must hold when a part fails. That is the job description of most firmware work.</p>
+
+  <h2>The idea: write the requirements before the code</h2>
+  <p>
+    A requirement says what the system must do, in a form that can be checked. A design says how. Interviewers and safety standards look for the same chain: every requirement has an acceptance criterion, and every criterion has a test. Functional safety standards such as IEC 61508 make this explicit (lesson 109), and a hiring manager reads a repository for it. You will build that chain in this capstone: the requirements here, the host tests in lessons 111 and 112, and the simulation and CI in lesson 113.
+  </p>
+  <p>
+    The dryer has two kinds of requirement. The <em>functional</em> ones say what it does for the user. The <em>safety</em> ones say what it does when something is broken, and they are the ones that make the design interesting. A third group, the <em>non-functional</em> ones, sets limits such as memory, timing and the way the code is checked.
+  </p>
+
+  <h2>Requirements with acceptance criteria</h2>
+  <p>
+    Each row below is a requirement, numbered 1.1 onwards, with the test that proves it. Read the acceptance column as the promise the later lessons keep.
+  </p>
+  <table>
+    <thead><tr><th>No.</th><th>Requirement</th><th>Acceptance criterion</th></tr></thead>
+    <tbody>
+      <tr><td>1.1</td><td>Hold the chamber at the material's setpoint (PLA 45 °C, PETG 65 °C, ABS 80 °C).</td><td>After the press, the temperature stays within 1 °C of the setpoint after 600 s or less (lesson 112 closed-loop test).</td></tr>
+      <tr><td>1.2</td><td>Dry for the material's time (4, 4 and 6 hours), counted from the moment the setpoint is reached.</td><td>HOLDING ends exactly after the preset time (host test in lesson 111).</td></tr>
+      <tr><td>1.3</td><td>One button starts and stops the cycle; a second button selects the material while idle.</td><td>One press gives one event, however long the button is held or however much it bounces (debounce test).</td></tr>
+      <tr><td>1.4</td><td>Show the material, the temperature, the state and the minutes left on a 128 × 64 OLED.</td><td>The four text lines match the strings the host test expects.</td></tr>
+      <tr><td>1.5</td><td>Cool down to 40 °C or below before going idle, so the filament is not left hot in a dry box.</td><td>COOLDOWN ends at 40.00 °C and not before (host test).</td></tr>
+      <tr><td>2.1</td><td>Hard over-temperature cutoff: heater off at 90 °C or above, whatever the controller wants.</td><td>A reading of 90.00 °C latches FAULT with the over-temperature code, and the heater command is 0 (host test).</td></tr>
+      <tr><td>2.2</td><td>Sensor fault: an open or shorted NTC cuts the heater and blocks a start.</td><td>An ADC code of 15 or less, or 4080 or more, is a fault (host tests).</td></tr>
+      <tr><td>2.3</td><td>Heater runaway: at full power, far below the setpoint, a rise of 2 °C must happen within 60 s.</td><td>A heater with no gain latches the runaway fault within 300 s (closed-loop test, 80.4 s measured).</td></tr>
+      <tr><td>2.4</td><td>Stale control: if the control loop stops producing samples, the heater is cut.</td><td>A sample older than 500 ms latches the stale fault (host test).</td></tr>
+      <tr><td>2.5</td><td>A stalled task must reset the chip, not leave the heater on.</td><td>The watchdog is kicked only when every monitored task has checked in; a task that stops checking in causes a reset within about 262 ms (code review and simulation).</td></tr>
+      <tr><td>2.6</td><td>A fault stays latched until the operator acknowledges it, and only when the cause is gone and the part is below 60 °C.</td><td>A start press in FAULT is ignored above 60 °C and accepted below it (host test).</td></tr>
+      <tr><td>3.1</td><td>The application code has no hardware in it, so it can be tested on the PC.</td><td>The host test projects compile the same <code>app/</code> files as the firmware (lessons 111 to 113).</td></tr>
+      <tr><td>3.2</td><td>The application fits its slot: 48 KB of flash and 20 KB of RAM in total.</td><td><code>arm-none-eabi-size</code> reports the totals (lesson 113).</td></tr>
+      <tr><td>3.3</td><td>Control runs every 100 ms and safety every 50 ms.</td><td>The periods are constants in <code>rtos/tasks.c</code> and the rates are reviewed against the priorities (this lesson).</td></tr>
+      <tr><td>3.4</td><td>Modbus RTU slave on USART1 for a host to read the status and set the material.</td><td>A host script reads eight registers and writes one (lesson 113).</td></tr>
+      <tr><td>3.5</td><td>The firmware version is visible on the display.</td><td>The version is read from the image header and drawn on the bottom line (lesson 113).</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <strong>What to show an interviewer.</strong> A requirements table with acceptance criteria that point to tests in the repository is the strongest single artefact in a firmware portfolio. Keep this table in the README of your project, and keep each row true.
+  </div>
+
+  <h2>The state machine</h2>
+  <p>
+    A state machine is the cleanest way to describe a controller whose behaviour depends on what happened before. The dryer has five states: <strong>IDLE</strong>, <strong>HEATING</strong> (climbing to the setpoint), <strong>HOLDING</strong> (drying at the setpoint), <strong>COOLDOWN</strong> (cooling with the fan on), and <strong>FAULT</strong> (latched, heater off). Every transition has a cause, and the table below is the authoritative list. The diagram shows the main path.
+  </p>
+  <figure>
+    <svg viewBox="0 0 560 250" role="img" aria-label="State machine of the dryer: IDLE to HEATING to HOLDING to COOLDOWN to IDLE, with FAULT above" style="max-width:728px">
+      <defs><marker id="ah72" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="120" width="110" height="36" rx="4"/>
+        <rect x="210" y="120" width="110" height="36" rx="4"/>
+        <rect x="370" y="120" width="110" height="36" rx="4"/>
+        <rect x="210" y="24" width="110" height="36" rx="4"/>
+        <rect x="370" y="190" width="110" height="36" rx="4"/>
+        <path d="M130 138 H210" marker-end="url(#ah72)"/>
+        <path d="M320 138 H370" marker-end="url(#ah72)"/>
+        <path d="M265 120 V60" marker-end="url(#ah72)"/>
+        <path d="M210 42 H75 V120" marker-end="url(#ah72)"/>
+        <path d="M425 156 V190" marker-end="url(#ah72)"/>
+        <path d="M370 208 H75 V156" marker-end="url(#ah72)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="75" y="142.2" text-anchor="middle" font-size="12">IDLE</text>
+        <text x="265" y="142.2" text-anchor="middle" font-size="12">HEATING</text>
+        <text x="425" y="142.2" text-anchor="middle" font-size="12">HOLDING</text>
+        <text x="265" y="46.2" text-anchor="middle" font-size="12">FAULT</text>
+        <text x="425" y="212.2" text-anchor="middle" font-size="12">COOLDOWN</text>
+        <text x="170" y="130" text-anchor="middle" font-size="12">start</text>
+        <text x="345" y="110" text-anchor="middle" font-size="12">at setpoint</text>
+        <text x="274" y="96" text-anchor="start" font-size="12">trip</text>
+        <text x="84" y="36" text-anchor="start" font-size="12">start, when safe</text>
+        <text x="434" y="178" text-anchor="start" font-size="12">time done</text>
+        <text x="220" y="200" text-anchor="middle" font-size="12">below 40 °C</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The main path and the fault path. The stop button (not drawn) takes HEATING or HOLDING to COOLDOWN, which is the table's rule 4.</figcaption>
+  </figure>
+
+  <h2>The transition table</h2>
+  <p>The table is the test plan for the state machine. Lesson 111 writes one test per row.</p>
+  <table>
+    <thead><tr><th>No.</th><th>From</th><th>Event or condition</th><th>To</th><th>Output</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>IDLE</td><td>Start press, sensor good</td><td>HEATING</td><td>Heater on (PID), fan on</td></tr>
+      <tr><td>2</td><td>HEATING</td><td>Temperature within 1 °C of the setpoint</td><td>HOLDING</td><td>Hold timer starts</td></tr>
+      <tr><td>3</td><td>HOLDING</td><td>Hold time elapsed</td><td>COOLDOWN</td><td>Heater off, fan on</td></tr>
+      <tr><td>4</td><td>HEATING or HOLDING</td><td>Stop press</td><td>COOLDOWN</td><td>Heater off, fan on</td></tr>
+      <tr><td>5</td><td>COOLDOWN</td><td>Temperature 40 °C or below</td><td>IDLE</td><td>Fan off</td></tr>
+      <tr><td>6</td><td>any running state</td><td>Over-temperature, sensor, runaway or stale fault</td><td>FAULT</td><td>Heater off, fan on, fault code shown</td></tr>
+      <tr><td>7</td><td>FAULT</td><td>Start press, cause gone, below 60 °C</td><td>IDLE</td><td>Fault cleared</td></tr>
+      <tr><td>8</td><td>IDLE</td><td>Material press</td><td>IDLE</td><td>Material index advances: PLA, PETG, ABS</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Two rules do most of the safety work. First, a stop is a cool-down, not a switch-off: a hot part that is cut off dead can stay hot for an hour in an enclosure. Second, a fault is latched in the state machine, not in the sensor reading, so a sensor that comes back does not restart the heater by itself.
+  </p>
+
+  <h2>The layered architecture</h2>
+  <p>
+    Layers separate what the product does from what the chip does. Each layer calls only the layer below it. This is the same idea as the HAL in lesson 76 and the driver model in lesson 96, applied to the whole product. The top layer is pure logic that you can test on a PC; the bottom layer is the only place with registers in it.
+  </p>
+  <figure>
+    <svg viewBox="0 0 560 290" role="img" aria-label="Layered architecture: application, services, drivers, HAL, board" style="max-width:728px">
+      <defs><marker id="ah73" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="20" width="520" height="50" rx="3"/>
+        <rect x="20" y="84" width="520" height="50" rx="3"/>
+        <rect x="20" y="148" width="520" height="40" rx="3"/>
+        <rect x="20" y="202" width="520" height="32" rx="3"/>
+        <rect x="20" y="246" width="520" height="32" rx="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="280" y="41.85" text-anchor="middle" font-size="11">Application: state machine, PID, safety checks,</text>
+        <text x="280" y="55.85" text-anchor="middle" font-size="11">OLED text (portable C, host-tested)</text>
+        <text x="280" y="105.85" text-anchor="middle" font-size="11">Services: sensor filter, debounced buttons,</text>
+        <text x="280" y="119.85" text-anchor="middle" font-size="11">Modbus register map, watchdog kicks</text>
+        <text x="280" y="171.85" text-anchor="middle" font-size="11">Drivers: NTC conversion, SSD1306 display, Modbus RTU frames, CRC-16</text>
+        <text x="280" y="221.85" text-anchor="middle" font-size="11">HAL (hal.h): ADC, heater PWM, fan, buttons, I2C, UART, watchdog, clock</text>
+        <text x="280" y="265.85" text-anchor="middle" font-size="11">Board (hw/hal_bluepill.c): the only file with registers; FreeRTOS on top</text>
+      </g>
+    </svg>
+    <figcaption>Figure 2. Layers, top to bottom. An arrow always points down: a layer never calls up.</figcaption>
+  </figure>
+  <p>
+    The HAL is an interface, not a vendor library. The application calls <code>hal_heater_set_permille()</code>, not a timer register, so the same logic runs in the simulator, on a Blue Pill, or on the PC with a fake HAL (lesson 81). The rule that matters in an interview is the dependency direction: nothing in the application may include a register header.
+  </p>
+
+  <h2>Tasks and priorities with rate-monotonic reasoning</h2>
+  <p>
+    The product runs five jobs in parallel: the safety monitor, the control loop, the Modbus comms, the user interface, and the logger. In FreeRTOS each is a task with a priority (lesson 87). Rate-monotonic scheduling (lesson 91) gives the rule for periodic tasks: the shorter the period, the higher the priority. With that rule and the execution times, you can check that every deadline holds before you write any task code.
+  </p>
+  <table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Period</th><th>Job</th><th>Why this priority</th></tr></thead>
+    <tbody>
+      <tr><td>safety</td><td>4</td><td>50 ms</td><td>Check the published state, cut the heater on a trip, kick the watchdog</td><td>Shortest period, and it must preempt the control loop</td></tr>
+      <tr><td>control</td><td>3</td><td>100 ms</td><td>Read the NTC, filter, state machine, PID, outputs</td><td>Second-shortest period</td></tr>
+      <tr><td>comms (113)</td><td>2</td><td>on each byte, 2 ms gap</td><td>Modbus RTU frames</td><td>Event-driven: it is not periodic, so it sits with the UI</td></tr>
+      <tr><td>ui</td><td>2</td><td>20 ms (buttons), 200 ms (redraw)</td><td>Debounce buttons, post presses, draw the OLED</td><td>Human timescale; it may be late without harm</td></tr>
+      <tr><td>logger</td><td>1</td><td>100 ms check-in, 1 s line</td><td>Check in with the watchdog, print one status line a second</td><td>Least urgent</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The rate-monotonic test is a sum. For <em>n</em> periodic tasks, the utilisation sum of execution time ÷ period stays below <em>n</em>(2<sup>1/n</sup> − 1) if deadlines are guaranteed. For four tasks that bound is 0.757. Your estimates go into the sum. The display flush is the big term: a 1 KB frame at 100 kHz I2C takes about 90 ms, and the UI task spends it every 200 ms, so about 0.45 of the processor goes to drawing. That is high, and it is the first thing lesson 112 measures and lesson 113 discusses. The sum is still below 0.757 with the other tasks, so the rule says the deadlines hold.
+  </p>
+  <div class="warning">
+    <strong>Estimates, not measurements.</strong> The execution times above are rough figures from reading the code, marked as estimates. A real design measures them with a GPIO toggle around each task, or a trace tool, and puts the measured numbers in the README.
+  </div>
+
+  <h2>The pin map</h2>
+  <p>
+    Pins are the first thing a schematic review checks. The table lists every pin the design uses, with its alternate function. The alternate functions were checked against a community pin table for the STM32F103C8 that agrees with the vendor's pin definitions, because the ST server refused the datasheet download while this lesson was prepared. Before you build a board, confirm each row in the datasheet's pin definitions table (lesson 43 shows how to read such a table).
+  </p>
+  <table>
+    <thead><tr><th>Pin</th><th>Function</th><th>Peripheral</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>PA0</td><td>NTC divider output</td><td>ADC1_IN0</td><td>Analog input, 12-bit, single conversion</td></tr>
+      <tr><td>PA6</td><td>Heater PWM</td><td>TIM3_CH1</td><td>1 kHz, alternate-function push-pull</td></tr>
+      <tr><td>PB0</td><td>Fan</td><td>GPIO output</td><td>Drives the fan's MOSFET gate</td></tr>
+      <tr><td>PB12</td><td>Start/stop button</td><td>GPIO input</td><td>Internal pull-up, active low</td></tr>
+      <tr><td>PB13</td><td>Material button</td><td>GPIO input</td><td>Internal pull-up, active low</td></tr>
+      <tr><td>PB6</td><td>OLED SCL</td><td>I2C1_SCL</td><td>External 4.7 kΩ pull-up</td></tr>
+      <tr><td>PB7</td><td>OLED SDA</td><td>I2C1_SDA</td><td>External 4.7 kΩ pull-up</td></tr>
+      <tr><td>PA9</td><td>Serial TX</td><td>USART1_TX</td><td>Log now, Modbus in lesson 113</td></tr>
+      <tr><td>PA10</td><td>Serial RX</td><td>USART1_RX</td><td>Used from lesson 113</td></tr>
+      <tr><td>PC13</td><td>Status LED</td><td>GPIO output</td><td>On the board, active low</td></tr>
+    </tbody>
+  </table>
+
+  <h2>The real circuit behind the LED</h2>
+  <p>
+    In Wokwi the heater is a red LED, and the fan is a green one. On the real dryer, the microcontroller never drives a heater: it switches a power MOSFET. The gate is driven from PA6 through a series resistor of about 100 Ω, with a pull-down of about 10 kΩ so the heater stays off while the chip resets. The MOSFET's drain feeds the 24 V heater, and a logic-level N-channel part is chosen so its gate turns fully on at 3.3 V (lesson 12 and lesson 106 cover the parts and the layout). The fan is a motor, which is inductive, so it gets a flyback diode across its terminals (lesson 14).
+  </p>
+  <p>
+    The most important part is not on the MCU at all. A heater that the software can switch on must also have a hardware limit that does not depend on the software: a thermal fuse or a bimetal cutoff in series with the heater, rated above the setpoint and below the destruction temperature. Software safety is a second layer, not the only one. That sentence is worth repeating in an interview.
+  </p>
+  <div class="note">
+    The same reasoning is behind Klipper's <code>verify_heater</code> on your printer: the firmware checks that the heater is actually heating, and it still does not replace a physical thermal protection.
+  </div>
+
+  <h2>Try it: the skeleton</h2>
+  <p>
+    The skeleton is the architecture with empty modules. It builds, it wires the parts in the diagram, and it prints the banner. You will fill it in over the next three lessons.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0110-dryer-skeleton/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run <code>python -I tools/build.py projects/0110-dryer-skeleton/starter</code> from the workspace root.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Open <code>diagram.json</code> and check the wiring: the NTC on PA0, the heater LED through a resistor on PA6, the fan on PB0, two buttons on PB12 and PB13, and the OLED on PB6 and PB7.</li>
+    <li>Your task: in <code>main.c</code>, read the first preset with <code>materials_get(0)</code>, then print exactly <code>DRYER SKELETON OK</code> with <code>hal_log()</code>. You know it works when the serial monitor shows that line.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The layers already exist: <code>hal_log()</code> is in <code>hw/hal_bluepill.c</code>, and the banner is one call. The preset is only read to show that the materials module links in; the skeleton does nothing with it yet.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0110-dryer-skeleton/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You turned a product idea into numbered requirements, a state machine with a transition table, a layer diagram, and a rate-monotonic task plan, and you proved the skeleton links with the banner. The next lesson writes the drivers and the first unit tests.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The monitor, the display and the logger are ready at the same time. Which one gets the CPU first, and why?",
+        "options": ["The monitor, because its period is shortest", "The display, because it is shown first", "The logger, because it writes text out"],
+        "answer": 0,
+        "why": "Rate-monotonic scheduling gives the shortest period the highest priority, and the monitor has the shortest period (50 ms). The tempting answer, the display, is about what the user sees first, which says nothing about timing." },
+      { "type": "number",
+        "prompt": "The control task runs every 100 ms. How many control cycles fit into one minute?",
+        "answer": 600, "tolerance": 0,
+        "why": "One minute is 60 s, which is 60 000 ms, and 60 000 ÷ 100 = 600. The tempting answer, 60, forgets to convert the period from milliseconds to seconds." },
+      { "type": "text",
+        "prompt": "What is the hard over-temperature cutoff of the dryer, in degrees Celsius? Write the number.",
+        "accept": ["90", "90c", "90°c"],
+        "why": "The requirement 2.1 sets the cutoff at 90 °C. The tempting answer, 80, is the ABS setpoint, which is the normal drying temperature and not the limit." },
+      { "type": "mc",
+        "prompt": "The operator presses stop while the dryer is in HOLDING. What must happen first?",
+        "options": ["HOLDING goes to COOLDOWN, then IDLE", "HOLDING goes straight to IDLE once", "HOLDING goes to FAULT, then IDLE"],
+        "answer": 0,
+        "why": "A stop cools the part before the machine goes idle, which is transition 4 followed by transition 5. The tempting answer, going straight to IDLE, switches the fan off on a hot part. The FAULT path is for faults, not for an operator's stop." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0058-adc.html\">lesson 58</a>: how many codes does a 12-bit ADC have, from 0 to full scale?",
+        "answer": 4096, "tolerance": 0,
+        "why": "A 12-bit converter has 2 to the power 12 codes, which is 4096, running from 0 to 4095. The tempting answer, 4095, is the full-scale code, which is one less than the count." },
+      { "type": "mc",
+        "prompt": "From <a href=\"0084-robustness.html\">lesson 84</a>: when a watchdog is not kicked in time, what happens?",
+        "options": ["The chip restarts from reset", "Only the stuck task restarts", "The timer stops until reboot"],
+        "answer": 0,
+        "why": "A watchdog resets the whole chip when it expires. The other two options are tempting because they sound like a recovery, but a watchdog does not restart one task and does not stop itself." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How do you choose the priorities of your RTOS tasks?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I list each task's period and worst-case execution time, then give the shortest period the highest priority, which is rate-monotonic scheduling. For periodic tasks, if the sum of execution time divided by period stays below n(2<sup>1/n</sup> − 1), every deadline is met. Event-driven or human-paced tasks go lower, and the safety monitor goes highest because it must preempt anything that is running. I check the estimates with measurements, because a long blocking call, like a polled I2C transfer, changes the answer.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.klipper3d.org/Config_Reference.html">Klipper Config Reference, the [verify_heater] section</a>: read the descriptions of <code>max_error</code>, <code>check_gain_time</code> and <code>heating_gain</code>. They are the printer-world version of the heater-runaway requirement (2.3), with the defaults 120, 20 s and 2 °C.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Which of my requirements has the weakest acceptance criterion, and how would I make it testable?"
+    Related: <a href="0109-functional-safety.html">Lesson 109: Functional safety</a>, <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76: Driver design and HAL</a>, and <a href="0091-timing-analysis-deadlines-and-stack.html">Lesson 91: Timing analysis</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

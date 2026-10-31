@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Embedded security: secure boot, debug lockdown, attack surfaces · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js. data-concept: no simulator task. -->
+<body data-lesson="0103" data-concept>
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Embedded security: secure boot, debug lockdown, attack surfaces</h1>
+  <p class="subtitle">A device that runs code can be made to run the wrong code. Security in firmware means deciding what a device trusts, starting from the first instruction, and what an attacker can reach. This lesson is concept-heavy: you model threats for a device, and you learn what the chip vendors give you and what they do not.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>classify threats with STRIDE, explain a chain of trust built from signed images, and say what debug lockdown and readout protection do and do not stop</strong>.
+  </div>
+
+  <div class="note">
+    <strong>Why this lesson has no simulator task.</strong> Security depends on the hardware and on keys that a simulator does not have, and Wokwi has no secure boot. The lesson is a concept lesson with an interactive threat-model exercise. Lesson 102's bootloader is the place where the signature check would go.
+  </div>
+
+  <h2>Start with a threat model</h2>
+  <p>
+    A threat model lists what you protect, who might attack it, and how. STRIDE is a common way to sort threats into six kinds: Spoofing (pretending to be someone else), Tampering (changing data), Repudiation (denying an action with no way to prove it), Information disclosure (leaking secrets), Denial of service (stopping the device), and Elevation of privilege (gaining rights you should not have). STRIDE comes from Microsoft's threat-modelling work, and this lesson did not open a primary source for it, so use the six names as a checklist rather than a standard.
+  </p>
+  <p>
+    The exercise below gives six threats for a connected controller. Pick the STRIDE category for each one.
+  </p>
+
+  <div class="widget" id="stride" data-title="Threat-model exercise">
+    <table>
+      <thead><tr><th>Threat</th><th>STRIDE category</th></tr></thead>
+      <tbody>
+        <tr><td>1. An attacker writes a modified application image to flash.</td><td><select data-answer="T" aria-label="Threat 1 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+        <tr><td>2. A technician reads the firmware out over the debug port and copies it.</td><td><select data-answer="I" aria-label="Threat 2 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+        <tr><td>3. A calibration change has no record of which operator made it.</td><td><select data-answer="R" aria-label="Threat 3 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+        <tr><td>4. A malformed frame on the bus makes the controller reset in a loop.</td><td><select data-answer="D" aria-label="Threat 4 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+        <tr><td>5. A normal user sends a command that unlocks the admin menu.</td><td><select data-answer="E" aria-label="Threat 5 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+        <tr><td>6. A forged message claims to come from the cloud server.</td><td><select data-answer="S" aria-label="Threat 6 category"><option value="">choose</option><option value="S">Spoofing</option><option value="T">Tampering</option><option value="R">Repudiation</option><option value="I">Information disclosure</option><option value="D">Denial of service</option><option value="E">Elevation of privilege</option></select></td></tr>
+      </tbody>
+    </table>
+    <p><button class="btn" type="button" id="stride-check">Check my categories</button></p>
+    <div id="stride-feedback" class="q-feedback"></div>
+  </div>
+  <script>
+  (function () {
+    "use strict";
+    var box = document.getElementById("stride");
+    if (!box) { return; }
+    var why = {
+      T: "Changing the image is tampering: the data was modified. Signing (below) is the defence.",
+      I: "Reading the firmware out is information disclosure. Readout protection and debug lockdown are the defences.",
+      R: "No record of who did what is repudiation. An audit log with signed or authenticated entries fixes it.",
+      D: "A device that stops or loops is a denial of service. Input checks and a watchdog reduce it.",
+      E: "Gaining rights you should not have is elevation of privilege. Check authorisation on every privileged command.",
+      S: "A forged sender is spoofing. Authenticate the message, for example with a MAC or a signature."
+    };
+    var names = { S: "Spoofing", T: "Tampering", R: "Repudiation", I: "Information disclosure", D: "Denial of service", E: "Elevation of privilege" };
+    var selects = box.querySelectorAll("select[data-answer]");
+    var fb = document.getElementById("stride-feedback");
+    document.getElementById("stride-check").addEventListener("click", function () {
+      var right = 0, notes = [], missing = 0;
+      Array.prototype.forEach.call(selects, function (s, i) {
+        var want = s.getAttribute("data-answer");
+        if (!s.value) { missing++; return; }
+        if (s.value === want) { right++; }
+        else { notes.push("Threat " + (i + 1) + ": " + names[want] + ". " + why[want]); }
+      });
+      if (missing) {
+        fb.className = "q-feedback show bad";
+        fb.textContent = "Choose a category for every threat first (" + missing + " left).";
+        return;
+      }
+      fb.className = "q-feedback show " + (right === selects.length ? "good" : "bad");
+      fb.textContent = right + " of " + selects.length + " correct. " + notes.join(" ");
+    });
+  })();
+  </script>
+
+  <h2>A chain of trust: each stage checks the next</h2>
+  <p>
+    Secure boot starts from something the attacker cannot change, and each stage checks the next before it runs. On the RP2350, the bootrom is that root of trust, and it is fixed at design time. The bootrom checks a signature on the image before it runs the image, and it refuses an image whose signature does not verify (<a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet, section 10.1.1, Secure boot, p. 734</a>).
+  </p>
+  <p>
+    The check works in four steps: hash the image with SHA-256, verify the signature over the image's public key, compare the signed hash with the one you computed, and compare the public key with a fingerprint stored in one-time-programmable memory. A signature only proves something if the key is genuine, which is why the fingerprint sits in OTP and cannot be changed afterwards. The datasheet also describes an anti-rollback version number, held in an OTP counter, which stops an attacker from installing an older image with a known flaw.
+  </p>
+  <div class="note">
+    The RP2350 datasheet uses secp256k1 ECDSA over a SHA-256 hash for these signatures. Other designs use Ed25519 or ECDSA on a different curve. Check which algorithm your bootloader supports before you design a key scheme. Do not write your own cryptography: use a library that is reviewed.
+  </div>
+  <p>
+    A CRC, which lesson 101 used for damage, is not enough for this. Anyone can recompute a CRC after changing the data, because it has no secret. A signature needs the private key, and that is what an attacker cannot make.
+  </p>
+
+  <h2>Debug lockdown and readout protection</h2>
+  <p>
+    Debug access is a path around the software. The RP2350 datasheet says that a debugger can skip the bootrom entirely, and that disabling debug is part of the secure boot enable procedure (<a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet, section 10.1.1, and section 10.5 for the enable procedure</a>). Readout protection is the same idea for the flash contents: the chip refuses to let a debugger read the code back.
+  </p>
+  <p>
+    The STM32F103 has an option-byte status bit for this. In <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, <code>FLASH_OBR_RDPRT</code> is bit 1 of <code>FLASH_OBR</code>, named "Read protection". The protection levels, and what each one allows, are in the flash chapter of RM0008. This lesson did not open that chapter, so check the levels there, and remember that a level you set may be permanent. Readout protection stops casual copying; it does not stop an attacker with the time and equipment to attack the chip itself.
+  </p>
+
+  <h2>The RP2040 and the RP2350 compared</h2>
+  <p>
+    The RP2350 datasheet describes secure boot as a feature of the RP2350 bootrom, with the glitch detectors, the redundancy coprocessor and the OTP keys around it. The RP2040 is the earlier chip in this course. This lesson did not open the RP2040 datasheet, so before you say in an interview that the RP2040 has no secure boot, check its bootrom section. Once you have, the RP2350 is the chip to use for a product that needs a signed image.
+  </p>
+
+  <h2>Side channels and fault injection</h2>
+  <p>
+    A signature check in software can be attacked by a glitch, a short fault in the power or clock that makes a comparison succeed when it should fail. The RP2350 datasheet says exactly this: a pure-software secure boot is susceptible to fault injection, and the glitch detector and the redundancy coprocessor exist to stop it (section 10.1.1). Side-channel attacks read secrets from timing or power use. Both are physical attacks, and they matter when the attacker holds the device. The defence is in hardware and in the algorithm, and it is not something a firmware author can add with a single line.
+  </p>
+
+  <h2>The attack surface: where the device listens</h2>
+  <p>
+    Every interface is an attack surface: the debug port, the bootloader's update path, every serial or CAN message, and every command parser. Reduce the surface before you defend it. Turn off what you do not use, check every length field before you copy, and authenticate the commands that change state. Lesson 84 showed the watchdog and the fault handler, which turn a crash into a recovery and keep a device usable under attack.
+  </p>
+
+  <h2>The career point: the Cyber Resilience Act</h2>
+  <p>
+    The EU Cyber Resilience Act, Regulation (EU) 2024/2847, sets cybersecurity requirements for products with digital elements sold in the EU. It asks manufacturers for secure-by-default design, security updates over the product's life, and a vulnerability reporting duty. Firmware engineers now face these requirements in job descriptions, which is why secure boot, signed updates and a threat model show up on a CV. The official text is on <a href="https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng">EUR-Lex</a>. Secondary sites give the application dates, and they disagree on some of them. This lesson did not confirm the dates in the official text, so check Article 71 before you quote one.
+  </p>
+
+  <div class="win">You classified threats with STRIDE, explained a signed chain of trust, and know what debug lockdown and readout protection do and do not stop.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "An attacker replaces the application image in flash with their own build. Which STRIDE category fits?",
+        "options": ["Tampering with the image", "Information disclosure of data", "Repudiation of an action", "Denial of service attack"],
+        "answer": 0,
+        "why": "The image's contents were changed, which is tampering. The tempting answer, information disclosure, is about reading secrets, and the attacker here writes the image." },
+      { "type": "mc",
+        "prompt": "Why does a signature check resist a forger, when a CRC over the same image does not?",
+        "options": ["Blocks a forger outright", "Detects random bit flips", "Speeds up every boot", "Shrinks the image size"],
+        "answer": 0,
+        "why": "A CRC has no secret, so anyone can recompute it after changing the data. A signature needs the private key. The tempting answer, detects random bit flips, is what a CRC is good at, and it is not a forgery defence." },
+      { "type": "mc",
+        "prompt": "Why does RP2350 secure boot disable hardware debug as part of its enable procedure?",
+        "options": ["Debug could skip secure boot", "Debug would drain the battery", "Debug needs a signed image", "Debug uses the USB port"],
+        "answer": 0,
+        "why": "The datasheet says a debugger can skip the bootrom, so debug has to be closed for the check to mean anything. The tempting answer, the battery, is not the reason in the datasheet." },
+      { "type": "mc",
+        "prompt": "What does the RP2350 glitch detector address?",
+        "options": ["Fault injection during boot", "Slow clock during boot", "Flash wear during updates", "Missing USB enumeration here"],
+        "answer": 0,
+        "why": "The glitch detector mitigates fault injection, which is a short fault that makes a check pass. The tempting answer, a slow clock, is a performance problem, not a security one." },
+      { "type": "number",
+        "prompt": "How many STRIDE categories are there?",
+        "answer": 6, "tolerance": 0, "unit": "categories",
+        "why": "The six letters are Spoofing, Tampering, Repudiation, Information disclosure, Denial of service and Elevation of privilege. The tempting answer, four, is the number of CIA-style properties, which is a different list." },
+      { "type": "text",
+        "prompt": "On the RP2350, which part of the chain is the root of trust that is fixed at design time? One word.",
+        "accept": ["bootrom", "ROM", "boot rom"],
+        "why": "The bootrom is fixed at design time, and it verifies the first image. The tempting answer, the application, cannot be the root, because it is what the root checks." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 102: what does the VTOR register point at after the bootloader hands over?",
+        "accept": ["vector table", "the vector table", "application vector table"],
+        "why": "VTOR points exceptions at the application's vector table. The tempting answer, the bootloader's table, is what it pointed at before the hand-over." },
+      { "type": "text",
+        "prompt": "From lesson 84: once started, what can stop the independent watchdog (IWDG)?",
+        "accept": ["reset", "a reset", "resets"],
+        "why": "Once started, the IWDG cannot be stopped except by a reset. The tempting answer, a software write, is what a window watchdog does not allow either, and the IWDG has no such write." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you secure a device in the field, and what would you not rely on?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I would start with a threat model: the assets, the interfaces, and the threats by STRIDE category. I would build a chain of trust from a root of trust that the attacker cannot change, through a bootloader that verifies a signed image with a key whose fingerprint is fixed in one-time memory. I would close the debug port and set readout protection, knowing it does not stop a determined physical attacker. I would not rely on a CRC, which anyone can recompute, or on secrecy of the code, or on a hard-coded password in the firmware.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet (Raspberry Pi)</a>: read section 10.1.1, Secure boot (p. 734), for the signature steps, the anti-rollback counter, the fault-injection defences and the debug note. Section 10.5 is the enable procedure, and it is the source for the lockdown steps.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Build a threat model for a Modbus slave on an RS-485 bus: list the assets, the entry points and the trust boundaries, then tag each threat with a STRIDE category."
+    Related: <a href="0102-bootloaders-and-firmware-updates.html">Lesson 102: Bootloaders and firmware updates</a>, <a href="0099-rs-485-and-modbus-rtu.html">Lesson 99: RS-485 and Modbus RTU</a>, <a href="0084-robustness.html">Lesson 84: Robustness</a>, <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

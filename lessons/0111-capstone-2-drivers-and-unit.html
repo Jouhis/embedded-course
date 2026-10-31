@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 2: drivers and unit tests for the dryer · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0111">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 2: drivers and unit tests for the dryer</h1>
+  <p class="subtitle">A thermistor gives a number, and the number must become a temperature that the safety rules can trust. This lesson turns the ADC code into °C, drives the heater PWM, debounces the buttons, and tests every piece of pure logic on the PC before the firmware runs it.</p>
+
+  <div class="goal">
+    By the end of this lesson you can convert a 12-bit NTC reading to °C with the Beta equation, detect an open or shorted sensor, check a timer's PWM arithmetic, and write host unit tests (Unity, with an FFF fake for the hardware) that the firmware and the tests share.
+  </div>
+
+  <h2>The idea: a driver turns hardware into numbers</h2>
+  <p>
+    A driver is the code that talks to one piece of hardware. Its output should be a plain value with a known meaning: an ADC code, a duty cycle, a stable button level. Everything after the driver, the state machine and the safety checks, works on those values and never on registers. That split is what makes the logic testable: a test passes a number in and checks the number that comes out (lesson 80).
+  </p>
+  <p>
+    This lesson builds five pieces. The NTC conversion is pure C. The heater PWM, the fan and the buttons are thin wrappers over registers in the board file. The display reuses the SSD1306 driver from Labs 3 to 5. The debounce is the lesson 80 module. The state machine and the safety checks are pure, and they get the most tests.
+  </p>
+
+  <h2>The NTC: from an ADC code to degrees Celsius</h2>
+  <p>
+    The sensor is a negative-temperature-coefficient thermistor, an NTC: its resistance falls as it warms. The circuit is a voltage divider. The series resistor sits between 3.3 V and the output pin, and the NTC sits between the output and ground. The ADC reads the output node, so a warm NTC pulls the node down and the code falls with it (lesson 58 builds this divider and reads it on the Pico).
+  </p>
+  <p>
+    The Wokwi docs give the conversion from an analogue reading to a temperature in one line of C, with the Beta equation and a 10-bit full-scale constant of 1023 <a href="https://docs.wokwi.com/parts/wokwi-ntc-temperature-sensor">Wokwi docs: NTC temperature sensor</a>. The Blue Pill has a 12-bit ADC, so the constant becomes 4095. Nothing else changes:
+  </p>
+  <pre><code><span class="c">// full = 4095 (12-bit), raw = the ADC code, B = beta (3950), 298.15 K = 25 C
+</span>float inv_t = logf(1.0f / (full / (float)raw - 1.0f)) / 3950.0f + 1.0f / 298.15f;
+float celsius = 1.0f / inv_t - 273.15f;</code></pre>
+  <p>
+    The first line is the divider in disguise. The divider gives R<sub>ntc</sub> ÷ R<sub>series</sub> = 1 ÷ (full ÷ raw − 1), so the log is of the resistance ratio, and the Beta equation turns that ratio into a temperature. The beta constant is a property of the thermistor, not of the code, so it goes in the datasheet for the real part.
+  </p>
+  <div class="note">
+    <strong>Check the constant.</strong> If the code uses 1023 with a 12-bit ADC, every reading is wrong, and the error is silent: the numbers look plausible. Lesson 58 made this same mistake on purpose to show it. Write the full-scale constant as a named value and test a known reading.
+  </div>
+
+  <h2>Known values for the tests</h2>
+  <p>
+    A test needs an answer that does not come from the code under test. The values below come from an independent calculation of the same equation, in double precision. They are the numbers the host test checks.
+  </p>
+  <table>
+    <thead><tr><th>ADC code (12-bit)</th><th>Meaning</th><th>Temperature</th></tr></thead>
+    <tbody>
+      <tr><td>2048</td><td>Half scale: the NTC equals the 10 kΩ series resistor, which is the 25 °C reference</td><td>24.99 °C</td></tr>
+      <tr><td>1000</td><td>Warm: the NTC resistance is much lower</td><td>52.80 °C</td></tr>
+      <tr><td>3000</td><td>Cold</td><td>3.92 °C</td></tr>
+      <tr><td>15 or less, or 4080 or more</td><td>Shorted or open sensor</td><td>fault, no temperature</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The fault range matters as much as the conversion. A code near 0 means OUT is pulled to ground, which is an NTC that is shorted or a wire to GND. A code near 4095 means OUT is pulled up to 3.3 V through the series resistor, which is an open NTC. The logarithm is undefined at both ends, so the conversion must refuse those codes rather than return a number. The dryer's code returns <code>false</code> for them, and the caller treats the reading as a fault. A reading that is wrong by 30 degrees is more dangerous than no reading.
+  </p>
+  <div class="warning">
+    A pull-up or pull-down that the code does not know about changes which end is the NTC. The conversion above assumes the NTC is the lower resistor, as in the Wokwi part and in lesson 58. If you wire the NTC on top, the same code reads the wrong temperature. Check the schematic, not only the code.
+  </div>
+
+  <h2>The heater PWM: timer arithmetic</h2>
+  <p>
+    The heater is a resistive load, and its temperature changes over tens of seconds. A PWM frequency of 1 kHz is more than fast enough, and it stays above the audible range. Lesson 71 covers the timer blocks. The arithmetic here is worth doing once by hand:
+  </p>
+  <ul>
+    <li>The timer clock is 8 MHz (the HSI, lesson 67). A prescaler of 7 divides it by 8, giving a counter clock of 1 MHz.</li>
+    <li>The auto-reload value of 999 counts 1000 steps, so the period is 1000 ÷ 1 MHz = 1 ms, which is 1 kHz.</li>
+    <li>In PWM mode 1, the output is high while the counter is below the compare value. A compare of 0 is always low, and a compare of 1000 is always high, because the counter never reaches 1000.</li>
+  </ul>
+  <p>
+    That last point is why the duty is given in permille, from 0 to 1000, and why the driver clamps at 1000. The same hardware gives the 0 % and 100 % endpoints without any special case.
+  </p>
+
+  <h2>The buttons: one press, one event</h2>
+  <p>
+    A mechanical button bounces for a few milliseconds, so a naive read sees several presses. The debounce module from lesson 80 counts agreeing samples: the output changes only after three samples in a row agree (lesson 52 explains the physics). The button driver then turns a change from released to pressed into one event, and holding the button adds nothing. The events go into a flag that the control task reads once.
+  </p>
+
+  <h2>The display: the driver from Labs 3 to 5</h2>
+  <p>
+    The SSD1306 driver and its 5 × 7 font come from the Lab 5 code, unchanged except for one job: the font had no F, G, H, W, Y or percent sign, and the status screen needs them. Those glyphs were added in the same table, in the same format. The driver draws into a 1 KB framebuffer and sends it over I2C with a flush, which takes about 90 ms at 100 kHz. Lesson 112 explains why that matters for the schedule.
+  </p>
+  <p>
+    The text itself is built by <code>ui_compose()</code>, a pure function that fills four strings of 21 characters. The test checks the strings, because the learner reads those strings on the screen, and a wrong character is a visible bug.
+  </p>
+
+  <h2>The safety checks: pure logic with a test per rule</h2>
+  <p>
+    <code>safety_check()</code> returns the first fault it finds, in a fixed order: sensor, over-temperature, stale sample, then the heater runaway. The runaway rule is Klipper's <code>verify_heater</code> idea (klipper3d.org Config_Reference, [verify_heater]): while the heater is at full power and far below the setpoint, the temperature must rise by 2 °C within the window, and a rise restarts the window. Klipper's defaults are a 2 °C gain and a window of 20 s for extruders, and 60 s for the heated bed; the dryer uses 60 s with the 2 °C gain. A chamber has more thermal mass than a nozzle, so the longer window is the honest number. The state machine in <code>dryer.c</code> latches whatever the check returns.
+  </p>
+
+  <h2>Testing with Unity and FFF</h2>
+  <p>
+    The host test project compiles the same <code>app/*.c</code> files as the firmware (lesson 80's rule: the test runs the real code). Unity gives the assertions and FFF gives the fakes (lesson 81). CMock would generate fakes from headers, but it needs Ruby, which this workspace does not install, so the course uses FFF for the hands-on work.
+  </p>
+  <p>
+    The driver tests are the place for FFF. <code>sensor_read()</code> and <code>buttons_sample()</code> call <code>hal_adc_read_ntc()</code> and <code>hal_button_pressed()</code>, which exist only on the board. The test defines those two functions as FFF fakes, so the driver code runs on the PC with a scripted ADC code and a scripted button level. A fake records its calls, so a test can also check that the driver asked for one conversion, not two.
+  </p>
+
+  <h2>Try it: write the conversion and the safety checks</h2>
+  <p>
+    The starter has the whole dryer, but two pieces are stubs: the NTC conversion and the safety check. The three host test files that depend on them fail on purpose. Your task is to make them pass.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0111-dryer-host-tests/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0111-dryer-host-tests/starter --test</code> from the workspace root.</li>
+    <li>Read the failures. <code>test_ntc</code> fails because <code>ntc_centi_from_raw()</code> returns false for every code. <code>test_safety</code> fails because <code>safety_check()</code> never trips. <code>test_drivers</code> fails on the conversion test, because the sensor service depends on the conversion.</li>
+    <li>Implement the conversion in <code>projects/0111-dryer-drivers/starter/app/ntc.c</code>, following the TODO(learner) comment. Build the firmware with <code>python -I tools/build.py projects/0111-dryer-drivers/starter</code>.</li>
+    <li>Implement <code>safety_check()</code> in <code>projects/0111-dryer-drivers/starter/app/safety.c</code>, in the order of the TODO(learner) comment. Rerun the host tests. You know it works when all eight test programs pass, with <code>100% tests passed</code> in the summary.</li>
+    <li>Compare with the reference in <code>projects/0111-dryer-drivers/solution/app</code>, and read <code>test/test_drivers.c</code> to see how FFF replaces the hardware.</li>
+  </ol>
+  <details>
+    <summary>Hint for the conversion</summary>
+    <p>Reject the fault codes first, then compute the three steps of the formula in order, in floats. The final step multiplies by 100 and rounds with <code>lroundf()</code>, because the result is stored in hundredths of a degree. A test with raw 2048 should give 2499 or 2500, and that tolerance is in the test.</p>
+  </details>
+  <details>
+    <summary>Hint for the safety order</summary>
+    <p>Return the first fault you find, and do the cheap checks first. The runaway check has state: it must reset its window whenever the heater is not at full power or the chamber is near the setpoint, and it must restart the window after a rise of 2 °C. A test that sets the time 60 s after the window opened tells you whether the window logic is right.</p>
+  </details>
+
+  <div class="win">You turned a thermistor code into a temperature that the safety rules can trust, and you wrote tests that check the real code on the PC, with FFF standing in for the hardware. The next lesson puts these pieces on FreeRTOS.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The NTC reads a code of 4095. Which fault is most likely?",
+        "options": ["The NTC is open circuit now", "The NTC is shorted to GND", "The chamber is at 25 degrees"],
+        "answer": 0,
+        "why": "A code at full scale means OUT is pulled up through the series resistor, which is an open NTC. A short to ground gives a code near 0, and 25 degrees is half scale. The tempting answer, a short, has the codes the wrong way round." },
+      { "type": "mc",
+        "prompt": "The heater is not at full power. What does the runaway check do?",
+        "options": ["It resets its window and does not trip", "It trips once the sixty second window ends", "It keeps counting the window until stop pressed"],
+        "answer": 0,
+        "why": "The check verifies only a heater at full power, so any other case resets the window. The tempting answers keep a window running while the heater is not even trying, which would trip a healthy proportional controller." },
+      { "type": "mc",
+        "prompt": "Why does sensor_read() return the raw code even when the conversion fails?",
+        "options": ["So the log can show the raw value", "So the heater can be set from it", "So the fault can be cleared at once"],
+        "answer": 0,
+        "why": "The raw code is the evidence for a fault: it tells you whether the sensor is open or shorted. Using it to drive the heater is the dangerous option, and clearing a fault is the operator's job, not the driver's." },
+      { "type": "number",
+        "prompt": "With beta 3950 and a 12-bit ADC, what temperature in degrees C does a code of 2048 give? Give the value to within a quarter of a degree.",
+        "answer": 25, "tolerance": 0.01,
+        "why": "At half scale the NTC equals the 10 kΩ series resistor, which is the 25 °C reference of the beta equation, so the answer is 25. The tempting answer is 20, which is what a 10-bit full-scale constant of 1023 gives for the same code." },
+      { "type": "text",
+        "prompt": "Which fake library does the driver test use? Write its three letters.",
+        "accept": ["fff"],
+        "why": "FFF is the fake function framework in third_party/fff, which defines fakes as macros. Unity is the assertion framework, and CMock is the generator that needs Ruby, which this workspace does not install." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From <a href=\"0080-unit-testing-on-the-host.html\">lesson 80</a>: what does one bounce do to a debounce that needs three agreeing samples?",
+        "options": ["A bounce never confirms a press", "A bounce confirms the press once", "A bounce needs a longer wait"],
+        "answer": 0,
+        "why": "One bounce is one disagreeing sample, which resets the count, so it never reaches the confirmation threshold. The tempting answer, a confirmed press, is what a debounce is for preventing. The third is a different fix, not the mechanism." },
+      { "type": "number",
+        "prompt": "From <a href=\"0071-timers.html\">lesson 71</a>: a 1 MHz counter clock and an auto-reload of 999 give what PWM frequency in hertz?",
+        "answer": 1000, "tolerance": 0,
+        "why": "The period is 1000 counts at 1 MHz, which is 1 ms, so the frequency is 1000 Hz. The tempting answer, 999, is the auto-reload value and not the frequency." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How do you test firmware logic that depends on hardware, without the hardware?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I put the logic in plain C that takes values as inputs and returns values, and I keep registers behind a small HAL interface. The host build compiles the same logic files, and the HAL is either replaced by fakes, such as FFF functions that return scripted values and record their calls, or not called at all, because the logic is pure. Then Unity checks the outputs, including the fault cases and the boundaries. The hardware tests still run on the board, but the logic is covered on the PC in milliseconds, and CI runs it on every commit.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.wokwi.com/parts/wokwi-ntc-temperature-sensor">Wokwi docs: NTC temperature sensor</a>: the pins, the beta attribute, and the Beta formula with its 10-bit constant. Read it to see the formula that this lesson adapts to 12 bits; then check your result against the table above.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why is the runaway window 60 seconds for a dryer when Klipper uses 20 seconds for an extruder?"
+    Related: <a href="0080-unit-testing-on-the-host.html">Lesson 80: Unit testing on the host</a>, <a href="0081-mocks-and-fakes.html">Lesson 81: Mocks and fakes</a>, and <a href="0058-adc.html">Lesson 58: ADC</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

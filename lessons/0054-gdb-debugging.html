@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GDB debugging · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0054">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>GDB debugging: breakpoints, watchpoints, and memory</h1>
+  <p class="subtitle">When a value is wrong, <code>printf</code> tells you what it is. A watchpoint tells you which instruction changed it, and that is usually the answer you need. GDB gives you both, and it works with the simulator the same way it works with a probe on a real board.</p>
+
+  <div class="goal">
+    By the end of this lesson you can stop the Pico simulator on a memory write with a watchpoint, examine memory with <code>x</code>, and find the statement that corrupts a neighbouring variable.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    GDB runs on your PC and talks to a GDB server. In Wokwi, the server is inside the simulator, and <code>gdbServerPort = 3333</code> in <code>wokwi.toml</code> is the port it listens on <a href="https://docs.wokwi.com/vscode/debugging">(Wokwi debugging docs)</a>. The debugger reads and writes registers and memory through that port. The chip does not know it is being debugged: a breakpoint is the core running a <code>BKPT</code> instruction or a hardware comparator, and a watchpoint is the core's own comparator on a data address.
+    <span class="sidenote">This is the same protocol a probe such as an SWD debugger uses on a real board. Lesson 32 used GDB to step through compiled C, and this lesson uses it to find a bug.</span>
+  </p>
+  <p>
+    The Cortex-M0+ in the RP2040 has four hardware breakpoint comparators and two watchpoint comparators. Software breakpoints (the <code>BKPT</code> instruction) are not limited <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.4.2.4)</a>. Two watchpoints are enough for one bug at a time, but they are a hard limit: a third watch needs you to delete one.
+  </p>
+
+  <h2>Start a session</h2>
+  <ol class="steps">
+    <li>Build the project with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The course builds in Debug mode: debug symbols (<code>-g</code>) and light optimisation (<code>-Og</code>), so stepping follows your source closely. A release build (<code>python tools/build.py &lt;project&gt; --release</code>) optimises harder, and the stepping order can then jump around.</li>
+    <li>Start the simulator first: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Starting the debugger first makes it fail to connect. The Wokwi docs also offer <em>Wokwi: Start Simulator and Wait for Debugger</em>, which pauses before the first instruction until GDB attaches.</li>
+    <li>Press <kbd>F5</kbd>. The project's <code>.vscode/launch.json</code> connects to <code>localhost:3333</code>, and the debugger stops at the start of the program.</li>
+  </ol>
+
+  <h2>The commands you need</h2>
+  <p>
+    The VS Code debug toolbar covers stepping. The debug console accepts GDB commands directly if you prefix them with <code>-exec</code>, for example <code>-exec x/8xb &amp;frame</code>. Here are the commands for this lesson. The full list is in the reference sheet.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Command</th><th>What it does</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>break main</code>, <code>break file.c:42</code></td><td>Stop when execution reaches a function or line.</td></tr>
+      <tr><td><code>continue</code> (<code>c</code>)</td><td>Run until the next stop.</td></tr>
+      <tr><td><code>next</code> (<code>n</code>) and <code>step</code> (<code>s</code>)</td><td>Run one source line, stepping over or into calls.</td></tr>
+      <tr><td><code>finish</code></td><td>Run until the current function returns, and print its return value.</td></tr>
+      <tr><td><code>bt</code></td><td>Print the call stack, from the current function up to <code>main</code>.</td></tr>
+      <tr><td><code>info registers</code></td><td>Show <code>r0</code> to <code>r12</code>, <code>sp</code>, <code>lr</code>, <code>pc</code> and <code>xPSR</code>. Lesson 31 explains each one.</td></tr>
+      <tr><td><code>print frame</code>, <code>print/x frame.sentinel</code></td><td>Show a variable, optionally in hex.</td></tr>
+      <tr><td><code>x/8xb &amp;frame</code></td><td>Examine memory: eight bytes in hex, starting at the address of <code>frame</code>.</td></tr>
+      <tr><td><code>set var seed = 0x20</code></td><td>Change a variable while the program is stopped.</td></tr>
+      <tr><td><code>watch frame.sentinel</code></td><td>Stop when the value of that object changes.</td></tr>
+      <tr><td><code>info breakpoints</code>, <code>delete 2</code></td><td>List the breakpoints and watchpoints, or remove one.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The <code>x</code> command has the form <code>x/NFU address</code>. <code>N</code> is a count, <code>F</code> is a format (<code>x</code> for hex, <code>d</code> for decimal, <code>s</code> for a string) and <code>U</code> is the unit size (<code>b</code> for byte, <code>h</code> for halfword, <code>w</code> for word). <code>x/8xb &amp;frame</code> therefore prints eight bytes in hex, which is the whole <code>data[]</code> array in the struct you will meet in the task.
+  </p>
+  <div class="note">A watchpoint on a variable stops the program when the variable's bytes change. It does not stop on the line that assigns it, but on the store that changed the bytes. That is the line you want: it is the one that corrupted the value, even when the name in the statement is a different variable.</div>
+
+  <h2>A watchpoint on a neighbour</h2>
+  <p>
+    Here is the shape of the bug in the task. A struct holds a fixed-length array, and a byte right after the array is a sentinel. An off-by-one loop writes one element past the end. The write lands on the sentinel, which is adjacent in memory. From the struct's point of view it is a valid assignment, so the compiler does not complain.
+  </p>
+  <pre><code><span class="k">typedef struct</span> {
+    <span class="k">uint8_t</span> data[FRAME_LEN];   <span class="c">/* bytes 0 to 7 */</span>
+    <span class="k">uint8_t</span> sentinel;           <span class="c">/* byte 8: one past data[] */</span>
+} frame_t;
+
+<span class="k">for</span> (uint32_t i = 0; i <span class="c">&lt;=</span> FRAME_LEN; i++) {
+    f-&gt;data[i] = (<span class="k">uint8_t</span>)(seed + i);   <span class="c">/* i == 8 writes the sentinel */</span>
+}</code></pre>
+  <p>
+    The debugging method is the one to remember. Confirm the symptom with a print, then set a watchpoint on the value that should not change. <code>continue</code> runs until the watchpoint fires, and GDB prints the old value, the new value, and the line where the store happened. Then <code>bt</code> shows how you got there, and <code>x</code> shows the memory around the address.
+  </p>
+  <div class="warning">Watchpoints are a feature of the core's debug unit, and the simulator must implement them. The Wokwi docs do not list watchpoints, so confirm that the watch stops in the simulator before you rely on it. If it does not, use the fallback below, which uses only breakpoints.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0054-gdb-watchpoint</code>. The starter prints a line every second, and the line says the sentinel is corrupted. Your job is to find the write that corrupts it, and fix that statement. The sentinel is a global, so it has a fixed address that GDB can watch.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0054-gdb-watchpoint/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build, start the simulator, then press <kbd>F5</kbd>.</li>
+    <li>Your task: set a watchpoint on <code>frame.sentinel</code>, with <code>watch frame.sentinel</code> in the debug console. Continue with <code>c</code> until GDB stops. Read the old and new values. Use <code>bt</code> to see the call, and <code>x/9xb &amp;frame</code> to see the eight data bytes and the sentinel together.</li>
+    <li>The stop shows the line that wrote the byte. Fix that line so the loop does not write past <code>data[]</code>. Stop the debugger, rebuild, start the simulator again, and press <kbd>F5</kbd>.</li>
+    <li>You will know it works when the serial monitor prints <code>GDB WATCH OK</code> every second, with the sentinel intact at <code>0xa5</code>.</li>
+  </ol>
+  <details>
+    <summary>Fallback if the watchpoint never stops</summary>
+    <p>Use breakpoints, which the core has in hardware. Set <code>break build_frame</code>, continue, then use <code>next</code> through the loop and print <code>frame.sentinel</code> with <code>print/x frame.sentinel</code> on each pass. The first pass where the value changes is the one that writes past the array. This is slower than a watchpoint, but it finds the same line.</p>
+  </details>
+  <details>
+    <summary>Hint for the bound</summary>
+    <p>Count the elements. <code>data[]</code> has <code>FRAME_LEN</code> elements, indexed 0 to <code>FRAME_LEN − 1</code>. A loop that stops when <code>i</code> is <em>less than</em> <code>FRAME_LEN</code> never reaches the sentinel.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0054-gdb-watchpoint/solution</code>. Try first, compare after. Its comment on <code>build_frame()</code> names the bug and the fix.</p>
+
+  <div class="win">You stopped the simulated Pico on the instruction that wrote a byte it should not, read the value with <code>x</code>, and fixed the bound. That is the method for any memory corruption: a watchpoint on the value, then the backtrace of the write.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which command shows the eight bytes at &amp;frame in hex?",
+        "options": [
+          "x/8xb &amp;frame",
+          "print frame.data",
+          "info registers",
+          "backtrace frame"
+        ],
+        "answer": 0,
+        "why": "x/8xb examines eight bytes in hex at the given address, so it shows the sentinel too. The tempting answer, print frame.data, shows the array in C form with decimal values and stops at the array's end. info registers lists CPU registers, not variables, and backtrace prints the call stack." },
+      { "type": "mc",
+        "prompt": "Why is the sentinel corrupted if the loop writes data[8]?",
+        "options": [
+          "It follows the data array",
+          "It is the array length",
+          "It is the seed value",
+          "It lives in a struct"
+        ],
+        "answer": 0,
+        "why": "In this struct the sentinel sits right after the array, so data[8] is the sentinel's address. The compiler accepts the write, because the index is an ordinary integer. The tempting answer, the array length, is a value the loop compares against, not a memory location." },
+      { "type": "mc",
+        "prompt": "How many hardware watchpoint comparators does the RP2040's Cortex-M0+ have?",
+        "options": [
+          "Two",
+          "Four",
+          "Eight",
+          "Ten"
+        ],
+        "answer": 0,
+        "why": "The core has two watchpoint comparators, which the datasheet lists in its debug features. The tempting answer, four, is the number of hardware breakpoints. Software breakpoints are not limited by that count, since they use the BKPT instruction." },
+      { "type": "mc",
+        "prompt": "Why should you start the Wokwi simulator before pressing F5?",
+        "options": [
+          "It connects to a running server",
+          "Builds are made only in Wokwi",
+          "The serial port needs Wokwi open",
+          "The project file is read only"
+        ],
+        "answer": 0,
+        "why": "The debugger connects to the GDB server that the simulator runs on port 3333, so the simulator must be running first. The tempting answer about the serial port is a separate matter, and the build is made by the CMake task, not by Wokwi." },
+      { "type": "text",
+        "prompt": "Which GDB command changes a variable while the program is stopped? Write the command word only.",
+        "accept": ["set", "set var", "setvar"],
+        "why": "set var changes a value in memory while the program is stopped. The tempting answer, print, shows a value, and in GDB print can also assign with print x = 5, but set var is the command for assignment." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 46: what does volatile tell the compiler about an access?",
+        "options": [
+          "Each access is kept",
+          "It lives in flash",
+          "It is cached once",
+          "It is linked globally"
+        ],
+        "answer": 0,
+        "why": "volatile makes each access an observable side effect, so the compiler cannot remove or merge it. The tempting answer, flash storage, is what const does for read-only data. The tempting answer about caching is exactly what volatile prevents." },
+      { "type": "number",
+        "prompt": "From lesson 38: the SIO base is 0xD0000000 and GPIO_OUT is at offset 0x010. What is the address of GPIO_OUT, in hex?",
+        "answer": 3489660944, "tolerance": 0, "unit": "",
+        "why": "0xD0000000 + 0x10 = 0xD0000010, which is 3489660944 in decimal. The tempting answer, 0xD0000014, is GPIO_OUT_SET, the next register." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A global variable gets a wrong value, and no code in your file obviously writes it. How do you find the writer?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I'd confirm the wrong value is real with a print or a read of memory, then find its address and set a watchpoint on it, so the debugger stops at the first write that changes it. The backtrace shows which function did the write. If the watchpoint is unavailable, I'd break at the suspect function and step through it, checking the value on each pass. The usual causes are an out-of-bounds write into a neighbour, a DMA or ISR writing the wrong buffer, or a pointer that aims at the wrong struct. I'd also check the map file to see what sits next to the variable.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.wokwi.com/vscode/debugging">Wokwi: debugging in VS Code</a>: read the Setup and Starting a session sections, and the note about starting the simulator before the debugger. For the GDB commands, use the GDB manual's sections on breakpoints and watchpoints, and the <code>x</code> command, which the reference sheet summarises.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how to watch a struct field that is read by an ISR, and what GDB does if the watchpoint fires inside the ISR."
+    Related: <a href="0032-reading-arm-assembly.html">Lesson 32: Reading ARM assembly and stepping in GDB</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers and struct overlays</a>, and <a href="../reference/gdb.html">GDB commands reference</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

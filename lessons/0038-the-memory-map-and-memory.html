@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The memory map and memory-mapped registers · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0038">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>The memory map and memory-mapped registers</h1>
+  <p class="subtitle">A peripheral register is just an address. Once you can compute that address from a base and an offset, the struct syntax in the vendor header stops being magic.</p>
+
+  <div class="goal">
+    By the end of this lesson you can compute the address of a peripheral register from its base address and offset, write it through a pointer, and check that the raw write and the struct access land on the same address.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The core sees one flat 32-bit address space. Each region of that space is assigned to something: flash, SRAM, or a peripheral. The assignment is the <a href="../reference/glossary.html#memory-map">memory map</a>. The core reaches a peripheral with an ordinary load or store to an address inside its region. A register inside a peripheral that is reached this way is a <strong>memory-mapped register</strong>.
+    <span class="sidenote">This is why the architecture course's "load and store" model covers peripherals too. A write to GPIO is a store instruction, and the bus delivers it to the GPIO block instead of to RAM.</span>
+  </p>
+  <p>
+    A peripheral has a <strong>base address</strong>, the start of its block, and each register sits at a fixed <strong>offset</strong> from that base. So the register's address is <code>base + offset</code>. The header files and the reference manual both give you the base and the offset, and the struct in the header is only a convenient way to write the same arithmetic.
+  </p>
+
+  <h2>The RP2040 map, in brief</h2>
+  <table>
+    <thead><tr><th>Region</th><th>Address</th><th>What is there</th></tr></thead>
+    <tbody>
+      <tr><td>ROM</td><td><code>0x00000000</code></td><td>16 kB bootrom</td></tr>
+      <tr><td>XIP</td><td><code>0x10000000</code></td><td>Flash window, cacheable (lesson 36)</td></tr>
+      <tr><td>SRAM</td><td><code>0x20000000</code></td><td>264 kB, six banks</td></tr>
+      <tr><td>APB peripherals</td><td><code>0x40000000</code></td><td>Clocks, GPIO bank, UARTs, timers and more</td></tr>
+      <tr><td>AHB-Lite peripherals</td><td><code>0x50000000</code></td><td>DMA, USB, PIO</td></tr>
+      <tr><td>SIO (single-cycle IO)</td><td><code>0xD0000000</code></td><td>GPIO set, clear and toggle registers</td></tr>
+      <tr><td>Cortex-M0+ internal</td><td><code>0xE0000000</code></td><td>NVIC, SysTick and the system control block</td></tr>
+    </tbody>
+  </table>
+  <p>
+    That table is the datasheet's summary: <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, Table 15 in section 2.2.1, with the detail in 2.2.2</a>. Within the APB region the blocks are 16 kB apart. For example, the clocks block base is <code>0x40008000</code> (section 2.15.7), the GPIO bank IO base is <code>0x40014000</code> (section 2.19.6.1), and the GPIO pad control base is <code>0x4001C000</code> (section 2.19.6.3).
+  </p>
+  <p>
+    The SIO block is special. It is the single-cycle IO block attached to the cores' IO ports, not an APB peripheral. Its registers start at <code>0xD0000000</code>. Its GPIO registers are at fixed offsets: <code>GPIO_OUT</code> at <code>0x010</code>, <code>GPIO_OUT_SET</code> at <code>0x014</code>, <code>GPIO_OUT_CLR</code> at <code>0x018</code> and <code>GPIO_OUT_XOR</code> at <code>0x01C</code>. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.3.1.7 (SIO list of registers)</a>.
+  </p>
+
+  <h2>The STM32F103 map, from the header</h2>
+  <p>
+    The ST device header defines the regions. The flash starts at <code>FLASH_BASE = 0x08000000</code>, SRAM at <code>SRAM_BASE = 0x20000000</code>, and the peripheral region at <code>PERIPH_BASE = 0x40000000</code>. APB2 is <code>PERIPH_BASE + 0x10000</code>, GPIOC is <code>APB2PERIPH_BASE + 0x1000</code> and the RCC is <code>AHBPERIPH_BASE + 0x1000</code>. All of these come from <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 130" role="img" aria-label="The address of GPIOC BSRR is the GPIOC base 0x40011000 plus the offset 0x10, giving 0x40011010">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="10" y="30" width="150" height="50" rx="4"/>
+        <rect x="200" y="30" width="110" height="50" rx="4"/>
+        <rect x="350" y="30" width="200" height="50" rx="4"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="13" text-anchor="middle">
+        <text x="85" y="52">GPIOC base</text>
+        <text x="85" y="70">0x40011000</text>
+        <text x="255" y="52">+ BSRR offset</text>
+        <text x="255" y="70">0x10</text>
+        <text x="450" y="52">BSRR address</text>
+        <text x="450" y="70">0x40011010</text>
+        <text x="180" y="62" font-size="18">+</text>
+        <text x="335" y="62" font-size="18">=</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Base plus offset gives the register address. The struct field <code>GPIOC-&gt;BSRR</code> is the compiler doing this sum for you.</figcaption>
+  </figure>
+
+  <h2>Writing the address yourself</h2>
+  <p>
+    The C form of a register is a pointer to <code>volatile</code>. <code>volatile</code> tells the compiler that each access must really happen, because the hardware can change the value at any time, and that the access must not be merged or removed. Lesson 46 covers why this matters.
+  </p>
+  <pre><code><span class="c">/* GPIOC base 0x40011000 + BSRR offset 0x10 */</span>
+<span class="k">#define</span> GPIOC_BSRR_ADDR  (0x40011000UL + 0x10UL)
+
+<span class="c">/* A write through this pointer is a store to 0x40011010. */</span>
+<span class="k">volatile</span> uint32_t *bsrr = (<span class="k">volatile</span> uint32_t *)GPIOC_BSRR_ADDR;
+*bsrr = GPIO_BSRR_BR13;     <span class="c">/* bit 29: reset PC13, the LED on the Blue Pill */</span></code></pre>
+  <div class="warning">A write to BSRR sets or resets only the bits you name, and bits written as 0 leave their pins alone. That is why it is safer than reading the output register, changing one bit and writing it back, which can race an interrupt. The template uses BSRR for this reason. The bit meanings are in the GPIO section of RM0008.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project has a starter and a solution. The starter blinks the LED through <code>GPIOC-&gt;BSRR</code>, and your task is to replace those two writes with raw writes.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0038-memory-map/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Find the two <code>TODO(learner)</code> lines in <code>main.c</code>. Compute the BSRR address from GPIOC base and the BSRR offset, then write <code>GPIO_BSRR_BR13</code> and <code>GPIO_BSRR_BS13</code> through a <code>volatile</code> pointer to that address.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor should still print <code>LED on</code> and <code>LED off</code> in turn.</li>
+    <li>Compare with <code>projects/0038-memory-map/solution</code>. Its first lines print the BSRR address and the line <code>address check OK</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The GPIOC base is <code>0x40011000</code>, and the BSRR offset is the 5th word of <code>GPIO_TypeDef</code>, which is <code>0x10</code>. The pointer type must be <code>volatile uint32_t *</code>.</p>
+  </details>
+
+  <div class="win">You computed a peripheral register address from its base and offset, wrote it through a volatile pointer, and checked that it matches the struct access. Every peripheral in this course works this way underneath.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "GPIOC base is 0x40011000 and the BSRR offset is 0x10. Which address is GPIOC->BSRR?",
+        "options": ["0x40011010", "0x40011000", "0x40010010", "0x40021010"],
+        "answer": 0,
+        "why": "The register address is base plus offset: 0x40011000 + 0x10 = 0x40011010. The tempting answer, 0x40011000, is the base with no offset: the start of the block, not BSRR. 0x40010010 uses the APB2 base instead of the GPIOC base." },
+      { "type": "number",
+        "prompt": "What is the RP2040 SIO base address? Type it in hex, for example 0x1234.",
+        "answer": 3489660928, "tolerance": 0, "unit": "",
+        "why": "SIO_BASE is 0xD0000000 (RP2040 datasheet section 2.3.1.7). In decimal that is 3489660928. The tempting answer, 0x40000000, is the APB peripheral base, not the SIO." },
+      { "type": "mc",
+        "prompt": "Which address is the RP2040 GPIO_OUT_CLR register, at SIO offset 0x018?",
+        "options": ["0xD0000018", "0xD0000014", "0x40000018", "0xD0000010"],
+        "answer": 0,
+        "why": "SIO base 0xD0000000 plus offset 0x018 gives 0xD0000018 (section 2.3.1.7). The tempting answer, 0xD0000014, is GPIO_OUT_SET, one register earlier in the same list." },
+      { "type": "text",
+        "prompt": "Which C type should a pointer to a hardware register point to? Write it as one word, using the standard C spelling.",
+        "accept": ["volatile uint32_t*", "uint32_t volatile*", "volatileuint32_t*", "volatile uint32_t"],
+        "why": "The register is hardware-controlled, so each access must be real: the pointer is volatile uint32_t *. Without volatile, the compiler may remove or merge the writes, which lesson 46 shows." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 8: a 10 kΩ resistor on top and a 10 kΩ resistor below, from a 3.3 V supply. What is the output voltage in volts?",
+        "answer": 1.65, "tolerance": 0.01, "unit": "V",
+        "why": "A voltage divider gives Vout = Vin × R2 ÷ (R1 + R2) = 3.3 × 10 ÷ 20 = 1.65 V. The tempting answer, 3.3 V, is the supply, which the divider never reaches." },
+      { "type": "text",
+        "prompt": "From lesson 31: which Cortex-M register is the program counter, written as R-number?",
+        "accept": ["PC", "R15", "r15"],
+        "why": "The program counter is R15 (PC). The tempting answer, LR, is the link register, which holds the return address." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is a memory-mapped register, and what does the compiler emit when you write a value to a GPIO's BSRR field?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>A memory-mapped register is a peripheral control register that sits at a fixed address in the memory map, so the core reaches it with ordinary loads and stores. The compiler computes base plus offset, loads that address into a register, and emits a single store, such as <code>str</code>, to it. The bus delivers the store to the GPIO block, which decodes the offset and acts on it. The pointer must be volatile, so the store is not optimised away.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.2 (Address Map) and its Table 15, then the register list at section 2.3.1.7 for the SIO offsets. The base and offset arithmetic is the same on the STM32, where the header plays the role of the list.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the disassembly of the raw BSRR write and point to the address in the register."
+    Related: <a href="0037-bus-architecture.html">Lesson 37: Bus architecture</a>, <a href="0043-navigating-a-reference-manual.html">Lesson 43: Navigating a reference manual</a>, and <a href="../reference/glossary.html#peripheral-register">Glossary: Peripheral register</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

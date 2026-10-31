@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reading ARM assembly · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0032">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Reading ARM assembly</h1>
+  <p class="subtitle">The compiler has already made every decision in your C code. The disassembly shows those decisions, and you can check them line by line.</p>
+
+  <div class="goal">
+    By the end of this lesson you can find a C function in the disassembly of a real Pico build, match its loop to the C code, and step through its first instructions in a debugger.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The compiler turns each C function into machine instructions, and the linker places them at addresses in flash. The file <code>build/blink.elf</code> keeps those addresses and the function names. The tool <code>arm-none-eabi-objdump</code> prints each function as a listing: an address, the raw bytes, and the instruction. You do not need to memorise the instruction set to read a short function. You need the four things below.
+  </p>
+  <ul>
+    <li><strong>The function's address</strong>, which is the label line such as <code>10000280 &lt;sum_to&gt;:</code>.</li>
+    <li><strong>The argument registers on entry.</strong> The first argument arrives in R0 under the calling convention (lesson 33).</li>
+    <li><strong>The branches.</strong> A conditional branch backwards is a loop, and a <code>bx lr</code> is a return.</li>
+    <li><strong>The return value.</strong> It leaves in R0.</li>
+  </ul>
+  <p>
+    The Pico's program is stored in flash at <code>0x10000000</code>, which the RP2040 datasheet calls XIP (execute in place) (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, §2.2.1</a>). That is why the function addresses in the listing start at <code>10000280</code>.
+    <span class="sidenote">The bytes in the listing are 16-bit Thumb instructions, two bytes each. A few are 32-bit, such as the <code>bl</code> call, which takes two halfwords. Lesson 29 decoded the 16-bit forms field by field.</span>
+  </p>
+
+  <h2>The code</h2>
+  <p>
+    The function sums 1 to <em>n</em>. It is marked <code>noinline</code> so that it keeps its own symbol and the disassembly shows it as a unit. The starter <code>main.c</code> calls it with 100 and prints the result.
+  </p>
+  <pre><code><span class="c">__attribute__((noinline))</span>
+uint32_t sum_to(uint32_t n) {
+    uint32_t total = 0;
+    for (uint32_t i = 1; i &lt;= n; i++) {
+        total += i;
+    }
+    return total;
+}</code></pre>
+
+  <h2>The disassembly, from a real build</h2>
+  <p>
+    This listing is the output of <code>arm-none-eabi-objdump -d --disassemble=sum_to build/blink.elf</code> on the project in <code>projects/0032-reading-arm-assembly</code>, built with <code>CMAKE_BUILD_TYPE=Release</code> (in <code>build/CMakeCache.txt</code>). Your addresses and bytes will match if you build the same code with the same toolchain.
+  </p>
+  <pre><code>10000280 &lt;sum_to&gt;:
+10000280:	1e02      	subs	r2, r0, #0          <span class="c">@ r2 = n; set flags for n == 0</span>
+10000282:	d006      	beq.n	10000292            <span class="c">@ n == 0: return 0 at once</span>
+10000284:	2301      	movs	r3, #1              <span class="c">@ i = 1</span>
+10000286:	2000      	movs	r0, #0              <span class="c">@ total = 0</span>
+10000288:	18c0      	adds	r0, r0, r3         <span class="c">@ total += i   (loop starts here)</span>
+1000028a:	3301      	adds	r3, #1              <span class="c">@ i++</span>
+1000028c:	429a      	cmp	r2, r3              <span class="c">@ compare n with i</span>
+1000028e:	d2fb      	bcs.n	10000288            <span class="c">@ if n &gt;= i (unsigned), loop back</span>
+10000290:	4770      	bx	lr                  <span class="c">@ return; the result is in R0</span>
+10000292:	2000      	movs	r0, #0              <span class="c">@ the n == 0 path</span>
+10000294:	e7fc      	b.n	10000290            <span class="c">@ go to the return</span></code></pre>
+  <p>
+    The compiler moved <code>n</code> into R2 at the start. The first two instructions handle the case <code>n == 0</code>, so the loop never has to run with an empty range. The loop body is the four instructions from <code>10000288</code> to <code>1000028e</code>. The <code>bcs.n</code> is taken while <code>n</code> is at least <code>i</code>, which is the same as "while <em>i</em> ≤ <em>n</em>" in C.
+    <span class="sidenote">The <code>.n</code> suffix means the narrow, 16-bit form of the branch. The disassembler adds it so you can see the instruction size.</span>
+  </p>
+
+  <h2>The caller, from the same build</h2>
+  <pre><code>10000298 &lt;main&gt;:
+10000298:	b510      	push	{r4, lr}
+1000029a:	f003 fdfd 	bl	10003e98 &lt;stdio_init_all&gt;
+1000029e:	2064      	movs	r0, #100	<span class="c">@ 0x64: the argument n</span>
+100002a0:	f7ff ffee 	bl	10000280 &lt;sum_to&gt;
+100002a4:	4b04      	ldr	r3, [pc, #16]
+100002a6:	0001      	movs	r1, r0            <span class="c">@ the result goes to the printf argument</span></code></pre>
+  <p>
+    The caller puts 100 in R0 and calls <code>sum_to</code> with <code>bl</code>. The result comes back in R0, and the next line copies it to R1 for <code>printf</code>. This is the calling convention in action, and lesson 33 explains the rules.
+  </p>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "How many instructions make up the loop body in the sum_to listing?",
+        "options": ["Four instructions", "Three instructions", "Five instructions"],
+        "answer": 0,
+        "why": "The loop runs from 10000288 to 1000028e, which is four instructions: adds, adds, cmp and bcs.n. The tempting answer is three, which leaves out the adds that increments i." },
+      { "type": "mc",
+        "prompt": "What does the bcs.n at 1000028e do?",
+        "options": ["Loops back while n is at least i", "Exits to the caller and frees all memory", "Calls sum_to again from the top of it"],
+        "answer": 0,
+        "why": "bcs branches when the carry flag is set after the cmp, which means n is at least i with an unsigned compare. So the loop repeats while i is at most n. The tempting answer is the call one, because a backward branch looks like a call, but a call would use bl and save a return address." },
+      { "type": "text",
+        "prompt": "On entry to sum_to, which register holds the argument n?",
+        "accept": ["R0", "r0"],
+        "why": "The first subs reads R0 and copies it to R2, so n arrives in R0. The tempting answer is R2, which holds n only after the first instruction runs." },
+      { "type": "number",
+        "prompt": "What value does sum_to(100) return, in decimal?",
+        "answer": 5050, "tolerance": 0,
+        "why": "The sum of 1 to 100 is 100 × 101 ÷ 2 = 5050. The tempting answer is 10100, which is 100 × 101 and forgets the division by two." },
+      { "type": "mc",
+        "prompt": "Why does the project mark sum_to as noinline?",
+        "options": ["Keeps sum_to as its own symbol", "Makes the loop run much faster", "Stops main from calling any function"],
+        "answer": 0,
+        "why": "noinline keeps the function as a separate symbol, so it appears in the listing as one unit. It does not change the loop's speed. The tempting answer is the speed one, because people often reach for noinline to tune performance, but here it is for readability." }
+    ] }
+    </script>
+  </div>
+
+  <h2>Try it: step through it in the debugger</h2>
+  <p>
+    The debugger shows the same instructions one at a time, with the registers beside them. You will use the GDB console. Lesson 54 covers GDB in depth.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0032-reading-arm-assembly</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>In a terminal, run <code>arm-none-eabi-objdump -d build/blink.elf</code> and find <code>sum_to</code>. Check that your addresses match the listing above.</li>
+    <li>Press <kbd>F5</kbd> to start the simulator under GDB. In the GDB console, type <code>break *0x10000280</code> and then <code>continue</code>. This stops on the first instruction of <code>sum_to</code>.</li>
+    <li>In the GDB console, type <code>disassemble sum_to</code> and check that it matches the listing.</li>
+    <li>Type <code>stepi</code> three times. After each one, type <code>info registers r0 r2 r3 pc</code>. Predict each PC before you look: it moves by 2 bytes at a time, and the first <code>stepi</code> lands on <code>10000282</code>.</li>
+    <li>For a visual view, right-click in the editor and open the disassembly view. The GDB command <code>layout asm</code> is for a terminal interface and does not work in VS Code.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>If the stop comes from the start of the program instead, the address is wrong: check that the listing's first address for <code>sum_to</code> matches the one in your build. Use <code>info registers pc</code> to see where you are.</p>
+  </details>
+  <div class="note">We did not run these debugger steps inside Wokwi for this lesson, because no Wokwi CI token was available when the lesson was written. The GDB commands are standard, and the listing is real. If the debugger view differs from the steps above, trust what you see and tell the teacher agent.</div>
+
+  <div class="win">You found a C function in a real Pico build, matched its loop and return to the C code, and traced the first instructions in a debugger. From here you can read any disassembly that a debugger gives you.</div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "In lesson 2, which file tells the simulator where the firmware ELF is?",
+        "accept": ["wokwi.toml"],
+        "why": "wokwi.toml names the ELF file under elf and firmware. diagram.json describes the parts and wiring, which is the tempting wrong answer." },
+      { "type": "text",
+        "prompt": "In lesson 11, which transistor region do you use to switch a load fully on?",
+        "accept": ["saturation", "saturated"],
+        "why": "In saturation the collector-emitter voltage is small, so the switch is fully on. The active region is in between, where the transistor wastes power, and that is the tempting wrong answer." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You have a crash in a release build. How would you find the instruction that failed, starting from the ELF file?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Take the faulting address from the fault status or the debugger, and find the function that contains it with objdump or the map file. Read the listing around that address to see which instruction and which operands failed. Then match it to the C code, using the calling convention to find the arguments. The ELF keeps the symbols, so the listing can show the function names.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: §2.2.1 for the address map (XIP at <code>0x10000000</code>). For the instruction-level meaning of each line, the Arm TRM is the authority: <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>. Read the sections on the registers (§2.3) first.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the first four instructions of sum_to, one line at a time, and tell me what R2 holds after each one."
+    Related: <a href="0029-instruction-sets.html">Lesson 29: Instruction sets</a>, <a href="0033-the-stack-and-the-aapcs.html">Lesson 33: The stack and the AAPCS</a>, and <a href="../reference/glossary.html#elf-file">Glossary: ELF file</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

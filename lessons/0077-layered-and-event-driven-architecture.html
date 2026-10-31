@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Layered and event-driven architecture; active objects · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0077">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Layered and event-driven architecture; active objects</h1>
+  <p class="subtitle">A super loop works until a second feature needs a delay. Then every feature waits for every other one. An active object gives each part its own state and its own queue of events, so a part only runs when something happens to it.</p>
+
+  <div class="goal">
+    By the end of this lesson you can split a super loop into two active objects, each with its own event queue and handler, connect them with a published event, and explain why a handler needs no lock.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea: events instead of waiting</h2>
+  <p>
+    In a super loop, each feature is a function call in order, and a slow call delays all the others (lesson 55 showed the deadline fix). An <strong>event-driven</strong> design turns each happening into a message: a press, a tick, a sensor value ready. The code that sees the happening posts an <strong>event</strong> to a <strong>queue</strong>, and the code that owns the feature takes the event out later and reacts to it.
+    <span class="sidenote">A queue is the same ring buffer as lesson 70, with one writer for the head and one for the tail. The only new part is what goes into it: events, not bytes.</span>
+  </p>
+  <p>
+    An <strong>active object</strong> (AO) is a feature with three parts: its state, one event queue, and one handler, the function that the framework calls for each event. Nothing else touches the state. The handler is a state machine (lesson 56): it looks at the state and the event, changes the state, and returns. Miro Samek's active-object model is the usual reference (<a href="https://www.state-machine.com/video-course">Samek, Modern Embedded Systems Programming</a>). The QP/C reference describes it as "lightweight implementation of the asynchronous, event-driven, and non-blocking Active Object" model (<a href="http://www.state-machine.com/qpc/">QP/C Reference Manual, overview</a>).
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 215" role="img" aria-label="A tick event is published to two queues. The button AO and the blinker AO each have a queue, and the button AO publishes a press event to the blinker queue. A dispatcher takes events from the queues one at a time." style="max-width:728px">
+      <defs><marker id="ah54" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="20" width="130" height="32" rx="3"/>
+        <rect x="210" y="20" width="140" height="32" rx="3"/>
+        <path d="M150 36 H210" marker-end="url(#ah54)"/>
+        <rect x="210" y="160" width="170" height="32" rx="3"/>
+        <rect x="20" y="160" width="130" height="32" rx="3"/>
+        <path d="M150 176 H210" marker-end="url(#ah54)"/>
+        <rect x="410" y="92" width="130" height="32" rx="3"/>
+        <path d="M350 36 L410 100" marker-end="url(#ah54)"/>
+        <path d="M380 170 L410 116" marker-end="url(#ah54)"/>
+        <path d="M150 46 C190 100 220 120 250 160" stroke-dasharray="5 4" marker-end="url(#ah54)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="85" y="40.2" text-anchor="middle" font-size="12">button AO</text>
+        <text x="280" y="40.2" text-anchor="middle" font-size="12">queue: TICK</text>
+        <text x="295" y="180.2" text-anchor="middle" font-size="12">queue: TICK, PRESS</text>
+        <text x="85" y="180.2" text-anchor="middle" font-size="12">blinker AO</text>
+        <text x="475" y="112.2" text-anchor="middle" font-size="12">dispatcher</text>
+        <text x="226" y="112" text-anchor="start" font-size="11">PRESS published</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The tick goes to every AO. The button AO publishes a press, and only the blinker, which subscribed to it, gets that event. The dispatcher runs one event at a time.</figcaption>
+  </figure>
+
+  <h2>Run to completion, and why no lock</h2>
+  <p>
+    The dispatcher takes one event and calls the handler. The handler runs to its end and returns. Only then does the dispatcher take the next event. That rule is <strong>run to completion</strong>: no event can interrupt a handler that is running, so a handler sees its own state as it was when the event began.
+  </p>
+  <p>
+    On one core, with the posts and the dispatch in the main loop, no two handlers run at once. So the queue needs no lock, and neither does the state. The head of the queue is written only by the poster, and the tail only by the dispatcher (the same single-writer rule as lesson 70). An interrupt that posts would break this, and then the queue needs the protection that lesson 57 covers.
+    <span class="sidenote">Full RTOS queues and mutexes (Part 7) are for the case where threads truly run in parallel. The active-object model in this lesson needs neither, because the super loop is the only thread.</span>
+  </p>
+
+  <h2>Publish and subscribe</h2>
+  <p>
+    Some events have several listeners. The button announces a press, and it should not know who cares. In <strong>publish and subscribe</strong>, each AO declares which events it wants, and the publisher sends the event to every AO that subscribed. The publisher's code does not change when a new listener is added. A subscription here is a bit mask, one bit for each signal. The button publishes <code>SIG_PRESS</code>, and only the AOs with that bit set receive it.
+  </p>
+  <div class="warning">A published event copies into every subscriber's queue. If one queue is full, that event is lost for that subscriber only. The framework counts such losses, and a count that keeps rising means a handler is too slow or a queue is too small.</div>
+
+  <h2>Layers around the events</h2>
+  <p>
+    The framework is a service, the two AOs are application features, and the button code is a driver (lesson 76). The dependencies point one way: the blinker depends on the event <code>SIG_PRESS</code>, and it never includes the button's pin code. The button depends on the framework and on nothing about the LED. You can change either AO without touching the other.
+  </p>
+
+  <!-- ===== Hands-on ===== -->
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0077-active-objects-button-blinker</code>. The framework, <code>ao.c</code> and <code>ao.h</code>, is complete in both folders, with about eighty lines of code, so you can read the whole queue and dispatcher. The starter <code>main.c</code> is a working super loop: a press toggles the blink, and the LED flips every 500 ms. Your job is to move its logic into the two AO files and reduce <code>main.c</code> to a tick and a dispatch.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0077-active-objects-button-blinker/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Click the button in the diagram, and the monitor prints <code>blink on</code>, then <code>blink off</code> on the next click.</li>
+    <li>Your task, part 1: in <code>button_ao.c</code>, write a handler that reacts to <code>SIG_TICK</code>, debounces the pin with the integrator from lesson 52, and calls <code>ao_publish()</code> with <code>SIG_PRESS</code> once per confirmed press. In <code>button_ao_init()</code>, set up the pin, and register the handler with <code>ao_start()</code>.</li>
+    <li>Your task, part 2: in <code>blinker_ao.c</code>, write a handler that toggles the blink on <code>SIG_PRESS</code>, flips the LED every 50 ticks while blinking, and prints <code>blink on</code> or <code>blink off</code>. Subscribe it to both signals in <code>blinker_ao_init()</code> with <code>AO_SUB(SIG_TICK) | AO_SUB(SIG_PRESS)</code>.</li>
+    <li>Your task, part 3: in <code>main.c</code>, delete the super loop body. Keep the 10 ms tick, publish <code>SIG_TICK</code> with <code>ao_publish()</code>, and call <code>ao_dispatch_all()</code> on every pass. Print <code>AO OK</code> once after the two init calls.</li>
+    <li>You will know it works when the monitor prints <code>AO OK</code> at the start, and each click gives one <code>blink on</code> or <code>blink off</code> line, with the LED behaving as before.</li>
+  </ol>
+  <details>
+    <summary>Hint for the handler's switch</summary>
+    <p>Each handler gets the AO as <code>ao_t *</code>. Cast it to your own struct, such as <code>button_t *</code>, because the first member is the <code>ao_t</code>. The solution's <code>button_handler()</code> and <code>blinker_handler()</code> show the cast and the switch.</p>
+  </details>
+  <details>
+    <summary>Hint if nothing happens after the refactor</summary>
+    <p>Check that each AO was registered with <code>ao_start()</code>, and that the blinker subscribed to <code>SIG_PRESS</code>. A missing subscription drops the press without an error. <code>ao_dropped()</code> counts the full queues; the framework does not count missing subscribers.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0077-active-objects-button-blinker/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You turned a super loop into two active objects with their own queues, joined them with a published event, and can say why neither handler needs a lock.</div>
+
+  <!-- ===== Quiz ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The button must make the blink start, but it must not name the LED. Which design does that?",
+        "options": [
+          "The button publishes a press event",
+          "The button calls the LED directly",
+          "The button writes the LED pin",
+          "The button sets one shared flag"
+        ],
+        "answer": 0,
+        "why": "A published event reaches every subscriber, and the button does not know them. The tempting answer, a direct call, works today but ties the button to the LED. A shared flag is also a coupling, and it needs care when two parts read it." },
+      { "type": "number",
+        "prompt": "AO_QUEUE_SIZE is 8. How many events can one queue hold at the same time?",
+        "answer": 7, "tolerance": 0, "unit": "events",
+        "why": "One slot always stays empty, so the framework can tell a full queue from an empty one. The tempting answer, 8, forgets that slot." },
+      { "type": "mc",
+        "prompt": "A handler is running when a new event is posted to its own queue. When does the new event get handled?",
+        "options": [
+          "After the first handler has returned",
+          "Inside the first handler, at once",
+          "Before the first handler even starts",
+          "Never, because the queue is locked"
+        ],
+        "answer": 0,
+        "why": "Run to completion means the handler returns before the next event starts. The tempting answer, inside the handler, describes preemption, which this framework does not do. The queue is not locked, since the poster only writes the head." },
+      { "type": "mc",
+        "prompt": "Why does the blinker handler need no lock when the button handler posts to its queue?",
+        "options": [
+          "Handlers never run in parallel here",
+          "The compiler makes every queue atomic",
+          "Events are copied in one store",
+          "The blinker never reads the queue"
+        ],
+        "answer": 0,
+        "why": "On one core, the dispatcher runs one handler at a time, so the state is never touched by two handlers at once. The tempting answer, the compiler, is wrong: C does not make a queue atomic, and volatile is not a lock. The blinker does read its queue, through the dispatcher." },
+      { "type": "text",
+        "prompt": "What is the name of the pattern in which the sender does not know who receives its event? Write two words.",
+        "accept": ["publish subscribe", "publish-subscribe", "publishsubscribe", "publish/subscribe", "pub/sub"],
+        "why": "Publish and subscribe is the pattern: subscribers register interest, and the publisher sends to all of them. The tempting answer, polling, is checking a pin in a loop, which has no sender at all." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 56: in a transition table, what does a cell that keeps the current state mean? Write one word.",
+        "accept": ["ignored", "nothing", "stay", "noop"],
+        "why": "The event is ignored in that state, and nothing changes. The tempting answer, error, is wrong: the design chooses to ignore a valid event." },
+      { "type": "number",
+        "prompt": "From lesson 70: RING_SIZE is 16. What mask turns a free-running counter into a slot index?",
+        "answer": 15, "tolerance": 0, "unit": "",
+        "why": "For a power of two, the index is the counter ANDed with SIZE minus one, which is 15. The tempting answer, 16, is the size, and ANDing with it gives 0 for every counter value." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== Interview ===== -->
+  <div class="interview">
+    <p><strong>"A super loop works, but every new feature makes the loop slower to respond. How would you restructure it?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I would make each feature an object with its own state and its own event queue, and the main loop would only generate ticks and dispatch events. Hardware code would post events, not call the features directly. A handler runs to completion, so the state needs no lock on one core, and a slow feature only delays its own queue. Events that several features need go out by publish and subscribe, so the publisher does not change when a listener is added. I would watch the dropped-event count to find a queue that is too small or a handler that is too slow.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.state-machine.com/video-course">Miro Samek, Modern Embedded Systems Programming (video course)</a>: the lectures on active objects and event queues, which show the code each step compiles to. Timestamps are not listed, so find the module by its title. Read the QP/C overview for the framework's full version: <a href="http://www.state-machine.com/qpc/">QP/C Reference Manual, overview</a>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace one SIG_TICK through ao_publish, the two queues and ao_dispatch_all, one step at a time, and say where a dropped event would show up."
+    Related: <a href="0056-state-machines.html">Lesson 56: State machines</a>, <a href="0070-usart-and-exti-interrupts-with.html">Lesson 70: USART and EXTI interrupts with a ring buffer</a>, <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76: Driver design and hardware abstraction layers</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

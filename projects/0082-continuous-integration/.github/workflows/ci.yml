@@ -1,0 +1,84 @@
+# CI pipeline for the Blue Pill sample (lesson 82).
+# GitHub reads workflows only from the repository root's .github/workflows/ folder.
+# To use this file, copy it there and keep the course layout (projects/, templates/common,
+# third_party/), because the CMake files find the toolchain and Unity through those paths.
+name: firmware-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Build and run the unit tests
+        run: |
+          cmake -S projects/0082-continuous-integration/host-tests -B build-host -G Ninja
+          cmake --build build-host
+          ctest --test-dir build-host --output-on-failure
+
+  static-analysis:
+    name: Static analysis (cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Check the pure C sources
+        # --error-exitcode=1 fails the job on any warning or style finding.
+        run: >
+          cppcheck --enable=warning,style --inline-suppr --error-exitcode=1 --std=c11 --quiet
+          projects/0082-continuous-integration/src
+          projects/0082-continuous-integration/host-tests
+
+  firmware:
+    name: Build firmware
+    needs: [host-tests, static-analysis]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Arm GCC toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.3.Rel2'
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Build (Debug, with the ELF and the map file)
+        run: |
+          cmake -S projects/0082-continuous-integration -B projects/0082-continuous-integration/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build projects/0082-continuous-integration/build
+      - name: Keep the build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            projects/0082-continuous-integration/build/blink.elf
+            projects/0082-continuous-integration/build/blink.hex
+            projects/0082-continuous-integration/build/blink.map
+
+  simulate:
+    name: Simulate in Wokwi
+    needs: firmware
+    # Pull requests from forks do not receive repository secrets, so skip the
+    # simulation there rather than fail with an authentication error.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the firmware
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: projects/0082-continuous-integration/build
+      - name: Run the simulation
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: projects/0082-continuous-integration
+          timeout: 10000
+          expect_text: 'LED on'

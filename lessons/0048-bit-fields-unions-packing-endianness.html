@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bit fields, unions, packing, and endianness · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0048">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bit fields, unions, packing, and endianness</h1>
+  <p class="subtitle">A sensor sends bytes, and a register holds bits. C offers bit-fields, unions and packed structs for both, but the standard leaves much of their layout to the compiler. Shifts and masks are the portable way.</p>
+
+  <div class="goal">
+    By the end of this lesson you can parse a big-endian 16-bit value from a byte buffer with shifts, explain why a bit-field is not a portable register layout, and say what <code>__attribute__((packed))</code> does and does not change.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>bit-field</strong> is a struct member with a width in bits: <code>unsigned mode : 2;</code>. It looks like a register map, and it is tempting for hardware work. The C standard does not fix its layout. The order of bit-fields within a storage unit, whether a bit-field can straddle a unit boundary, and whether a plain <code>int</code> bit-field is signed are all implementation-defined or unspecified.
+    <a href="https://en.cppreference.com/w/c/language/bit_field">cppreference, bit-field layout</a>
+    <span class="sidenote">The same code can give different bit positions on two compilers, or two versions of one compiler. Your register map would then depend on the toolchain, which is the opposite of what a register needs.</span>
+  </p>
+  <div class="warning">Do not describe a hardware register with bit-fields in portable code. Use a fixed-width integer and named mask and shift constants. The mask is exact, and the same expression works on every compiler that follows the standard.</div>
+
+  <h2>Shifts instead of casts</h2>
+  <p>
+    A sensor usually sends its values big-endian: the high byte comes first on the wire. To build a 16-bit value, combine the bytes with shifts. Each byte is promoted to <code>int</code> first, so cast it to <code>uint16_t</code> before you shift the high byte up, which keeps the arithmetic in the type you intend (lesson 45).
+  </p>
+  <pre><code><span class="c">/* frame[1] is the high byte, frame[2] the low byte: big-endian on the wire */</span>
+uint16_t temp = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2]);</code></pre>
+  <p>
+    This expression gives the same result whatever byte order the CPU uses, because it works on values, not on memory. The alternative, copying the two bytes into a <code>uint16_t</code> with <code>memcpy</code> or a cast, copies them in the host's byte order. Whether that is right depends on the CPU, so it is not portable.
+  </p>
+
+  <h2>Endianness on the Cortex-M</h2>
+  <p>
+    <strong>Endianness</strong> is the order of bytes in a multi-byte value in memory. Little-endian puts the least significant byte at the lowest address. The toolchain used in this course predefines <code>__ARMEL__</code> and <code>__BYTE_ORDER__</code> as little-endian for both the Cortex-M0+ (RP2040) and the Cortex-M3 (STM32F1). Compiling a file with <code>-dM -E</code> prints those macros, so you can check your own target.
+    <span class="sidenote">Little-endian is the default for these cores, so a plain <code>memcpy</code> of a big-endian wire value gives the wrong number on them. Code that must also run on a big-endian target needs the shift form.</span>
+  </p>
+
+  <h2>Unions</h2>
+  <p>
+    A <strong>union</strong> puts all its members at the same address. It can overlay a 32-bit register on four bytes, which looks convenient. In portable C, though, reading a union member other than the one last written is subtle, and the result depends on the rules you rely on. Use shifts to convert bytes to a value. Use a plain struct for a register block, as lesson 47 shows.
+  </p>
+
+  <h2>Packing</h2>
+  <p>
+    A compiler adds padding inside a struct so each member sits at its natural alignment. A <strong>packed</strong> struct removes that padding. GCC documents the attribute on a struct, which applies to every member.
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual, common attributes: packed</a>
+  </p>
+  <pre><code><span class="k">typedef struct</span> __attribute__((packed)) {
+    uint8_t  header;      <span class="c">/* offset 0 */</span>
+    uint16_t temp;        <span class="c">/* offset 1 with packing; offset 2 without */</span>
+    uint8_t  status;      <span class="c">/* offset 3 with packing; offset 4 without */</span>
+} WireFrame;</code></pre>
+  <p>
+    Packing describes the layout of the struct in memory. It does not change the byte order, and it does not make a shift unnecessary. A packed <code>uint16_t</code> at offset 1 is an unaligned access, and on some cores that faults or runs slowly. Use packing when you need a struct to match an agreed layout, and still parse the value with shifts.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0048-sensor-frame-parse</code> parses a 4-byte sensor frame. The frame has a header byte, a big-endian temperature in two bytes, and a status byte whose low bits are a mode field and bit 2 is a valid flag.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0048-sensor-frame-parse/starter</code> in VS Code, build, and start the simulator.</li>
+    <li>Read the printed line. The test frame <code>{0xA5, 0x12, 0x34, 0x05}</code> should give <code>temp=4660</code>, which is 0x1234. Note the number the starter prints.</li>
+    <li>Your task: find out why the starter's temperature is wrong and fix <code>parse_frame</code>. The fix uses shifts, and it must still reject a bad header.</li>
+    <li>You will know it works when the serial monitor prints <code>FRAME PARSE OK temp=4660 mode=1 valid=1</code>, followed by <code>bad header rejected</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>Work out what the two bytes 0x12 and 0x34 become when copied into a <code>uint16_t</code> on a little-endian CPU. If the number you printed is 13330, that is 0x3412, the bytes swapped.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0048-sensor-frame-parse/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You parsed a big-endian value from a byte buffer with shifts, so the result does not depend on the CPU's byte order. You also saw the failure a plain copy causes on a little-endian Cortex-M.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why are bit-fields a poor choice for a hardware register layout?",
+        "options": [
+          "Its bit order is implementation-defined",
+          "Masks are slower than bit-fields",
+          "They cannot store 32-bit values",
+          "Their storage needs extra padding"
+        ],
+        "answer": 0,
+        "why": "The standard leaves the bit order and some signedness rules to the compiler, so the same struct can map to different bits on another toolchain. The tempting answer is the fourth, padding, which is not the core problem. The third is false: bit-fields can be 32 bits wide." },
+      { "type": "number",
+        "prompt": "A big-endian frame has bytes 0x12 (high) and 0x34 (low). What is the 16-bit value in decimal?",
+        "answer": 4660, "tolerance": 0,
+        "why": "0x1234 is 4660 in decimal. The tempting answer is 13330, which is 0x3412: the bytes read as little-endian, which is what a plain memcpy gives on the Cortex-M." },
+      { "type": "mc",
+        "prompt": "Which statement about a plain memcpy of two wire bytes is correct?",
+        "options": [
+          "It copies in host byte order",
+          "It reads them as big-endian now",
+          "It converts the bytes to ASCII",
+          "It fails on any even byte"
+        ],
+        "answer": 0,
+        "why": "memcpy copies the raw bytes, so the value depends on the host's byte order. On a little-endian Cortex-M the high and low bytes swap. The tempting answer is the second: memcpy does no byte swapping, so it does not read big-endian." },
+      { "type": "text",
+        "prompt": "Which GCC attribute removes struct padding? Write the attribute name only.",
+        "accept": ["packed", "__attribute__((packed))"],
+        "why": "packed removes padding, so members sit at the smallest possible alignment. The tempting answer is aligned, which does the opposite: it adds alignment." },
+      { "type": "mc",
+        "prompt": "Which statement about a packed struct is correct?",
+        "options": [
+          "It reverses the member byte order",
+          "It removes padding, not byte order",
+          "It makes unaligned access always safe",
+          "It is required for every register"
+        ],
+        "answer": 1,
+        "why": "Packing changes the layout of members in memory, not the order of their bytes. It also does not make unaligned access safe on every core, and registers need no packing. The tempting answer is the third: packing can produce unaligned members, which some cores do not handle well." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 2: which GPIO number drives the Pico's on-board LED?",
+        "accept": ["25", "GP25", "GPIO25"],
+        "why": "The on-board LED is on GPIO 25. The tempting answer is GP0, which is the first UART pin in the template wiring, not the LED." },
+      { "type": "number",
+        "prompt": "From lesson 9: the exact resistance for an LED at 4 mA with 1.3 V across it is 325 Ω. What is the nearest E12 value at or above it, in ohms?",
+        "answer": 330, "tolerance": 0.01, "unit": "Ω",
+        "why": "E12 rounds up to 330 Ω, which keeps the current at or below 4 mA. The tempting answer, 270 Ω, is below 325 Ω, so it draws more than the target." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you parse a 16-bit big-endian value from a byte buffer in portable C, and why not cast the buffer?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Read the two bytes with explicit indices, cast each to uint16_t, shift the high byte left by eight, and OR in the low byte. That works on any CPU. Casting the buffer to a uint16_t pointer depends on alignment and byte order, and on some cores an unaligned load faults or gives the wrong value. A bit-field struct for the same data depends on the compiler's layout, so it is not portable either.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual: common attributes</a>: read the packed attribute, which describes padding removal and alignment of members, and its note on bit-fields. Then read the C bit-field page on cppreference for what the standard leaves to the compiler.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the bytes in memory for a uint16_t on the RP2040, and how a shift-based parse would read the same two bytes."
+    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and promotion</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

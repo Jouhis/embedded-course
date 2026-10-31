@@ -1,0 +1,98 @@
+# CI pipeline for the filament dryer (lessons 82 and 113). Adapted from projects/0082-continuous-integration.
+# GitHub reads workflows only from the repository root's .github/workflows/ folder. To use this file,
+# copy it there and keep the course layout (projects/, templates/common, third_party/): the CMake
+# files find the toolchain, Unity and FreeRTOS through those paths.
+name: dryer-ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  FIRMWARE: projects/0113-dryer-modbus-bootloader/solution
+  HOST_TESTS: projects/0113-dryer-host-tests/solution
+
+jobs:
+  host-tests:
+    name: Host unit tests and closed loop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Build and run the unit tests (ctest)
+        run: |
+          cmake -S $HOST_TESTS -B build-host -G Ninja
+          cmake --build build-host
+          ctest --test-dir build-host --output-on-failure
+
+  static-analysis:
+    name: Static analysis (cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Check the firmware sources
+        # --error-exitcode=1 fails the job on any warning or style finding.
+        run: >
+          cppcheck --enable=warning,style --inline-suppr --error-exitcode=1 --std=c11 --quiet
+          -I $FIRMWARE/app -I $FIRMWARE/rtos -I $FIRMWARE/boot -I $FIRMWARE
+          $FIRMWARE/app $FIRMWARE/rtos/tasks.c $FIRMWARE/boot/bootloader.c $FIRMWARE/boot/app_vectors.c $FIRMWARE/main.c
+
+  firmware:
+    name: Build the firmware (bootloader + application, one ELF)
+    needs: [host-tests, static-analysis]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Arm GCC toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.3.Rel2'
+      - name: Install CMake and Ninja
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build
+      - name: Build (Debug, with the ELF, the hex and the map file)
+        run: |
+          cmake -S $FIRMWARE -B $FIRMWARE/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build $FIRMWARE/build
+          arm-none-eabi-size $FIRMWARE/build/dryer.elf
+      - name: Keep the build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            ${{ env.FIRMWARE }}/build/dryer.elf
+            ${{ env.FIRMWARE }}/build/dryer.hex
+            ${{ env.FIRMWARE }}/build/dryer.map
+
+  simulate:
+    name: Simulate in Wokwi (only when the token is set)
+    needs: firmware
+    runs-on: ubuntu-latest
+    env:
+      WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the token is present
+        id: token
+        # Secrets cannot be tested in an if: of a job, so the presence is read here and passed on.
+        # Pull requests from forks get no secrets, so this step reports "absent" for them.
+        run: |
+          if [ -n "$WOKWI_CLI_TOKEN" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "WOKWI_CLI_TOKEN not set: the simulation is skipped"; fi
+      - name: Download the firmware
+        if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: ${{ env.FIRMWARE }}/build
+      - name: Run the simulation and expect the banner
+        if: steps.token.outputs.present == 'true'
+        # The action wraps wokwi-cli: it runs the project for up to 10 s and fails unless the serial
+        # output contains the expected text (the same check as "wokwi-cli --timeout --expect-text").
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: ${{ env.FIRMWARE }}
+          timeout: 10000
+          expect_text: 'DRYER RTOS OK'

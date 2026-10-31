@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fixed-point vs floating-point · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0021">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Fixed-point vs floating-point</h1>
+  <p class="subtitle">Your sensor gives you 0.37 of something, and your Cortex-M0+ has no floating-point hardware. Fixed-point arithmetic is how firmware handles fractions on such a core, and you need to know it before you write a PID loop or a filter.</p>
+
+  <div class="goal">
+    By the end of this lesson you can store a fraction in Q15 or Q16.16, convert a value to and from its stored integer, and explain why a Cortex-M0+ or M3 is better served by fixed point than by <code>float</code>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A computer stores a fraction either as a plain integer that the programmer scales, or as a float with an exponent. In <strong>fixed point</strong>, the binary point stays in the same place. A <strong>Q format</strong> names the split: Q<em>m</em>.<em>n</em> has <em>n</em> fraction bits, so the stored integer <em>x</em> means <em>x</em> ÷ 2<sup><em>n</em></sup>.
+    <span class="sidenote">Q15 is a 16-bit signed value with 15 fraction bits. Q16.16 is a 32-bit signed value with 16 integer bits and 16 fraction bits. The "Q" stands for quotient, which is the common name in the DSP literature.</span>
+  </p>
+
+  <table>
+    <thead><tr><th>Format</th><th>Stored as</th><th>Stored integer for 0.5</th><th>Stored integer for 1.5</th><th>Range</th></tr></thead>
+    <tbody>
+      <tr><td>Q15</td><td>int16_t</td><td>16384 (0x4000)</td><td>not representable</td><td>−1.0 to just under +1.0</td></tr>
+      <tr><td>Q16.16</td><td>int32_t</td><td>32768 (0x8000)</td><td>98304 (0x18000)</td><td>−32768 to just under +32768</td></tr>
+    </tbody>
+  </table>
+
+  <p>
+    Adding two values in the same Q format is a plain integer add, because the binary point lines up. Multiplying needs care. The product of two Q<em>n</em> numbers has 2<em>n</em> fraction bits, so you shift the product right by <em>n</em> to return to Q<em>n</em>. Use a wider intermediate type, or the high bits fall off.
+  </p>
+
+  <pre><code><span class="c">// Q15 multiply: the product of two int16_t needs 32 bits, so widen first.</span>
+<span class="k">static</span> int16_t q15_mul(int16_t a, int16_t b) {
+    int32_t p = (int32_t)a * (int32_t)b;   <span class="c">// now Q30</span>
+    return (int16_t)(p &gt;&gt; 15);              <span class="c">// back to Q15</span>
+}</code></pre>
+
+  <figure>
+    <svg viewBox="0 0 480 120" role="img" aria-label="A 32 bit word split into 16 integer bits and 16 fraction bits, with the binary point between them">
+      <g fill="none" stroke="currentColor" stroke-width="1.2">
+        <rect x="20" y="30" width="220" height="36"/><rect x="240" y="30" width="220" height="36"/>
+      </g>
+      <line x1="240" y1="20" x2="240" y2="76" stroke="currentColor" stroke-width="2"/>
+      <g fill="currentColor" font-family="sans-serif" font-size="13" text-anchor="middle">
+        <text x="130" y="53">16 integer bits</text>
+        <text x="350" y="53">16 fraction bits</text>
+        <text x="240" y="98">binary point, fixed in place</text>
+        <text x="240" y="14">value = stored ÷ 65536</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Q16.16. The binary point is fixed, so the programmer, not the hardware, keeps track of it. Stored 98304 is 98304 ÷ 65536 = 1.5.</figcaption>
+  </figure>
+
+  <h2>Floating point: the cost of a flexible point</h2>
+  <p>
+    A float stores a sign, an exponent and a mantissa, and the binary point floats to keep the precision roughly constant. The IEEE 754 single-precision format is what most C compilers use for <code>float</code>. The RP2040 datasheet describes both the single and double formats in its ROM float library.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8.3.2 (Fast Floating Point Library)</a>.
+  </p>
+  <p>
+    Floats are convenient, but a float add or multiply is a long sequence of integer steps: align the exponents, add the mantissas, normalise, round. Without an FPU, the compiler calls a library routine for each operation. The Arm comparison table lists no FPU for the Cortex-M0, M0+ and M3, and the only FPU options are on the M4, M7 and later cores.
+    <a href="https://documentation-service.arm.com/static/655e085f2c8b3557fee7048f">Arm Cortex-M processor comparison table, row "Floating-Point Unit (FPU)"</a>.
+  </p>
+
+  <div class="note">The RP2040 has a hardware integer divider in the SIO block, which the Pico SDK uses for <code>/</code> and <code>%</code>. It is an 8-cycle divider, not an FPU. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.3.1.5</a>.</div>
+
+  <h2>Why fixed point on a Cortex-M0+ or M3</h2>
+  <p>
+    The fixed-point operations are integer operations, and the core does them in one or a few instructions. A Q15 multiply is a 32-bit multiply and a shift. The M0+ has no hardware divide, and the M3 has one, but neither has a float unit. So the choice is between a few cycles of integer work and a software float routine that can cost many times more, with the code size to match. A filter or a PID loop that runs 1000 times a second has to fit the budget, and fixed point is the usual answer.
+  </p>
+  <p>
+    The costs are real. You must choose the Q format for each value so it neither overflows nor loses all its precision, and you must add the shifts yourself. Lesson 105 (PID control) and lesson 104 (digital filters) use fixed point for exactly this reason.
+  </p>
+
+  <div class="warning">An overflow in fixed point is silent. 0.9 + 0.9 in Q15 wraps to a negative value, and the code keeps running. Check the range of each intermediate result, or saturate it, before you rely on the sum.</div>
+
+  <h2>Try it: concept-only lesson</h2>
+  <p>
+    This lesson is concept-only. The arithmetic is exact integer arithmetic that you can do on paper, and the simulator would only repeat it. Work each question with the Q formulas above, then check your answer with the quiz.
+  </p>
+  <ol class="steps">
+    <li>Store 0.25 in Q15. Find the integer, then write it in hex.</li>
+    <li>Multiply 0.5 by 0.5 in Q15 using the raw integers, and shift right by 15.</li>
+    <li>Look at the table of Q formats. Check that 1.5 in Q15 is not representable, and say why.</li>
+  </ol>
+
+  <div class="win">You can store a fraction in a Q format, multiply two values without losing the high bits, and give the two reasons a small core prefers fixed point: no float hardware, and an integer operation that costs a few cycles.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In Q15, which integer stores 0.5?",
+        "answer": 16384, "tolerance": 0,
+        "why": "0.5 × 2<sup>15</sup> = 16384, which is 0x4000. The tempting answer, 32768, is 2<sup>15</sup> itself, which is 1.0 and does not fit in a signed 16-bit Q15 value." },
+      { "type": "number",
+        "prompt": "In Q16.16, which integer stores 1.5?",
+        "answer": 98304, "tolerance": 0,
+        "why": "1.5 × 2<sup>16</sup> = 98304. The tempting answer, 49152, is 1.5 × 2<sup>15</sup>, which is Q15 scaling, not Q16.16." },
+      { "type": "number",
+        "prompt": "In Q15, what is 0.5 × 0.5 as a stored integer?",
+        "answer": 8192, "tolerance": 0,
+        "why": "16384 × 16384 = 2<sup>28</sup>, which is Q30. Shift right by 15 to get 2<sup>13</sup> = 8192, which is 0.25 in Q15. The tempting answer, 16384, skips the shift and is 0.5." },
+      { "type": "mc",
+        "prompt": "Which statement about the Cortex-M0+ is true?",
+        "options": ["M0+ has no FPU", "M0+ has an FPU", "M0+ has a DSP"],
+        "answer": 0,
+        "why": "The Arm comparison table lists no FPU and no DSP extension for the M0+. The tempting answer, an FPU, belongs to the M4F and the M7, which the table lists with an FPU option." },
+      { "type": "number",
+        "prompt": "How many fraction bits does Q15 have?",
+        "answer": 15, "tolerance": 0,
+        "why": "The name Q15 gives the fraction bits after the point, and the single sign bit holds the rest. The tempting answer, 16, counts the whole 16-bit word instead." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In lesson 19, what is the signed (two's complement) value of <code>0xFE</code> in 8 bits?",
+        "answer": -2, "tolerance": 0,
+        "why": "0xFE is 254 unsigned. Subtract 256 because bit 7 is set: 254 − 256 = −2. The tempting answer, 254, ignores the sign bit." },
+      { "type": "number",
+        "prompt": "In lesson 9, what forward voltage does the worked example assume for the red LED?",
+        "answer": 2.0, "tolerance": 0.01, "unit": "V",
+        "why": "The worked example uses Vf = 2.0 V, which is inside the typical red-LED range. The tempting answer, 3.3 V, is the supply voltage, not the LED's drop." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why would you use Q15 instead of float on a Cortex-M0+ filter?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The M0+ has no FPU, so each float operation becomes a library call with many integer steps. Q15 keeps the work to a multiply, a shift and an add, which are cheap on the core. The cost is that I must track the binary point, check the range of each value, and widen the intermediate product so the high bits survive.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8.3.2, Fast Floating Point Library</a>: the ROM float routines and the IEEE single and double formats they implement. Read it to see why the Pico SDK's float calls are slower than integer code.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "How do I choose the Q format for a value that goes from −5 to +5?"
+    Related: <a href="0020-bitwise-operations-and-masks.html">Lesson 20: Bitwise operations and masks</a>, <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

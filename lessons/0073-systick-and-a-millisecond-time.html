@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SysTick and a millisecond time base · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0073">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>SysTick and a millisecond time base</h1>
+  <p class="subtitle">Almost every firmware timeout needs a clock that ticks at a known rate. The Cortex-M core has one built in: SysTick. Get the reload value right, and make the timeout arithmetic survive the counter wrap.</p>
+
+  <div class="goal">
+    By the end of this lesson you can start SysTick at 1 kHz with <code>SysTick_Config</code>, keep a <code>volatile uint32_t</code> millisecond counter in the handler, write a wrap-safe <code>millis()</code> and timeout check, and explain why the HAL's <code>HAL_Delay</code> depends on the SysTick priority.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    SysTick is a 24-bit down counter in the core, not in the STM32 peripherals. It counts from its reload value, <code>LOAD</code>, to zero, then reloads and sets its flag. With the interrupt enabled, it raises an exception each time it reaches zero. The Cortex-M3 Programming Manual describes the registers, and the CMSIS names them <code>SysTick-&gt;LOAD</code>, <code>SysTick-&gt;VAL</code> and <code>SysTick-&gt;CTRL</code>.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, the SysTick section</a>
+    <span class="sidenote">Because SysTick is in the core, it works on every STM32F1 variant the same way. The timers in lesson 71 are chip peripherals, so their names and clock trees differ between parts.</span>
+  </p>
+  <p>
+    The reload value sets the period. At an 8 MHz core clock, a reload of <code>8000 − 1 = 7999</code> gives one interrupt every millisecond. The subtraction of one is the same off-by-one rule as in lesson 71: the counter counts from the reload down to zero, which is <code>reload + 1</code> ticks per period.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 140" role="img" aria-label="SysTick counts down from LOAD to zero, then reloads and raises an interrupt" style="max-width:728px">
+      <defs><marker id="ah51" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M60 110 H520"/>
+        <path d="M60 30 L150 110 V30 L240 110 V30 L330 110 V30 L420 110"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="14" y="34" text-anchor="start" font-size="12">LOAD</text>
+        <text x="14" y="114" text-anchor="start" font-size="12">0</text>
+        <text x="150" y="20" text-anchor="middle" font-size="12">1 ms</text>
+        <text x="240" y="20" text-anchor="middle" font-size="12">1 ms</text>
+        <text x="330" y="20" text-anchor="middle" font-size="12">1 ms</text>
+        <text x="60" y="134" text-anchor="start" font-size="12">each reset raises SysTick_Handler</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A reload of 7999 at 8 MHz is a sawtooth with a period of 8000 ticks, so one exception every millisecond.</figcaption>
+  </figure>
+
+  <h2>SysTick_Config: one call that does three things</h2>
+  <p>
+    <code>SysTick_Config(ticks)</code> in <code>core_cm3.h</code> writes the reload value, sets SysTick's interrupt to the lowest priority (<code>(1 &lt;&lt; __NVIC_PRIO_BITS) − 1</code>, which is 15 on this device), clears the counter, and enables the counter and the interrupt. It returns 1 when the reload does not fit in 24 bits, and 0 on success. The largest reload is 2<sup>24</sup> − 1, so at 8 MHz the longest single period is about 2.1 s.
+    <a href="https://arm-software.github.io/CMSIS_5/Core/html/index.html">CMSIS-Core reference</a>
+  </p>
+  <pre><code><span class="k">volatile</span> uint32_t g_ms;               <span class="c">/* written in the ISR, read in main */</span>
+
+<span class="k">void</span> SysTick_Handler(<span class="k">void</span>) {
+    g_ms++;                          <span class="c">/* one millisecond has passed */</span>
+}
+
+<span class="c">/* in main(): 8 MHz / 1000 = 8000 ticks per millisecond */</span>
+<span class="k">if</span> (SysTick_Config(SystemCoreClock / <span class="k">1000U</span>) != <span class="k">0U</span>) {
+    <span class="c">/* reload too large: pick a bigger tick period */</span>
+}</code></pre>
+  <p>
+    The variable is <code>volatile</code> because the handler changes it outside the normal flow of <code>main</code> (lesson 46). A 32-bit aligned load is a single bus access on the Cortex-M3, so reading <code>g_ms</code> cannot tear. A timestamp of two or more words, such as a 64-bit count, would need a critical section (lesson 57).
+  </p>
+
+  <h2>Wrap-safe millis() and timeouts</h2>
+  <p>
+    <code>g_ms</code> is a 32-bit counter, so it wraps after 2<sup>32</sup> ms, which is about 49.7 days. A check such as <code>now &gt;= deadline</code> is wrong after the wrap: the deadline is then larger than the current time, and the timeout never expires, or expires at once. The fix is to subtract the start time, and do the subtraction in <code>uint32_t</code>. Unsigned arithmetic is modulo 2<sup>32</sup> (lesson 45), so the difference is the elapsed time as long as it is less than 2<sup>31</sup> ms.
+  </p>
+  <pre><code><span class="k">static</span> uint8_t timed_out(uint32_t start_ms, uint32_t timeout_ms) {
+    <span class="k">return</span> (uint32_t)(millis() - start_ms) &gt;= timeout_ms;
+}</code></pre>
+  <div class="warning">Compare with the unsigned subtraction, not with a deadline you computed as <code>start + timeout</code>. The deadline itself can wrap. Lesson 55 uses the same rule for the non-blocking blink, and the solution checks the wrap by starting the counter 256 ms before zero.</div>
+
+  <h2>Why HAL_Delay depends on the SysTick priority</h2>
+  <p>
+    The STM32F1 HAL keeps its own counter, <code>uwTick</code>, and <code>HAL_Delay()</code> busy-waits until that counter has advanced. The counter moves only when <code>HAL_IncTick()</code> runs, which the template calls from <code>SysTick_Handler</code>. <code>HAL_Init()</code> starts SysTick through <code>HAL_InitTick()</code> with the priority <code>TICK_INT_PRIORITY</code>, which the template's configuration file sets to <code>0x0F</code>, the lowest priority (<code>stm32f1xx_hal.c</code>, <code>stm32f1xx_hal_conf.h</code>).
+  </p>
+  <p>
+    Now the hazard. If code runs at a higher priority than SysTick (a lower number) and calls <code>HAL_Delay()</code>, SysTick cannot preempt it. <code>uwTick</code> stops moving, and the loop never ends. The delay is not slow: it is blocked forever.
+  </p>
+  <div class="warning">Never call <code>HAL_Delay()</code> from an interrupt or from code that runs with a higher priority than SysTick. Either move the work to the main loop, or give SysTick a higher priority with <code>HAL_NVIC_SetPriority(SysTick_IRQn, ...)</code> and accept that the timebase now runs inside your critical path.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0073-systick-millis</code> starts the counter 256 ms before its wrap, and prints the timeout after 2000 ms. The LED toggles without blocking, using the same <code>timed_out()</code> check.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0073-systick-millis/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Your task: start SysTick at 1 kHz in <code>main()</code>, add one to <code>g_ms</code> in the handler, and return 1 from <code>timed_out()</code> when the timeout has passed, using the unsigned subtraction.</li>
+    <li>You will know it works when the serial monitor shows <code>WRAP passed</code> and then <code>TIMEOUT elapsed=2000 ms</code>, and the LED blinks at 1 Hz.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The starter's <code>timed_out()</code> only needs one line: compare <code>(uint32_t)(millis() - start_ms)</code> with <code>timeout_ms</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0073-systick-millis/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You started a 1 kHz time base from SysTick, wrote a millisecond counter and a timeout that survives the wrap, and you can explain why <code>HAL_Delay</code> hangs at a high interrupt priority.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "An 8 MHz core clock feeds SysTick. What reload value gives a 1 kHz tick? (Type the value to load into LOAD.)",
+        "answer": 7999, "tolerance": 0, "unit": "",
+        "why": "The reload is ticks − 1, so 8 000 000 ÷ 1000 − 1 = 7999. The tempting answer, 8000, is off by one: the counter counts from the reload down to zero, which is 8000 ticks." },
+      { "type": "mc",
+        "prompt": "Which check gives a correct timeout after the millisecond counter wraps?",
+        "options": [
+          "Subtract start, then compare",
+          "Compare raw times directly",
+          "Store the counter signed",
+          "Disable interrupts for longer"
+        ],
+        "answer": 0,
+        "why": "Unsigned subtraction is modulo 2^32, so the difference is the elapsed time across the wrap. Comparing raw times fails once now wraps past zero. The tempting answer, storing the time as signed, does not fix the wrap, and a signed overflow is undefined behaviour (lesson 45)." },
+      { "type": "mc",
+        "prompt": "Why does HAL_Delay hang when it is called from a higher-priority interrupt?",
+        "options": [
+          "SysTick cannot preempt a caller",
+          "The counter wraps too early",
+          "The UART blocks the timer",
+          "Flash waits slow reads down"
+        ],
+        "answer": 0,
+        "why": "HAL_Delay waits for uwTick to advance, and only SysTick_Handler advances it. SysTick runs at priority 15 and cannot interrupt a higher-priority caller, so the wait never ends. The tempting answer, the counter wrap, happens only after about 49.7 days." },
+      { "type": "number",
+        "prompt": "At an 8 MHz core clock, what is the longest single SysTick period, in milliseconds? (The reload is at most 2^24 − 1.)",
+        "answer": 2097.152, "tolerance": 0.001, "unit": "ms",
+        "why": "2^24 ÷ 8 000 000 = 2.097152 s, which is 2097.152 ms. The tempting answer, about 16 777 ms, uses a 1 MHz clock." },
+      { "type": "text",
+        "prompt": "Which SysTick register holds the reload value? Write its name as in CMSIS.",
+        "accept": ["LOAD", "SysTick->LOAD", "SysTick_LOAD"],
+        "why": "LOAD is the reload register, and the counter starts from it. The tempting answer, VAL, is the current count, which the core writes to clear the counter." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 45: uint8_t a = 250 and b = 10. What is (uint8_t)(a + b)?",
+        "answer": 4, "tolerance": 0, "unit": "",
+        "why": "The sum is 260 in int, and converting to uint8_t keeps it modulo 256, which is 4. The tempting answer, 260, is the int value before the conversion." },
+      { "type": "text",
+        "prompt": "From lesson 47: which GPIO register sets pins with one write and resets them with another, so it is safe with an ISR? Write the name.",
+        "accept": ["BSRR"],
+        "why": "BSRR is one store that names only the pins to change, so the hardware never reads the old state. The tempting answer, ODR, needs a read-modify-write, which an interrupt can break." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you implement millis() on a bare-metal STM32, and how do you make a timeout survive the counter wrap?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Configure SysTick for a 1 kHz interrupt with SysTick_Config, or the reload for your clock. In the handler, increment a volatile uint32_t. millis() returns that value. For timeouts, never compare absolute times, because they wrap after about 49.7 days. Store the start time, and test (uint32_t)(now - start) against the timeout. The unsigned subtraction is correct across the wrap, as long as the timeout is shorter than half the range. Two more points: the SysTick priority must be low enough that it does not starve, and it must be high enough that a blocking HAL_Delay still sees it advance. Name the mistake you avoid: a HAL_Delay inside an ISR at a higher priority hangs forever.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 Programming Manual</a>: read the SysTick section for LOAD, VAL and CTRL, and the COUNTFLAG bit. For the HAL side, read <code>third_party/stm32f1xx-hal-driver/Src/stm32f1xx_hal.c</code>: <code>HAL_InitTick</code> and <code>HAL_Delay</code> show the priority and the busy wait discussed here.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the timeline of a HAL_Delay(1) call that runs at priority 0, while SysTick is at priority 15, and say where it hangs."
+    Related: <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, <a href="0071-timers.html">Lesson 71: Timers</a>, and <a href="../reference/glossary.html#blocking-code">Glossary: Blocking (code)</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Devicetree: describing hardware · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="0094">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Devicetree: describing hardware</h1>
+  <p class="subtitle">In Zephyr, the pin numbers, the bus addresses and the device names are not in the C code. They are in a tree that the build reads first, and this lesson shows how to read it and change it.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>add a node in a board overlay, give it an alias, and read it from C with <code>GPIO_DT_SPEC_GET</code>, then find the merged result in <code>build/zephyr/zephyr.dts</code></strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A devicetree is a tree of nodes. Each node describes one piece of hardware, and its properties say what it is and where it is. A property called <code>compatible</code> names the binding, which is the schema that says which properties the node must have. The <code>reg</code> property is an address or a bus address. <code>status = "okay"</code> enables a node, and <code>"disabled"</code> turns it off. The format comes from the devicetree specification, and Zephyr's guide is in <a href="https://docs.zephyrproject.org/4.5.0/build/dts/index.html">Zephyr's devicetree pages</a>.
+    <span class="sidenote">Linux uses the same format for ARM boards. If you have read a Linux device tree, the syntax here will look familiar.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 620 200" role="img" aria-label="rp2040.dtsi defines the SoC, rpi_pico-common.dtsi and rpi_pico.dts add the board, the overlay in boards/rpi_pico.overlay adds your nodes, and the merged result is zephyr.dts." style="max-width:806px">
+      <defs><marker id="ah63" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="20" width="220" height="44" rx="3"/>
+        <rect x="10" y="78" width="220" height="44" rx="3"/>
+        <rect x="10" y="136" width="220" height="44" rx="3"/>
+        <rect x="280" y="80" width="160" height="48" rx="3"/>
+        <rect x="490" y="80" width="120" height="48" rx="3"/>
+        <path d="M230 42 L280 96" marker-end="url(#ah63)"/>
+        <path d="M230 100 L280 104" marker-end="url(#ah63)"/>
+        <path d="M230 158 L280 112" marker-end="url(#ah63)"/>
+        <path d="M440 104 H490" marker-end="url(#ah63)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="120" y="38.7" text-anchor="middle" font-size="12">rp2040.dtsi</text>
+        <text x="120" y="53.7" text-anchor="middle" font-size="12">(the chip)</text>
+        <text x="120" y="96.7" text-anchor="middle" font-size="12">rpi_pico-common.dtsi</text>
+        <text x="120" y="111.7" text-anchor="middle" font-size="12">(the board)</text>
+        <text x="120" y="154.7" text-anchor="middle" font-size="12">boards/rpi_pico.overlay</text>
+        <text x="120" y="169.7" text-anchor="middle" font-size="12">(yours)</text>
+        <text x="360" y="108.2" text-anchor="middle" font-size="12">merged in the build</text>
+        <text x="550" y="100.7" text-anchor="middle" font-size="12">build/zephyr/</text>
+        <text x="550" y="115.7" text-anchor="middle" font-size="12">zephyr.dts</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Later files add to or override earlier ones. The overlay is the last word, and the merged file is the one the build uses.</figcaption>
+  </figure>
+
+  <h2>What the Pico already says</h2>
+  <p>
+    Open <code>build/zephyr/zephyr.dts</code> after any build. Each line ends with a comment that names the file it came from, so you can trace every value. Three of them matter for this course. The on-board LED is a child of the <code>leds</code> node with <code>gpios = &lt;&amp;gpio0 25 …&gt;</code>, which is GP25, active high. The alias <code>led0</code> points at it. The I2C bus <code>i2c0</code> sits at <code>0x40044000</code>, with <code>clock-frequency</code> set to 100 kHz by the board. Its pins come from a pinctrl group: <code>I2C0_SDA_P4</code> and <code>I2C0_SCL_P5</code> in <code>rpi_pico-pinctrl-common.dtsi</code>.</p>
+  <p>
+    A node with no <code>compatible</code> is a container. A node with a <code>compatible</code> is matched to a binding, and Zephyr generates the macros for it. The difference matters, as the next section shows.
+  </p>
+
+  <h2>Adding a button with an overlay</h2>
+  <p>
+    The overlay file is <code>boards/rpi_pico.overlay</code>, and the build picks it up automatically for the Pico. The solution adds a second LED on GP16 and a button on GP14. The button is a new node, so it needs a binding. The project's own <code>dts/bindings</code> folder is a devicetree root, because the build adds the application directory to the root list (<code>cmake/modules/pre_dt.cmake</code>). The binding file is <code>dts/bindings/input/vnd,user-button.yaml</code>.
+  </p>
+  <pre><code>buttons {
+    user_button: button_0 {
+        compatible = "vnd,user-button";
+        gpios = &lt;&amp;gpio0 14 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)&gt;;
+        label = "Button";
+    };
+};
+aliases {
+    sw0 = &amp;user_button;
+};</code></pre>
+  <p>
+    Read the <code>gpios</code> line. The first cell is the controller, the second is the pin, and the third is the flags. <code>GPIO_ACTIVE_LOW</code> means the logical value is 1 when the pin reads 0, and <code>GPIO_PULL_UP</code> turns the internal resistor on. The flags are defined in <code>include/zephyr/dt-bindings/gpio/gpio.h</code>.
+  </p>
+  <div class="warning">
+    Leave out the <code>compatible</code> line and the build fails. Our first attempt did exactly that, and the compiler reported <code>undeclared</code> identifiers from <code>DT_N_S_buttons_S_button_0_…</code>. The generated <code>GPIO_DT_SPEC</code> macros exist only for nodes with a binding. The fix was the <code>compatible</code> line plus the binding file.
+  </div>
+  <div class="note">
+    Adding a binding file does not always take effect in an incremental build. After a new binding, rebuild with <code>--clean</code> (the build script's flag), or the cached list of bindings does not include it.
+  </div>
+
+  <h2>Reading the nodes from C</h2>
+  <p>The C code never names GP14. It names the alias:</p>
+  <pre><code>static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+
+gpio_pin_set_dt(&amp;led1, gpio_pin_get_dt(&amp;button));</code></pre>
+  <p>
+    <code>GPIO_DT_SPEC_GET</code> builds a struct from the node's <code>gpios</code> property (<code>include/zephyr/drivers/gpio.h:376</code>). <code>gpio_pin_get_dt</code> returns the logical level, so the active-low flag is already applied, and a pressed button reads 1 (<code>gpio.h:1796</code>).
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>The starter blinks led0 and has a TODO(learner) note where the overlay's second LED and button go. Add them, then wire the button to the second LED in the loop.</p>
+  <ol class="steps">
+    <li>Open <code>projects/0094-devicetree/starter</code> in VS Code.</li>
+    <li>In <code>boards/rpi_pico.overlay</code>, add the <code>led1</code> node on GP16, the button node on GP14 with <code>compatible = "vnd,user-button"</code>, and the aliases. The binding file is already in <code>dts/bindings/input</code>.</li>
+    <li>In <code>src/main.c</code>, get the two specs with <code>GPIO_DT_SPEC_GET</code>, configure them, and set led1 to the button's logical level each pass.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then open <code>build/zephyr/zephyr.dts</code> and find <code>led_1</code>. Start the simulator. You'll know it works when the second LED follows the button, and the serial monitor prints "DEVICETREE OK".</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>If the build reports undeclared identifiers, check the alias names and the <code>compatible</code> line first. The solution's overlay is the reference.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0094-devicetree/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You changed the Pico's hardware description with an overlay, gave a button a binding, and read both pins from C through aliases without naming a pin number.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A button node in the overlay has no compatible string. What does the build do?",
+        "options": ["Build fails with errors", "The button works anyway", "Zephyr guesses a driver", "Pin defaults to zero"],
+        "answer": 0,
+        "why": "Without a binding, no GPIO_DT_SPEC is generated, so the C code references names that do not exist and the compile fails. The tempting answer, that it works anyway, assumes that a gpios property alone is enough; it is not, because the generated macros need the binding." },
+      { "type": "mc",
+        "prompt": "Where should a board change for one application go?",
+        "options": ["Overlay file in boards", "Edit the board file", "Edit common dtsi file", "Edit the Zephyr tree"],
+        "answer": 0,
+        "why": "An overlay in boards/ changes only this project and leaves the Zephyr tree alone. The tempting answer, editing the board file, changes every project that uses the Pico, and editing the Zephyr tree is a change to the workspace itself." },
+      { "type": "number",
+        "prompt": "Which GPIO number is the Pico's on-board LED on?",
+        "answer": 25, "tolerance": 0, "unit": "",
+        "why": "The LED is gpio0 25, as shown in rpi_pico-led.dtsi and in the merged zephyr.dts. The tempting answer, 14, is button A in this course's overlay, a different pin." },
+      { "type": "text",
+        "prompt": "Which devicetree alias does the blink use for the first LED?",
+        "accept": ["led0"],
+        "why": "The board defines led0 in rpi_pico-led.dtsi, and DT_ALIAS(led0) reads it. The tempting answer, a pin name such as GP25, is what the alias hides." },
+      { "type": "mc",
+        "prompt": "Why does the solution use DT_ALIAS(sw0) instead of the number 14?",
+        "options": ["Pin lives in overlay", "Alias runs quicker now", "Alias sets the pull", "Code needs no pin"],
+        "answer": 0,
+        "why": "Moving the button means editing the overlay only, and the C code does not change. The tempting answer, a faster alias, is wrong: an alias is a name, and it costs nothing at run time. The alias does not set the pull, the flags in the overlay do." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 60: what is the PWR_MGMT_1 register address of the MPU-6050, in hex?",
+        "accept": ["0x6b", "6b"],
+        "why": "PWR_MGMT_1 is at 0x6B, which is the register that wakes the sensor up. The tempting answer, 0x75, is WHO_AM_I, a different register." },
+      { "type": "text",
+        "prompt": "From lesson 54: which GDB command examines memory at an address?",
+        "accept": ["x"],
+        "why": "The x command prints memory in a chosen format. The tempting answer, print, shows a variable's value rather than raw memory at an address." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you move a status LED to a different pin in an RTOS project without touching the C code?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Change the gpios property in the board overlay, which is the devicetree's job, and rebuild. The C code reads the pin through an alias with GPIO_DT_SPEC_GET, so it keeps working. If the new node is a new kind of device, add a binding file for its compatible string, and do a clean build.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.zephyrproject.org/4.5.0/build/dts/index.html">Zephyr documentation: Devicetree</a>: read "Devicetree basics", "Aliases, labels and paths" and "Overlays". Then open <code>build/zephyr/zephyr.dts</code> from your build and find the <code>button_0</code> node.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the difference between a label and an alias in the devicetree, with one example from the Pico's files."
+    Related: <a href="0092-zephyr-setup.html">Lesson 92: Zephyr setup</a>, <a href="0093-kconfig-and-the-build-system.html">Lesson 93: Kconfig and the build system</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

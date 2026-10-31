@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Memory: stack vs heap, static allocation, and detecting stack overflow · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0078">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Memory: stack vs heap, static allocation, and detecting stack overflow</h1>
+  <p class="subtitle">A stack overflow in firmware prints nothing. It overwrites a variable, or a return address, and the bug shows up several functions later. This lesson shows how to see how deep the stack really goes, and why most embedded standards avoid the heap after startup.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read the Pico's stack bounds from the linker symbols, paint the unused stack and report its high-water mark, and say why <code>malloc()</code> is banned in most firmware after startup.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea: three regions in one RAM</h2>
+  <p>
+    The RP2040 has 256 KB of SRAM starting at <code>0x20000000</code>. The program uses three parts of it. The <strong>static data</strong> (globals and <code>static</code> variables) has a fixed size and lives for the whole run (lessons 41 and 42 show how the linker places it). The <strong>stack</strong> holds the call frames, and it grows downward from the top (lesson 33). The <strong>heap</strong> is the area that <code>malloc()</code> hands out, and it grows upward. The stack and the heap grow toward each other, so a deep stack and a large heap can collide.
+  </p>
+  <p>
+    On the Pico, the SDK's linker script reserves a fixed stack for core 0. The default is <code>PICO_STACK_SIZE</code>, which is <code>0x800</code>, or 2048 bytes, and the stack starts at the top of the scratch RAM at <code>0x20042000</code> (<a href="https://github.com/raspberrypi/pico-sdk">pico-sdk, src/rp2040/pico_platform/memmap_default.ld and rp2_common/pico_standard_link/script_include</a>; the default is in <code>src/rp2040/pico_platform/include/pico/platform.h</code>, read in the SDK 2.3.1 copy).
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 580 262" role="img" aria-label="The RAM map: static data at the bottom, the heap above it growing up, free space, then the 2 KB core 0 stack growing down from the top, with the canary at its bottom." style="max-width:754px">
+      <defs><marker id="ah55" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="170" y="30" width="200" height="50" rx="0"/>
+        <rect x="170" y="80" width="200" height="20" rx="0"/>
+        <rect x="170" y="100" width="200" height="60" rx="0"/>
+        <rect x="170" y="160" width="200" height="50" rx="0"/>
+        <rect x="170" y="210" width="200" height="40" rx="0"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="270" y="60" text-anchor="middle" font-size="11">stack, grows down</text>
+        <text x="270" y="94" text-anchor="middle" font-size="11">canary (lowest word)</text>
+        <text x="270" y="135" text-anchor="middle" font-size="11">free RAM</text>
+        <text x="270" y="190" text-anchor="middle" font-size="11">heap (grows up)</text>
+        <text x="270" y="234" text-anchor="middle" font-size="11">static data (.data, .bss)</text>
+        <text x="386" y="50" text-anchor="start" font-size="11">2 KB reserved</text>
+        <text x="386" y="66" text-anchor="start" font-size="11">for core 0 stack</text>
+        <text x="386" y="236" text-anchor="start" font-size="11">RAM starts at 0x20000000</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A schematic of RAM, not to scale. The stack starts at the top and grows down; the heap starts above the static data and grows up. The canary sits at the lowest reserved word of the stack.</figcaption>
+  </figure>
+
+  <h2>Why most standards ban malloc after startup</h2>
+  <p>
+    <code>malloc()</code> is convenient on a PC, where the heap is large and paged. On a microcontroller it causes three problems. First, the heap can <strong>fragment</strong>: after many allocations and frees of different sizes, there can be enough free bytes in total but no single block big enough, so the call fails late and at random. Second, the time an allocation takes is not fixed, which breaks a real-time deadline. Third, a failed call returns a null pointer that the code must check on every path, and the failure often happens only after months of uptime.
+    <span class="sidenote">MISRA C:2012 rule 21.3 prohibits the allocation and free functions of <code>&lt;stdlib.h&gt;</code>. The rule text is in the paid MISRA document; a tool vendor's summary of it is in the <a href="https://www.mathworks.com/help/bugfinder/ref/misrac2012rule21.3.html">Polyspace rule page</a>.</span>
+  </p>
+  <div class="warning">A common claim is that malloc is "slower". That is not the main reason. The main reason is that the failure happens at a time you do not choose, in a state you did not test.</div>
+
+  <h2>Static allocation and memory pools</h2>
+  <p>
+    The usual alternative is to allocate everything at startup, from fixed-size arrays. A <strong>memory pool</strong> is an array of identical blocks with a free list: taking a block and returning one are a few pointer moves, the time is fixed, and no size fragments. The pool's size is part of the design, so the worst case is known before the device ships.
+  </p>
+  <pre><code><span class="k">#define</span> POOL_BLOCKS 8u
+
+<span class="k">typedef struct</span> msg { uint8_t payload[32]; <span class="k">struct</span> msg *next; } msg_t;
+
+<span class="k">static</span> msg_t pool[POOL_BLOCKS];      <span class="c">/* in .bss: reserved at link time, free at run time */</span>
+<span class="k">static</span> msg_t *free_list;
+
+<span class="k">static</span> msg_t *pool_take(<span class="k">void</span>) {
+    msg_t *m = free_list;
+    <span class="k">if</span> (m) free_list = m-&gt;next;   <span class="c">/* NULL means the pool is empty: handle it */</span>
+    <span class="k">return</span> m;
+}</code></pre>
+
+  <h2>Detecting stack overflow</h2>
+  <p>
+    A stack overflow writes into whatever lies below the stack, so the damage can be silent. Three checks catch it.
+  </p>
+  <ol class="steps">
+    <li><strong>Painting and high-water mark.</strong> Before the program runs, fill the unused stack with a known pattern. After it runs, the lowest word that no longer holds the pattern is the deepest point the stack reached. Its distance from the top is the high-water mark.</li>
+    <li><strong>A canary.</strong> Put a known word at the lowest reserved address. If the stack ever writes it, the stack has passed its limit. A canary only tells you after the damage. It does not stop the write.</li>
+    <li><strong>An MPU guard.</strong> The Cortex-M MPU can make the bottom of the stack unwritable, so the overflow faults at the moment it happens (lesson 39). The Pico SDK can install that guard for core 0 when <code>PICO_USE_STACK_GUARDS</code> is 1; the default is 0. The source is <code>src/rp2_common/pico_runtime_init/runtime_init_stack_guard.c</code> and <code>runtime_init.h</code> in the SDK 2.3.1 copy, and this lesson did not test the guard.</li>
+  </ol>
+
+  <h2>The linker symbols</h2>
+  <p>
+    The linker defines the stack and heap bounds as symbols, so code can read them without hard-coding addresses. These are the values from the built Pico ELF for this lesson, read with <code>arm-none-eabi-nm</code>.
+  </p>
+  <table>
+    <thead><tr><th>Symbol</th><th>Value on the Pico</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>__StackTop</code></td><td><code>0x20042000</code></td><td>One past the highest stack byte. The stack starts here.</td></tr>
+      <tr><td><code>__StackBottom</code></td><td><code>0x20041800</code></td><td>Lowest byte of the reserved core 0 stack (2048 bytes above it).</td></tr>
+      <tr><td><code>__StackLimit</code></td><td><code>0x20040000</code></td><td>End of the 256 KB RAM, the upper limit for the heap.</td></tr>
+      <tr><td><code>__end__</code> or <code>end</code></td><td><code>0x200006d0</code> in this build</td><td>Start of the heap, after the static data (<code>section_heap.incl</code>).</td></tr>
+      <tr><td><code>__HeapLimit</code></td><td><code>0x20040000</code></td><td>Upper limit of the heap.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Lesson 68 explains how these are defined in a script you write yourself. The symbols in this table are defined by the SDK's script, and <code>__end__</code> depends on the size of the static data in your build.
+  </p>
+
+  <!-- ===== Hands-on ===== -->
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0078-stack-painting</code>. The starter prints a stack report, but its painting and measurement functions are stubs marked <code>TODO(learner)</code>, so it prints <code>STACK PAINT FAIL</code>. The recursion is written for you: each call uses a 24-byte frame, so 16 calls use about 384 bytes of the 2048-byte stack.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0078-stack-painting/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>STACK PAINT FAIL</code>.</li>
+    <li>Your task, part 1: in <code>paint_unused_stack()</code>, write the canary into the word at <code>&amp;__StackBottom</code>. Then paint every word from the next one up to <code>current_sp() - PAINT_MARGIN_BYTES</code> with <code>PAINT_WORD</code>. Set <code>s_paint_limit</code> to the top of the painted range.</li>
+    <li>Your task, part 2: in <code>high_water_bytes()</code>, scan the painted words from the bottom up, skipping the canary. The first word that is not the paint is the deepest point. Return the distance from <code>&amp;__StackTop</code>, or 0 if every word still has the paint.</li>
+    <li>Build and run. The monitor prints the reserved size and the high-water mark, and then <code>STACK PAINT OK</code>. The high-water mark must be at least 384 bytes, because of the 16 frames.</li>
+    <li>Optional: in <code>canary_intact()</code>, return whether the word at <code>&amp;__StackBottom</code> still holds <code>CANARY_WORD</code>. The starter's last line prints <code>CANARY OK</code> or <code>CANARY HIT</code> after the 128-frame overflow in the solution, which writes 1 KB below the reserved stack.</li>
+  </ol>
+  <details>
+    <summary>Hint for the scan</summary>
+    <p>Walk from <code>lo + 1</code> up to <code>s_paint_limit</code>, comparing each word with <code>PAINT_WORD</code>. The stack grows down, so the first changed word, reached from the bottom, is the lowest one that the stack wrote. Subtract its address from <code>&amp;__StackTop</code>, cast to <code>uintptr_t</code>, to get bytes.</p>
+  </details>
+  <details>
+    <summary>Hint if the report says 0 bytes</summary>
+    <p>The scan stops at <code>s_paint_limit</code>, so the paint must reach up to that point. If <code>s_paint_limit</code> was never set, the loop does nothing and returns 0. Also check that <code>current_sp()</code> is read in <code>paint_unused_stack()</code>, not earlier in <code>main()</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0078-stack-painting/solution</code>. Try first, compare after. The solution's expected line is <code>STACK PAINT OK</code>; the high-water number itself is for you to read, not to copy.</p>
+
+  <div class="win">You painted the unused stack, ran code that used it, and measured how deep it went, from the linker's own bounds. You can say why a canary is a detector and not a guard.</div>
+
+  <!-- ===== Quiz ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The core 0 stack is 2048 bytes, and each recurse() frame is 24 bytes. About how many frames fit if nothing else uses the stack? Give a whole number.",
+        "answer": 85, "tolerance": 0.02, "unit": "frames",
+        "why": "2048 divided by 24 is 85.3, so 85 whole frames fit. The tempting answer, 2048, is the byte count, not the number of frames." },
+      { "type": "mc",
+        "prompt": "Why do many embedded standards ban malloc after startup?",
+        "options": [
+          "Heap blocks fragment and fail later",
+          "malloc is slower than static arrays",
+          "The linker refuses to link malloc",
+          "Static arrays cannot hold any struct"
+        ],
+        "answer": 0,
+        "why": "Fragmentation makes an allocation fail late and unpredictably. The tempting answer, speed, is a side effect, not the main reason. The linker does link malloc, and static arrays hold structs without trouble." },
+      { "type": "mc",
+        "prompt": "Which linker symbol marks the lowest byte of the reserved core 0 stack on the Pico?",
+        "options": [
+          "__StackTop",
+          "__StackBottom",
+          "__StackLimit",
+          "__HeapLimit"
+        ],
+        "answer": 1,
+        "why": "__StackBottom is the lowest reserved byte. The tempting answer, __StackTop, is the highest byte, where the stack starts. __StackLimit is the top of RAM, which bounds the heap." },
+      { "type": "mc",
+        "prompt": "After a run, the canary word has changed. What does that tell you?",
+        "options": [
+          "The stack overran its reserved area",
+          "Heap allocations failed in this run",
+          "The high-water mark is exactly zero",
+          "The paint pattern was never written"
+        ],
+        "answer": 0,
+        "why": "Only the stack writes at the bottom of its reserved region, so a changed canary means it overflowed. The tempting answer, a heap failure, is unrelated: the heap is not used in this program." },
+      { "type": "text",
+        "prompt": "In the solution, which 32-bit pattern fills the unused stack? Write it in hex with 0x.",
+        "accept": ["0xa5a5a5a5", "a5a5a5a5"],
+        "why": "The paint is 0xA5A5A5A5. The tempting answer, 0xDEADBEEF, is the canary, which is a different word stored at the bottom." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 45: (uint8_t)200 + (uint8_t)100, stored in a uint8_t. What value is stored?",
+        "answer": 44, "tolerance": 0, "unit": "",
+        "why": "The sum is 300, and 300 modulo 256 is 44. The tempting answer, 300, is the sum before the store truncates it." },
+      { "type": "text",
+        "prompt": "From lesson 33: on Cortex-M, which register holds the return address after a call? Write the name.",
+        "accept": ["LR", "R14", "lr", "r14"],
+        "why": "LR, the link register, holds the return address after a call. The tempting answer, SP, is the stack pointer, which marks where the stack is, not where to return." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== Interview ===== -->
+  <div class="interview">
+    <p><strong>"Why would you avoid malloc in firmware?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>On a microcontroller the heap is small and it fragments. After many allocations and frees, an allocation can fail even though the total free memory looks fine, and it fails at a time the test suite did not choose. The allocation time is also not fixed, which breaks deadlines. I would allocate everything at startup from static arrays or a fixed memory pool, so the worst case is known from the design. Then I would check the stack with painting, a high-water mark and a canary, and enable an MPU guard where the hardware has one.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://github.com/raspberrypi/pico-sdk">pico-sdk (Raspberry Pi, GitHub)</a>: read <code>src/rp2040/pico_platform/memmap_default.ld</code> and the <code>script_include</code> files in <code>src/rp2_common/pico_standard_link</code> for <code>__StackTop</code>, <code>__StackBottom</code> and the heap. The values above come from the local SDK 2.3.1 copy and an ELF built from this project, not from a web fetch of the GitHub files.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the frame layout of recurse() in the disassembly, and explain why the 24 bytes include the saved registers and the return address."
+    Related: <a href="0033-the-stack-and-the-aapcs.html">Lesson 33: The stack and the AAPCS</a>, <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, <a href="0068-writing-your-own-linker-script.html">Lesson 68: Writing your own linker script</a>, and <a href="../reference/pico-sdk.html">the Pico SDK sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

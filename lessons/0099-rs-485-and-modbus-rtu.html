@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RS-485 and Modbus RTU · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0099">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>RS-485 and Modbus RTU</h1>
+  <p class="subtitle">Modbus is the protocol most factory meters, drives and PLCs speak, and RS-485 is the wire it usually runs on. You will write a Modbus slave for the Pico that the lesson's firmware serves over UART0, and talk to it from a Python master on your PC.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>build a Modbus RTU request and response with CRC-16/MODBUS, answer function 03 (read holding registers) and 06 (write single register), and find the end of a frame from the silent interval</strong>.
+  </div>
+
+  <h2>The idea: RS-485 is the wire, Modbus is the language</h2>
+  <p>
+    RS-485 carries each bit as the voltage difference between two wires, A and B, the same differential idea as CAN in lesson 98. It is <em>half-duplex</em>: one pair carries both directions, so only one node may drive the line at a time. A driver stays off unless its driver-enable pin (DE) is high, and the receiver is usually enabled on the same chip by an active-low RE pin. Termination resistors at the two ends stop reflections on a long line, and many nodes can share the bus. These electrical facts are general, so check a transceiver's datasheet before you design a board.
+    <span class="sidenote">The Pico's UART0 is a TTL serial port, not RS-485. In Wokwi there is no transceiver, so the firmware has no DE pin to drive. On a real board you would drive DE high before each reply and low once the last byte has left the shifter.</span>
+  </p>
+  <p>
+    Modbus defines what the bytes mean. Modbus RTU is the binary version: each byte is sent as-is, with a CRC at the end. The master starts every exchange, and a slave answers only when it is addressed. The Modbus specifications are published by the Modbus organisation (<a href="https://www.modbus.org/specs.php">modbus.org specifications</a>): the serial-line specification covers the frame and the timing, and the application protocol specification covers the function codes. This lesson did not open the PDFs, so cite section numbers from the originals when you need them.
+  </p>
+
+  <h2>The RTU frame</h2>
+  <figure>
+    <svg viewBox="0 0 460 80" role="img" aria-label="A Modbus RTU frame: address, function, data, then CRC low byte and high byte">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="10" y="20" width="60" height="36"/>
+        <rect x="70" y="20" width="60" height="36"/>
+        <rect x="130" y="20" width="200" height="36"/>
+        <rect x="330" y="20" width="60" height="36"/>
+        <rect x="390" y="20" width="60" height="36"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle">
+        <text x="40" y="42">address</text>
+        <text x="100" y="42">function</text>
+        <text x="230" y="42">data (big-endian)</text>
+        <text x="360" y="42">CRC low</text>
+        <text x="420" y="42">CRC high</text>
+        <text x="230" y="75">Silent gap of 3.5 characters before and after every frame</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. An RTU frame has no start or end byte. The silence between frames marks the edges, and the CRC checks the contents.</figcaption>
+  </figure>
+  <p>
+    The fields are the slave address (1 to 247; 0 is broadcast), the function code, the data, and a 16-bit CRC. Multi-byte fields are big-endian, which is the opposite of the CRC: the CRC's low byte is sent first. The CRC is CRC-16/MODBUS, with the reflected polynomial 0xA001, an initial value of 0xFFFF and no final XOR. You will check your code against the standard test value: the ASCII string "123456789" gives <code>0x4B37</code>.
+  </p>
+  <p>
+    A frame has no start or end byte. The receiver decides that a frame has ended when the line is silent for 3.5 character times. At 115200 baud that is about 334 µs, but the serial-line specification fixes the silence at 1.750 ms for rates above 19200 baud. The firmware uses 1750 µs. Check that value in the specification before you rely on it, because this lesson did not open it.
+  </p>
+
+  <h2>Function 03 and function 06</h2>
+  <table>
+    <thead><tr><th>Function</th><th>Request data</th><th>Response data</th></tr></thead>
+    <tbody>
+      <tr><td>03 read holding registers</td><td>start address, quantity (1 to 125)</td><td>byte count, then the register values, big-endian</td></tr>
+      <tr><td>06 write single register</td><td>register address, value</td><td>an echo of the request</td></tr>
+    </tbody>
+  </table>
+  <p>
+    A request for registers 0 to 1 from slave 1 is <code>01 03 00 00 00 02 C4 0B</code>. The reply that carries 0x1234 and 0xABCD is <code>01 03 04 12 34 AB CD 00 20</code>. Those bytes come from the Python code in the project and are repeated in the C host tests, so the two implementations check each other.
+  </p>
+  <p>
+    When the slave cannot honour a request, it sends an exception: the function code with its high bit set (0x83 for a 03 request), then an exception code. Code 01 is an illegal function, 02 an illegal data address, and 03 an illegal data value (application protocol specification, section 7; not opened for this lesson). A bad CRC or a frame for another address gets no reply at all.
+  </p>
+
+  <h2>Try it: the host tests first</h2>
+  <p>
+    The frame handler is plain C with no hardware, so you test it on the PC before the board. The project is <code>projects/0099-modbus-rtu-tests</code>. Its starter has the same nine tests as the solution, and six of them fail, because the CRC loop and the function handlers are still marked <code>TODO(learner)</code>.
+  </p>
+  <ol class="steps">
+    <li>From the workspace root, run <code>python -I tools/build.py projects/0099-modbus-rtu-tests/starter --test</code>. The output ends with <code>9 Tests 6 Failures 0 Ignored</code>, and <code>0% tests passed</code>.</li>
+    <li>Open <code>src/crc16.c</code> and write the inner loop of <code>crc16_modbus()</code>. The check value test is the first to pass. Run the command again.</li>
+    <li>Open <code>src/modbus.c</code> and handle functions 03 and 06 where the <code>TODO(learner)</code> comment is. Use <code>finish_frame()</code> for the CRC and <code>exception_response()</code> for every error.</li>
+    <li>You will know it works when the output ends with <code>9 Tests 0 Failures 0 Ignored</code>, and ctest reports <code>100% tests passed</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint for the CRC loop</summary>
+    <p>XOR each byte into the low byte of <code>crc</code>. Then loop eight times: if the bit that falls off the right end is 1, shift right and XOR with <code>0xA001</code>, otherwise just shift.</p>
+  </details>
+  <details>
+    <summary>Hint for function 03</summary>
+    <p>The quantity is the value field. Build the response in <code>rsp</code>: address, function, byte count (twice the quantity), then each register big-endian starting at index 3. Pass the total length to <code>finish_frame()</code>.</p>
+  </details>
+
+  <h2>Try it on the Pico, through the simulated serial port</h2>
+  <p>
+    The firmware is in <code>projects/0099-modbus-rtu-slave</code>. It uses the same <code>modbus.c</code> and <code>crc16.c</code>, copied from the host project. The Pico reads frames from UART0 on GP0 and GP1. Its register map is holding register 0 (a counter, +1 each second), register 1 (the LED, bit 0) and register 2 (a sensor value of 2250, which is 22.50 °C in hundredths).
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0099-modbus-rtu-slave/starter</code> in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter builds, but it does not answer yet.</li>
+    <li>In <code>main.c</code>, write the frame-end test where the <code>TODO(learner)</code> comment is: when the line has been silent for <code>FRAME_SILENCE_US</code> and <code>rx_len</code> is not zero, call <code>modbus_process()</code>, send any reply with <code>uart_write_blocking()</code>, and reset <code>rx_len</code>.</li>
+    <li>Build again, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor shows <code>MODBUS SLAVE READY</code>. The simulator forwards UART0 on TCP port 4000 (<code>rfc2217ServerPort = 4000</code> in <code>wokwi.toml</code>).</li>
+    <li>In a terminal, install pyserial yourself with <code>pip install pyserial</code>. Then, from the project folder, run <code>python master_modbus.py read 0 3</code>. You will know it works when the master prints three values, with the counter in the first one, and <code>2250</code> in the third.</li>
+    <li>Write the LED register: <code>python master_modbus.py write 1 1</code> should print <code>echo ok</code>, and the LED on the Pico turns on.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The timer function is <code>time_us_32()</code>. Compare it with <code>last_byte_us</code>. A reply that is empty means the slave stayed silent: a wrong address or a bad CRC, which is correct behaviour.</p>
+  </details>
+  <div class="note">
+    We did not run the simulator for this lesson, because the workspace has no <code>WOKWI_CLI_TOKEN</code>. The host tests and the firmware build were run. The RFC 2217 link, and whether the simulated UART0 answers the master, are the parts to confirm in VS Code. If the master gets no reply, check that the simulator tab is visible, because the docs say the simulation may pause without it.
+  </div>
+  <p>The reference solution is in <code>projects/0099-modbus-rtu-slave/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You built a Modbus RTU slave whose CRC checks against the standard value, and whose frame handler is tested on the PC first. You also know how a frame ends, and why a bad CRC gets no reply.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A request has the right slave address but a CRC that does not match its bytes. What does the slave do?",
+        "options": ["Stays silent and sends nothing", "Sends an illegal function exception", "Sends an illegal address exception", "Resends its last register value"],
+        "answer": 0,
+        "why": "A frame with a bad CRC was damaged on the wire, so the slave cannot trust its contents and stays silent. The tempting answer, an exception, would send a reply the master may act on, based on a request that was never received." },
+      { "type": "number",
+        "prompt": "A master reads 3 registers with function 03. What is the byte count field in the reply?",
+        "answer": 6, "tolerance": 0, "unit": "bytes",
+        "why": "Each register is 16 bits, so 3 registers are 6 bytes. The tempting answer, 3, counts registers, not bytes." },
+      { "type": "mc",
+        "prompt": "In an RTU frame, which CRC byte goes on the wire first?",
+        "options": ["The low byte is sent first", "The high byte is sent first", "Only one CRC byte is sent", "Both bytes are sent at once"],
+        "answer": 0,
+        "why": "The CRC is sent low byte first, which is the opposite of the big-endian data fields. The tempting answer, high byte first, is the usual order for data, and it would fail the check." },
+      { "type": "text",
+        "prompt": "Which function code reads holding registers? Give the two-digit hex code.",
+        "accept": ["0x03", "03", "3"],
+        "why": "03 is read holding registers. The tempting answer, 06, is write single register, which changes a value and does not read one." },
+      { "type": "mc",
+        "prompt": "A master writes 0x2A to register 1 with function 06. What does a healthy slave send back?",
+        "options": ["It echoes the request frame", "It sends only the value", "It sends an exception reply", "It sends nothing at all"],
+        "answer": 0,
+        "why": "A successful write is answered with an echo of the request, so the master can check that the write arrived. The tempting answer, nothing, is what a bad CRC gets, not a good write." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 70: in the USART ring buffer, which index does the interrupt write?",
+        "accept": ["head"],
+        "why": "The interrupt is the producer, and it writes the head. The tempting answer, tail, is the consumer's index, which main writes." },
+      { "type": "number",
+        "prompt": "From lesson 80: how many tests pass in the debounce suite when its starter is fixed and all seven tests run?",
+        "answer": 7, "tolerance": 0, "unit": "tests",
+        "why": "The debounce suite has seven tests, and all seven pass when the logic is right. The tempting answer, three, counts only the tests that failed on the starter." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How does a Modbus RTU slave know a frame has ended, and what does it do with a bad CRC?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>RTU has no end byte, so the slave waits for a silence of 3.5 character times, which is 1.750 ms above 19200 baud. Then it treats everything received as one frame. It checks the address, then the CRC-16 over all bytes but the last two. A bad CRC means the frame was damaged on the wire, so the slave sends nothing, and the master times out and retries. A correct request for a wrong address also gets no reply.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.modbus.org/specs.php">Modbus organisation: specifications</a>: the Modbus over Serial Line specification for the RTU framing and timing, and the Modbus Application Protocol specification for the function codes and exceptions. This lesson did not open the PDFs, so read the sections yourself before you cite a number.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Compute the CRC of the request for registers 10 to 12 by hand, one bit at a time, and check it against the Python selftest."
+    Related: <a href="0098-can-bus.html">Lesson 98: CAN bus</a>, <a href="0070-usart-and-exti-interrupts-with.html">Lesson 70: USART and EXTI with a ring buffer</a>, <a href="../reference/protocols.html">Protocol comparison</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

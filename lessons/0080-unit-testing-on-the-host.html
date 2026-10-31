@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unit testing on the host with Unity; TDD for firmware · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0080">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Unit testing on the host with Unity; TDD for firmware</h1>
+  <p class="subtitle">Flashing a board to check one line of logic takes minutes. A unit test on your PC takes a fraction of a second, and it runs the same code every time. This lesson shows how to split logic from hardware so that it can be tested, and how to write the test first.</p>
+
+  <div class="goal">
+    By the end of this lesson you can write a failing Unity test for a small module, make it pass with the simplest code, and run the whole suite on the PC with one command.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea: logic without hardware</h2>
+  <p>
+    Most firmware bugs are in logic: a debounce that counts wrong, a state machine that misses a transition, a conversion that overflows. Logic that touches a pin is hard to test, because the test needs the board. The fix is to separate the two. A module takes numbers in and returns numbers out, and the code that reads the pin is a thin layer above it. The debounce in this lesson takes a raw level and returns a stable level, and it never reads a pin.
+  </p>
+  <p>
+    That separation makes the logic run on any target. The same <code>.c</code> file compiles with the PC's gcc for the tests and with the ARM toolchain for the board. James Grenning calls this <strong>dual targeting</strong>, and his book on test-driven development for embedded C is the reference for the practice (<a href="https://pragprog.com/titles/jgade/test-driven-development-for-embedded-c/">Grenning, Test-Driven Development for Embedded C, Pragmatic</a>).
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 640 170" role="img" aria-label="The debounce module is plain C and is compiled twice. The PC build links the module with Unity and runs the tests. The ARM build links the same module with the pin code." style="max-width:832px">
+      <defs><marker id="ah56" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="20" width="190" height="32" rx="3"/>
+        <rect x="10" y="110" width="190" height="32" rx="3"/>
+        <rect x="250" y="60" width="160" height="40" rx="3"/>
+        <rect x="450" y="20" width="180" height="32" rx="3"/>
+        <rect x="450" y="110" width="180" height="32" rx="3"/>
+        <path d="M200 36 L250 70" marker-end="url(#ah56)"/>
+        <path d="M200 126 L250 90" marker-end="url(#ah56)"/>
+        <path d="M410 70 L450 36" marker-end="url(#ah56)"/>
+        <path d="M410 90 L450 126" marker-end="url(#ah56)"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="105" y="40.2" text-anchor="middle" font-size="12">test_debounce.c + Unity</text>
+        <text x="105" y="130.2" text-anchor="middle" font-size="12">PC gcc: runs in ms</text>
+        <text x="330" y="84.2" text-anchor="middle" font-size="12">debounce.c (plain C)</text>
+        <text x="540" y="40.2" text-anchor="middle" font-size="12">pin reader (main.c)</text>
+        <text x="540" y="129.85" text-anchor="middle" font-size="11">ARM gcc: runs on the board</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. One module, two builds. The test build runs on the PC. The board build adds the pin code, and the module itself does not change.</figcaption>
+  </figure>
+
+  <h2>Unity: asserts and fixtures</h2>
+  <p>
+    Unity is a unit-test framework written in pure ANSI C, so it compiles with the PC's gcc and needs no operating system (<a href="https://www.throwtheswitch.org/unity">Unity, Throw The Switch</a>). A test is a function. It checks results with an assert, and Unity reports the first failure with its file and line. Unity has typed assert macros, such as <code>TEST_ASSERT_EQUAL_INT</code> for an int and <code>TEST_ASSERT_EQUAL_UINT8</code> for a byte, so the comparison has the right width.
+  </p>
+  <p>
+    Two functions run around each test. <code>setUp()</code> runs before every test, so each test starts from a known state, and <code>tearDown()</code> runs after it. <code>main()</code> lists the tests with <code>RUN_TEST</code> between <code>UNITY_BEGIN()</code> and <code>UNITY_END()</code>.
+  </p>
+  <pre><code><span class="k">static</span> debounce_t d;
+<span class="k">void</span> setUp(<span class="k">void</span>) { debounce_init(&amp;d); }    <span class="c">/* a fresh state before every test */</span>
+<span class="k">void</span> tearDown(<span class="k">void</span>) { }
+
+<span class="k">static void</span> test_three_presses_confirm(<span class="k">void</span>) {
+    debounce_update(&amp;d, 1);
+    debounce_update(&amp;d, 1);
+    TEST_ASSERT_EQUAL_UINT8(1, debounce_update(&amp;d, 1));  <span class="c">/* the third sample confirms */</span>
+}</code></pre>
+
+  <h2>Red, green, refactor</h2>
+  <p>
+    Test-driven development repeats three steps. <strong>Red</strong>: write a test for one behaviour, and run it to see it fail. <strong>Green</strong>: write the simplest code that makes it pass, even if the code is ugly. <strong>Refactor</strong>: clean the code while the tests stay green. The failing test is the proof that the test can fail, and a test that was never red may pass for the wrong reason.
+  </p>
+  <div class="note">Start with the behaviour you want, not with the data structure. The test "three presses confirm" says what the debounce is for. The integrator is an implementation choice that the test does not need to know about.</div>
+
+  <h2>Host and target together</h2>
+  <p>
+    The host run checks the logic, and the board run checks the pins, the clocks and the timing. Neither replaces the other. Host tests run in a fraction of a second, so you run them after every change. Lesson 81 adds fakes, which replace a hardware function with a function the test controls, and lesson 82 runs these tests in continuous integration.
+    <span class="sidenote">CMock is the other common tool for generating fakes. It needs Ruby, which is not installed on the workspace PC, so this course uses FFF for the hands-on mocks in lesson 81.</span>
+  </p>
+
+  <!-- ===== Hands-on ===== -->
+  <h2>Try it on the PC</h2>
+  <p>
+    The project is <code>projects/0080-debounce-tdd</code>. It is a host-test project: no Wokwi and no board, only the PC's gcc, Unity, and CTest. The starter has the debounce header, an empty <code>debounce_update()</code> marked <code>TODO(learner)</code>, and seven tests. Three of the tests fail on the starter, by design.
+  </p>
+  <ol class="steps">
+    <li>From the workspace root, run the starter's tests: <code>python -I tools/build.py projects/0080-debounce-tdd/starter --test</code>. Three tests fail. The output names them, and ends with <code>0% tests passed, 1 tests failed out of 1</code>.</li>
+    <li>Read the three failing tests in <code>test/test_debounce.c</code>. Each names a behaviour: a press needs three samples, a release needs three lows, and a bounce during a press keeps it pressed.</li>
+    <li>Your task: in <code>src/debounce.c</code>, implement <code>debounce_update()</code>. Keep the integrator in <code>d-&gt;count</code>. Count up on a high sample and down on a low one, stop at <code>DEBOUNCE_MAX</code> and at 0, and set <code>d-&gt;stable</code> only at those two ends. Return <code>d-&gt;stable</code>.</li>
+    <li>Run the tests again with the same command. You will know it works when the output ends with <code>100% tests passed, 0 tests failed out of 1</code>, and the Unity line above it reads <code>7 Tests 0 Failures 0 Ignored</code> followed by <code>OK</code>.</li>
+    <li>Refactor: rename the variables if the names are unclear, and keep the tests green after each change. Then run the command once more.</li>
+  </ol>
+  <details>
+    <summary>Hint for the two ends of the integrator</summary>
+    <p>The stable level must change only when the count reaches <code>DEBOUNCE_MAX</code> (becomes 1) or 0 (becomes 0). Between the two ends, the output keeps its old value. Test that rule with the bounce test before you change anything else.</p>
+  </details>
+  <details>
+    <summary>Hint if the release test fails</summary>
+    <p>Check the release with the counter at the top. After three presses the count is <code>DEBOUNCE_MAX</code>, so the stable level stays 1 until the count falls to 0. Count the lows by hand: the first two keep the press, and the third releases it.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0080-debounce-tdd/solution</code>. Its tests pass, and it prints <code>7 Tests 0 Failures 0 Ignored</code> and <code>OK</code>. Try first, compare after.</p>
+
+  <div class="win">You wrote a unit test that failed first, made it pass, and ran the whole suite on the PC with one command, without a board.</div>
+
+  <!-- ===== Quiz ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why run the debounce tests on the PC instead of the Blue Pill?",
+        "options": [
+          "Runs are fast, with no board",
+          "The PC compiler is more correct",
+          "Tests can read the real pins",
+          "PC tests replace the whole review"
+        ],
+        "answer": 0,
+        "why": "The logic has no hardware in it, so a PC run is fast and repeatable. The tempting answer, a more correct compiler, is not a reason: the same source runs on both. The tests cannot read pins, and tests do not replace review." },
+      { "type": "number",
+        "prompt": "A suite has seven tests, and each test runs once. How many times does setUp() run in one run of the suite?",
+        "answer": 7, "tolerance": 0, "unit": "times",
+        "why": "setUp() runs before every test, so seven tests give seven calls. The tempting answer, 1, assumes setUp runs once per file, which is wrong." },
+      { "type": "mc",
+        "prompt": "Which Unity assert checks that a uint8_t value equals an expected value?",
+        "options": [
+          "TEST_ASSERT_EQUAL_UINT8",
+          "TEST_ASSERT_EQUAL_INT",
+          "TEST_ASSERT_EQUAL_UINT16",
+          "TEST_ASSERT_NOT_NULL"
+        ],
+        "answer": 0,
+        "why": "The UINT8 form compares an 8-bit value, so the width is right. The tempting answer, INT, compares a full int, and UINT16 has the wrong width. NOT_NULL checks a pointer, not a value." },
+      { "type": "text",
+        "prompt": "Which Unity function runs before every test? Write its name.",
+        "accept": ["setUp", "setup"],
+        "why": "setUp() runs before each test, and tearDown() after it. The tempting answer, main, runs once and lists the tests." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 73: the SysTick reload for a 1 kHz tick at 8 MHz. What value?",
+        "answer": 7999, "tolerance": 0, "unit": "",
+        "why": "The reload is the ticks minus one: 8000 minus 1 is 7999. The tempting answer, 8000, is off by one." },
+      { "type": "number",
+        "prompt": "From lesson 52: at a 1 ms sample period, how many samples does the integrator in the reference solution need to confirm a press?",
+        "answer": 10, "tolerance": 0, "unit": "samples",
+        "why": "The reference uses DEBOUNCE_SAMPLES of 10. The tempting answer, 1, is the sample rate, not the count the integrator needs." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== Interview ===== -->
+  <div class="interview">
+    <p><strong>"How do you test code that touches hardware?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I keep the logic in plain C modules that take values in and return values out, with no register or SDK call inside them. Those modules compile on the PC with a unit-test framework, so I can write a failing test first and run the whole suite in a fraction of a second. Where the logic has to call hardware, the test replaces that call with a fake that records the call and returns a value I choose. The board-side layer is thin, and I test it on the target with a small set of tests, because the clock, the timing and the electrical behaviour exist only there.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.throwtheswitch.org/unity">Unity, Throw The Switch</a>: the project page, which describes Unity as a unit-test framework in pure ANSI C and lists the typed assert macros. The test-driven cycle is in James Grenning's book, linked in the text above; this lesson did not read its chapters.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Write a failing test for a moving-average filter of eight samples, show the red run, then the smallest code that goes green."
+    Related: <a href="0056-state-machines.html">Lesson 56: State machines</a>, <a href="0052-gpio-input-and-debouncing.html">Lesson 52: GPIO input and debouncing</a>, <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76: Driver design and hardware abstraction layers</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

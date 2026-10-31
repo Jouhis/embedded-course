@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Designing a serial protocol: framing, checksums, CRC · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0101">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Designing a serial protocol: framing, checksums, CRC</h1>
+  <p class="subtitle">A UART gives you a stream of bytes with no beginnings and no ends. A protocol turns that stream into messages that a receiver can find, check and, when a message is lost, ask again for. You will implement COBS byte stuffing and CRC-16/CCITT-FALSE, test them on the PC, and frame sensor readings on the Pico.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>implement COBS encoding and decoding and a CRC-16/CCITT-FALSE, check the CRC against its standard value, and frame a sensor reading so that a receiver can find it and verify it</strong>.
+  </div>
+
+  <h2>The idea: a stream needs framing</h2>
+  <p>
+    A receiver that reads a UART byte by byte cannot tell where one message stops and the next starts, and line noise can add or drop bytes. A protocol has to solve two problems: <em>framing</em>, which marks where each message begins and ends, and <em>error detection</em>, which tells the receiver whether the bytes are intact. Three common framing styles solve the first one:
+  </p>
+  <ul>
+    <li><strong>Length prefix.</strong> The first byte gives the length. It is simple, but one corrupted length byte loses synchronisation for every message after it.</li>
+    <li><strong>Delimiter with escaping.</strong> A special byte ends each frame, and the body is rewritten so the delimiter never appears inside it. SLIP does this by escaping the end byte (RFC 1055, not opened for this lesson). In the worst case it can double the length of a frame.</li>
+    <li><strong>COBS.</strong> Consistent Overhead Byte Stuffing rewrites the body so it contains no zero at all, and then 0x00 is free to mark every frame end. Its overhead is bounded, and a receiver can resynchronise after any noise: the next zero is the next frame.</li>
+  </ul>
+  <p>
+    Cheshire and Baker's paper defines COBS and proves its bound: the stuffing adds no more than one byte in 254 to any packet (<a href="https://stuartcheshire.org/papers/COBSforToN/">Cheshire and Baker, "Consistent Overhead Byte Stuffing", IEEE/ACM Transactions on Networking, 1999</a>). That makes COBS the usual choice for a binary stream that must resynchronise after noise.
+    <span class="sidenote">The paper's publisher identifier is S 1063-6692(99)03826-1. This lesson did not find a DOI, so cite the paper by its authors, title and journal.</span>
+  </p>
+
+  <h2>COBS: the rule in one example</h2>
+  <p>
+    COBS splits the data at its zeros. Each block starts with a <em>code byte</em> that gives the distance to the next zero, counting the code byte itself, and the data bytes of the block follow. Take <code>11 22 00 33</code>. The first block holds <code>11 22</code>, and its code is 3 (two data bytes plus one). The zero is replaced by the code. The last block holds <code>33</code>, with code 2. The encoding is <code>03 11 22 02 33</code>, which has no zero in it. Decoding reverses it: read a code, copy the block, and put back the zero that the code stood for.
+  </p>
+  <figure>
+    <svg viewBox="0 0 520 170" role="img" aria-label="The bytes 11 22 00 33 encoded as 03 11 22 02 33, with the zero replaced by a code byte" style="max-width:676px">
+      <defs><marker id="ah68" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="30" width="50" height="34" rx="0"/>
+        <rect x="60" y="30" width="50" height="34" rx="0"/>
+        <rect x="110" y="30" width="50" height="34" rx="0"/>
+        <rect x="160" y="30" width="50" height="34" rx="0"/>
+        <rect x="10" y="104" width="50" height="34" rx="0"/>
+        <rect x="60" y="104" width="50" height="34" rx="0"/>
+        <rect x="110" y="104" width="50" height="34" rx="0"/>
+        <rect x="160" y="104" width="50" height="34" rx="0"/>
+        <rect x="210" y="104" width="50" height="34" rx="0"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="10" y="22" text-anchor="start" font-size="11">Data as sent by the application (contains a zero)</text>
+        <text x="35" y="51.2" text-anchor="middle" font-size="12">11</text>
+        <text x="85" y="51.2" text-anchor="middle" font-size="12">22</text>
+        <text x="135" y="51.2" text-anchor="middle" font-size="12">00</text>
+        <text x="185" y="51.2" text-anchor="middle" font-size="12">33</text>
+        <text x="10" y="96" text-anchor="start" font-size="11">COBS encoding: the zero became a code byte.</text>
+        <text x="35" y="125.2" text-anchor="middle" font-size="12">03</text>
+        <text x="85" y="125.2" text-anchor="middle" font-size="12">11</text>
+        <text x="135" y="125.2" text-anchor="middle" font-size="12">22</text>
+        <text x="185" y="125.2" text-anchor="middle" font-size="12">02</text>
+        <text x="235" y="125.2" text-anchor="middle" font-size="12">33</text>
+        <text x="10" y="160" text-anchor="start" font-size="11">Then the frame delimiter 00 is added on the wire.</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The zero is removed from the data. Its place now holds the distance to the next zero, so the wire never carries a zero inside a frame.</figcaption>
+  </figure>
+
+  <h2>Checksums and CRC: what they can catch</h2>
+  <p>
+    A <em>checksum</em> adds the bytes together, and it catches a single flipped bit. It misses a reordering of bytes, and it misses many pairs of errors that cancel. A <em>cyclic redundancy check</em> (CRC) treats the message as a long binary number and takes its remainder when divided by a fixed polynomial. Its detection power depends on the polynomial, and it catches all burst errors up to its width. Choosing a polynomial is a research problem: Philip Koopman's tables list the best polynomials for each size and Hamming distance (<a href="https://users.ece.cmu.edu/~koopman/crc/">Koopman, "Best CRC Polynomials", Carnegie Mellon University</a>).
+  </p>
+  <table>
+    <thead><tr><th>Variant</th><th>Polynomial</th><th>Init</th><th>Check value for "123456789"</th></tr></thead>
+    <tbody>
+      <tr><td>CRC-16/CCITT-FALSE</td><td>0x1021</td><td>0xFFFF</td><td>0x29B1</td></tr>
+      <tr><td>CRC-16/MODBUS (lesson 99)</td><td>0x8005, reflected 0xA001</td><td>0xFFFF</td><td>0x4B37</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The bitwise version works one bit at a time: eight shifts per byte, and no table. A table-driven version looks up 256 precomputed values, one per byte, which is faster but costs 512 bytes of flash. On a small microcontroller, the bitwise form is often the right trade. The check value is the test you run first: if your CRC gives 0x29B1 for "123456789", the polynomial, the init value and the bit order are all right. Append the CRC big-endian to a frame and the CRC of the whole frame becomes zero, which lets the receiver check a frame in one call.
+  </p>
+
+  <h2>Sequence numbers and retries</h2>
+  <p>
+    A CRC tells the receiver that a frame is damaged, but it cannot tell it that a frame is missing. Add a sequence number to each frame. The receiver answers with an ACK for a good frame or a NACK for a bad one, and the sender retries after a timeout. The sequence number also lets the receiver drop a duplicate when an ACK was lost. Stop-and-wait, one frame in flight at a time, is the simplest scheme that works. Lesson 99's Modbus avoids the problem by making every request a question that gets an answer.
+  </p>
+
+  <h2>Try it on the PC first: COBS and CRC by test</h2>
+  <p>
+    The host project is <code>projects/0101-serial-framing-tests</code>. It contains 15 tests, and the starter fails eleven of them, because the COBS encoder and decoder and the CCITT CRC are still <code>TODO(learner)</code>. The four that pass in the starter check error paths, which return 0 in the stub.
+  </p>
+  <ol class="steps">
+    <li>From the workspace root, run <code>python -I tools/build.py projects/0101-serial-framing-tests/starter --test</code>. The output ends with <code>15 Tests 11 Failures 0 Ignored</code>.</li>
+    <li>Read <code>test/test_framing.c</code>. The vectors are the encodings of <code>{}</code>, <code>{00}</code>, <code>{11 22 00 33}</code> and a full 254-byte block. Each one states an expected output.</li>
+    <li>Write <code>cobs_encode()</code> in <code>src/cobs.c</code>, then <code>cobs_decode()</code>, then the CRC in <code>src/crc16.c</code>. Run the command after each one.</li>
+    <li>You will know it works when the output ends with <code>15 Tests 0 Failures 0 Ignored</code>, and ctest reports <code>100% tests passed</code>. The CRC test reads <code>0x29B1</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint for the encoder</summary>
+    <p>Keep two indexes: <code>code_at</code>, where the current code byte goes, and <code>w</code>, the next free output byte. At each zero, write the code into <code>code_at</code> and reserve the next code byte. At 254 data bytes, close the block the same way, without a zero.</p>
+  </details>
+  <details>
+    <summary>Hint for the decoder</summary>
+    <p>Read a code <code>c</code>, reject a zero code, and copy <code>c - 1</code> bytes. After any block except one whose code is 0xFF, put back a zero, unless the input has ended.</p>
+  </details>
+
+  <h2>Try it on the Pico: a framed sensor stream</h2>
+  <p>
+    The Pico project is <code>projects/0101-framed-sensor-stream</code>. Each frame carries a sequence number, a sensor ID, a 16-bit reading and a CRC, all COBS-encoded and ended by a zero. The firmware decodes each frame back, then checks that a corrupted frame is rejected, and it prints <code>ROUNDTRIP OK</code> at the end.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0101-framed-sensor-stream/starter</code> in VS Code. The starter prints frames with no bytes, and <code>ROUNDTRIP FAILED</code> at the end.</li>
+    <li>In <code>main.c</code>, fill in <code>frame_encode()</code>, following the comment: body, CRC, COBS, then the delimiter. Then fill in <code>frame_decode()</code>: COBS-decode, check the body length, check that the CRC of all six bytes is zero, and read the fields back.</li>
+    <li>Build, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. You will know it works when the serial monitor shows five <code>FRAME</code> lines, each followed by <code>decoded</code>, then <code>corrupted frame rejected: yes</code>, and then <code>ROUNDTRIP OK</code>.</li>
+  </ol>
+  <div class="note">
+    We did not run the simulator for this lesson, because the workspace has no <code>WOKWI_CLI_TOKEN</code>. The reference solution's logic was run on the PC: it compiles against the same COBS and CRC files, and its output ends with <code>ROUNDTRIP OK</code>. The Wokwi run is the step to confirm.
+  </div>
+  <p>The reference solution is in <code>projects/0101-framed-sensor-stream/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You implemented COBS and a CRC, checked the CRC against its standard value, and framed a sensor reading so the receiver can find it and verify it.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which framing method guarantees that the body has no zero byte, so 0x00 can mark every frame end?",
+        "options": ["COBS removes all zero bytes", "SLIP doubles every END byte", "A fixed length prefix byte", "A checksum byte at end"],
+        "answer": 0,
+        "why": "COBS replaces every zero with a code, so the body has no zeros. SLIP escapes END bytes instead, and its overhead can double. A length prefix does not mark ends with a special byte at all." },
+      { "type": "number",
+        "prompt": "The CRC-16/CCITT-FALSE check value for ASCII 123456789 is 0x29B1. What is that in decimal?",
+        "answer": 10673, "tolerance": 0, "unit": "",
+        "why": "0x29B1 is 2 times 4096, plus 9 times 256, plus 11 times 16, plus 1, which is 10673. The tempting answer, 29185, reads the hex digits as decimal." },
+      { "type": "mc",
+        "prompt": "A COBS encoding starts with the code byte 0xFF. What does that block contain?",
+        "options": ["A full block of 254 bytes", "An empty block with no data", "A block one byte too short", "A zero that marks the end"],
+        "answer": 0,
+        "why": "0xFF means 254 data bytes, and no zero follows the block. The tempting answer, an empty block, is the code 0x01, which is the last block of some encodings." },
+      { "type": "text",
+        "prompt": "In this lesson's framing, which byte value marks the end of each COBS frame on the wire? Give it in hex.",
+        "accept": ["0x00", "00", "0"],
+        "why": "The delimiter is 0x00, which never appears inside the encoded body. The tempting answer, 0xFF, is a code byte for a full block." },
+      { "type": "mc",
+        "prompt": "Why does each frame carry a sequence number when the receiver sends ACK or NACK?",
+        "options": ["It detects lost frames", "It shortens every frame", "It replaces the CRC", "It resets baud rate"],
+        "answer": 0,
+        "why": "A sequence number lets the receiver spot a missing frame and drop a repeated one. The tempting answer, shortening frames, is the opposite: the number adds a byte. The CRC still does the damage check, so the number does not replace it." },
+      { "type": "mc",
+        "prompt": "A receiver computes the CRC over a frame that has its CRC appended, and gets a nonzero result. What does it conclude?",
+        "options": ["The frame was corrupted", "Wrong baud rate used", "The delimiter was missing", "Sequence number was wrong"],
+        "answer": 0,
+        "why": "A good frame with the CRC appended big-endian has a CRC of zero. A nonzero result means the bytes changed, so the frame was corrupted in transit. The tempting answer, a wrong baud rate, would damage many frames, but one frame's CRC cannot tell you the rate." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 84: in HFSR, which bit number is the FORCED bit, set when a configurable fault escalates to HardFault?",
+        "answer": 30, "tolerance": 0, "unit": "",
+        "why": "HFSR bit 30 is FORCED. The tempting answer, 31, is the debug event bit, which has a different meaning." },
+      { "type": "text",
+        "prompt": "From lesson 84: what does the assertion handler do after it logs the file and line?",
+        "accept": ["reset", "resets", "system reset", "resets the system"],
+        "why": "The assertion logs and resets, so the device recovers and the log explains why. The tempting answer, halt, would leave the device stuck until someone looks at it." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you frame a binary byte stream on a UART, and how would the receiver know a frame is corrupted?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I would use COBS, so the body contains no zero, and end each frame with 0x00. A receiver that loses sync just waits for the next zero. Each frame carries a sequence number and a CRC-16 over its contents. A nonzero CRC over the frame, with its CRC appended, means damage, and the receiver answers NACK so the sender retries. The sequence number catches a lost frame or a duplicate. The check value of the CRC is the first test I run.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://stuartcheshire.org/papers/COBSforToN/">Cheshire and Baker, "Consistent Overhead Byte Stuffing"</a>: read the definition of COBS and the overhead bound in the introduction and the algorithm section. The CRC polynomial choice is in <a href="https://users.ece.cmu.edu/~koopman/crc/">Koopman's CRC tables</a>, which this lesson links but does not cover in depth.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Encode 00 00 11 by hand with COBS, then check my answer against the host test vectors."
+    Related: <a href="0098-can-bus.html">Lesson 98: CAN bus</a>, <a href="0099-rs-485-and-modbus-rtu.html">Lesson 99: RS-485 and Modbus RTU</a>, <a href="../reference/protocols.html">Protocol comparison</a>, <a href="../reference/glossary.html#cobs">Glossary: COBS</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

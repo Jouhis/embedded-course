@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Von Neumann vs Harvard architecture · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0027">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Von Neumann vs Harvard architecture</h1>
+  <p class="subtitle">Every instruction is fetched from memory and most of them also touch memory. How many paths the core has to memory decides what a loop costs.</p>
+
+  <div class="goal">
+    By the end of this lesson you can say whether a Cortex-M core can fetch an instruction and load data in the same cycle, name the bus that proves it, and count the bus transfers in a short program.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>von Neumann</strong> design keeps the program and the data in one memory and reaches it over one path. The CPU cannot fetch the next instruction while it is loading a value, because both go over the same wires. A <strong>Harvard</strong> design gives instructions and data separate memories and separate paths, so the core can fetch and load at the same time.
+    <span class="sidenote">The names describe the paths, not the address map. A Cortex-M core has one address space, which both designs use. The Harvard split is about how many buses reach it.</span>
+  </p>
+  <p>
+    The Cortex-M3 is a Harvard design. Arm's TRM describes it as a "Harvard processor architecture enabling simultaneous instruction fetch with data load/store" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §1.1</a>). It has three bus interfaces: the I-Code bus for instruction fetches from code memory (§12.3), the D-Code bus for literal and constant data in the code region (§12.4), and the System bus for SRAM and peripherals (§12.5). All three are AHB-Lite.
+  </p>
+  <p>
+    The Cortex-M0+ in the RP2040 is different. Arm's datasheet describes one <strong>32-bit AMBA-3 AHB-Lite system interface</strong> that serves the whole system, and says that <strong>instructions are only fetched using the AHB-Lite interface</strong> (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ processor datasheet</a>). Arm's datasheet summarises that bus as a von Neumann bus architecture.
+    <span class="sidenote">The RP2040 datasheet adds that each of its two M0+ cores has a dedicated AHB-Lite port for code fetch, loads and stores. The SIO block also has a single-cycle IOPORT bus for GPIO (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, §2.3 and Figure 6</a>). So the chip has more than one path, but the core itself has one memory port.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 520 220" role="img" aria-label="Two block diagrams. Left: a CPU joined by one bus to a single memory holding code and data. Right: a CPU joined by two separate buses to an instruction memory and a data memory." style="max-width:676px">
+      <defs><marker id="ah22" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="30" y="20" width="140" height="40" rx="3"/>
+        <rect x="30" y="140" width="140" height="40" rx="3"/>
+        <path d="M100 60 V140"/>
+        <rect x="290" y="20" width="150" height="40" rx="3"/>
+        <rect x="240" y="140" width="100" height="40" rx="3"/>
+        <rect x="380" y="140" width="100" height="40" rx="3"/>
+        <path d="M330 60 L290 140"/>
+        <path d="M400 60 L430 140"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="100" y="44.2" text-anchor="middle" font-size="12">CPU core</text>
+        <text x="100" y="164.2" text-anchor="middle" font-size="12">Memory</text>
+        <text x="110" y="106" text-anchor="start" font-size="12">code + data</text>
+        <text x="100" y="206" text-anchor="middle" font-size="12">von Neumann: one path</text>
+        <text x="365" y="44.2" text-anchor="middle" font-size="12">CPU core</text>
+        <text x="290" y="164.2" text-anchor="middle" font-size="12">Instr</text>
+        <text x="430" y="164.2" text-anchor="middle" font-size="12">Data</text>
+        <text x="360" y="206" text-anchor="middle" font-size="12">Harvard: two paths</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Left: one bus carries both the instruction fetch and the data access, so they take turns. Right: separate buses let the core fetch and load in the same cycle. Both drawings omit the shared address map.</figcaption>
+  </figure>
+
+  <h2>Why a loop feels the difference</h2>
+  <p>
+    Take a loop that loads a value, adds it to a total and repeats. Each instruction needs one fetch, and each load needs one more transfer for the data. On a single bus those transfers queue up. On a Harvard core, the fetch of the next instruction can overlap the load of the current data, so the loop can go faster. Real speed depends on wait states, the bus matrix and caches, which later lessons cover (lesson 36 and lesson 37). The bus count is the first thing to understand.
+  </p>
+
+  <h2>Try it in the CPU simulator</h2>
+  <p>
+    The simulator in this lesson is a simplified teaching model. It runs a small instruction subset on one memory map and does <strong>not</strong> model separate buses, so it cannot show the overlap. What it does show is what each instruction reads and writes, which lets you count the transfers. The program stores 7 into RAM and loads it back.
+  </p>
+  <ol class="steps">
+    <li>
+      Before you press anything, count the transfers on <strong>one shared bus</strong> for the first four instructions. Count one fetch per instruction, and one extra transfer for each <code>STR</code> and each <code>LDR</code>.
+    </li>
+    <li>
+      Press <em>Instruction</em> four times and watch the memory row and the register row change. Check that the <code>STR</code> writes to <code>0x20000010</code> and the <code>LDR</code> reads it back into R1.
+    </li>
+    <li>
+      The fifth instruction is <code>B .</code>, which halts the program. Do not step past it: the simulator shows it as a branch to itself.
+    </li>
+  </ol>
+  <div class="widget cpusim" data-title="Store and reload (one shared bus)" data-show="regs,mem,phases">
+    <script type="text/plain">
+            MOV  R2, #0x20000010     @ address in RAM
+            MOV  R0, #7
+            STR  R0, [R2]            @ write 7 to RAM
+            LDR  R1, [R2]            @ read it back
+            B    .                   @ halt
+    </script>
+  </div>
+  <details>
+    <summary>Hint</summary>
+    <p>Each of the four instructions needs one fetch. The <code>STR</code> and the <code>LDR</code> each need one data transfer, and the two <code>MOV</code>s need none. Add the fetches and the data transfers together.</p>
+  </details>
+  <p>
+    The simulator has one memory map, one bus and no cache. Real Cortex-M cores have several buses (Harvard on the M3, one AHB-Lite port on the M0+), and the bus fabric in the RP2040 has its own crossbar (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, §2.1</a>). The simulator's "one bus" count is a teaching shortcut. The real chips do not count transfers the same way.
+  </p>
+
+  <div class="win">You counted the bus transfers for a short program, and you can say why a Harvard core can overlap a fetch with a load while a von Neumann core cannot.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which core can fetch an instruction and load data in the same cycle?",
+        "options": ["Cortex-M3 core", "Cortex-M0+ core", "Neither core."],
+        "answer": 0,
+        "why": "The M3 is a Harvard design with separate I-Code, D-Code and System buses (DDI0337G §1.1 and §12). The M0+ fetches instructions only over its single AHB-Lite port, so a fetch and a load have to share it. Choosing the M0+ is the tempting mistake: it is a common design, but it has one port." },
+      { "type": "number",
+        "prompt": "On a single shared bus, how many transfers does the first four instructions of the simulator program need? Fetches plus data.",
+        "answer": 6, "tolerance": 0,
+        "why": "Four fetches (one per instruction) plus one write for the STR and one read for the LDR make 6. The tempting answer is 4, which counts only the fetches and forgets the data transfers." },
+      { "type": "mc",
+        "prompt": "Which statement about the Cortex-M3 System bus is correct?",
+        "options": ["It carries SRAM and peripheral accesses", "It carries only the instruction fetches", "It carries only literal constant data"],
+        "answer": 0,
+        "why": "The System bus reaches SRAM and peripherals (DDI0337G §12.5). The I-Code bus carries instruction fetches (§12.3), and the D-Code bus carries literal data from the code region (§12.4). The tempting answer is the instruction-fetch one, because the I-Code bus is the one most people think of first." },
+      { "type": "text",
+        "prompt": "Which Cortex-M3 bus carries SRAM and peripheral accesses? Give the short name.",
+        "accept": ["System bus", "System", "system bus"],
+        "why": "The System bus (DDI0337G §12.5) connects to SRAM and peripherals. The D-Code bus is the tempting wrong answer, because it also carries data, but only literal data from the code region." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "In lesson 9, a 3.3 V GPIO drives a red LED with Vf = 2.0 V through 330 Ω. What current flows, in milliamps?",
+        "answer": 3.94, "tolerance": 0.02, "unit": "mA",
+        "why": "I = (3.3 V − 2.0 V) ÷ 330 Ω = 3.94 mA. The tempting answer is 10 mA, which ignores the LED's drop and uses 3.3 V ÷ 330 Ω." },
+      { "type": "text",
+        "prompt": "In lesson 2, which GPIO number is the on-board LED on the Pico?",
+        "accept": ["25", "GP25", "GPIO25"],
+        "why": "The on-board LED is on GPIO 25. GP0 and GP1 are the serial pins in the same lesson, which is the tempting wrong answer." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is the difference between von Neumann and Harvard architecture, and which one does a Cortex-M3 use?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Von Neumann has one memory and one path shared by instructions and data, so fetches and loads take turns. Harvard has separate instruction and data paths, so the core can fetch and load at once. The Cortex-M3 is Harvard, with I-Code, D-Code and System buses. Both designs share one address map, so the split is about buses, not addresses.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 Technical Reference Manual, DDI0337G</a>: read §1.1 (the Harvard statement) and §12 (the bus interfaces). The Arm <a href="https://developer.arm.com/documentation/dui0552/latest/">Cortex-M3 Devices Generic User Guide (DUI0552)</a> is the companion overview, which we have not checked line by line for this lesson.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does sharing one address map still count as Harvard, and what would break if the M3 used one bus?"
+    Related: <a href="0028-fetch-decode-execute.html">Lesson 28: Fetch, decode, execute</a>, <a href="../reference/glossary.html#cpu-core">Glossary: CPU core</a>, and <a href="../reference/glossary.html#memory-map">Glossary: Memory map</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+<script src="../assets/cpusim.js"></script>
+</body>
+</html>

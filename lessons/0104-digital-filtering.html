@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Digital filtering: moving average and IIR · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0104">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Digital filtering: moving average and IIR</h1>
+  <p class="subtitle">A potentiometer or thermistor reading jitters from sample to sample. Two short C functions smooth it, and one of them needs no loop at all. Knowing their step response tells you how much lag you are buying.</p>
+
+  <div class="goal">
+    By the end of this lesson you can implement a moving average with a running sum and a first-order IIR (exponential moving average) in integer C, predict the step response of each from its equation, and say what a median filter removes that the others cannot.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The ADC gives you a number every time you ask, at a fixed rate. That rate is the <em>sample rate</em>, and the signal you care about must change more slowly than half of it. A sine wave at more than half the sample rate does not disappear; it folds down to a lower frequency and looks like a different signal. That fold is <em>aliasing</em>, and the limit of half the sample rate is the <em>Nyquist frequency</em> <a href="https://www.dspguide.com/">The Scientist and Engineer's Guide to DSP</a>.
+    <span class="sidenote">Aliasing happens inside the sampling, before any filter runs. A digital filter cannot remove an alias, so sample fast enough, or filter the analogue signal before the ADC with an RC low-pass (lesson 13).</span>
+  </p>
+  <p>
+    A digital filter is a short program that turns the sample stream into a smoother one. Two families cover most of the work in sensor code. A <em>FIR</em> (finite impulse response) filter averages a window of past inputs. An <em>IIR</em> (infinite impulse response) filter feeds its own previous output back in, so its memory never ends. The moving average is the FIR case, and the exponential moving average is the simplest IIR case.
+  </p>
+
+  <h2>Moving average: a running sum, O(1)</h2>
+  <p>
+    A moving average of N samples is the mean of the last N inputs. The naive version adds up N values on every sample, which costs work proportional to N. The running-sum version keeps the total and changes it by two numbers: add the newest sample, subtract the one that just left the window. The window itself is a ring buffer, an array with a write index that wraps around. Each update then costs the same whatever N is.
+  </p>
+  <pre><code><span class="k">int32_t</span> ma_update(moving_avg_t *m, <span class="k">int32_t</span> x) {
+    m-&gt;sum += x - m-&gt;buf[m-&gt;idx];   <span class="c">/* add the new sample, remove the oldest */</span>
+    m-&gt;buf[m-&gt;idx] = x;             <span class="c">/* the oldest slot now holds the newest sample */</span>
+    m-&gt;idx = (m-&gt;idx + 1u) % m-&gt;window;   <span class="c">/* wrap around: this is the ring */</span>
+    <span class="k">return</span> m-&gt;sum / (<span class="k">int32_t</span>)m-&gt;window;
+}</code></pre>
+  <p>
+    A step from 0 to 1000 into a window of 4 reads 250, 500, 750, 1000, one quarter of the way in each sample, and then holds. The output rises in <i>N</i> equal steps, and the lag is about (N − 1)/2 samples. The filter has an exact response, so you can check it with a test, which the Try it section does.
+  </p>
+
+  <h2>IIR: the exponential moving average</h2>
+  <p>
+    The first-order IIR filter feeds its own output back. Its equation is one line:
+  </p>
+  <p style="text-align:center"><i>y</i> += (<i>x</i> − <i>y</i>) × α, and with α = 1 / 2<sup><i>k</i></sup>, the code is <code>y += (x - y) &gt;&gt; k</code>.</p>
+  <p>
+    Each new output moves a fraction α of the way from the old output to the input. With α = 1/8 (k = 3), the response to a unit step falls by 7/8 each sample, so the output after <i>n</i> samples is 1 − (7/8)<sup><i>n</i></sup>. The time constant τ, the number of samples to reach 63 % of a step, is −1 / ln(1 − α). For α = 1/8 that is 7.49 samples, close to but not equal to 2<sup><i>k</i></sup> = 8. The cutoff frequency at sample rate f<sub>s</sub> is about −f<sub>s</sub> ln(1 − α) / 2π. At 100 Hz that is 2.1 Hz.
+  </p>
+  <p>
+    A filter that multiplies by 1/8 with a shift needs no multiplier and no divider, which matters on a chip with no hardware divide. The Cortex-M0+ has no hardware divide, so each <code>/</code> costs a software routine (lesson 21 explains why). The moving average above has one divide per sample; a window of a power of two, with a shift in place of the divide, avoids it.
+  </p>
+
+  <h2>The fixed-point trap</h2>
+  <p>
+    The Cortex-M0+ has no FPU (lesson 26 and the Arm processor comparison table), so a float EMA runs in software and costs time on every sample. Integer arithmetic is the normal choice. The integer EMA has a problem, though. With <code>y += (x - y) &gt;&gt; 3</code>, if the input is 5 and the output is 0, then (5 − 0) &gt;&gt; 3 is 0, and the output never moves. The filter stalls 5 codes short, in a dead band.
+  </p>
+  <p>
+    The fix is to keep the state with extra fractional bits. Store <i>y</i> multiplied by 256, so one step is 1/256 of a code and small errors still move the state. Round when you shift back down, so a steady 5 reads 5 and not 4. The code in <code>filters.c</code> does both.
+  </p>
+  <pre><code><span class="c">/* state holds y * 256 (EMA_FRAC_BITS = 8) */</span>
+<span class="k">int32_t</span> target = x * (1 &lt;&lt; 8);
+state += (target - state) &gt;&gt; k;
+<span class="k">return</span> (state + 128) &gt;&gt; 8;      <span class="c">/* round to nearest on the way out */</span></code></pre>
+  <div class="warning">Right-shifting a negative signed value is implementation-defined in C (gcc shifts arithmetically). Keep these filters on non-negative signals, or check the compiler's behaviour before you rely on it.</div>
+
+  <h2>Median of three: removing spikes</h2>
+  <p>
+    A loose wire or a noise burst gives one wild sample. A moving average smears it over N outputs; an EMA follows it at 1/8 of its size. A median of three samples removes a lone spike completely: the middle value of (10, 1000, 10) is 10. The cost is a one-sample delay on a real step, because the median needs the new value and the one before it. Use the median first and the averaging second, so the spike never reaches the average.
+  </p>
+
+  <h2>Try it: the host tests</h2>
+  <p>
+    The project <code>projects/0104-filter-host</code> holds the filters in plain C and tests their step responses with Unity. Each expected number was computed by running the same equation, not by hand. Build and run it from the workspace root:
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0104-filter-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0104-filter-host/starter --test</code> from the workspace root.</li>
+    <li>Your task: write <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> in <code>src/filters.c</code>. Read the test names first; each one is a behaviour. The placeholders return the input unchanged, so the tests fail until you write the logic.</li>
+    <li>You will know it works when the test summary reports 0 failures. The reference solution is in <code>projects/0104-filter-host/solution</code>; it passes all 11 tests.</li>
+  </ol>
+  <details>
+    <summary>Hint for the moving average</summary>
+    <p>Subtract the oldest sample before you overwrite its slot. If you overwrite first, you subtract the new value and the sum never changes.</p>
+  </details>
+  <details>
+    <summary>Hint for the EMA</summary>
+    <p>On the first call, set the state to the first sample rather than to 0. Otherwise the output ramps up from 0 and the step-response tests fail by the first few samples.</p>
+  </details>
+
+  <h2>Try it: the Pico filter on a noisy reading</h2>
+  <p>
+    The Wokwi potentiometer is perfectly steady, so the simulator shows no noise. The project <code>projects/0104-filter-pico</code> adds a seeded pseudo-random noise of about ±16 codes and a spike every 25 samples, then prints one CSV row per sample: time, raw, median, moving average and EMA. The header row is <code>ms,raw,median,ma8,ema</code>.
+  </p>
+  <ol class="steps">
+    <li>Copy your <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> from the host project into <code>projects/0104-filter-pico/starter/filters.c</code>.</li>
+    <li>In <code>starter/main.c</code>, feed <code>raw</code> through <code>median3_update</code>, then <code>ma_update</code>, then <code>ema_update</code>, and print <code>FILTER OK</code> once when the eight-sample window is full.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Copy the CSV from the serial monitor into a file and plot the columns, or paste it into a spreadsheet. The spikes should show in <code>raw</code> and be gone from <code>median</code>.</li>
+  </ol>
+  <p>The reference solution is in <code>projects/0104-filter-pico/solution</code>. It prints <code>FILTER OK</code> and the CSV header first.</p>
+
+  <div class="win">You wrote a moving average without a loop, an integer IIR with the rounding that keeps it out of the dead band, and a median that removes spikes. The host tests prove the step responses, and the same C runs on the Pico.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A moving average of N samples, kept as a running sum, costs what per new sample?",
+        "options": ["Constant", "Linear", "Quadratic"],
+        "answer": 0,
+        "why": "The update adds one sample and removes one, so the work does not depend on N. Linear is the tempting answer, because re-summing the window in a loop does scale with N, but the running sum avoids that loop." },
+      { "type": "number",
+        "prompt": "A first-order IIR filter uses alpha = 1/8 (k = 3). What is its time constant, in samples? Give one decimal place.",
+        "answer": 7.5, "tolerance": 0.02, "unit": "samples",
+        "why": "tau = -1 / ln(1 - 1/8) = -1 / ln(0.875) = 7.49 samples. The tempting answer, 8, is the shorthand 2^k, which is close but not exact." },
+      { "type": "number",
+        "prompt": "The same filter (alpha = 1/8) runs at 100 Hz. What is its approximate cutoff frequency, in hertz?",
+        "answer": 2.13, "tolerance": 0.02, "unit": "Hz",
+        "why": "fc = -fs ln(1 - alpha) / 2 pi = 100 x 0.1335 / 6.283 = 2.13 Hz. The tempting answer, 12.5 Hz, is fs divided by 8, which confuses the sample rate with the cutoff." },
+      { "type": "mc",
+        "prompt": "The integer EMA y += (5 - y) >> 3 starts at 0 and the input is steadily 5. What does the output do?",
+        "options": ["Settles at five", "Wobbles at five", "Stalls at zero"],
+        "answer": 2,
+        "why": "With y = 0, (5 - 0) >> 3 is 0, so y never changes and the output stays at 0. The tempting answer, settles at five, is what the real-number equation predicts, but the shift discards the step." },
+      { "type": "mc",
+        "prompt": "A noisy reading has single-sample spikes of 600 codes. Which filter removes each spike completely?",
+        "options": ["Median filter", "Moving average", "Integer EMA"],
+        "answer": 0,
+        "why": "A median ignores a lone outlier, so the spike disappears. The moving average spreads the spike over N outputs, and the integer EMA follows it at 1/8 of its size. Both still carry the spike forward." },
+      { "type": "text",
+        "prompt": "In the fixed-point EMA, the state holds y multiplied by 256. Write 256 as a power of two: 2 to the power of what?",
+        "accept": ["8", "2^8", "2**8"],
+        "why": "256 = 2^8, so the state keeps 8 fractional bits. The tempting answer, 16, is the bit count of a 16-bit integer, which has nothing to do with the scaling." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0021-fixed-point-vs-floating-point.html\">lesson 21</a>: in a Q8 fixed-point value, what integer stands for 1.0?",
+        "answer": 256, "tolerance": 0,
+        "why": "Q8 has 8 fractional bits, so 1.0 is 2^8 = 256. The tempting answer, 1, is the integer value of 1.0 in a plain integer, not the scaled form." },
+      { "type": "mc",
+        "prompt": "From <a href=\"0080-unit-testing-on-the-host.html\">lesson 80</a>: in test-driven development, what is the first step?",
+        "options": ["Write a failing test", "Write the final code", "Read the datasheet first"],
+        "answer": 0,
+        "why": "A test that fails first proves the test can fail, then the code is written to make it pass. The tempting answer, writing the code, is what the test is meant to come before." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Implement a moving average without a loop."</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Keep a ring buffer and a running sum. On each sample, add the new value, subtract the value that the write index is about to overwrite, store the new value in that slot, advance the index with wraparound, and divide the sum by the window size. Each update is one add and one subtract, so the cost is constant. Mention the start-up: the buffer begins as zeros, so the first outputs ramp up unless you count how many samples you have seen.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.dspguide.com/">The Scientist and Engineer's Guide to Digital Signal Processing, Steven W. Smith</a>: read the digital filter chapters 15 (digital filters and the moving average) and 19 (recursive filters, the IIR family). The chapters are free online and written for engineers who are new to DSP.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does a moving average with a window of 16 let me replace the divide with a shift, and what does that cost in lag?"
+    Related: <a href="0021-fixed-point-vs-floating-point.html">Lesson 21: Fixed-point vs floating-point</a>, <a href="0058-adc.html">Lesson 58: ADC</a>, and <a href="0080-unit-testing-on-the-host.html">Lesson 80: Unit testing on the host</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

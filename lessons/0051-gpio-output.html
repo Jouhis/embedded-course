@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GPIO output · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0051">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>GPIO output: the SIO registers under the SDK</h1>
+  <p class="subtitle">Every <code>gpio_put()</code> you have written is a store to a register that holds one bit per pin. Knowing which register, and why the SDK uses the set and clear aliases, is what makes a pin change safe when an interrupt or the second core touches the same port.</p>
+
+  <div class="goal">
+    By the end of this lesson you can drive four LEDs as a binary counter with one masked write per step, and name the SIO register each SDK call writes.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A GPIO pin is a bit in two registers. <code>GPIO_OUT</code> holds the level you want, and <code>GPIO_OE</code> (output enable) decides whether the pin drives that level or stays an input. Both live in the SIO block, which starts at <code>0xD0000000</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §2.3.1.7, Table 16)</a>. Lesson 38 showed the SIO address. Here the offsets matter: <code>GPIO_OUT</code> is at <code>0x010</code>, and <code>GPIO_OE</code> is at <code>0x020</code>.
+    <span class="sidenote">The SIO is not on the main bus. Each core reaches it through its IOPORT, so every SIO access takes exactly one cycle (§2.3.1). A load or store on the AHB-Lite system bus takes two cycles on the M0+, and it can wait behind other bus masters.</span>
+  </p>
+  <p>
+    A pin also needs its function set to SIO in the IO bank, so the SIO drives it and not a peripheral such as a UART. Function 5 is SIO for every GPIO <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.2, Table 279)</a>. The SDK does all three steps in <code>gpio_init()</code>.
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 130" role="img" aria-label="Pin GP2 has three settings: function select to SIO, direction bit in GPIO_OE, and level bit in GPIO_OUT, which drives the pad" style="max-width:728px">
+      <defs><marker id="ah33" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="20" width="240" height="36" rx="3"/>
+        <rect x="10" y="86" width="240" height="36" rx="3"/>
+        <rect x="280" y="56" width="140" height="48" rx="3"/>
+        <rect x="450" y="56" width="102" height="48" rx="3"/>
+        <path d="M250 38 H266 V80 H280"/>
+        <path d="M250 104 H266 V80"/>
+        <path d="M420 80 H450"/>
+      </g>
+      <g fill="currentColor">
+        <circle cx="266" cy="80" r="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="130" y="42.2" text-anchor="middle" font-size="12">IO bank: FUNCSEL = 5 (SIO)</text>
+        <text x="130" y="108.2" text-anchor="middle" font-size="12">SIO: GPIO_OE bit 2 (1 = output)</text>
+        <text x="350" y="76.85" text-anchor="middle" font-size="11">SIO: GPIO_OUT bit 2</text>
+        <text x="350" y="90.85" text-anchor="middle" font-size="11">(the level you want)</text>
+        <text x="501" y="76.85" text-anchor="middle" font-size="11">Pad GP2</text>
+        <text x="501" y="90.85" text-anchor="middle" font-size="11">to the LED</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Three settings decide what GP2 does. The function select routes the pin to the SIO, the output-enable bit makes it an output, and the output bit sets its level.</figcaption>
+  </figure>
+
+  <h2>Set, clear and toggle as separate addresses</h2>
+  <p>
+    Changing a level with <code>GPIO_OUT |= bit</code> is a read-modify-write. The CPU loads the whole register, changes one bit and stores it back. The SIO avoids that with three extra addresses, each an atomic bit operation on <code>GPIO_OUT</code>: <code>GPIO_OUT_SET</code> at <code>0x014</code> does <code>|=</code>, <code>GPIO_OUT_CLR</code> at <code>0x018</code> does <code>&amp;= ~</code>, and <code>GPIO_OUT_XOR</code> at <code>0x01C</code> does <code>^=</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.3.1.7, Tables 21 to 23)</a>.
+    <span class="sidenote">This is the idea behind the STM32 BSRR register in lesson 47. There you write 1 to bit n to set a pin. Here you write a mask to <code>GPIO_OUT_SET</code>, and every bit you write as 1 is set, while every 0 leaves its pin alone.</span>
+  </p>
+  <pre><code><span class="c">/* Set GP2 high two ways. Both are one store, and neither touches the other pins. */</span>
+sio_hw-&gt;gpio_set = 1u &lt;&lt; 2;     <span class="c">/* GPIO_OUT_SET at 0xD0000014: GPIO_OUT |= (1 &lt;&lt; 2)   */</span>
+gpio_put(2, 1);                  <span class="c">/* the SDK call; it reaches the same register       */</span>
+
+<span class="c">/* What you must not do with a shared port: a read, a change, then a store. */</span>
+sio_hw-&gt;gpio_out = sio_hw-&gt;gpio_out | (1u &lt;&lt; 2);   <span class="c">/* an interrupt between the two accesses can be lost */</span></code></pre>
+  <p>
+    The reference adds one rule. If core 0 and core 1 write <code>GPIO_OUT</code> or one of its aliases in the same cycle, the result is as though core 0's write happened first and core 1's was then applied to that result <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.3.1.7, Table 20)</a>. The alias registers keep the bits you did not name, which a plain store would not.
+  </p>
+
+  <h2>What the SDK calls write</h2>
+  <p>The Pico SDK wraps these registers in small inline functions. Here is what the common calls do, read from the SDK source in <code>src/rp2_common/hardware_gpio/include/hardware/gpio.h</code> (SDK 2.3.1):</p>
+  <table>
+    <thead>
+      <tr><th>SDK call</th><th>Register write</th><th>Note</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>gpio_put(pin, 1)</code></td><td><code>GPIO_OUT_SET</code> (or <code>GPIO_OUT_CLR</code> for 0)</td><td>One store, one bit.</td></tr>
+      <tr><td><code>gpio_set_dir(pin, GPIO_OUT)</code></td><td><code>GPIO_OE_SET</code></td><td>One store, one bit.</td></tr>
+      <tr><td><code>gpio_set_dir_out_masked(mask)</code></td><td><code>GPIO_OE_SET</code> with <code>mask</code></td><td>Several pins in one store.</td></tr>
+      <tr><td><code>gpio_put_masked(mask, value)</code></td><td>Reads <code>GPIO_OUT</code>, then one store to <code>GPIO_OUT_XOR</code></td><td>Flips only the bits in <code>mask</code> that differ from <code>value</code>. The read is not part of the atomic store.</td></tr>
+      <tr><td><code>gpio_init(pin)</code></td><td>Output low, input direction, function set to SIO</td><td>Three steps, in that order, so the pin does not glitch high.</td></tr>
+      <tr><td><code>gpio_get(pin)</code></td><td>Reads <code>GPIO_IN</code> at <code>0x004</code></td><td>The pad level, not the output register.</td></tr>
+    </tbody>
+  </table>
+  <div class="note"><code>gpio_put_masked()</code> is convenient, but read it carefully. Its read of <code>GPIO_OUT</code> comes before the XOR store, so if another core or an ISR changes a pin in the mask between the two steps, the result can be wrong. For a pin that another context also changes, use <code>gpio_set_mask()</code> and <code>gpio_clr_mask()</code>, which are one store each.</div>
+
+  <h2>Current, and why the resistor is there</h2>
+  <p>
+    An LED needs a series resistor. With a 3.3 V pin and a red LED at about 2.0 V forward voltage, a 220 Ω resistor passes (3.3 − 2.0) ÷ 220 ≈ 5.9 mA. Lesson 9 covers how to choose that value. The pad's output drive strength is programmable, with choices of 2, 4, 8 and 12 mA <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.4)</a>. Keep each LED near that current, and never drive LEDs from a pin without a series resistor.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0051-gpio-output</code>. Four LEDs are wired from GP2 to GP5, each through a 220 Ω resistor to ground. The counter counts from 0 to 15, with bit 0 on GP2 and bit 3 on GP5.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0051-gpio-output/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, but no LED lights.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>count = 0</code>, <code>count = 1</code> and so on, but the LEDs stay dark.</li>
+    <li>Your task, in the two places marked <code>TODO(learner)</code>. First, make the four pins outputs. Second, show the counter on them with one <code>gpio_put_masked()</code> call, shifted and masked. You will know it works when the serial monitor prints <code>BINARY COUNTER OK</code> and the LEDs count in binary once a second.</li>
+  </ol>
+  <details>
+    <summary>Hint for the shift and mask</summary>
+    <p>Bit 0 of <code>count</code> must go to GP2, so shift <code>count</code> left by <code>LED_FIRST_PIN</code>. <code>LED_MASK</code> is <code>0x3C</code>, which is bits 2 to 5. Anything the shift moves outside that range must not reach the pins, so AND the shifted value with the mask.</p>
+  </details>
+  <details>
+    <summary>Hint for the direction</summary>
+    <p><code>gpio_init_mask()</code> handles all four pins at once and leaves them as inputs. The second call, <code>gpio_set_dir_out_masked()</code>, makes the same four pins outputs. Each call is one store to the SIO.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0051-gpio-output/solution</code>. Try first, compare after. Its comments name the register each call writes.</p>
+
+  <div class="win">You drove four pins with one masked write per step, and you can say which SIO register each SDK call stores to. That is the base for every GPIO, from LED outputs to the chip-select lines of an SPI display.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which store sets GP2 high without changing any other pin?",
+        "options": [
+          "Write 0x04 to GPIO_OUT_SET",
+          "Write 0x04 to GPIO_OUT",
+          "Write 0x04 to GPIO_OUT_XOR",
+          "Write 0xFB to GPIO_OUT_CLR"
+        ],
+        "answer": 0,
+        "why": "GPIO_OUT_SET ORs in the written mask, so bit 2 sets GP2 and zero bits change nothing. Writing GPIO_OUT itself replaces all the bits, so every other pin takes the value 0. The XOR alias flips GP2, which is right only if it is low now. Writing 0xFB to GPIO_OUT_CLR clears GP2 and is the opposite action." },
+      { "type": "mc",
+        "prompt": "Why is GPIO_OUT_SET safer than GPIO_OUT |= bit when an ISR also drives the port?",
+        "options": [
+          "A single atomic store",
+          "It needs one clock",
+          "It skips IO muxing",
+          "It makes pins inputs"
+        ],
+        "answer": 0,
+        "why": "The alias is one atomic store, so the hardware never hands back a stale copy of the whole register. The read-modify-write can overwrite a bit that the ISR set in between. The tempting answer, the clock, is unrelated to the race. Pin direction is set in GPIO_OE, not by this alias." },
+      { "type": "mc",
+        "prompt": "What does gpio_init() do that a bare gpio_set_dir() call does not?",
+        "options": [
+          "Selects the SIO function",
+          "Turns on the pull-up",
+          "Starts the system clock",
+          "Drives the pin high"
+        ],
+        "answer": 0,
+        "why": "gpio_init() routes the pin to the SIO by setting its function select to 5. It also drives the pin low first, so the last option is wrong. Pull-ups are a separate call, and the clock is set up at boot." },
+      { "type": "number",
+        "prompt": "A red LED (Vf 2.0 V) runs from a 3.3 V pin through 220 Ω. What is the current in milliamps?",
+        "answer": 5.9, "tolerance": 0.03, "unit": "mA",
+        "why": "I = (3.3 − 2.0) ÷ 220 = 0.0059 A, about 5.9 mA. The tempting answer, 13 mA, is the voltage across the resistor divided by the 100 Ω you might think of, which is off by a factor of about 2.2." },
+      { "type": "text",
+        "prompt": "Which SIO register holds the output-enable bits (1 means output)? Write its name.",
+        "accept": ["GPIO_OE", "gpio_oe", "OE"],
+        "why": "GPIO_OE sets the direction. GPIO_OUT holds the level, and GPIO_IN reads the pad. The tempting answer, GPIO_OUT, sets the level but not the direction." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "From lesson 20: what is 0x3C AND 0xFF?",
+        "options": [
+          "0x3C",
+          "0xC3",
+          "0xFF",
+          "0x00"
+        ],
+        "answer": 0,
+        "why": "AND with 0xFF keeps every bit of 0x3C, so the answer is 0x3C. The tempting answer, 0xC3, is the bitwise NOT of 0x3C, which flips the bits instead of keeping them." },
+      { "type": "text",
+        "prompt": "From lesson 38: what is the RP2040 SIO base address? Write it in hex.",
+        "accept": ["0xD0000000", "D0000000"],
+        "why": "SIO sits at 0xD0000000. The tempting answer, 0x40000000, is the APB peripheral base, which is a different part of the map." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You need to set one pin high in a register that an interrupt also writes. How do you do it, and why?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Use the set alias (GPIO_OUT_SET on the RP2040, BSRR on the STM32): one store that names only that pin. A read-modify-write on the whole output register can lose a change that the interrupt makes between the load and the store. For a multi-pin change, use a masked store that touches only the pins in the mask. Do not rely on a masked helper that reads first if another context writes the same pins.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.3.1 (SIO) for the one-cycle IOPORT, then section 2.3.1.7 (List of Registers) for the GPIO_OUT, GPIO_OUT_SET, GPIO_OUT_CLR and GPIO_OUT_XOR descriptions in Tables 20 to 23, and section 2.19.2 for the function select.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the assembly for <code>gpio_put(2, 1)</code> in the solution and point to the store that reaches GPIO_OUT_SET."
+    Related: <a href="0038-the-memory-map-and-memory.html">Lesson 38: The memory map and memory-mapped registers</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers and struct overlays</a>, <a href="0020-bitwise-operations-and-masks.html">Lesson 20: Bitwise operations and masks</a>, and <a href="../reference/pico-sdk.html">Pico SDK cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

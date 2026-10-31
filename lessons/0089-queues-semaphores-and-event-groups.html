@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Queues, semaphores and event groups · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0089">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Queues, semaphores and event groups</h1>
+  <p class="subtitle">Tasks need to hand data and signals to each other without sharing variables by hand. A queue carries data, a semaphore carries a signal, and an interrupt can use the FromISR versions of both. Pick the right one and most concurrency bugs never happen.</p>
+
+  <div class="goal">
+    By the end of this lesson you can send data between tasks with a queue, signal a task from an interrupt with a binary semaphore, use the FromISR calls and <code>portYIELD_FROM_ISR()</code> correctly, and say when an event group is the better choice.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>queue</strong> is a fixed-length FIFO of items. <code>xQueueSend()</code> copies an item in, and <code>xQueueReceive()</code> copies it out. Because the kernel copies the item, the sender may reuse its variable at once. A receiver that finds the queue empty blocks, so it uses no CPU until something arrives. The FreeRTOS API reference documents both calls, and the queue implementation is <code>queue.c</code> in the kernel source.
+  </p>
+  <p>
+    A <strong>semaphore</strong> carries a count rather than data. A <strong>binary semaphore</strong> is 0 or 1: it is the signal "this happened, once". A <strong>counting semaphore</strong> counts events up to a limit, such as the number of free buffers. Lesson 90 covers the mutex, which is a semaphore with an owner.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Need</th><th>Use</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Pass a value from one task to another</td><td>Queue</td><td>The item is copied, and the queue keeps order</td></tr>
+      <tr><td>Say "an event happened" to one waiting task</td><td>Binary semaphore</td><td>No data, and repeated signals before the take collapse into one</td></tr>
+      <tr><td>Count events, such as free buffers</td><td>Counting semaphore</td><td>The count is kept, up to the limit you set</td></tr>
+      <tr><td>Wait for any of several flags</td><td>Event group</td><td>Bits can be set by different sources; the waiter can wait for all or any</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Interrupts use the FromISR versions</h2>
+  <p>
+    An interrupt cannot block, and it must not call a kernel function that might. So FreeRTOS has <code>xQueueSendFromISR()</code>, <code>xSemaphoreGiveFromISR()</code> and so on. Each takes a <code>pxHigherPriorityTaskWoken</code> pointer. If the call makes a task ready that has a higher priority than the interrupted task, the flag becomes <code>pdTRUE</code>. At the end of the ISR, <code>portYIELD_FROM_ISR(woken)</code> requests the switch (<code>portmacro.h</code> line 111 maps it to the port's end-of-switching macro). The event-group documentation gives the same pattern (<code>event_groups.h</code> around line 603).
+  </p>
+<pre><code><span class="k">void</span> EXTI15_10_IRQHandler(<span class="k">void</span>) {
+    <span class="k">if</span> ((EXTI-&gt;PR &amp; EXTI_PR_PR12) != 0U) {
+        EXTI-&gt;PR = EXTI_PR_PR12;              <span class="c">/* clear the flag, or the ISR runs again at once */</span>
+        BaseType_t woken = pdFALSE;
+        xSemaphoreGiveFromISR(button_sem, &amp;woken);
+        portYIELD_FROM_ISR(woken);            <span class="c">/* switch now if the button task is more urgent */</span>
+    }
+}</code></pre>
+  <div class="warning">An ISR that calls the plain <code>xSemaphoreGive()</code> or <code>xQueueSend()</code> is a bug, and it often works in the simulator and fails on silicon. Also, the ISR's NVIC priority must be at or below <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code> (5 in this course's template): a more urgent interrupt may not call FromISR functions.</div>
+
+  <h2>Event groups</h2>
+  <p>
+    An event group is a word of flags. Several sources set bits with <code>xEventGroupSetBits()</code>, and a task waits with <code>xEventGroupWaitBits()</code> for a combination: all of the bits, or any of them. Use it when one task waits for several conditions, such as "sensor ready and button pressed". Use a queue when the data matters, and a semaphore when a single event is enough. The API reference lists the wait functions, and the event-group source is <code>event_groups.c</code>.
+  </p>
+
+  <h2>The rules that matter in interviews</h2>
+  <ul>
+    <li><strong>A binary semaphore remembers at most one give.</strong> Two presses before the task runs make one wake-up. If you need every press, use a counting semaphore or a queue.</li>
+    <li><strong>A queue copies its items.</strong> Passing a pointer to a local variable is a bug, because the local is gone when the receiver runs.</li>
+    <li><strong>Block with a timeout or with <code>portMAX_DELAY</code> on purpose.</strong> A receiver that waits forever is fine for a worker; a sender that waits forever on a full queue hides a stuck consumer.</li>
+  </ul>
+
+  <h2>Try it: a button ISR and a queue on the Blue Pill</h2>
+  <p>
+    The project <code>projects/0089-queue-button-isr</code> has three tasks. A producer sends three numbers into a queue, a consumer prints them and then prints <code>QUEUE OK</code>, and a button task waits on a binary semaphore that the EXTI interrupt on PB12 gives. Open the starter in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.
+  </p>
+  <ol class="steps">
+    <li>In <code>starter/main.c</code>, find the <code>TODO(learner)</code> in <code>consumer_task</code>. Print <code>QUEUE OK</code> when the item is 3, using the same mutex pattern as <code>log_line()</code>.</li>
+    <li>In <code>EXTI15_10_IRQHandler</code>, replace the TODO(learner) marker. Give <code>button_sem</code> with <code>xSemaphoreGiveFromISR()</code>, passing <code>&amp;woken</code>, then call <code>portYIELD_FROM_ISR(woken)</code>.</li>
+    <li>Build and simulate. In the Wokwi diagram, click the pushbutton. The serial monitor prints <code>BUTTON pressed n=1</code>, then <code>n=2</code>, and so on.</li>
+    <li>Compare with <code>projects/0089-queue-button-isr/solution/main.c</code>. The solution prints <code>QUEUE OK</code> about 600 ms after start.</li>
+  </ol>
+  <div class="note">The EXTI interrupt is configured in <code>button_exti_init()</code>: PB12 is an input with a pull-up, EXTI line 12 is routed to port B through AFIO, and the interrupt is on the falling edge. Lesson 70 covers EXTI in detail.</div>
+
+  <div class="win">You moved data through a queue, signalled a task from an interrupt with a FromISR call, and used <code>portYIELD_FROM_ISR()</code> to switch at once when the woken task is more urgent.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A binary semaphore is given twice before the waiting task runs. How many times does the task wake?",
+        "options": ["Wakes once", "Wakes twice", "Never wakes"],
+        "answer": 0,
+        "why": "A binary semaphore holds at most one give, so the two gives collapse into one and the task wakes once. The tempting answer is twice, which holds for a counting semaphore or a queue, not for a binary one." },
+      { "type": "mc",
+        "prompt": "Why must an ISR call the FromISR version of a kernel function?",
+        "options": ["It must never block", "It runs more urgently", "It needs no stack"],
+        "answer": 0,
+        "why": "An ISR cannot block, and the FromISR calls are the ones written not to. The tempting answer, more urgent, is true of interrupts but is not why the FromISR calls exist." },
+      { "type": "number",
+        "prompt": "A queue has length 4 and items of 4 bytes. How many bytes does the queue's item storage hold?",
+        "answer": 16, "tolerance": 0, "unit": "bytes",
+        "why": "Four items of four bytes each is 16 bytes. The tempting answer is 4, which counts items, not bytes; the storage is what the kernel allocates from the heap." },
+      { "type": "text",
+        "prompt": "What must an ISR do after giving a semaphore with a FromISR call, so that a more urgent task runs at once? Name the macro.",
+        "accept": ["portYIELD_FROM_ISR", "portyield_from_isr", "portEND_SWITCHING_ISR"],
+        "why": "portYIELD_FROM_ISR(woken) requests the switch if the woken flag is set (portmacro.h line 111). The tempting answer is portYIELD(), which is for tasks, not interrupts." },
+      { "type": "mc",
+        "prompt": "A task waits for both a sensor flag and a button flag before it acts. Which kernel object fits best?",
+        "options": ["An event group with flags", "A binary semaphore, one signal", "A queue, copying bytes out"],
+        "answer": 0,
+        "why": "An event group waits on a combination of bits set by different sources, all or any. A single binary semaphore carries one signal, and a queue carries data, which is not what the task needs." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 57: what should an ISR do with a long calculation?",
+        "accept": ["defer it", "defer", "move it to a task", "do it in a task", "task"],
+        "why": "A long calculation belongs in a task, which the interrupt wakes. The tempting answer is to do it in the ISR, which delays every other interrupt." },
+      { "type": "number",
+        "prompt": "From lesson 73: how many milliseconds is one tick at 1 kHz?",
+        "answer": 1, "tolerance": 0, "unit": "ms",
+        "why": "1 kHz is 1000 ticks per second, so one tick is 1 ms. The tempting answer is 1000, which is the number of ticks in a second." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A button ISR must wake a task. Walk me through it, and what goes wrong if you call the non-ISR version?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The ISR clears the interrupt flag first, then calls xSemaphoreGiveFromISR with a pointer to a local BaseType_t. The call does not block, and it sets the flag if the woken task has a higher priority than the interrupted one. The ISR then calls portYIELD_FROM_ISR with that flag, so the switch happens at the end of the interrupt. If the ISR called xSemaphoreGive, the call could try to take a lock or change the ready list from interrupt context, which the port does not allow, and the kernel's critical sections would be corrupted. The ISR's priority must also be at or below configMAX_SYSCALL_INTERRUPT_PRIORITY.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.freertos.org/a00118.html">FreeRTOS API reference: xQueueSend, xQueueReceive and the FromISR variants</a>, and <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, the chapters on queue management and interrupts. In the workspace, read <code>third_party/FreeRTOS-Kernel/event_groups.h</code> around line 600 for the ISR pattern, and <code>portmacro.h</code> line 111 for <code>portYIELD_FROM_ISR</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does a counting semaphore suit a pool of three buffers, and what happens when a fourth task takes one while all three are in use?"
+    Related: <a href="0070-usart-and-exti-interrupts-with.html">Lesson 70: USART and EXTI interrupts</a>, <a href="0072-the-nvic.html">Lesson 72: The NVIC</a>, <a href="0090-mutexes-priority-inversion-and-deadlock.html">Lesson 90: Mutexes, priority inversion and deadlock</a>, and <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup, tasks and scheduling</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

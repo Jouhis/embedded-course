@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UART logging · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0053">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>UART logging</h1>
+  <p class="subtitle">A serial line is the cheapest way to see what firmware is doing. It is also slow enough that a careless <code>printf</code> can stall the code it is meant to observe. This lesson shows both sides, and how the baud rate is set in the registers.</p>
+
+  <div class="goal">
+    By the end of this lesson you can compute the UART baud divisor from <code>clk_peri</code>, check it against the hardware register, and write a levelled log macro that skips filtered messages before it evaluates them.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A UART sends one byte as a start bit, eight data bits and a stop bit, with no parity in the usual 8N1 setting. That is ten bits on the wire, sent at the baud rate. The RP2040 has two UART instances. Each has a 32-entry transmit FIFO and a 32-entry receive FIFO, and each receive entry carries 4 error bits with its byte <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.2.1)</a>. The FIFOs let the CPU hand over a burst of bytes and move on.
+    <span class="sidenote">The UART clock is <code>clk_peri</code>, not the CPU clock. The baud rate comes from dividing <code>clk_peri</code>, so the divisor depends on the clock you configured <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.2.7.1)</a>.</span>
+  </p>
+
+  <h2>The baud divisor</h2>
+  <p>
+    The baud generator divides <code>UARTCLK</code> by 16 times the baud rate. The divisor has a 16-bit integer part, written to <code>UARTIBRD</code>, and a 6-bit fraction, written to <code>UARTFBRD</code>. The fraction is the fractional part times 64, rounded: <code>m = int(frac × 64 + 0.5)</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.2.3.2.1)</a>.
+  </p>
+  <p>
+    The datasheet's worked example uses 115200 baud with <code>UARTCLK</code> at 125 MHz. The divisor is 125 × 10⁶ ÷ (16 × 115200) ≈ 67.817. The integer part is 67, and the fraction 0.817 × 64 + 0.5 rounds to 52. The generated divisor is 67 + 52/64 = 67.8125, which gives a baud rate within 0.006 % of the target <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.2.7.1)</a>.
+    <span class="sidenote">Each registers' value is in 64ths, so the whole divisor is one integer: <code>total64 = 64 × divisor</code>. That is the trick the code below uses, and it avoids floating point on a chip that has no FPU.</span>
+  </p>
+
+  <pre><code><span class="c">/* Integer-only divisor, in 64ths: total64 = 64 * clk / (16 * baud) = 4 * clk / baud */</span>
+<span class="k">uint32_t</span> total64 = (4u * clk_hz + baud / 2u) / baud;   <span class="c">/* + baud/2 rounds to nearest */</span>
+<span class="k">uint32_t</span> ibrd  = total64 / 64u;                        <span class="c">/* UARTIBRD: 67 for 115200 at 125 MHz */</span>
+<span class="k">uint32_t</span> fbrd  = total64 % 64u;                        <span class="c">/* UARTFBRD: 52 */</span></code></pre>
+  <p>
+    The Pico SDK does the same job in <code>uart_set_baudrate()</code>. It writes <code>UARTIBRD</code> and <code>UARTFBRD</code>, then does a dummy write to <code>UARTLCR_H</code>, because the PL011 latches the divisor only on a line-control write <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_uart/uart.c">(pico-sdk 2.3.1, uart.c)</a>. The code in this lesson checks its own result against those two registers.
+  </p>
+
+  <h2>printf is blocking</h2>
+  <p>
+    The stdio driver sends each character with <code>uart_putc()</code>. That call spins on the transmit-full flag until the byte fits in the FIFO <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_uart/include/hardware/uart.h">(pico-sdk 2.3.1, uart.h)</a>. The FIFO absorbs a burst, but once it is full, <code>printf</code> waits for the wire to empty.
+  </p>
+  <p>
+    The wire is slow. One byte takes 10 ÷ 115200 ≈ 87 µs. A 40-character line therefore takes about 3.5 ms of wire time, and the CPU is busy for all of it if the FIFO is full. A timer interrupt that runs for 1 ms of its own work and then logs one line can miss its next deadline. Never call <code>printf</code> from an interrupt handler, and never in a tight loop that has real-time work. Lesson 57 covers ISR rules, and lesson 55 covers deadlines.
+  </p>
+  <div class="warning">Logging that works on the bench can change the timing you are trying to measure. If you suspect a timing bug, log into a buffer in RAM and print it later, or print a single flag, and check the result again without the log.</div>
+
+  <h2>A levelled log macro</h2>
+  <p>
+    A log macro with levels lets you keep <code>DEBUG</code> lines in the code and turn them off with one constant. Put the level check first, inside the macro, so a filtered message costs one comparison, and its arguments are never evaluated.
+  </p>
+  <pre><code><span class="k">#define LOG(level, ...)</span>                          \
+    <span class="k">do</span> {                                       \
+        <span class="k">if</span> ((level) &lt;= LOG_LEVEL) {            \
+            printf(<span class="s">"[%c] "</span>, log_tag(level));    \
+            printf(__VA_ARGS__);                  \
+            printf(<span class="s">"\n"</span>);                      \
+        }                                         \
+    } <span class="k">while</span> (0)</code></pre>
+  <p>
+    The <code>do { ... } while (0)</code> wrapper makes the macro behave as one statement, so <code>if (x) LOG(...); else ...</code> still parses. The <code>__VA_ARGS__</code> form is C99, and it is valid in the C11 this course uses.
+    <a href="https://en.cppreference.com/w/c/preprocessor/replace">cppreference, replacement of macros</a>
+  </p>
+  <div class="note">The argument list of a macro is text, and it is evaluated only where the macro body uses it. Here that is inside the <code>if</code>. A dropped <code>LOG_LEVEL_DEBUG</code> line never calls the function that builds its arguments, so a costly expression in a debug line is free when the level is off.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0053-uart-logging</code>. Its diagram wires GP0 and GP1 to the serial monitor, which is the UART the SDK's stdio uses at 115200 baud.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0053-uart-logging/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor shows <code>UART log starter</code>, and then nothing useful: the <code>LOG</code> macro does nothing yet, and the divisor is not printed.</li>
+    <li>Your task, in two places marked <code>TODO(learner)</code>. First, write the <code>LOG</code> macro so it prints the level tag and the message when the level passes the filter. Second, compute <code>ibrd</code> and <code>fbrd</code> with the integer formula above and print them.</li>
+    <li>You will know it works when the serial monitor prints <code>UART LOG OK</code> at startup, then a line with <code>IBRD 67, FBRD 52</code>, then an <code>[I] tick</code> line every second. The <code>[W]</code> line appears every fifth tick, and no <code>[D]</code> lines appear at the <code>INFO</code> level.</li>
+  </ol>
+  <details>
+    <summary>Hint for the macro</summary>
+    <p>The starter already provides <code>log_tag()</code>, which turns a level into a letter. The macro needs two <code>printf</code> calls for the message and one for the newline. Use <code>__VA_ARGS__</code> for the message. Look at the solution's macro if you want to compare.</p>
+  </details>
+  <details>
+    <summary>Hint for the divisor</summary>
+    <p>With <code>clk_hz</code> at 125 000 000 and <code>baud</code> at 115 200, <code>4 * clk_hz</code> fits in 32 bits. Add <code>baud / 2</code> before dividing, so the division rounds to nearest. Then split the result into <code>/ 64</code> and <code>% 64</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0053-uart-logging/solution</code>. Try first, compare after. It also reads <code>UARTIBRD</code> and <code>UARTFBRD</code> back from the hardware and prints a warning if they differ from your calculation.</p>
+
+  <div class="win">You computed a UART divisor from the clock, checked it against the register the SDK wrote, and built a log macro that costs one comparison when a message is filtered out. You also know why a log line can stall real-time code.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "UARTCLK is 125 MHz and the baud rate is 9600. What is the integer part of the divisor, UARTIBRD?",
+        "answer": 813, "tolerance": 0, "unit": "",
+        "why": "125 × 10⁶ ÷ (16 × 9600) = 813.8, and the integer part is 813. The tempting answer, 52, is the fractional field from the 115200 example, which is a different baud rate." },
+      { "type": "number",
+        "prompt": "How long does one byte take on the wire at 115200 baud with 8N1, in microseconds?",
+        "answer": 86.8, "tolerance": 0.02, "unit": "µs",
+        "why": "A byte is 10 bits, so 10 ÷ 115200 = 86.8 µs. The tempting answer, 8.7 µs, counts only 1 bit in 10, which is wrong by a factor of ten." },
+      { "type": "mc",
+        "prompt": "Why does the LOG macro test the level before it calls printf?",
+        "options": [
+          "Filtered lines skip the work",
+          "It makes output more exact",
+          "It turns UART on first",
+          "It sends a faster baud"
+        ],
+        "answer": 0,
+        "why": "A filtered message costs one comparison, and its arguments are not evaluated. The tempting answer, exactness, is not the reason: the printed text is the same either way. The UART is set up once at boot, and the baud rate is fixed by the divisor." },
+      { "type": "mc",
+        "prompt": "Why is printf inside a timer interrupt a problem?",
+        "options": [
+          "It waits for FIFO room",
+          "It disables the timer IRQ",
+          "It changes the system clock",
+          "It loses the first byte"
+        ],
+        "answer": 0,
+        "why": "uart_putc waits for the transmit FIFO to have room, so once the FIFO is full the interrupt stalls. The tempting answer is that it disables the timer IRQ, which a print does not do. A print does not change the clock, and the first byte is not lost." },
+      { "type": "text",
+        "prompt": "Which UART register holds the integer part of the baud divisor? Write its name.",
+        "accept": ["UARTIBRD", "IBRD"],
+        "why": "UARTIBRD holds the 16-bit integer part, and UARTFBRD holds the 6-bit fraction. The tempting answer, UARTFBRD, is the fractional part, which the datasheet keeps in its own register." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 45: an unsigned 8-bit variable holds 250. It has 10 added to it. What value does it hold after the addition?",
+        "answer": 4, "tolerance": 0, "unit": "",
+        "why": "uint8_t arithmetic is modulo 256, so 250 + 10 = 260 becomes 260 − 256 = 4. The tempting answer, 260, assumes the value grows beyond the type's width, which it cannot." },
+      { "type": "text",
+        "prompt": "From lesson 47: which Cortex-M register struct field offset is the BSRR register in the STM32 GPIO block? Write it in hex.",
+        "accept": ["0x10", "0x0010"],
+        "why": "The GPIO register block lists BSRR at offset 0x10, after ODR at 0x0C. The tempting answer, 0x0C, is ODR, which does not set or clear single bits in one write." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Your timer ISR occasionally misses its deadline when it logs. Why, and what do you change?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>A UART write is blocking. When the transmit FIFO is full, the call spins until bytes leave at the baud rate, and at 115200 that is about 87 µs per byte, so a long line can hold the ISR for milliseconds. I'd move the logging out of the ISR: the ISR records a value or sets a flag, and the main loop prints it. If the output must come from the ISR, I'd write to a RAM ring buffer and drain it from the main loop, or raise the baud rate and keep the lines short. I'd also check the fix against the deadline, since logging itself can change the timing I'm measuring.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.2 (UART)</a>: read 4.2.1 for the FIFO sizes, 4.2.3.2.1 for the divisor, and 4.2.7.1 for the worked 115200 example. Then open <code>uart_set_baudrate()</code> in the Pico SDK source to see the same arithmetic in code.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me what <code>printf</code> compiles to on the RP2040, and where the blocking wait is."
+    Related: <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, and <a href="../reference/pico-sdk.html">Pico SDK cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

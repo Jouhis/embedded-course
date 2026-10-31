@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 3: RTOS threads and PID heater control · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0112">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 3: RTOS threads and PID heater control</h1>
+  <p class="subtitle">Bang-bang control from lesson 111 switches the heater hard and overshoots. This lesson puts the dryer on FreeRTOS, runs a PID controller at a fixed 10 Hz, and gives a supervisor task the job of kicking the watchdog only when every other task has proved it is alive.</p>
+
+  <div class="goal">
+    By the end of this lesson you can split a product into FreeRTOS tasks with rate-monotonic priorities, use a queue, a mutex and an event group, run a PID loop with anti-windup and derivative on measurement at a fixed rate with <code>vTaskDelayUntil()</code>, and check the whole loop on the PC against a thermal plant, with numbers.
+  </div>
+
+  <h2>The idea: tasks with deadlines, and a supervisor</h2>
+  <p>
+    Lesson 110 chose five tasks and their priorities by the rate-monotonic rule. This lesson builds four of them (the Modbus comms task arrives in lesson 113) and gives each one a single job, a period, and a way to report that it ran. The safety monitor is the one task whose job is to check the others, so it runs at the highest priority and never shares logic with the control code.
+  </p>
+  <table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Period</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td>safety</td><td>4</td><td>50 ms, <code>vTaskDelayUntil()</code></td><td>Independent checks on the published state; cuts the heater on a trip; kicks the watchdog</td></tr>
+      <tr><td>control</td><td>3</td><td>100 ms, <code>vTaskDelayUntil()</code></td><td>Sensor, filter, state machine, PID, outputs, and the snapshot for the others</td></tr>
+      <tr><td>ui</td><td>2</td><td>20 ms (buttons), 200 ms (draw)</td><td>Debounce the buttons, post presses to the queue, draw the OLED under the I2C mutex</td></tr>
+      <tr><td>logger</td><td>1</td><td>100 ms check-in, one line a second</td><td>Check in with the watchdog; print the status line</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The periods are constants, the priorities follow the rule in lesson 91, and the tasks never call each other directly. They share data through three kinds of object, each with a reason:
+  </p>
+  <ul>
+    <li><strong>A queue</strong> (lesson 89) carries button presses from the UI task to the control task. A queue is a copy in, copy out, so the sender never holds a pointer into the receiver's data.</li>
+    <li><strong>A mutex</strong> (lesson 90) protects the snapshot of the control state, and the I2C bus. A mutex, unlike a binary semaphore, has priority inheritance, so a low-priority task that holds it does not stall the safety monitor for long.</li>
+    <li><strong>An event group</strong> is the check-in board. Each monitored task sets its bit each cycle, and the supervisor reads the board.</li>
+  </ul>
+
+  <h2>The watchdog, and why the check-in board</h2>
+  <p>
+    A watchdog resets the chip unless the code kicks it on time (lesson 84). If the safety monitor kicked it every 50 ms no matter what, a stalled control loop would never be noticed: the monitor itself would keep the chip alive. The fix is that the monitor kicks only when every monitored task has set its bit since the last kick. A stalled task leaves its bit clear, the kick does not happen, and the window expires.
+  </p>
+  <p>
+    The Blue Pill's window watchdog (WWDG) runs from the bus clock, with a counter that falls from 0x7F to 0x3F in about 262 ms at the settings used here. The window register is 0x7F, so any refresh before the counter reaches 0x3F is accepted. The logger therefore checks in every 100 ms, even though it prints only once a second: a once-a-second check-in would expire the watchdog between prints. That detail is the kind of thing a reviewer looks for.
+  </p>
+  <div class="note">
+    <strong>On real hardware, use the IWDG.</strong> The independent watchdog (IWDG) runs from its own 40 kHz low-speed clock, so it keeps counting when the bus clock fails. The WWDG does not, and it cannot detect a stopped clock. The IWDG is not simulated by Wokwi (NOTES.md), so the course uses the WWDG here. The check-in logic is the same for both; only the peripheral changes, and the IWDG cannot be stopped once started, just like the WWDG.
+  </div>
+
+  <h2>The PID controller</h2>
+  <p>
+    A PID controller adds three terms to form its output from the error e = setpoint − measurement. The proportional term reacts to the error now, the integral term removes the steady offset a proportional controller leaves, and the derivative term damps the approach (lesson 105 derived the discrete form). The module is the same file as in lesson 105, unchanged, so the same code is tested on the PC and runs on the board.
+  </p>
+  <p>
+    Two details make the difference between a textbook loop and one that works on a heater. The first is <em>anti-windup</em>: the integral is clamped to the actuator's range, so while the heater is saturated at full power the integral cannot keep growing and overshoot badly later. The second is <em>derivative on measurement</em>: the derivative uses the measured temperature, not the error, so a setpoint step does not kick the output. A rising temperature reduces the output, which is why the derivative term has the minus sign.
+  </p>
+  <p>
+    The controller runs at 10 Hz with <code>CONTROL_DT_S = 0.1</code>. Because the derivative is computed from a difference divided by the period, the gains mean the same thing at any period, so the lesson 105 values carry over unchanged. The dryer's gains are kp = 0.04, ki = 0.0005 and kd = 0.5, from <code>app/tuning.h</code>.
+  </p>
+
+  <h2>The filter on the temperature</h2>
+  <p>
+    The NTC reading has noise of a few codes, and the derivative term amplifies noise, so the temperature is filtered before the controller sees it. The filter is the exponential moving average from lesson 104, with k = 2, so alpha is one quarter. Its time constant is −1 ÷ ln(1 − 1/4) ≈ 3.5 samples, which is 0.35 s at 10 Hz. That lag is small against the thermal time constant of the chamber, about a minute, so the filter costs little response and removes most of the jitter.
+  </p>
+
+  <h2>Measured: the closed loop against the plant</h2>
+  <p>
+    A physical heater is not on your desk, so the loop is closed in the host test. The thermal plant is the first-order model from lesson 105: 25 °C ambient, 80 °C rise at full power, and a 60 s time constant. The test does not use a copy of the control code. It calls <code>controller_step()</code>, the same function the control task calls, with the plant's temperature turned into an ADC code through the NTC divider and the beta equation, and then converted back by the firmware's <code>ntc_centi_from_raw()</code>. The only simulated part is the sensor and the heater.
+  </p>
+  <p>The real output of the host test, from the solution, is:</p>
+  <pre><code>[closed loop] PLA 45 C: settle 75.6 s, overshoot 0.36 C, final 45.00 C
+[closed loop] dead heater: runaway latched at 80.4 s</code></pre>
+  <table>
+    <thead><tr><th>Measure</th><th>Requirement (lesson 110)</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Settling time, PLA to 45 °C within 1 °C</td><td>600 s or less</td><td>75.6 s</td></tr>
+      <tr><td>Overshoot above 45 °C</td><td>2 °C or less</td><td>0.36 °C</td></tr>
+      <tr><td>Final temperature</td><td>within 1 °C of the setpoint</td><td>45.00 °C</td></tr>
+      <tr><td>Heater with no gain: runaway latched</td><td>within 300 s</td><td>80.4 s</td></tr>
+    </tbody>
+  </table>
+  <div class="warning">
+    <strong>What these numbers mean and do not mean.</strong> They show that the control code, the state machine and the safety check work together on a model of a heater. They do not show that your printer's chamber behaves this way. The model's gain and time constant are assumptions, and the gains were not retuned for a real chamber. Measure the step response of the real dryer, fit a model, and tune against that before you trust the numbers. Lesson 105 shows the Ziegler-Nichols method for that job.
+  </div>
+
+  <h2>Try it: close the loop yourself</h2>
+  <p>
+    The starter has the whole RTOS layer and the safety monitor. The PID step in <code>controller_step()</code> is a stub that always gives a duty of 0, so the heater never comes on. Your task is to wire the PID into that step.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0112-dryer-rtos-pid/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0112-dryer-rtos-pid/starter</code> from the workspace root.</li>
+    <li>Open <code>app/controller.c</code> and find the <code>TODO(learner)</code> comment in the heating branch. Convert the setpoint and the measured temperature to degrees C, call <code>pid_update()</code>, and convert its 0.0 to 1.0 result to permille.</li>
+    <li>Run the host tests: <code>python -I tools/build.py projects/0112-dryer-host-tests/starter --test</code>. Before your change, two of the eight test programs fail: <code>controller</code> and <code>closed_loop</code>.</li>
+    <li>You know it works when all eight pass and the closed-loop output shows the settling time and overshoot from the table above, within the limits. The reference is in <code>projects/0112-dryer-rtos-pid/solution</code>, and its host project is <code>projects/0112-dryer-host-tests/solution</code>.</li>
+    <li>Optional: change <code>TUNED_KP</code> in <code>tuning.h</code> to 0.02 and rerun the closed loop. Predict first whether the settling time gets longer or shorter, then check.</li>
+  </ol>
+  <details>
+    <summary>Hint for the units</summary>
+    <p>The state machine keeps the setpoint and the temperature in hundredths of a degree, and the PID works in degrees as floats. Divide by 100 before the call. The output is a fraction, so multiply by 1000 and round before you store it as a duty.</p>
+  </details>
+  <details>
+    <summary>Hint for the test that fails</summary>
+    <p>The <code>controller</code> test checks the first step after starting: the duty should be above 700 permille, because the error is 20 °C and kp is 0.04. A duty of 0 means the PID is not running at all, which points at the heating branch.</p>
+  </details>
+
+  <div class="win">You ran a PID loop at a fixed 10 Hz on FreeRTOS, with a supervisor that refuses to kick the watchdog for a stalled task, and you measured the closed loop against a thermal plant. Lesson 113 adds the Modbus interface, the bootloader and the CI.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Why does the PID take the derivative of the measurement, not of the error?",
+        "options": ["A setpoint step does not kick the output", "A setpoint step doubles the output right away", "A measurement is always noise free in practice"],
+        "answer": 0,
+        "why": "Differentiating the error turns a setpoint step into an impulse that kicks the output. Differentiating the measurement only sees the plant respond. The tempting answer, doubling the output, is the kick itself, and the third option is false: the measurement is noisy, which is why the filter exists." },
+      { "type": "number",
+        "prompt": "The IIR filter has k = 2, so alpha is 1/4 of a sample. Its time constant is −1 ÷ ln(1 − alpha) samples. What is it, to two decimal places?",
+        "answer": 3.48, "tolerance": 0.05,
+        "why": "The time constant is −1 ÷ ln(0.75), which is 3.48 samples. The tempting answer, 4, is the rough rule of 2 to the power k, which is only accurate for small alpha." },
+      { "type": "text",
+        "prompt": "Which task kicks the watchdog? Write its name, one word.",
+        "accept": ["safety", "safetytask", "safetymonitor"],
+        "why": "The safety monitor is the highest-priority task, and it is the only one that kicks the watchdog, and only when every monitored task has checked in. The tempting answer, control, is the task that does the most work, but it is not the supervisor." },
+      { "type": "mc",
+        "prompt": "What does the closed-loop test measure for a heater with no gain?",
+        "options": ["Runaway latches at about 80 seconds", "Runaway never latches for dead heaters", "Overshoot trips the runaway check instead"],
+        "answer": 0,
+        "why": "The test measured 80.4 s, which the runaway check takes after the integral saturates the heater. The tempting answer, that a dead heater never trips, is the failure the check exists to prevent, and overshoot is the wrong quantity for a heater that never heats." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0091-timing-analysis-deadlines-and-stack.html\">lesson 91</a>: the rate-monotonic bound for two tasks is 2 times (2 to the power 1/2, minus 1). Give it to two decimal places.",
+        "answer": 0.83, "tolerance": 0.01,
+        "why": "The bound is 2 × (1.4142 − 1) = 0.828, which is 0.83 to two places. The tempting answer, 1.0, is the utilisation of a single task, not the bound for two." },
+      { "type": "mc",
+        "prompt": "From <a href=\"0090-mutexes-priority-inversion-and-deadlock.html\">lesson 90</a>: what does a mutex with priority inheritance do?",
+        "options": ["It raises the holder's priority while waiting", "It lowers the waiter's priority to help", "It stops the whole scheduler until released"],
+        "answer": 0,
+        "why": "The holder runs at the priority of the highest task waiting for it, so a medium task cannot hold the low task off the CPU. The tempting answer, lowering the waiter, makes the problem worse; stopping the scheduler is what a critical section does, and it is not a mutex." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How do you stop a watchdog from hiding a stalled task?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I don't let one task kick the watchdog. A supervisor kicks it only when every monitored task has set its check-in bit since the last kick. Each task sets its bit on every cycle, not once a second, because the window is shorter than a slow task's period. The supervisor runs at the highest priority, so it is not starved, and it uses data from the other tasks through a snapshot under a mutex, so it can decide without holding them up. On real hardware I would use the independent watchdog, which keeps counting even if the bus clock stops.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.freertos.org/Documentation/00-Overview">FreeRTOS documentation: overview</a>: read the sections on tasks, the scheduler and the kernel's queues and mutexes, to check the priority and blocking rules used in <code>rtos/tasks.c</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "If I cut the control period from 100 ms to 200 ms, which of the closed-loop numbers would change, and in which direction?"
+    Related: <a href="0105-pid-control.html">Lesson 105: PID control</a>, <a href="0104-digital-filtering.html">Lesson 104: Digital filtering</a>, and <a href="0084-robustness.html">Lesson 84: Robustness</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

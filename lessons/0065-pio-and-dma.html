@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PIO and DMA · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0065">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>PIO and DMA</h1>
+  <p class="subtitle">Some timing is too tight for the CPU, even at 125 MHz. The RP2040 has programmable I/O state machines that run a few instructions per bit, and a DMA engine that keeps them fed. Together they move data without the core in the loop.</p>
+
+  <div class="note"><strong>Optional (⭐).</strong> You do not need this lesson for Lab 3 or the capstone. Read it when you meet a protocol with exact timing, such as an LED strip, a custom serial format or a fast parallel bus.</div>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>name the nine PIO instructions, decode a 16-bit PIO instruction, and explain how a DMA channel is paced by a PIO data request (DREQ)</strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The RP2040 has two PIO blocks, and each has four state machines. A PIO state machine is a very small processor: it runs a short program from its own instruction memory, shifts data in and out of pins, and does one instruction per clock cycle, with no interrupts and no cache. It is built for precise timing, not for general work <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet, section 3.1)</a>.
+    <span class="sidenote">A PIO state machine is the same idea as a CPU with a tiny instruction set, but it has no data memory and no call stack. Its job is to take bits from a FIFO and put them on pins, on a clock you choose.</span>
+  </p>
+  <p>
+    The instruction set has nine instructions, and each one is 16 bits. The top three bits select the instruction:
+  </p>
+  <table>
+    <thead><tr><th>Bits 15:13</th><th>Instruction</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>000</code></td><td>JMP</td><td>Jump, optionally on a condition</td></tr>
+      <tr><td><code>001</code></td><td>WAIT</td><td>Stall until a pin or flag has a value</td></tr>
+      <tr><td><code>010</code></td><td>IN</td><td>Shift bits from pins into the input shift register</td></tr>
+      <tr><td><code>011</code></td><td>OUT</td><td>Shift bits out of the output shift register to a destination</td></tr>
+      <tr><td><code>100</code></td><td>PUSH / PULL</td><td>Move a word between a FIFO and a shift register</td></tr>
+      <tr><td><code>101</code></td><td>MOV</td><td>Copy a value between registers, with an optional operation</td></tr>
+      <tr><td><code>110</code></td><td>IRQ</td><td>Set or clear an interrupt flag</td></tr>
+      <tr><td><code>111</code></td><td>SET</td><td>Write a 5-bit constant to pins, pin directions or scratch registers</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The table is from the datasheet's encoding table, which is Table 366 in section 3.4.1. Every instruction also has a 5-bit delay field, so one instruction can hold its pins for up to 31 extra cycles. That is how this course's program makes a slow pattern out of a fast clock.
+  </p>
+
+  <h2>Decode one instruction</h2>
+  <p>
+    Here is the program in this lesson's project. It has two instructions:
+  </p>
+  <pre><code>0x80A0   <span class="c">1000 0000 1010 0000</span>   PULL, no delay, block until the TX FIFO has a word
+0x7F04   <span class="c">0111 1111 0000 0100</span>   OUT PINS, 4 [31]: shift 4 bits to the pins, then wait 31 cycles</code></pre>
+  <p>
+    In <code>0x80A0</code>, the top three bits <code>100</code> select PULL. Bit 7 is fixed at 1 for PULL, bit 6 selects "if empty" (0 here), and bit 5 selects "block" (1 here). Blocking means the state machine stalls until the FIFO has a word. In <code>0x7F04</code>, the top bits <code>011</code> select OUT, the delay field <code>11111</code> is 31, the destination <code>000</code> is PINS, and the bit count <code>00100</code> is 4.
+    <span class="sidenote">Bit counts of 1 to 32 are written as is, except that 32 is written as 00000. The destination codes are in section 3.4.5 of the datasheet.</span>
+  </p>
+
+  <h2>How pioasm normally fits in</h2>
+  <p>
+    In a normal Pico SDK project you do not type the words by hand. You write a <code>.pio</code> file with labels, like this, and the build runs <code>pioasm</code>, which generates a header with a <code>pio_program_t</code> that you link to:
+  </p>
+  <pre><code>.program pattern
+.wrap_target
+    pull block          <span class="c">; wait for a word from DMA</span>
+    out pins, 4 [31]    <span class="c">; show its low four bits for 32 cycles</span>
+.wrap</code></pre>
+  <p>
+    The project does exactly that: <code>pattern.pio</code> sits next to <code>main.c</code>, and one line in <code>CMakeLists.txt</code>, <code>pico_generate_pio_header(blink ${CMAKE_CURRENT_LIST_DIR}/pattern.pio)</code>, makes the build run pioasm and write <code>build/pattern.pio.h</code>. The first build of a PIO project takes longer, because the SDK compiles pioasm itself with the host compiler (MinGW gcc, installed in lesson 1's tool check).
+  </p>
+  <p>
+    <code>main.c</code> still holds the two words decoded by hand from the datasheet, in <code>hand_decoded_words</code>. At startup the program compares them with pioasm's output and prints <code>PIO WORDS MATCH</code>. Open <code>build/pattern.pio.h</code> after a build and check the words yourself: pioasm writes <code>0x80a0</code> and <code>0x7f04</code>, with the disassembly as comments.
+  </p>
+  <div class="note">Decoding a few words by hand, once, is how you learn to read the encoding table. In real work you always let pioasm do it, and read its header when you need to check.</div>
+
+  <h2>DMA paced by PIO</h2>
+  <p>
+    A DMA channel copies data from memory to a peripheral without the CPU. The question is when to copy. Each peripheral that can use DMA raises a <strong>data request</strong>, called a DREQ, when it can take or give one word. The DMA channel waits for that request, so the peripheral sets the pace. The DREQ for PIO0 state machine 0's TX FIFO is <code>DREQ_PIO0_TX0</code>, with the number 0 in the global DREQ table <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet, section 2.5.3, Table 119)</a>.
+    <span class="sidenote">The pacing is the point. The CPU never checks whether the FIFO has room. The DREQ tells the DMA when to move the next word, and the PIO's pull block tells the state machine when to proceed.</span>
+  </p>
+  <p>
+    This project does three things. The PIO program pulls one word, shows its low four bits on four pins for 32 PIO cycles, and then pulls the next word. A DMA channel walks through an array of six patterns, one word at a time, paced by the DREQ. The CPU starts the DMA and restarts it when it finishes.
+  </p>
+  <pre><code><span class="c">/* DMA: write one word to the PIO TX FIFO each time the FIFO asks for one */</span>
+channel_config_set_transfer_data_size(&amp;dc, DMA_SIZE_32);
+channel_config_set_read_increment(&amp;dc, true);     <span class="c">/* walk through steps[] */</span>
+channel_config_set_write_increment(&amp;dc, false);   <span class="c">/* always the same FIFO register */</span>
+channel_config_set_dreq(&amp;dc, pio_get_dreq(PIO0, 0, true));</code></pre>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    Wokwi simulates PIO and can show its state machines in the PIO debugger, and it supports DMA only in combination with PIO, which this project uses. The four LEDs on GP10 to GP13 form a pattern that runs back and forth.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0065-pio-and-dma/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>PIO ready, DMA not set up</code> and the LEDs stay off.</li>
+    <li>Your task: replace the <code>TODO(learner)</code> comment with the DMA setup. Claim a channel, configure it to move 32-bit words from <code>steps[]</code> to the PIO TX FIFO, set the DREQ, enable the state machine, and restart the DMA in a loop when it finishes.</li>
+    <li>You will know it works when the serial monitor prints <code>PIO DMA OK steps=6</code> and the four LEDs step through the pattern about every 15 ms.</li>
+  </ol>
+  <details>
+    <summary>Hint for the DREQ</summary>
+    <p>Use <code>pio_get_dreq(PATTERN_PIO, PATTERN_SM, true)</code>. The last argument is <code>true</code> because the DMA writes to the TX FIFO. The state machine must be enabled before the first word matters.</p>
+  </details>
+  <details>
+    <summary>Hint for the restart</summary>
+    <p>The SDK has <code>dma_channel_wait_for_finish_blocking()</code> and <code>dma_channel_transfer_from_buffer_now()</code>. Call the first, then the second, inside the while loop.</p>
+  </details>
+  <p>
+    The reference solution is in <code>projects/0065-pio-and-dma/solution</code>. Try first, compare after. The simulation of this project was not run when it was written, so if the LEDs do not step, check the serial output first and then the PIO debugger.
+  </p>
+
+  <div class="win">You can decode a PIO instruction from its bits, explain what the DREQ does, and connect a DMA channel to a PIO FIFO so that the state machine sets the pace.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which instruction moves one word from the TX FIFO into the output shift register?",
+        "options": [
+          "PULL from the TX FIFO",
+          "PUSH to the RX FIFO",
+          "IN from the input pins",
+          "MOV from the scratch X"
+        ],
+        "answer": 0,
+        "why": "PULL moves a word from the TX FIFO into the output shift register (OSR). PUSH does the reverse, from the input shift register to the RX FIFO. The tempting answer is IN, which shifts bits from pins into the input shift register, not from the TX FIFO." },
+      { "type": "mc",
+        "prompt": "In this project, what does the DREQ do?",
+        "options": [
+          "It paces DMA to FIFO",
+          "It sets the clock speed",
+          "It drives the LED pins",
+          "It stops DMA for good"
+        ],
+        "answer": 0,
+        "why": "The DREQ is the data request from the PIO TX FIFO. The DMA waits for it before it moves the next word, so the state machine sets the pace. The tempting answer is the clock speed, which is the clock divider, a separate setting." },
+      { "type": "number",
+        "prompt": "The clock divider is 60000 with no fraction, the PIO runs from a 125 MHz system clock, and one step is 32 PIO cycles. How many milliseconds is one step?",
+        "answer": 15.36, "tolerance": 0.01, "unit": "ms",
+        "why": "The PIO clock is 125 MHz ÷ 60000 ≈ 2083 Hz, so one cycle is 0.48 ms, and 32 cycles take 15.36 ms. The tempting answer is 0.48 ms, which is only one cycle." },
+      { "type": "number",
+        "prompt": "What is the 16-bit PIO instruction <code>0x80A0</code> in decimal?",
+        "answer": 32928, "tolerance": 0, "unit": "",
+        "why": "0x8000 is 32768, and 0xA0 is 160, so the total is 32928. The tempting answer is 160, which is only the low byte." },
+      { "type": "text",
+        "prompt": "Which DREQ name paces DMA to PIO0 state machine 0's TX FIFO?",
+        "accept": ["DREQ_PIO0_TX0"],
+        "why": "The DREQ names are DREQ_PIOn_TXm and DREQ_PIOn_RXm, with n the PIO block and m the state machine. The tempting answer is DREQ_PIO0_RX0, which is the receive FIFO of the same state machine." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0020-bitwise-operations-and-masks.html\">lesson 20</a>: what is <code>0x7F04 &amp; 0x000F</code>? Give the decimal value.",
+        "answer": 4, "tolerance": 0,
+        "why": "The mask 0x000F keeps the low four bits, and those are 0100, which is 4. The tempting answer is 0x7F04, which the mask does not change." },
+      { "type": "text",
+        "prompt": "From <a href=\"0046-volatile-const-and-static.html\">lesson 46</a>: which keyword stops the compiler from caching a value that a peripheral changes? One word.",
+        "accept": ["volatile"],
+        "why": "volatile forces every access to be performed, so the value is reloaded. The tempting answer is const, which only forbids writes." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"You need to drive an LED strip with an exact bit timing while the CPU runs an RTOS. How do you do it, and what do you do with the CPU?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Use a PIO state machine. Its program produces the bit timing in cycles, with no interrupts to be late, and a DMA channel paced by the state machine's DREQ feeds it the pixel data from a buffer. The CPU only prepares the buffer and starts the transfer, so the RTOS tasks are not in the timing path. The trade-off is that the PIO program is hard to change and has limited memory, so it suits a fixed protocol. Check the timing against the datasheet and the LED strip's own timing table.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 3.4 (Instruction Set, Table 366) and section 2.5.3 (DMA data request)</a>: read the encoding table, then the PULL and OUT pages, then the DREQ table. The Pico SDK book has a PIO chapter with worked examples: <a href="https://datasheets.raspberrypi.com/pico/raspberry-pi-pico-c-sdk.pdf">Raspberry Pi Pico C/C++ SDK</a>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Decode 0x7F04 bit by bit, then change the delay so one step takes 100 ms, and show me the numbers."
+    Related: <a href="0020-bitwise-operations-and-masks.html">Lesson 20: Bitwise operations and masks</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const and static</a>, and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

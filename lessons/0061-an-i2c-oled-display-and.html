@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>An I2C OLED display and a small UI framework · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0061">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>An I2C OLED display and a small UI framework</h1>
+  <p class="subtitle">A 128 by 64 OLED panel has 1024 pixels, and the controller takes them as bytes over I2C. You will write the driver in about a hundred lines, then build a menu on top of it that two buttons can drive.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain the SSD1306's control byte and page addressing, write pixels into a framebuffer and flush it page by page over I2C, and drive a cursor-based menu from two buttons using callbacks.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The SSD1306 is a monochrome OLED controller. It has its own display RAM, 128 columns by 8 pages, and each RAM byte holds the state of eight vertical pixels in one column <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.7</a>. Your code keeps a copy of that RAM in the Pico's memory, called the framebuffer, and sends it over I2C each time the picture changes. The panel's address is 0x3C, which is 0111100 with the SA0 bit low <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5</a>.
+    <span class="sidenote">The framebuffer is 128 × 8 = 1024 bytes. On an RP2040 with 264 KB of RAM, that is a small fraction, and the cost is paid once.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 480 235" role="img" aria-label="A grid of eight pages of 128 columns; each column byte holds eight vertical pixels, with bit 0 at the top of the page" style="max-width:624px">
+      <defs><marker id="ah41" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <path d="M70 30 H310"/>
+        <path d="M70 50 H310"/>
+        <path d="M70 70 H310"/>
+        <path d="M70 90 H310"/>
+        <path d="M70 110 H310"/>
+        <path d="M70 130 H310"/>
+        <path d="M70 150 H310"/>
+        <path d="M70 170 H310"/>
+        <path d="M70 190 H310"/>
+        <path d="M70 30 V190"/>
+        <path d="M85 30 V190"/>
+        <path d="M100 30 V190"/>
+        <path d="M115 30 V190"/>
+        <path d="M130 30 V190"/>
+        <path d="M145 30 V190"/>
+        <path d="M160 30 V190"/>
+        <path d="M175 30 V190"/>
+        <path d="M190 30 V190"/>
+        <path d="M205 30 V190"/>
+        <path d="M220 30 V190"/>
+        <path d="M235 30 V190"/>
+        <path d="M250 30 V190"/>
+        <path d="M265 30 V190"/>
+        <path d="M280 30 V190"/>
+        <path d="M295 30 V190"/>
+        <path d="M310 30 V190"/>
+        <rect x="70" y="30" width="15" height="20" rx="0" fill="currentColor" fill-opacity="0.35" stroke="none"/>
+        <rect x="350" y="30" width="40" height="20" rx="0"/>
+        <rect x="350" y="50" width="40" height="20" rx="0"/>
+        <rect x="350" y="70" width="40" height="20" rx="0"/>
+        <rect x="350" y="90" width="40" height="20" rx="0"/>
+        <rect x="350" y="110" width="40" height="20" rx="0"/>
+        <rect x="350" y="130" width="40" height="20" rx="0"/>
+        <rect x="350" y="150" width="40" height="20" rx="0"/>
+        <rect x="350" y="170" width="40" height="20" rx="0"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="8" y="44" text-anchor="start" font-size="11">page 0</text>
+        <text x="8" y="64" text-anchor="start" font-size="11">page 1</text>
+        <text x="8" y="84" text-anchor="start" font-size="11">page 2</text>
+        <text x="8" y="104" text-anchor="start" font-size="11">page 3</text>
+        <text x="8" y="124" text-anchor="start" font-size="11">page 4</text>
+        <text x="8" y="144" text-anchor="start" font-size="11">page 5</text>
+        <text x="8" y="164" text-anchor="start" font-size="11">page 6</text>
+        <text x="8" y="184" text-anchor="start" font-size="11">page 7</text>
+        <text x="70" y="24" text-anchor="start" font-size="11">col 0</text>
+        <text x="70" y="208" text-anchor="start" font-size="11">128 columns</text>
+        <text x="370" y="22" text-anchor="middle" font-size="11">one byte</text>
+        <text x="398" y="44" text-anchor="start" font-size="10">bit 0</text>
+        <text x="398" y="64" text-anchor="start" font-size="10">bit 1</text>
+        <text x="398" y="84" text-anchor="start" font-size="10">bit 2</text>
+        <text x="398" y="104" text-anchor="start" font-size="10">bit 3</text>
+        <text x="398" y="124" text-anchor="start" font-size="10">bit 4</text>
+        <text x="398" y="144" text-anchor="start" font-size="10">bit 5</text>
+        <text x="398" y="164" text-anchor="start" font-size="10">bit 6</text>
+        <text x="398" y="184" text-anchor="start" font-size="10">bit 7</text>
+        <text x="70" y="226" text-anchor="start" font-size="11">column 0 is one byte: bit 0 top, bit 7 bottom</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. The panel's RAM is eight pages of 128 bytes. Each byte is one column of one page, so the picture is 8 rows of 8 pixels.</figcaption>
+  </figure>
+
+  <h2>The control byte</h2>
+  <p>
+    Every I2C write to the SSD1306 starts with a control byte. Its top bit, Co, says whether more control bytes follow. Its next bit, D/C#, says whether the bytes that follow are commands or display data <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5.1</a>. So a single command is sent as <code>0x80</code> followed by the command byte, and a stream of pixels is sent as <code>0x40</code> followed by the bytes.
+  </p>
+  <pre><code><span class="c">/* one command: control 0x80 (Co = 1, D/C# = 0), then the command */</span>
+<span class="k">uint8_t</span> buf[2] = {0x80, cmd};
+i2c_write_blocking(bus, 0x3C, buf, 2, <span class="k">false</span>);
+
+<span class="c">/* a page of pixels: control 0x40 (Co = 0, D/C# = 1), then 128 data bytes */</span>
+frame[0] = 0x40;
+i2c_write_blocking(bus, 0x3C, frame, 129, <span class="k">false</span>);</code></pre>
+
+  <h2>Page addressing</h2>
+  <p>
+    The controller can move its write pointer three ways. Page addressing, selected by the command <code>0x20 0x02</code>, writes one page of 128 columns, then the pointer wraps back to the start column of the same page. You set the page and the column for each page with three commands: page start <code>0xB0</code> to <code>0xB7</code>, and the column's low nibble (<code>0x00</code> to <code>0x0F</code>) and high nibble (<code>0x10</code> to <code>0x1F</code>) <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, sections 10.1.3, 10.1.13, 10.1.1 and 10.1.2</a>.
+  </p>
+  <p>
+    The driver below sends 129 bytes per page, eight times. That is about 1 KB over I2C per frame. At 400 kbit/s, the wire time is roughly 25 ms, so the menu redraws only when a button changes something.
+  </p>
+
+  <div class="note">The init sequence is the one in the pico-examples <code>i2c/ssd1306_i2c</code> driver, published under the BSD-3-Clause licence by Raspberry Pi. It is checked against the SSD1306 datasheet. The example uses 128 by 32 settings in some places, so the 128 by 64 values here use the multiplex ratio 0x3F and the COM pin layout 0x12.</div>
+
+  <h2>A 5 by 7 font</h2>
+  <p>
+    A character is a 5 by 7 bitmap, stored as five column bytes. Bit 0 of each column is the top row, and bit 6 is the bottom row. The capital L is <code>{0x7F, 0x40, 0x40, 0x40, 0x40}</code>: the first column is the full stem, and the bottom bar is bit 6 in each of the last four columns. A blank column between characters makes a six-pixel advance per character.
+  </p>
+  <div class="note">A complete font for 95 characters is too big for a lesson. The font here defines only the characters the menu uses: digits, a few capitals, a space, <code>:</code> and <code>&gt;</code>. Adding a letter means adding one 5-byte entry.</div>
+
+  <h2>A menu with a cursor and callbacks</h2>
+  <p>
+    A menu is an array of items, each with a label and an action, plus a cursor index. The action is a function pointer, the same callback mechanism as lesson 49. The menu does not know what an item does: it calls the pointer. Two buttons drive it. One moves the cursor down with wrap-around, and one runs the selected action. The buttons are read by polling for the falling edge, so one press is one step, however long the button is held.
+  </p>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0061-an-i2c-oled-display-and</code> wires a <code>board-ssd1306</code> display to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups as in lesson 60, and two pushbuttons: DOWN on GP14 and SELECT on GP15. Wokwi's SSD1306 board part is the one to use, because the older <code>wokwi-ssd1306</code> part is deprecated <a href="https://docs.wokwi.com/parts/board-ssd1306">Wokwi, board-ssd1306 part</a>. The display's address is 0x3C.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0061-an-i2c-oled-display-and/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The init and flush code is given. The screen stays blank until you finish the drawing code.</li>
+    <li>Your task: write <code>ssd1306_draw_char()</code> (copy the five column bytes from <code>font_glyph()</code>, and leave one blank column), and <code>ssd1306_draw_text()</code> (advance by six). Then fix the cursor in <code>menu_next()</code>: the starter does a plain increment, which runs off the end of the item list. Finally draw the status line, print <code>MENU OK</code> once, and check that DOWN moves the cursor and SELECT counts a press.</li>
+  </ol>
+  <details>
+    <summary>Hint for the glyph copy</summary>
+    <p>The glyph has five columns. Copy them into <code>s_fb[page][x + i]</code>, and leave <code>x + 5</code> at zero. Check the page and x against the framebuffer's size first.</p>
+  </details>
+  <details>
+    <summary>Hint for the cursor</summary>
+    <p>A modulo by the item count keeps the cursor in range, and it wraps by itself after the last item.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0061-an-i2c-oled-display-and/solution</code>. Try first, compare after. The serial monitor prints <code>MENU OK</code>, and the screen shows the menu.</p>
+
+  <div class="win">You drew text on an OLED you wrote the driver for, with the control byte, page addressing and a framebuffer, and you drove a menu from two buttons with callbacks. The same framebuffer and flush pattern works for the other SSD1306 and SH1106 panels.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which control byte precedes a stream of display data bytes?",
+        "options": ["0x40", "0x80", "0xB0", "0x00"],
+        "answer": 0,
+        "why": "0x40 sets Co to 0 and D/C# to 1, so the bytes that follow are data. The tempting answer, 0x80, is the control byte for a single command, and 0xB0 is a page start command, not a control byte." },
+      { "type": "number",
+        "prompt": "The panel has 8 pages of 128 bytes each. How many bytes is the framebuffer?",
+        "answer": 1024, "tolerance": 0, "unit": "bytes",
+        "why": "8 × 128 = 1024 bytes, one per column per page. The tempting answer, 8192, counts pixels instead of bytes, and one byte holds eight pixels." },
+      { "type": "mc",
+        "prompt": "Which addressing mode does the command pair 0x20 0x02 select?",
+        "options": ["Page mode", "Row mode", "Column mode", "Pixel mode"],
+        "answer": 0,
+        "why": "0x20 0x02 selects page addressing (datasheet section 10.1.3). The tempting answer, column mode, is close to horizontal addressing, which needs 0x00, not 0x02." },
+      { "type": "text",
+        "prompt": "Which command byte sets page 3 as the page start address?",
+        "accept": ["0xB3", "B3"],
+        "why": "The page start command is 0xB0 plus the page number, so page 3 is 0xB3 (datasheet section 10.1.13). The tempting answer, 0x03, is the lower nibble of a column address, not a page." },
+      { "type": "number",
+        "prompt": "How many 8-pixel pages are there on a 64-row panel?",
+        "answer": 8, "tolerance": 0, "unit": "pages",
+        "why": "64 rows ÷ 8 rows per page = 8 pages. The tempting answer, 64, counts rows instead of pages." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From <a href=\"0009-diodes-leds-and-current-limiting.html\">lesson 9</a>: a 3.3 V pin drives a red LED with Vf = 1.8 V at 10 mA. What series resistance, in ohms, does the exact calculation give?",
+        "answer": 150, "tolerance": 0.01, "unit": "Ω",
+        "why": "R = (3.3 V − 1.8 V) ÷ 0.010 A = 150 Ω. The tempting answer, 330 Ω, is a common E12 choice, but it is not the value this calculation gives." },
+      { "type": "text",
+        "prompt": "From <a href=\"0025-registers-counters-shift-registers.html\">lesson 25</a>: which 74HC595 pin takes the serial data bit?",
+        "accept": ["DS"],
+        "why": "DS is the serial data input, sampled on each SHCP rising edge. The tempting answer, STCP, is the latch clock." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you drive a 128 by 64 OLED over I2C, and why is the framebuffer usually kept in RAM?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Keep a 1 KB framebuffer in RAM, draw into it, and send it to the panel with page addressing: set the page and column for each of the eight pages, then burst 128 data bytes after a 0x40 control byte. The RAM copy lets you draw in any order and makes partial updates cheap. The I2C wire time, about 25 ms at 400 kbit/s, limits the frame rate, so redraw only when the picture changes.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet (Solomon Systech)</a>: read section 8.1.5 for the I2C address and the control byte, 8.7 for the display RAM, and 10.1.3 for addressing modes. Then compare with the <a href="https://github.com/raspberrypi/pico-examples/blob/master/i2c/ssd1306_i2c/ssd1306_i2c.c">pico-examples SSD1306 driver</a>, which is BSD-3-Clause.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how the 128 by 32 and 128 by 64 init sequences differ, and why the COM pin value changes."
+    Related: <a href="0060-the-i2c-protocol.html">Lesson 60: The I2C protocol</a>, <a href="0049-function-pointers-and-callbacks.html">Lesson 49: Function pointers and callbacks</a>, and <a href="../reference/glossary.html#callback">Glossary: Callback</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

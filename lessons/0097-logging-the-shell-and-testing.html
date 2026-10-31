@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logging, the shell, and testing with ztest and Twister · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="0097">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Logging, the shell, and testing with ztest and Twister</h1>
+  <p class="subtitle">Three tools make firmware easier to live with: a logger that tells you what happened, a shell that lets you poke the device by hand, and unit tests that run without the hardware. Zephyr ships all three, and this lesson uses each one.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>register a shell command that drives the LED, write a ztest case for a conversion function, and explain what Twister needs to run it, including why it cannot run on Windows</strong>.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The logger is a module with a name and a level. <code>LOG_MODULE_REGISTER(app, LOG_LEVEL_INF)</code> names this file's module and sets its level, and <code>LOG_INF</code>, <code>LOG_DBG</code> and the others print when the level allows (<code>include/zephyr/logging/log.h:845</code>). The global switch is <code>CONFIG_LOG</code>. With it off, every log call compiles to nothing.
+    <span class="sidenote">The shell is the other half of debugging. It runs in its own thread, reads commands from the UART, and calls your functions, which is how many teams test a board on the bench.</span>
+  </p>
+  <p>
+    The shell is on with <code>CONFIG_SHELL=y</code>, and its serial backend uses the UART named by the board's <code>zephyr,shell-uart</code> node (<code>uart0</code> on the Pico). A command is one <code>SHELL_CMD_REGISTER</code> line, and a subcommand tree is a <code>SHELL_STATIC_SUBCMD_SET_CREATE</code> block (<code>include/zephyr/shell/shell.h:465, 502</code>).
+  </p>
+  <div class="warning">
+    With the shell on, the UART log backend is off by default (<code>subsys/logging/backends/Kconfig.uart</code>: <code>default y if !SHELL_BACKEND_SERIAL</code>). The logs go through the shell's log backend instead, so set <code>CONFIG_SHELL_LOG_BACKEND=y</code>. Our starter forgot the shell, and the linker reported <code>undefined reference to shell_fprintf_impl</code>. That is a missing Kconfig symbol, not a code bug.
+  </div>
+
+  <h2>The conversion function, and its tests</h2>
+  <p>
+    The MYS-1 reports 1/64 °C per count, as a signed 16-bit number (datasheet section 4.1). The conversion function <code>mys_raw_to_centi_c</code> has no hardware in it: it takes a number and returns hundredths of a degree. That makes it testable on any machine. In the solution it is <code>(int32_t)raw * 100 / 64</code>. The code multiplies first, so the division keeps the fraction, and the product fits in 32 bits.
+  </p>
+  <pre><code>ZTEST_SUITE(temp_format, NULL, NULL, NULL, NULL, NULL);
+
+ZTEST(temp_format, test_room_temperature)
+{
+    zassert_equal(mys_raw_to_centi_c(1440), 2250, "1440 counts should be 22.50 C");
+}</code></pre>
+  <p>
+    <code>ZTEST_SUITE</code> groups the tests, and <code>ZTEST</code> defines one test case (<code>subsys/testsuite/ztest/include/zephyr/ztest_test.h:289, 789</code>). <code>zassert_equal</code> reports the message and goes on to the next test (<code>ztest_assert.h:346</code>). The tests live in <code>tests/temp_format/</code> with their own <code>prj.conf</code>, <code>CMakeLists.txt</code> and <code>testcase.yaml</code>. The test build compiles the same <code>temp_format.c</code> that the application uses, so the test checks the shipped code.
+  </p>
+
+  <h2>Twister, and what it needs</h2>
+  <p>
+    Twister is Zephyr's test runner. It reads <code>testcase.yaml</code>, builds each test for the platforms it names, and runs them where it can (<a href="https://docs.zephyrproject.org/4.5.0/develop/test/index.html">Zephyr testing</a>). The simulated board that CI uses is <code>native_sim</code>, which compiles the code into a Linux process. That needs Linux, and the docs say so: unit tests run as native applications, so they are "only supported for Linux" (<a href="https://docs.zephyrproject.org/4.5.0/develop/test/ztest.html">ztest docs</a>). The CMake guard says the same: <code>arch/posix/CMakeLists.txt</code> stops configuration unless the host is Linux.
+  </p>
+  <div class="note">
+    What we checked on this Windows machine: the ztest suite builds for the Pico (<code>python -I tools/build.py projects/0097-logging-shell-ztest/solution/tests/temp_format</code>), and a <code>native_sim</code> configure stops with the POSIX message even with a MinGW gcc on the PATH. Twister could not run here: its Python modules need <code>natsort</code>, which is not installed, and this course does not install packages. On Linux or WSL you would install the Zephyr requirements and run <code>west twister -T projects/0097-logging-shell-ztest/solution/tests/temp_format -p native_sim</code>. We did not run that.
+  </div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>The starter has the shell on, with three TODO(learner) handlers. You write the LED commands and the temperature command, and you turn on the logger.</p>
+  <ol class="steps">
+    <li>Open <code>projects/0097-logging-shell-ztest/starter</code> in VS Code. In <code>prj.conf</code>, turn on <code>CONFIG_LOG</code> and <code>CONFIG_SHELL_LOG_BACKEND</code> from the TODO(learner) note.</li>
+    <li>In <code>src/main.c</code>, write <code>cmd_led_on</code> and <code>cmd_led_off</code> with <code>gpio_pin_set_dt</code>. Then write <code>cmd_temp</code>: parse the argument with <code>strtol</code>, convert it with <code>mys_raw_to_centi_c</code>, and print the degrees.</li>
+    <li>In <code>src/temp_format.c</code>, fill in the formula, then build the test folder and check it compiles.</li>
+    <li>Build, start the simulator, and type <code>led on</code> and <code>temp 1440</code> in the serial monitor. You'll know it works when the LED turns on and the monitor prints <code>22.50 C</code>.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The shell only sees commands it was given. If <code>help</code> does not list <code>led</code>, check that the <code>SHELL_CMD_REGISTER</code> line is still in the file. For the formula, multiply first and divide last: <code>raw * 100 / 64</code>.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0097-logging-shell-ztest/solution</code>. Try first, compare after.</p>
+  <div class="note">
+    Typing into the simulator's serial monitor depends on how Wokwi routes input to the Pico's UART, which we did not verify here (no simulator token). If your shell does not respond, check the serial monitor's input box and the RX/TX wiring in <code>diagram.json</code> first.
+  </div>
+
+  <div class="win">You turned on the logger and the shell, drove the LED from a command you registered, and wrote a ztest case that checks the conversion the shell uses.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The shell's led command fails to link with undefined shell_fprintf_impl. What is missing?",
+        "options": ["Enable CONFIG_SHELL", "Enable CONFIG_ZTEST", "Enable CONFIG_LOG", "Enable CONFIG_I2C"],
+        "answer": 0,
+        "why": "shell_print calls into the shell, and without CONFIG_SHELL=y the shell code is not built. The tempting answer, CONFIG_LOG, is the logger, which the shell does not need in order to link." },
+      { "type": "mc",
+        "prompt": "Which host can run native_sim, the target for Twister's unit tests?",
+        "options": ["Linux or WSL", "Windows host ok", "macOS host ok", "Any host works"],
+        "answer": 0,
+        "why": "native_sim is a Linux process, and the CMake guard refuses other hosts. The tempting answer, any host, is false: the guard stops configuration on Windows." },
+      { "type": "number",
+        "prompt": "The test asserts mys_raw_to_centi_c(-64). What is the expected result in hundredths of a degree?",
+        "answer": -100, "tolerance": 0, "unit": "centi-C",
+        "why": "-64 counts is -1.00 C, which is -100 hundredths. The tempting answer, 100, drops the sign, and the signed type is what makes the result negative." },
+      { "type": "number",
+        "prompt": "Compute 1440 times 100, divided by 64, with integer division. What do you get?",
+        "answer": 2250, "tolerance": 0, "unit": "",
+        "why": "144000 divided by 64 is exactly 2250. The tempting answer, 22, divides first and loses the hundredths." },
+      { "type": "text",
+        "prompt": "Which Kconfig symbol sends the logs through the shell's log backend?",
+        "accept": ["CONFIG_SHELL_LOG_BACKEND", "SHELL_LOG_BACKEND"],
+        "why": "CONFIG_SHELL_LOG_BACKEND is the shell's log backend switch. The tempting answer, CONFIG_LOG_BACKEND_UART, is the UART backend, which is off when the serial shell is on." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "text",
+        "prompt": "From lesson 41: which file format does Wokwi run for these projects? Give the short name.",
+        "accept": ["ELF", "elf", ".elf"],
+        "why": "Wokwi runs the ELF file, which keeps the symbols that GDB needs. The tempting answer, a bin file, has no symbols, and the course uses ELF for debugging." },
+      { "type": "text",
+        "prompt": "From lesson 53: which Pico pin is UART0 transmit on in this course's diagram?",
+        "accept": ["GP0", "0"],
+        "why": "The diagram connects GP0 to the serial monitor's RX, so GP0 is the transmit pin. The tempting answer, GP1, is the receive pin." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How would you test firmware logic when you have no board on your desk?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Separate the logic from the hardware, so the logic is plain C that takes numbers and returns numbers. Write unit tests for it with a framework such as ztest, and run them on a host or a simulator in CI, using Twister or another runner. Keep the hardware-dependent code thin and test it on the bench or in the simulator.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.zephyrproject.org/4.5.0/develop/test/ztest.html">Zephyr documentation: ztest</a>: read "Writing a test suite" and the note on the Linux-only native host. Then open <code>samples/subsys/testsuite/integration</code> in the Zephyr tree for a complete example.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how to add a second ZTEST to temp_format that checks a negative count, and how Twister would report a failure."
+    Related: <a href="0093-kconfig-and-the-build-system.html">Lesson 93: Kconfig and the build system</a>, <a href="0053-uart-logging.html">Lesson 53: UART logging</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

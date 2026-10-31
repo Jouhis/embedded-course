@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Timing and non-blocking super-loops · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0055">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Timing and non-blocking super-loops</h1>
+  <p class="subtitle"><code>sleep_ms()</code> is fine until a program needs two things at once. A blink, a button and a sensor cannot all wait in the same place. The fix is to store a deadline, check it on every pass, and never wait.</p>
+
+  <div class="goal">
+    By the end of this lesson you can run three LEDs at 1, 2 and 4 Hz from one loop with no <code>sleep_ms()</code>, and write a deadline comparison that stays correct when the 32-bit microsecond counter wraps.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    The Pico has a 64-bit microsecond counter, driven by the TIMER block at <code>0x40054000</code>. Reading it takes two registers: read <code>TIMELR</code> first, which latches the high word, then <code>TIMEHR</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §4.6.2 and Table 527)</a>. The SDK does that pair for you in <code>time_us_64()</code>. <code>time_us_32()</code> returns the low 32 bits, and that wraps about every 71.6 minutes (2<sup>32</sup> µs).
+    <span class="sidenote">The datasheet warns that reading <code>TIMELR</code> on one core can leave the high word latched for the other core. The SDK's read is safe for its own use, but you should not write your own two-register read in code that runs on both cores.</span>
+  </p>
+  <p>
+    The SDK also has <code>absolute_time_t</code>, an opaque timestamp in microseconds since boot. You get one with <code>get_absolute_time()</code>, make a deadline with <code>make_timeout_time_ms()</code>, compare with <code>absolute_time_diff_us()</code>, and wait with <code>sleep_until()</code> <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/common/pico_time/include/pico/time.h">(pico-sdk 2.3.1, pico/time.h)</a>. Those helpers are the right tool when you write a delay. Inside a super-loop with several deadlines, a plain 32-bit integer is smaller and faster to compare, and the code below uses one.
+  </p>
+
+  <h2>Blocking vs checking the time</h2>
+  <p>
+    <code>sleep_ms(500)</code> does not return until 500 ms have passed. The CPU does nothing else during that time, and any LED, button or UART byte that should be handled in those 500 ms waits. That is blocking. A non-blocking loop asks instead: is the deadline reached yet? If not, it moves on, and the loop keeps running.
+  </p>
+  <figure>
+    <svg viewBox="0 0 520 130" role="img" aria-label="Three rows of blinks on a common time axis. Each row marks deadlines at its own spacing, and the loop checks all three on every pass.">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <line x1="20" y1="110" x2="500" y2="110"/>
+        <polyline points="20,30 20,30 100,30 100,20 180,20 180,30 260,30 260,20 340,20 340,30 420,30 420,20 500,20" stroke-width="1"/>
+        <polyline points="20,60 20,60 60,60 60,50 100,50 100,60 140,60 140,50 180,50 180,60 220,60 220,50 260,50 260,60 300,60 300,50 340,50 340,60 380,60 380,50 420,50 420,60 460,60 460,50 500,50" stroke-width="1"/>
+        <polyline points="20,90 20,90 40,90 40,80 60,80 60,90 80,90 80,80 100,80 100,90 120,90 120,80 140,80 140,90 160,90 160,80 180,80 180,90 200,90 200,80 220,80 220,90 240,90 240,80 260,80 260,90 280,90 280,80 300,80 300,90 320,90 320,80 340,80 340,90 360,90 360,80 380,80 380,90 400,90 400,80 420,80 420,90 440,90 440,80 460,80 460,90 480,90 480,80 500,80" stroke-width="1"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="11">
+        <text x="504" y="34">1 Hz</text>
+        <text x="504" y="64">2 Hz</text>
+        <text x="504" y="94">4 Hz</text>
+        <text x="20" y="125">time: each step is one toggle, and the loop checks all three on every pass</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Three independent blinks on one time axis. Each waveform changes state at its own deadlines. Nothing waits, so each change happens on time.</figcaption>
+  </figure>
+
+  <h2>The deadline pattern</h2>
+  <p>
+    A blink is a deadline and a toggle. Store the time of the next toggle, and on each pass ask whether it has arrived. If it has, toggle, and add the half period to the stored deadline. Add to the old deadline, not to the current time, so a late pass does not make the blink slower over time.
+  </p>
+  <pre><code><span class="k">static bool</span> is_due(<span class="k">uint32_t</span> now_us, <span class="k">uint32_t</span> deadline_us) {
+    <span class="k">return</span> (<span class="k">int32_t</span>)(now_us - deadline_us) &gt;= 0;   <span class="c">/* wraparound-safe */</span>
+}
+
+<span class="k">static void</span> blink_service(blink_t *b, <span class="k">uint32_t</span> now_us) {
+    <span class="k">if</span> (is_due(now_us, b-&gt;next_us)) {
+        gpio_xor_mask(b-&gt;mask);            <span class="c">/* one atomic toggle (lesson 51) */</span>
+        b-&gt;next_us += b-&gt;half_us;       <span class="c">/* from the old deadline, not from now */</span>
+    }
+}</code></pre>
+  <p>
+    The main loop calls <code>blink_service()</code> for each LED and does nothing else that waits. The loop runs many times per millisecond, so the toggles land within a few microseconds of their deadlines.
+  </p>
+
+  <h2>Wraparound: why subtract first</h2>
+  <p>
+    The counter wraps from <code>0xFFFFFFFF</code> back to <code>0x00000000</code>. A test such as <code>now &gt;= deadline</code> is wrong across that wrap. A deadline just below the wrap, <code>0xFFFFFFF0</code>, and a time just after it, <code>0x00000008</code>, give <code>8 &gt;= 0xFFFFFFF0</code>, which is false. The LED would stop blinking for about 71 minutes.
+  </p>
+  <p>
+    Subtract instead. In unsigned arithmetic, <code>now − deadline</code> is the true distance between the two times, modulo 2<sup>32</sup>. Reading that result as a signed value gives a positive number when <code>now</code> is at or after the deadline, and a negative one when it is before. Here is the check with the numbers above: <code>0x00000008 − 0xFFFFFFF0 = 0x00000018 = +24</code>, so the deadline has passed. <code>0xFFFFFFE0 − 0xFFFFFFF0 = 0xFFFFFFF0 = −16</code>, so it has not.
+  </p>
+  <div class="warning">The subtraction is right only if the two times are less than 2<sup>31</sup> µs apart, which is about 35.8 minutes. A deadline further away than that is a different problem: it needs a 64-bit time, or a check that you reschedule the deadline before it gets that far.</div>
+  <div class="note">The trick is the same as the one you know from unsigned arithmetic: the result of a modulo-2<sup>32</sup> subtraction is correct even when the operands have wrapped. Lesson 45 covers unsigned wraparound.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project is <code>projects/0055-nonblocking-blinks</code>. Three LEDs sit on GP2, GP3 and GP4. The starter blinks only the first one, in a blocking loop.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0055-nonblocking-blinks/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Observe the starter. Only LED A blinks, and the serial monitor prints <code>NONBLOCKING starter</code> once. The loop is stuck in <code>sleep_ms()</code>.</li>
+    <li>Your task: replace the blocking loop with the deadline pattern. Keep three <code>blink_t</code> values, one for each LED, with a half period of 500 ms, 250 ms and 125 ms. Call <code>blink_service()</code> for each one in a loop with no sleep. Then check the wraparound with <code>is_due()</code> at the top of <code>main()</code> before you start the blinks.</li>
+    <li>You will know it works when the serial monitor prints <code>NONBLOCKING OK</code> at startup and the three LEDs blink at 1, 2 and 4 Hz, all at once. Every two seconds it prints an <code>uptime</code> line.</li>
+  </ol>
+  <details>
+    <summary>Hint for the half period</summary>
+    <p>A 1 Hz blink has a period of 1 s, so each half is 500 000 µs. Halve the period for each doubling of the rate. The solution's <code>blink_t</code> lines show the three values.</p>
+  </details>
+  <details>
+    <summary>Hint for the first deadline</summary>
+    <p>Start each blink's deadline at <code>start + half_us</code>, where <code>start</code> is <code>time_us_32()</code> taken once before the loop. The LEDs start low, so the first toggle turns them on.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0055-nonblocking-blinks/solution</code>. Try first, compare after. It also prints an uptime line from <code>absolute_time_t</code>, so you can see both timing styles in one program.</p>
+
+  <div class="win">You replaced a blocking wait with deadlines that a single loop checks, and you wrote a comparison that stays right across the 32-bit wrap. That is the core structure of a firmware super-loop.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "How many microseconds pass before time_us_32() wraps back to zero? Write the number.",
+        "answer": 4294967296, "tolerance": 0.001, "unit": "µs",
+        "why": "The counter is 32 bits, so it wraps after 2³² = 4 294 967 296 µs, which is about 71.6 minutes. The tempting answer, 2³¹, is the limit of the signed distance check, not the wrap point." },
+      { "type": "mc",
+        "prompt": "A deadline is 0xFFFFFFF0 and now is 0x00000008. Is the deadline due?",
+        "options": [
+          "Yes, 24 µs have passed",
+          "No, it is well past",
+          "No, the timer has halted",
+          "Yes, it was due earlier"
+        ],
+        "answer": 0,
+        "why": "The distance now − deadline is 0x18, which is +24 µs, so the deadline has passed. The tempting answer, well past, reads the wrapped values as if they were ordered, which ignores the wrap. The timer has not halted, since the counter keeps running." },
+      { "type": "number",
+        "prompt": "A 2 Hz blink toggles its LED on every edge. How many toggles happen in one second?",
+        "answer": 4, "tolerance": 0, "unit": "toggles",
+        "why": "A 2 Hz blink has two full cycles per second, and each cycle has two toggles, so 4 toggles. The tempting answer, 2, counts cycles, not state changes." },
+      { "type": "mc",
+        "prompt": "Why does sleep_ms(500) make a poor blink inside a loop with a button check?",
+        "options": [
+          "It blocks the button check",
+          "It dims the LED early",
+          "It drains the cell fast",
+          "It uses the wrong clock"
+        ],
+        "answer": 0,
+        "why": "sleep_ms holds the CPU, so the button is not checked during the wait. The tempting answer, dimming, is a current question and has nothing to do with the delay. The battery and the clock are not affected by the delay call itself." },
+      { "type": "text",
+        "prompt": "Which SDK function returns the full 64-bit microsecond time? Write its name.",
+        "accept": ["time_us_64"],
+        "why": "time_us_64() returns the 64-bit counter. time_us_32() returns only the low 32 bits, which wrap every 71.6 minutes." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 45: what is 0xFFFFFFFF + 1 as a uint32_t? Write the number.",
+        "answer": 0, "tolerance": 0, "unit": "",
+        "why": "Unsigned arithmetic is modulo 2³², so the sum wraps to 0. The tempting answer, 4294967296, is the mathematical sum, which does not fit in 32 bits." },
+      { "type": "text",
+        "prompt": "From lesson 2: what is the simulator's firmware file in the wokwi.toml setting? Write the path.",
+        "accept": ["build/blink.elf", "blink.elf"],
+        "why": "The elf key names build/blink.elf, which is the file the build writes and the simulator loads. The tempting answer, the source file main.c, is what you edit, not what runs." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"A timer counter wraps. How do you check whether a deadline has passed, and what breaks if you compare with a plain greater-than?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I subtract the deadline from the current time in unsigned arithmetic, and test the sign of the result by casting it to a signed integer. That gives the correct distance modulo the counter width, so it stays right across the wrap, as long as the two times are less than half the range apart. A plain greater-than fails at the wrap: a deadline just before the wrap looks larger than a time just after it, so the event is missed for a whole counter period. I'd also say how long the counter takes to wrap, since that sets the largest interval the check can handle, and use a 64-bit counter if the interval can be longer.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.6 (Timer)</a>: read 4.6.2 (Counter) for the TIMELR and TIMEHR latch and the note about two cores. The register table shows the TIMER base at <code>0x40054000</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how a deadline scheduler changes when three tasks have different periods and one task runs long."
+    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and overflow</a>, <a href="0052-gpio-input-and-debouncing.html">Lesson 52: GPIO input and debouncing</a>, <a href="0056-state-machines.html">Lesson 56: State machines</a>, and <a href="../reference/pico-sdk.html">Pico SDK cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

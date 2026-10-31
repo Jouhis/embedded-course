@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bus architecture: AHB, APB, and the bus matrix · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0037">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bus architecture: AHB, APB, and the bus matrix</h1>
+  <p class="subtitle">Every register write you make travels over a bus. Knowing which bus, and what it costs, explains why two accesses can finish in the same cycle or one can wait.</p>
+
+  <div class="goal">
+    By the end of this lesson you can trace one register write from the core to a peripheral on an RP2040 or an STM32F103, name the bus it crosses, and say which accesses can run in parallel.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A <strong>bus</strong> is a set of wires and a protocol that carries an address, data and a control signal from one device to another. The device that starts a transfer is the <em>master</em>: the core, or a DMA controller. The device that answers is the <em>slave</em>: memory, or a peripheral register block. Your architecture course will know the shared-bus problem: one bus means one transfer at a time.
+    <span class="sidenote">A <strong>bus matrix</strong> (also called a crossbar) removes most of that limit. Each master has a path to each slave, so transfers to different slaves can run at the same time. Two masters that want the same slave still have to take turns.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 210" role="img" aria-label="Four masters on the left connect through a crossbar to memory and peripheral ports on the right">
+      <g fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="10" y="20" width="110" height="34" rx="4"/>
+        <rect x="10" y="70" width="110" height="34" rx="4"/>
+        <rect x="10" y="120" width="110" height="34" rx="4"/>
+        <rect x="10" y="170" width="110" height="34" rx="4"/>
+        <rect x="200" y="20" width="110" height="170" rx="4"/>
+        <rect x="380" y="20" width="170" height="34" rx="4"/>
+        <rect x="380" y="70" width="170" height="34" rx="4"/>
+        <rect x="380" y="120" width="170" height="34" rx="4"/>
+        <rect x="380" y="170" width="170" height="34" rx="4"/>
+        <line x1="120" y1="37" x2="200" y2="60"/>
+        <line x1="120" y1="87" x2="200" y2="110"/>
+        <line x1="120" y1="137" x2="200" y2="140"/>
+        <line x1="120" y1="187" x2="200" y2="170"/>
+        <line x1="310" y1="37" x2="380" y2="37"/>
+        <line x1="310" y1="87" x2="380" y2="87"/>
+        <line x1="310" y1="137" x2="380" y2="137"/>
+        <line x1="310" y1="187" x2="380" y2="187"/>
+      </g>
+      <g fill="currentColor" font-family="sans-serif" font-size="12" text-anchor="middle">
+        <text x="65" y="41">Core 0</text>
+        <text x="65" y="91">Core 1</text>
+        <text x="65" y="141">DMA read</text>
+        <text x="65" y="191">DMA write</text>
+        <text x="255" y="110">crossbar</text>
+        <text x="465" y="41">SRAM 0-5</text>
+        <text x="465" y="91">ROM and XIP flash</text>
+        <text x="465" y="141">APB bridge</text>
+        <text x="465" y="191">AHB-Lite peripherals</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. A simplified RP2040 bus fabric. The crossbar gives each master its own path to each slave port, so four accesses to four different ports can run in the same cycle.</figcaption>
+  </figure>
+
+  <h2>RP2040: a crossbar with ten ports</h2>
+  <p>
+    The RP2040 bus fabric connects four bus masters (core 0, core 1, and the read and write ports of the DMA) to ten downstream ports: ROM, XIP flash, SRAM 0 to 5, a shared port for the fast AHB-Lite peripherals, and a bridge to all the APB peripherals. The four masters can reach four different ports in the same cycle, and the fabric adds no wait states to an AHB-Lite access. At a 125 MHz system clock the datasheet gives a sustained bandwidth of 2.0 GBps. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1 (Bus Fabric) and 2.1.1 (AHB-Lite Crossbar)</a>.
+  </p>
+  <p>
+    The SRAM is split so that parallel accesses rarely collide. The first 256 kB is word-striped across four 64 kB banks, and two 4 kB banks sit above it. That is six banks in all, not four. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.6.2 (SRAM) and Table 153</a>.
+  </p>
+  <p>
+    The fabric also gives every peripheral register block three more addresses, for atomic updates. The address offset <code>+0x1000</code> XORs the bits you write, <code>+0x2000</code> sets them, and <code>+0x3000</code> clears them. A set or clear is then a single bus write that the hardware applies, so an interrupt cannot land between a read and a write-back. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2 (Atomic Register Access)</a>.
+  </p>
+
+  <h2>The APB bridge costs cycles</h2>
+  <p>
+    The fast AHB-Lite side has zero wait states. The slow peripherals sit behind the <strong>APB bridge</strong>, which registers the request and the response. The datasheet gives the cost: an APB access takes at least two cycles, a read adds one more, and a write adds two more. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.3 (APB Bridge)</a>.
+    <span class="sidenote">This is the cost of a shared, lower-speed peripheral bus: the bridge is simpler and smaller than a full crossbar port, and the peripherals need far less bandwidth than memory.</span>
+  </p>
+
+  <h2>STM32F103: AHB, APB1, and APB2</h2>
+  <p>
+    The STM32F1 uses the same idea with different names. The ST device header defines three peripheral bus regions from the peripheral base <code>0x40000000</code>: APB1 at <code>0x40000000</code>, APB2 at <code>0x40010000</code>, and AHB at <code>0x40020000</code>. The header then places the blocks you will use: <code>GPIOC_BASE</code> is <code>APB2PERIPH_BASE + 0x1000</code>, which is <code>0x40011000</code>, and <code>RCC_BASE</code> is <code>AHBPERIPH_BASE + 0x1000</code>, which is <code>0x40021000</code>. So GPIOC is on APB2 and the clock controller RCC is on AHB. <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </p>
+  <p>
+    Before a peripheral can be used, its clock must be enabled in RCC. The template does this as its first step: <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;</code> sets bit 4, which enables GPIOC. The RCC block is on the AHB side, so the clock enable is a write to one bus and the GPIO register write is a write to another.
+  </p>
+  <div class="note">The bus matrix and bridge details for the STM32F1 are in the bus architecture chapter of RM0008, with the bus figure. This course has not yet checked the exact figure against the vendor text, so use the header addresses above, and read RM0008 for the matrix itself.</div>
+
+  <div class="win">You can name the bus behind any address in the RP2040 or STM32 memory map, and you can explain why a write through the APB bridge is slower than a write to SRAM.</div>
+
+  <h2>Try it in Wokwi</h2>
+  <p>
+    The project <code>projects/0037-bus-architecture</code> is a single demo. It prints the base address of each bus region and of two blocks on them, then sets the GPIOC clock enable and prints the RCC register.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0037-bus-architecture</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Before you read the output, work out which bus <code>GPIOC base</code> and <code>RCC base</code> belong to, using the header addresses above.</li>
+    <li>Check the <code>APB2ENR</code> line. Bit 4 should be set. The value is <code>0x00000010</code> if nothing else on APB2 is enabled.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The bus region is the address with the offset removed. GPIOC base is <code>0x40011000</code>, which is in the APB2 region that starts at <code>0x40010000</code>. Bit 4 is value <code>0x10</code>.</p>
+  </details>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "On the RP2040, how many extra cycles does the APB bridge add to a write access, beyond the minimum? Type the number only.",
+        "answer": 2, "tolerance": 0, "unit": "cycles",
+        "why": "RP2040 datasheet section 2.1.3: the bridge adds one cycle to a read and two cycles to a write. The tempting answer, 1, is the read figure." },
+      { "type": "mc",
+        "prompt": "Two masters access two different SRAM banks in the same cycle. What does the RP2040 crossbar do?",
+        "options": ["both finish in the same cycle", "one must wait a whole cycle", "the second one is silently dropped", "the bus raises a hard fault"],
+        "answer": 0,
+        "why": "Each SRAM bank has its own crossbar port, and the fabric adds no wait states (section 2.1). The tempting answer, one waiting, applies only when two masters want the same port." },
+      { "type": "mc",
+        "prompt": "Why does the RP2040 give each peripheral a set alias at offset +0x2000?",
+        "options": ["so a set cannot race an interrupt", "so the writes run twice as quickly", "so the DMA can skip the bridge", "so the cache is always flushed too"],
+        "answer": 0,
+        "why": "The set alias applies the bitmask in one bus write, so an interrupt cannot land between a read and a write-back (section 2.1.2). The tempting answer is speed: native atomic writes take the same time as normal writes, so the alias is not faster." },
+      { "type": "text",
+        "prompt": "What is the RP2040 XOR alias offset, added to a peripheral register address? Write it in hex.",
+        "accept": ["0x1000", "1000", "+0x1000"],
+        "why": "Section 2.1.2 lists +0x1000 for atomic XOR on write. The tempting answer, +0x3000, is the clear alias." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 19: what is the hex value 0x10 in decimal?",
+        "answer": 16, "tolerance": 0, "unit": "",
+        "why": "0x10 is one sixteen, so the answer is 16. The tempting answer, 10, reads the hex digits as decimal." },
+      { "type": "text",
+        "prompt": "From lesson 16: which resistor makes an open-drain line read high when nothing pulls it low?",
+        "accept": ["pull-up", "pull-up resistor"],
+        "why": "A pull-up connects the line to the supply, so it reads high when the open-drain output releases it. The tempting answer, a pull-down, pulls the line low instead." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Why do peripherals usually sit on a slower bus than SRAM, and what does the bridge cost you?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Memory needs bandwidth, so it gets wide, zero-wait paths on a crossbar with its own ports. Peripherals need little bandwidth and their register blocks are simple, so a shared, lower-speed bus with a bridge is much cheaper in silicon and power. The bridge costs cycles: on the RP2040 an APB write takes at least two cycles more than an AHB write, and a register poll or a write-heavy loop feels that cost.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.1 (Bus Fabric) with Figure 4 and Figure 5, then 2.1.2 (Atomic Register Access) and 2.1.3 (APB Bridge). They are short, and they explain every bus cost in this lesson.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace a write to GPIOC->BSRR on the STM32, step by step, from the core to the pin."
+    Related: <a href="0036-memory-hierarchy.html">Lesson 36: Memory hierarchy</a>, <a href="0038-the-memory-map-and-memory.html">Lesson 38: The memory map</a>, and <a href="../reference/glossary.html#peripheral">Glossary: Peripheral</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

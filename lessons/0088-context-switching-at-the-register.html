@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context switching at the register level · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0088">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Context switching at the register level</h1>
+  <p class="subtitle">A context switch is two pieces of work: the core saves eight registers on the stack by itself, and the kernel saves the other eight. Then it swaps one stack pointer. You will build that in the CPU simulator, and then find the same code in the FreeRTOS port.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain which registers the hardware stacks and which the software saves, step through a two-task round-robin in the simulator, and point to the matching lines of the FreeRTOS Cortex-M3 port.
+  </div>
+
+  <h2>The idea</h2>
+  <p>
+    A task is only its registers, its stack and its place in the scheduler. A <strong>context switch</strong> saves the registers of the running task, makes the stack pointer point to the next task's saved state, and restores that state. The last step is a return from the exception, which pops the next task's hardware frame and resumes it.
+  </p>
+  <p>
+    The Cortex-M3 splits the work. On exception entry, the hardware stacks eight words: xPSR, PC, LR, R12 and R0 to R3 (lesson 34, DDI0337G §5.5.1). These are the registers that a C function is allowed to change without saving, under the AAPCS calling convention (lesson 33). The kernel saves the other eight, R4 to R11, because a C handler is not required to preserve them and the hardware does not touch them. The FreeRTOS port's comment says so directly: "Pop the registers that are not automatically saved on exception entry" (<code>port.c</code> line 234).
+  </p>
+
+  <table>
+    <thead>
+      <tr><th>Saved by</th><th>Registers</th><th>Why there</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Hardware, on exception entry</td><td>R0–R3, R12, LR, PC, xPSR</td><td>The caller-saved set of the AAPCS; the core does it in fixed time, before any code runs</td></tr>
+      <tr><td>Software, in the switch handler</td><td>R4–R11</td><td>Callee-saved set of the AAPCS; only the switch needs the full context of a task that is leaving</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Two stacks and one handler</h2>
+  <p>
+    Each task has its own stack, and thread mode uses the process stack (PSP), as lesson 35 showed. When a task is interrupted or yields, the hardware frame is pushed onto its PSP. The handler then pushes R4–R11 below that frame, and saves the resulting PSP in the task's control block. The next task's PSP is loaded, its R4–R11 are popped, and the exception return pops its hardware frame. The stack pointer changes, and the registers follow it.
+  </p>
+  <div class="note">The FreeRTOS port uses the PendSV exception for the switch, not SVC. PendSV is set to the lowest priority (see the port source below), so the switch waits until every other interrupt has finished. The simulator in this lesson uses SVC for both the first start and every switch. It does not model PendSV priority or interrupt nesting, so the order of exceptions is a simplification.</div>
+
+  <h2>Try it in the CPU simulator</h2>
+  <p>
+    The program below has two tasks. Each adds to its own R4, which is the only state the test checks: task A adds 1 and task B adds 100. The handler is the switch. It saves the running task's R4–R11 under its hardware frame, saves the PSP, loads the other task's PSP and registers, and returns. The first switch starts task A, because nothing has run yet.
+  </p>
+  <p>
+    <code>LDR R0, =task_a</code> loads the <em>address</em> of the label <code>task_a</code>, exactly as the GNU assembler does. That address becomes the stacked PC, so the first exception return lands at the start of the task. The RAM layout is: the slots at <code>0x20000000</code> (current task, PSP of A, PSP of B), task A's stack ending at <code>0x20000080</code>, and task B's stack ending at <code>0x200000C0</code>.
+  </p>
+  <ol class="steps">
+    <li>Press <em>Instruction</em> repeatedly. Watch the PSP in the system panel. It changes at each <code>SVC</code>, and the mem panel shows the current task in the first word at <code>0x20000000</code>.</li>
+    <li>Press <em>Instruction</em> until <code>SVC_Handler</code> runs for the first time. Predict first: which task starts, and what PSP will the task run on? Then check: task A, at <code>0x20000060</code>.</li>
+    <li>Run the program for a while. Each task's R4 counts up in its own steps, and R4 holds the task's value while the other task runs. Predict R4 for task B at its second visit before you check.</li>
+  </ol>
+  <div class="widget cpusim" data-title="Two tasks, one switch handler" data-show="regs,sys,mem,phases">
+    <script type="text/plain">
+main:   LDR  R1, =0x20000000     @ CUR: which task runs (0 = A, 1 = B, 2 = none yet)
+        MOV  R0, #2
+        STR  R0, [R1]
+        LDR  R2, =0x20000040     @ task A's saved block (its stack: 0x20000040..0x2000007F)
+        LDR  R3, =0x20000004     @ PSPA slot
+        STR  R2, [R3]
+        LDR  R2, =0x20000080     @ task B's saved block (0x20000080..0x200000BF)
+        LDR  R3, =0x20000008     @ PSPB slot
+        STR  R2, [R3]
+        LDR  R0, =task_a        @ the hardware frame: PC and xPSR (R0-R3, R12, LR start at 0)
+        LDR  R1, =0x20000078
+        STR  R0, [R1]
+        LDR  R0, =0x01000000
+        LDR  R1, =0x2000007C
+        STR  R0, [R1]
+        LDR  R0, =task_b
+        LDR  R1, =0x200000B8
+        STR  R0, [R1]
+        LDR  R0, =0x01000000
+        LDR  R1, =0x200000BC
+        STR  R0, [R1]
+        SVC  #0                  @ start the first task: the handler does not return here
+
+task_a: ADD  R4, R4, #1          @ task A keeps its own R4 across switches
+        SVC  #0                  @ yield to task B
+        B    task_a
+task_b: ADD  R4, R4, #100        @ task B's R4 is separate from task A's
+        SVC  #0                  @ yield to task A
+        B    task_b
+
+SVC_Handler:                     @ handler mode, on MSP; the frame of the running task is on its PSP
+        LDR  R1, =0x20000000
+        LDR  R2, [R1]            @ R2 = the task that was running
+        CMP  R2, #2
+        BEQ  first               @ nothing to save on the very first switch
+        MRS  R0, PSP             @ R0 = the running task's hardware frame
+        SUB  R0, R0, #32         @ room below the frame for R4-R11
+        STR  R4, [R0, #0]
+        STR  R5, [R0, #4]
+        STR  R6, [R0, #8]
+        STR  R7, [R0, #12]
+        STR  R8, [R0, #16]
+        STR  R9, [R0, #20]
+        STR  R10, [R0, #24]
+        STR  R11, [R0, #28]
+        LDR  R3, =0x20000004     @ the PSP slot of task A
+        CMP  R2, #0
+        BEQ  store
+        LDR  R3, =0x20000008     @ the PSP slot of task B
+store:  STR  R0, [R3]
+        CMP  R2, #0              @ the next task is the other one
+        BEQ  pickb
+        MOV  R2, #0
+        B    load
+pickb:  MOV  R2, #1
+        B    load
+first:  MOV  R2, #0              @ the very first switch starts task A
+load:   STR  R2, [R1]            @ CUR = the next task
+        LDR  R3, =0x20000004
+        CMP  R2, #0
+        BEQ  restore
+        LDR  R3, =0x20000008
+restore: LDR R0, [R3]            @ R0 = the next task's saved block
+        LDR  R4, [R0, #0]
+        LDR  R5, [R0, #4]
+        LDR  R6, [R0, #8]
+        LDR  R7, [R0, #12]
+        LDR  R8, [R0, #16]
+        LDR  R9, [R0, #20]
+        LDR  R10, [R0, #24]
+        LDR  R11, [R0, #28]
+        ADD  R0, R0, #32         @ R0 = its hardware frame; the exception return pops it
+        MSR  PSP, R0
+        LDR  LR, =0xFFFFFFFD     @ return to thread mode, using the PSP
+        BX   LR
+    </script>
+  </div>
+  <details>
+    <summary>Hint</summary>
+    <p>Task A's hardware frame starts at <code>0x20000060</code>, which is 32 bytes below its stack top. The handler saves R4–R11 in the 32 bytes below that, so task A's saved block starts at <code>0x20000040</code>. The PSP that a task runs on is always its hardware frame, so the PSP values you see alternate between <code>0x20000060</code> and <code>0x200000A0</code>.</p>
+  </details>
+  <p class="sidenote">The simulator's <code>data-show</code> list here includes <code>mem</code>, which shows the first 16 words of RAM: the current task and the two saved PSPs are visible there. The task stacks are above that range, so use the system panel for the PSP.</p>
+
+  <h2>Map it to the FreeRTOS port</h2>
+  <p>
+    The real port does the same work in two handlers, and the file is <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code>. Read these in order.
+  </p>
+  <ol>
+    <li><strong>Building a task's first frame</strong> (<code>pxPortInitialiseStack</code>, lines 182 to 199). The function writes the hardware frame by hand, with <code>portINITIAL_XPSR</code> (<code>0x01000000</code>, line 78) at the top, then the task entry as PC, then LR, R12, R3 to R0 and R4 to R11. It is exactly the layout the simulator program writes with its <code>STR</code> instructions.</li>
+    <li><strong>Starting the first task</strong> (<code>vPortSVCHandler</code>, lines 228 to 241, and <code>prvPortStartFirstTask</code> at line 247). The port's start function is called <code>prvPortStartFirstTask</code> in this kernel version. It sets MSP, enables interrupts and executes <code>svc 0</code> (line 258). The SVC handler then restores the first task: <code>ldmia r0!, {r4-r11}</code> at line 234, <code>msr psp, r0</code> at line 235, and <code>orr r14, #0xd</code> at line 239, which makes LR equal to <code>0xFFFFFFFD</code>, return to thread mode on the PSP.</li>
+    <li><strong>The switch</strong> (<code>xPortPendSVHandler</code>, lines 455 to 485). The handler reads the running task's PSP (<code>mrs r0, psp</code>, line 461) and loads the current TCB address (<code>ldr r3, =pxCurrentTCB</code>, line 464). It saves R4–R11 below the hardware frame with <code>stmdb r0!, {r4-r11}</code> (line 467), and stores the new top of stack into the TCB (<code>str r0, [r2]</code>, line 468). Then it calls <code>vTaskSwitchContext</code> (line 473), which picks the next task and changes <code>pxCurrentTCB</code>. The second half loads the new task's stack top from the TCB (lines 478 to 480), pops its R4–R11 (line 480), writes PSP (line 481) and returns with <code>bx r14</code> (line 483).</li>
+  </ol>
+  <p>
+    Compare the simulator's handler with the port: the layout of the saved block, the store of the PSP in a slot, the choice of the next task, and the final <code>MSR PSP</code> followed by the exception return are the same steps. The simulator keeps the choice in a memory slot; the port calls <code>vTaskSwitchContext()</code>, which is in <code>tasks.c</code> at line 5109.
+  </p>
+
+  <h2>Why PendSV is at the lowest priority</h2>
+  <p>
+    The port sets PendSV to the lowest priority at line 390 (<code>portNVIC_SHPR3_REG |= portNVIC_PENDSV_PRI</code>), in the same way as SysTick (line 391), and gives SVCall the highest (line 392, <code>portNVIC_SHPR2_REG = 0</code>). The tick handler does not switch tasks itself. It only asks for a switch by pending PendSV (<code>portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT</code>, near line 507). Because PendSV is the lowest priority, it runs when no other interrupt is active. A switch in the middle of another ISR would save a task while that ISR still uses the same stack, and that is the reason for the design. The ARMv7-M architecture defines the exception priority model that this relies on (Armv7-M Architecture Reference Manual, the exception model chapter; the Cortex-M3 TRM covers the system handler priority registers, SHPR2 and SHPR3).
+  </p>
+  <div class="warning">The port uses <code>BASEPRI</code> (line 471) to mask the kernel's interrupts while <code>vTaskSwitchContext()</code> runs. The simulator has no BASEPRI and no nesting, so a real interrupt can arrive mid-switch on silicon in a way the simulator cannot show.</div>
+
+  <div class="win">You built a two-task round-robin where each task keeps its own registers across switches, followed the PSP through the handler, and matched every step to the lines of the FreeRTOS Cortex-M3 port.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which registers does the hardware stack on exception entry?",
+        "options": ["R0-R3, R12, LR, PC, xPSR", "R4-R11 and nothing else too", "R0-R12 and the stack pointer"],
+        "answer": 0,
+        "why": "The hardware stacks the caller-saved set: R0 to R3, R12, LR, PC and xPSR (DDI0337G §5.5.1). The tempting answer, R4 to R11, is the set the kernel saves itself, because the hardware leaves those alone." },
+      { "type": "mc",
+        "prompt": "Why does the switch handler save R4 to R11 in software?",
+        "options": ["C handlers preserve R4-R11 themselves", "Stacking them would be slower", "The hardware cannot write memory"],
+        "answer": 0,
+        "why": "A C interrupt handler follows the AAPCS, which requires it to preserve R4 to R11 before it returns, so the core leaves them alone on entry. A context switch is different: it changes which task owns those registers, so the kernel must save them itself. The tempting answer is speed, which is not the reason: the hardware could stack them, but the architecture stacks only the caller-saved set." },
+      { "type": "number",
+        "prompt": "In the simulator's first switch, task A's hardware frame is at 0x20000060. What is the lowest address of its saved R4 to R11 block, in decimal?",
+        "answer": 536870976, "tolerance": 0,
+        "why": "The R4 to R11 block is 32 bytes below the hardware frame, so it starts at 0x20000060 − 0x20 = 0x20000040, which is 536870976 in decimal. The tempting answer is 0x20000060, the frame itself, which is 32 bytes higher." },
+      { "type": "text",
+        "prompt": "Which exception does the FreeRTOS port use to perform the context switch, as written in port.c?",
+        "accept": ["PendSV", "pendsv", "PendSV_Handler", "xPortPendSVHandler"],
+        "why": "The switch is in xPortPendSVHandler (port.c line 455). SVC only starts the first task. The tempting answer is SVC, which the simulator uses for every switch, so the port and the simulator differ here on purpose." },
+      { "type": "mc",
+        "prompt": "Why is PendSV set to the lowest interrupt priority in the port?",
+        "options": ["Other interrupts finish before it", "It makes the switch faster", "It shrinks every task stack"],
+        "answer": 0,
+        "why": "PendSV runs only when no other interrupt is active, so a task is never switched out while an ISR still uses the same stack. A faster switch is not the reason, and the stack RAM is unchanged; the tempting answer is speed, which is at most a side effect." }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 33: a function uses 40 bytes of locals. How many words is that?",
+        "answer": 10, "tolerance": 0, "unit": "words",
+        "why": "Each word on the Cortex-M3 is 4 bytes, so 40 bytes is 10 words. The tempting answer is 40, which counts bytes, not words." },
+      { "type": "text",
+        "prompt": "From lesson 31: which register is the stack pointer on the Cortex-M3 (give the name R13 or SP)?",
+        "accept": ["SP", "R13", "sp", "r13"],
+        "why": "R13 is the stack pointer, and the assembler also calls it SP. The tempting answer is LR, which is R14 and holds the return address." }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What happens in a context switch on a Cortex-M3 with FreeRTOS, step by step?"</strong> Answer out loud in 90 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The tick handler decides a switch is needed and pends PendSV. When no higher-priority interrupt is active, PendSV runs: the running task's PSP is read, R4 to R11 are pushed below the hardware frame that the core stacked on entry, and the new top of stack is stored in the task's control block. vTaskSwitchContext picks the highest-priority ready task and updates pxCurrentTCB. The handler loads the new task's stack top, pops its R4 to R11, writes PSP, and returns with an EXC_RETURN value that pops the hardware frame. The task resumes at the PC it saved. A good answer also says which registers are which: the core saves R0 to R3, R12, LR, PC and xPSR, and the kernel saves R4 to R11, and it says why PendSV is the lowest priority.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §5.5.1 (the stacked frame). The FreeRTOS kernel source in this workspace, <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code>: <code>pxPortInitialiseStack</code> (lines 182 to 199), <code>vPortSVCHandler</code> (228 to 241), <code>prvPortStartFirstTask</code> (247 to 259), <code>xPortStartScheduler</code> (from line 268, with the priority setup at 388 to 392 and the first start at 402), and <code>xPortPendSVHandler</code> (455 to 485). Read <code>xPortPendSVHandler</code> line by line before the interview.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk through the simulator's SVC_Handler one instruction at a time, and say which PSP the handler reads at each step."
+    Related: <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>, <a href="0035-privilege-modes.html">Lesson 35: Privilege modes</a>, <a href="0033-the-stack-and-the-aapcs.html">Lesson 33: The stack and the AAPCS</a>, and <a href="../reference/cortex-m.html">Reference: Cortex-M programmer's model</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+<script src="../assets/cpusim.js"></script>
+</body>
+</html>

@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Continuous integration · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0082">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Continuous integration for firmware</h1>
+  <p class="subtitle">Every push builds the firmware, runs the tests, checks the code and simulates the board. A failing check blocks the change before a reviewer sees it.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>run the firmware checks locally with <code>verify_projects.py</code>, and say what each job of a firmware CI workflow does and why</strong>.
+  </div>
+
+  <!-- ===== 1. Knowledge ===== -->
+  <h2>The idea</h2>
+  <p>
+    Continuous integration (CI) is a server that runs a fixed list of checks on every change. The checks are the same ones you run at your desk, but they run on every push, on a clean machine, so "it works on my laptop" cannot slip through. In firmware work, a CI job usually has five stages: build, <a href="0080-unit-testing-on-the-host.html">host unit tests</a> (lesson 80), static analysis, simulation, and keeping the outputs. The branch and review habits that decide what reaches the pipeline are in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>.
+    <span class="sidenote">Interviewers ask "what does your pipeline look like?" to see whether you can separate fast checks from slow ones, and whether you keep the checks reproducible on a laptop.</span>
+  </p>
+
+  <figure>
+    <svg viewBox="0 0 560 150" role="img" aria-label="Pipeline: host tests and static analysis run first, then the firmware build, then simulation, with artifacts kept">
+      <rect x="10" y="50" width="120" height="50" fill="none" stroke="currentColor"/>
+      <text x="70" y="72" text-anchor="middle" fill="currentColor" font-size="13">Host unit tests</text>
+      <text x="70" y="88" text-anchor="middle" fill="currentColor" font-size="11">PC gcc, ctest</text>
+      <rect x="10" y="10" width="120" height="30" fill="none" stroke="currentColor"/>
+      <text x="70" y="30" text-anchor="middle" fill="currentColor" font-size="13">Static analysis</text>
+      <rect x="170" y="30" width="120" height="70" fill="none" stroke="currentColor"/>
+      <text x="230" y="60" text-anchor="middle" fill="currentColor" font-size="13">Build firmware</text>
+      <text x="230" y="78" text-anchor="middle" fill="currentColor" font-size="11">Arm GCC, ELF and map</text>
+      <rect x="330" y="30" width="120" height="70" fill="none" stroke="currentColor"/>
+      <text x="390" y="60" text-anchor="middle" fill="currentColor" font-size="13">Simulate</text>
+      <text x="390" y="78" text-anchor="middle" fill="currentColor" font-size="11">wokwi-cli, timeout</text>
+      <rect x="450" y="30" width="100" height="70" fill="none" stroke="currentColor" stroke-dasharray="4 3"/>
+      <text x="500" y="60" text-anchor="middle" fill="currentColor" font-size="13">Artifacts</text>
+      <text x="500" y="78" text-anchor="middle" fill="currentColor" font-size="11">ELF, map, log</text>
+      <path d="M130 25 L170 60 M130 75 L170 70 M290 65 L330 65 M450 65 L450 65" stroke="currentColor" fill="none"/>
+    </svg>
+    <figcaption>Figure 1. Fast checks run first and stop the pipeline early. The simulation needs the firmware, so it waits for the build. The dashed box is what the job keeps for a human to read later.</figcaption>
+  </figure>
+
+  <h2>Why each job exists</h2>
+  <p>
+    <strong>Host unit tests</strong> (lesson 80) run in seconds on a plain Linux runner, with no toolchain for the board. <strong>Static analysis</strong> (lesson 83) fails the job on warnings before anything is built for the board. <strong>The build</strong> uses the same Arm GCC release every time, pinned in the workflow, because a compiler change can move bugs and sizes. <strong>The simulation</strong> runs the firmware on a virtual board, so the boot path, the serial output and the timing are checked, not just the compile.
+  </p>
+  <p>
+    <strong>Artifacts</strong> are the build outputs the job keeps: the <code>.elf</code> for a debugger, the <code>.map</code> for the memory layout (lesson 41), and the <code>.hex</code> for flashing. When a test fails on the server, the artifact lets you look at the same binary.
+  </p>
+
+  <h2>Wokwi CLI: the flags that matter</h2>
+  <p>
+    <code>wokwi-cli</code> runs a project headless. The options that matter for a test (from the <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage page</a>):
+  </p>
+  <table>
+    <thead><tr><th>Option</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td><code>--timeout &lt;ms&gt;</code></td><td>Simulated milliseconds before the run stops. The default is 30000. It is simulated time, not wall-clock time.</td></tr>
+      <tr><td><code>--expect-text &lt;text&gt;</code></td><td>The run passes only if this text appears on the serial monitor.</td></tr>
+      <tr><td><code>--fail-text &lt;text&gt;</code></td><td>The run fails as soon as this text appears, for example <code>HardFault</code>.</td></tr>
+      <tr><td><code>--serial-log-file &lt;path&gt;</code></td><td>Saves the serial output, so you can read the log of a failed run.</td></tr>
+      <tr><td><code>--scenario &lt;path&gt;</code></td><td>Runs a YAML file of steps (below).</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    The timeout is simulated time. A 10000 ms timeout is 10 simulated seconds, and the simulator may run faster or slower than the clock on the wall.
+  </div>
+
+  <h2>Scenarios: steps instead of one text match</h2>
+  <p>
+    A scenario is a YAML file of steps that run in order. The Wokwi docs describe it as an alpha feature, so its format may change. The sample has one (<code>smoke.scenario.yaml</code>):
+  </p>
+  <pre><code>name: 'LED blinks on the serial monitor'
+version: 1
+author: 'course'
+steps:
+  - wait-serial: 'LED on'
+  - delay: 500ms
+  - wait-serial: 'LED off'</code></pre>
+  <p>
+    <span class="sidenote">The automation page lists steps such as <code>set-control</code>, which presses a virtual button, and <code>expect-pin</code>, which checks a pin level. Use the steps the docs list, and check the page before you rely on one.</span>
+    Run it from the project folder with <code>wokwi-cli . --scenario smoke.scenario.yaml</code>, as the <a href="https://docs.wokwi.com/wokwi-ci/automation-scenarios">automation scenarios page</a> shows.
+  </p>
+
+  <h2>The workflow file</h2>
+  <p>
+    GitHub reads workflows from <code>.github/workflows/</code> at the repository root. The sample's <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code> has four jobs: <code>host-tests</code>, <code>static-analysis</code>, <code>firmware</code> and <code>simulate</code>. The last job uses the Wokwi action, <code>wokwi/wokwi-ci-action@v1</code>, from the <a href="https://github.com/wokwi/wokwi-ci-action">action repository</a>. It takes the token from a repository secret named <code>WOKWI_CLI_TOKEN</code>. The Arm toolchain comes from <code>carlosperate/arm-none-eabi-gcc-action@v1</code>.
+  </p>
+  <div class="warning">
+    Never put a token in the YAML file or in a commit. Anyone who can read the repository can read the file, and the token lets them run simulations under your account. Store it in the repository settings as a secret, and reference it as <code>${{ secrets.WOKWI_CLI_TOKEN }}</code>. Pull requests from forks do not receive secrets, which is why the sample's <code>simulate</code> job has an <code>if</code> line.
+  </div>
+  <p>
+    The sample uses the Arm toolchain release <code>15.3.Rel2</code>, which the action documents. Your laptop has Arm GNU 14.2 (lesson 1). Two releases can produce different code, so a real project pins one release in both places, and this is a reasonable thing to raise in review (the checklist is in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>).
+  </p>
+
+  <!-- ===== 2. Skill: hands-on ===== -->
+  <h2>Try it on your machine</h2>
+  <ol class="steps">
+    <li>In a terminal at the workspace root, run <code>python -I tools/verify_projects.py 0082</code>. It builds the sample, lints its diagram, and checks the <code>wokwi.toml</code> paths. You should see <em>ok</em> and <em>1/1 projects ok</em>.</li>
+    <li>Run the host tests: <code>python -I tools/build.py projects/0082-continuous-integration/host-tests --test</code>. The summary line is <em>100% tests passed, 0 tests failed out of 1</em>.</li>
+    <li>Open <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code>. Find the job that runs <code>cppcheck</code>, and say which of its options turns a warning into a failed job.</li>
+    <li>Your task: find where the sample's <code>main.c</code> tells the simulation what text to expect. Then explain why the line must start with two slashes, using <code>tools/verify_projects.py</code>.</li>
+    <li>Optional, needs a token: create a token at <a href="https://wokwi.com/dashboard/ci">wokwi.com/dashboard/ci</a>, then in PowerShell run <code>setx WOKWI_CLI_TOKEN "your-token"</code>. <code>setx</code> does not change the shell you are in, so open a new terminal. Then run <code>python -I tools/verify_projects.py 0082 --sim</code>. This machine has no token set, so this step has not been run for this lesson.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The expect line is read by a regular expression, not by the C compiler. Look at <code>tools/verify_projects.py</code>, the function that reads <code>EXPECT</code>.</p>
+  </details>
+  <p>
+    The reference is in <code>projects/0082-continuous-integration</code>. The firmware sources are in <code>src/led_pattern.c</code>, and the host tests are in <code>host-tests/</code>. They are plain C, so you can read them in one minute.
+  </p>
+
+  <div class="win">You can run the same checks as the CI pipeline on your laptop, and you can say what each job of the workflow is for. A green local run is the first gate; the pipeline is the second.</div>
+
+  <!-- ===== 3. Retrieval practice ===== -->
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Which repository secret holds the Wokwi token that the simulation job reads?",
+        "options": ["WOKWI_CLI_TOKEN", "WOKWI_CLI_KEY", "WOKWI_CLI_SECRET", "WOKWI_CLI_APIKEY"],
+        "answer": 0,
+        "why": "The Wokwi docs and the action both use WOKWI_CLI_TOKEN. The other names look plausible, but none of them is the secret the action reads." },
+      { "type": "mc",
+        "prompt": "A pull request comes from a fork. What happens to the simulation job in the sample workflow?",
+        "options": ["It is skipped by the if", "It fails with an auth error", "It runs with the secret too", "It runs but times out early"],
+        "answer": 0,
+        "why": "The if line checks that the head repository is this one, so the job is skipped. Without that guard, the job would fail with an authentication error, which is the tempting answer. Forks do not get secrets, so the job cannot run with one." },
+      { "type": "number",
+        "prompt": "The sample's simulation job sets timeout to 10000. How many simulated seconds is that?",
+        "answer": 10, "tolerance": 0, "unit": "s",
+        "why": "The CLI timeout is in simulated milliseconds, so 10000 ms is 10 s. The tempting answer, 10000, takes the number as seconds." },
+      { "type": "text",
+        "prompt": "Type the command that builds, lints and path-checks the sample project from the workspace root (project 0082).",
+        "accept": ["python -I tools/verify_projects.py 0082", "python -I tools/verify_projects.py 0082-continuous-integration"],
+        "why": "verify_projects.py takes a filter that matches part of the folder name. The -I flag ignores environment variables that could change imports. The tempting variant without -I works too, but the course uses -I everywhere." },
+      { "type": "mc",
+        "prompt": "Which line in main.c lets verify_projects.py read the text to expect in the simulation?",
+        "options": ["// EXPECT: LED on", "/* EXPECT: LED */", "#define EXP LED on", "# EXPECT LED on"],
+        "answer": 0,
+        "why": "The script searches for two slashes followed by EXPECT. The block-comment form is valid C but the script's pattern does not match it, so the expected text would be silently missing. The tempting answer is the block comment, which is the usual C style." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 4. Spaced review ===== -->
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "From lesson 72: how many cycles does the Cortex-M3 exception entry take in the usual case?",
+        "answer": 12, "tolerance": 0, "unit": "cycles",
+        "why": "Lesson 72 gives 12 cycles for stacking, the vector fetch and the start of the handler. The tempting answer, 24, is the cost of two entries." },
+      { "type": "text",
+        "prompt": "From lesson 42: which linker symbol holds the load address of .data in flash?",
+        "accept": ["_sidata"],
+        "why": "The startup code copies from _sidata to _sdata. The tempting answer, _sdata, is the RAM address the copy writes to." }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 5. Interview drill ===== -->
+  <div class="interview">
+    <p><strong>"What does your CI pipeline look like for a firmware project?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary>
+      <p>Every push runs three things in parallel, first: host unit tests on a plain Linux runner, static analysis with the warning flags and cppcheck, and a cross-build with a pinned Arm GCC release. Only when those pass does the pipeline run the simulation, with a timeout and an expected serial line, and keep the ELF and map as artifacts. Secrets live in the repository settings, and the simulation is skipped for forks. Locally, a single script runs the same checks, so a failure reproduces on the laptop before anyone else sees it.</p>
+    </details>
+  </div>
+
+  <!-- ===== 6. Source ===== -->
+  <div class="source">
+    <a href="https://docs.wokwi.com/wokwi-ci/getting-started">Wokwi CI: getting started</a>, then <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage</a> for the flags. Use the GitHub Actions page for the workflow example, and the automation scenarios page for the YAML steps.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through what happens in the simulate job, step by step, from checkout to the expect-text check."
+    Related: <a href="0080-unit-testing-on-the-host.html">Lesson 80: unit testing on the host</a>, <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76: driver design and the HAL seam</a> (why the LED logic is a pure module), and <a href="0041-the-build-pipeline.html">Lesson 41: the build pipeline</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>
