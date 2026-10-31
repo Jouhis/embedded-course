@@ -40,9 +40,13 @@ setup.cmd            # Windows (double-click works too)
 ./setup.sh           # macOS, Linux
 ```
 
-It fetches `third_party/` and installs Arm GCC, CMake, Ninja, a host C compiler, cppcheck
-(winget / Homebrew / apt / dnf), Pico SDK 2.3.1 and the VS Code extensions, then test-builds the
-Pico and STM32 templates. Add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108) or
+It fetches `third_party/` and installs Arm GCC, CMake, Ninja, a host C compiler and cppcheck
+with your package manager (winget, Homebrew, apt, dnf or pacman), then Pico SDK 2.3.1 and the
+VS Code extensions, and test-builds the Pico and STM32 templates.
+
+No package manager, or not allowed to install software? It then downloads the official portable
+archives into `~/.embedded-course-tools` instead, with no admin rights needed (add `--portable` to choose
+this yourself). `tools/build.py` finds tools there automatically. Add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108) or
 `--all`; `--dry-run` shows what it would do. It is safe to run again: it skips what's there.
 
 Lesson 1 explains each tool, if you'd rather install them by hand. To see what's missing:

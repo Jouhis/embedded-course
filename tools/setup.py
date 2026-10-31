@@ -4,13 +4,16 @@
   python tools/setup.py --zephyr     also the Zephyr workspace (lessons 92-96, lab 6; about 1-2 GB)
   python tools/setup.py --rust       also Rust for lesson 108
   python tools/setup.py --all        everything
+  python tools/setup.py --portable   no package manager: download portable tools (no admin rights)
   python tools/setup.py --dry-run    show what would be done, change nothing
 
 Safe to run again: every step checks first and skips what is already there.
 What it does (lesson 1 explains each tool):
   1. fetches the libraries in third_party/ (git submodules)
   2. installs Arm GCC, CMake, Ninja, a host C compiler and cppcheck with the system package
-     manager: winget (Windows), Homebrew (macOS), apt or dnf (Linux; asks for your sudo password)
+     manager: winget (Windows), Homebrew (macOS), apt, dnf or pacman (Linux; asks for your sudo
+     password). Without one, or with --portable, it downloads the official portable archives into
+     ~/.embedded-course-tools instead: no admin rights needed
   3. downloads Pico SDK 2.3.1 to ~/.pico-sdk/sdk/2.3.1
   4. installs the VS Code extensions (Wokwi, C/C++, Cortex-Debug) if VS Code's `code` command exists
   5. runs `python tools/build.py --check` and test-builds the Pico and STM32 templates
@@ -37,12 +40,15 @@ MAC = sys.platform == "darwin"
 PACKAGES = {
     "arm-none-eabi-gcc": {"winget": "Arm.GnuArmEmbeddedToolchain", "brew": "--cask gcc-arm-embedded",
                           "apt": "gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib",
-                          "dnf": "arm-none-eabi-gcc-cs arm-none-eabi-newlib arm-none-eabi-gcc-cs-c++"},
-    "cmake":   {"winget": "Kitware.CMake", "brew": "cmake", "apt": "cmake", "dnf": "cmake"},
-    "ninja":   {"winget": "Ninja-build.Ninja", "brew": "ninja", "apt": "ninja-build", "dnf": "ninja-build"},
+                          "dnf": "arm-none-eabi-gcc-cs arm-none-eabi-newlib arm-none-eabi-gcc-cs-c++",
+                          "pacman": "arm-none-eabi-gcc arm-none-eabi-newlib"},
+    "cmake":   {"winget": "Kitware.CMake", "brew": "cmake", "apt": "cmake", "dnf": "cmake", "pacman": "cmake"},
+    "ninja":   {"winget": "Ninja-build.Ninja", "brew": "ninja", "apt": "ninja-build", "dnf": "ninja-build",
+                "pacman": "ninja"},
     "gcc":     {"winget": "BrechtSanders.WinLibs.POSIX.UCRT", "brew": None,   # macOS: Xcode command line tools
-                "apt": "build-essential", "dnf": "gcc gcc-c++ make"},
-    "cppcheck": {"winget": "Cppcheck.Cppcheck", "brew": "cppcheck", "apt": "cppcheck", "dnf": "cppcheck"},
+                "apt": "build-essential", "dnf": "gcc gcc-c++ make", "pacman": "base-devel"},
+    "cppcheck": {"winget": "Cppcheck.Cppcheck", "brew": "cppcheck", "apt": "cppcheck", "dnf": "cppcheck",
+                 "pacman": "cppcheck"},
 }
 
 DRY = False
@@ -91,10 +97,111 @@ def package_manager():
         return "winget" if shutil.which("winget") else None
     if MAC:
         return "brew" if shutil.which("brew") else None
-    for pm in ("apt", "dnf"):
-        if shutil.which(pm if pm == "dnf" else "apt-get"):
+    for pm, exe in (("apt", "apt-get"), ("dnf", "dnf"), ("pacman", "pacman")):
+        if shutil.which(exe):
             return pm
     return None
+
+
+# ---------------------------------------------------------------- portable downloads
+# Used when there is no package manager (or with --portable). Official archives, unpacked into
+# ~/.embedded-course-tools, which tools/build.py also searches. No admin rights needed.
+
+ARM_URL = ("https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/"
+           "arm-gnu-toolchain-14.2.rel1-{}-arm-none-eabi.{}")
+CMAKE_URL = "https://github.com/Kitware/CMake/releases/download/v4.3.2/cmake-4.3.2-{}"
+NINJA_URL = "https://github.com/ninja-build/ninja/releases/download/v1.13.2/ninja-{}.zip"
+# WinLibs: MinGW gcc for Windows. It also contains cmake, ninja and cppcheck.
+WINLIBS_URL = ("https://github.com/brechtsanders/winlibs_mingw/releases/download/16.2.0posix-14.0.0-ucrt-r2/"
+               "winlibs-x86_64-posix-seh-gcc-16.2.0-mingw-w64ucrt-14.0.0-r2.zip")
+
+
+def portable_plan(missing):
+    """Return ([(label, url)], [tools with no portable download on this OS])."""
+    arm64 = platform.machine().lower() in ("arm64", "aarch64")
+    plan, left = [], []
+    if WINDOWS:
+        if "arm-none-eabi-gcc" in missing:
+            plan.append(("Arm GNU toolchain 14.2", ARM_URL.format("mingw-w64-x86_64", "zip")))
+        if set(missing) & {"gcc", "cmake", "ninja", "cppcheck"}:
+            plan.append(("WinLibs gcc 16.2 (with cmake, ninja, cppcheck)", WINLIBS_URL))
+        return plan, left
+    if MAC:
+        arm_os = "darwin-arm64" if arm64 else "darwin-x86_64"
+    else:
+        arm_os = "aarch64" if arm64 else "x86_64"
+    for t in missing:
+        if t == "arm-none-eabi-gcc":
+            plan.append(("Arm GNU toolchain 14.2", ARM_URL.format(arm_os, "tar.xz")))
+        elif t == "cmake":
+            plan.append(("CMake 4.3.2", CMAKE_URL.format(
+                "macos-universal.tar.gz" if MAC else f"linux-{'aarch64' if arm64 else 'x86_64'}.tar.gz")))
+        elif t == "ninja":
+            plan.append(("Ninja 1.13.2", NINJA_URL.format("mac" if MAC else ("linux-aarch64" if arm64 else "linux"))))
+        else:
+            left.append(t)   # gcc, cppcheck: need the system package manager on macOS and Linux
+    return plan, left
+
+
+def local_tools_dir():
+    sys.path.insert(0, str(ROOT / "tools"))
+    import build  # noqa: E402  (tools/build.py)
+    return build.LOCAL_TOOLS
+
+
+def download_and_unpack(label, url):
+    import tarfile
+    import urllib.request
+    import zipfile
+    dest = local_tools_dir()
+    name = url.rsplit("/", 1)[1]
+    stem = name.split(".tar.")[0] if ".tar." in name else name.rsplit(".", 1)[0]
+    if stem.startswith("arm-gnu-toolchain-") and WINDOWS:
+        stem = "arm-gnu-toolchain-14.2"   # short: GCC's include paths must stay under Windows' 260-character limit
+    sub = dest   # zips without a single top folder (Arm for Windows, Ninja) get one named after the archive
+    if DRY:
+        say(f"  would download {label}: {url}")
+        say(f"    and unpack it into {dest}")
+        return
+    sub.mkdir(parents=True, exist_ok=True)
+    archive = dest / name
+    say(f"  downloading {label} ...")
+    try:
+        with urllib.request.urlopen(url) as r, open(archive, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r    {done >> 20} / {total >> 20} MB", end="", flush=True)
+        print()
+        say("  unpacking ...")
+        if name.endswith(".zip"):
+            with zipfile.ZipFile(archive) as z:
+                tops = {n.split("/", 1)[0] for n in z.namelist()}
+                if len(tops) != 1 or not any("/" in n for n in z.namelist()):
+                    sub = dest / stem
+                z.extractall(sub)
+                if not WINDOWS:   # zip does not restore the executable bit
+                    for info in z.infolist():
+                        mode = info.external_attr >> 16
+                        if mode & 0o111:
+                            os.chmod(sub / info.filename, mode & 0o777)
+        else:
+            with tarfile.open(archive) as t:
+                if hasattr(tarfile, "data_filter"):
+                    t.extractall(sub, filter="data")
+                else:
+                    t.extractall(sub)
+    except Exception as e:  # network, disk or archive error: report it and carry on with the other steps
+        problems.append(f"{label}: {e}  (download it yourself from {url} and unpack it into {dest})")
+    finally:
+        if archive.exists():
+            archive.unlink()
 
 
 # ---------------------------------------------------------------- steps
@@ -111,7 +218,7 @@ def submodules():
     run(["git", "submodule", "update", "--init"], cwd=ROOT)
 
 
-def system_tools():
+def system_tools(portable=False):
     step("2. Compilers and build tools")
     env = tool_env()
     missing = [t for t in PACKAGES if not have(t, env)]
@@ -124,15 +231,20 @@ def system_tools():
     if not missing:
         say("  all present")
         return
-    pm = package_manager()
+    say(f"  missing: {', '.join(missing)}")
+    pm = None if portable else package_manager()
     if not pm:
-        hint = ("install Homebrew from https://brew.sh" if MAC else
-                "install App Installer (winget) from the Microsoft Store" if WINDOWS else
-                "install them with your distribution's package manager")
-        problems.append(f"missing {', '.join(missing)} and no supported package manager: {hint}")
+        say("  no package manager in use: downloading portable versions (no admin rights needed)")
+        plan, left = portable_plan(missing)
+        for label, url in plan:
+            download_and_unpack(label, url)
+        if left:
+            how = ("brew install " + " ".join(left)) if MAC else "your distribution's package manager"
+            note = " (cppcheck is only needed from lesson 83)" if left == ["cppcheck"] else ""
+            problems.append(f"still missing {', '.join(left)}: install with {how}{note}")
         return
-    pkgs = [PACKAGES[t][pm] for t in missing if PACKAGES[t][pm]]
-    say(f"  missing: {', '.join(missing)}  (installing with {pm})")
+    pkgs = [PACKAGES[t][pm] for t in missing if PACKAGES[t].get(pm)]
+    say(f"  installing with {pm}")
     if pm == "winget":
         for p in pkgs:
             run(["winget", "install", "-e", "--id", p, "--accept-package-agreements", "--accept-source-agreements"])
@@ -145,8 +257,10 @@ def system_tools():
         if pm == "apt":
             run(sudo + ["apt-get", "update"])
             run(sudo + ["apt-get", "install", "-y"] + names)
-        else:
+        elif pm == "dnf":
             run(sudo + ["dnf", "install", "-y"] + names)
+        else:
+            run(sudo + ["pacman", "-S", "--needed", "--noconfirm"] + names)
     if WINDOWS:
         say("  note: open a new terminal afterwards so the new tools are on PATH (tools/build.py finds them anyway)")
 
@@ -250,6 +364,8 @@ def main():
     ap.add_argument("--zephyr", action="store_true", help="also set up the Zephyr workspace (~1-2 GB)")
     ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 108")
     ap.add_argument("--all", action="store_true", help="core tools plus Zephyr and Rust")
+    ap.add_argument("--portable", action="store_true",
+                    help="download portable tools into ~/.embedded-course-tools instead of using a package manager")
     ap.add_argument("--dry-run", action="store_true", help="show what would be done without changing anything")
     a = ap.parse_args()
     DRY = a.dry_run
@@ -258,7 +374,7 @@ def main():
     say(f"Course setup on {platform.system()} {platform.machine()}" + ("  (dry run)" if DRY else ""))
 
     submodules()
-    system_tools()
+    system_tools(a.portable)
     pico_sdk()
     vscode_extensions()
     if a.zephyr or a.all:

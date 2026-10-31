@@ -28,10 +28,20 @@ DEFAULTS = {
     "pico_sdk": HOME / ".pico-sdk" / "sdk" / "2.3.1",
     "zephyr_ws": HOME / "zephyrproject",
 }
+# Portable tools that tools/setup.py downloads when there is no package manager (winget, Homebrew, ...).
+LOCAL_TOOLS = Path(os.environ.get("EMBEDDED_COURSE_TOOLS") or HOME / ".embedded-course-tools")
+LOCAL_BIN_GLOBS = ["arm-gnu-toolchain-*/bin", "cmake-*/bin", "cmake-*/CMake.app/Contents/bin",
+                   "ninja-*", "mingw64/bin"]
 
 
-def find_tool(exe, extra_dirs):
-    found = shutil.which(exe)
+def local_bin_dirs():
+    if not LOCAL_TOOLS.exists():
+        return []
+    return [str(d) for g in LOCAL_BIN_GLOBS for d in sorted(LOCAL_TOOLS.glob(g)) if d.is_dir()]
+
+
+def find_tool(exe, extra_dirs, path=None):
+    found = shutil.which(exe, path=path)
     if found:
         return Path(found).parent
     for d in extra_dirs:
@@ -43,15 +53,17 @@ def find_tool(exe, extra_dirs):
 
 def environment():
     env = os.environ.copy()
+    env["PATH"] = os.pathsep.join(local_bin_dirs() + [env.get("PATH", "")])
     paths = []
     gcc = find_tool("arm-none-eabi-gcc", DEFAULTS["arm_gcc"] +
-                    list(Path(r"C:\Program Files (x86)").glob("Arm GNU Toolchain arm-none-eabi/*/bin")))
-    ninja = find_tool("ninja", DEFAULTS["ninja"])
-    host = find_tool("gcc", DEFAULTS["host_gcc"])   # host compiler: unit tests (Part 6) and the SDK's pioasm
-    for p in (gcc, ninja, host):
+                    list(Path(r"C:\Program Files (x86)").glob("Arm GNU Toolchain arm-none-eabi/*/bin")), env["PATH"])
+    ninja = find_tool("ninja", DEFAULTS["ninja"], env["PATH"])
+    host = find_tool("gcc", DEFAULTS["host_gcc"], env["PATH"])   # host compiler: unit tests (Part 6) and the SDK's pioasm
+    for p in (gcc, ninja):
         if p:
             paths.append(str(p))
-    env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+    # The host compiler goes last: WinLibs also ships cmake and ninja, and an installed CMake should win.
+    env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")] + ([str(host)] if host else []))
     env.setdefault("PICO_SDK_PATH", str(DEFAULTS["pico_sdk"]))
     if gcc:
         env.setdefault("ZEPHYR_TOOLCHAIN_VARIANT", "gnuarmemb")
@@ -62,7 +74,10 @@ def environment():
 
 def run(cmd, cwd, env):
     print("$", " ".join(str(c) for c in cmd), flush=True)
-    return subprocess.call([str(c) for c in cmd], cwd=cwd, env=env)
+    cmd = [str(c) for c in cmd]
+    # Windows looks programs up on this process's PATH, not env's: resolve against env's PATH ourselves.
+    cmd[0] = shutil.which(cmd[0], path=env.get("PATH")) or cmd[0]
+    return subprocess.call(cmd, cwd=cwd, env=env)
 
 
 def detect(project: Path):
@@ -143,10 +158,10 @@ def check() -> int:
     rows = [
         ("ARM GCC (arm-none-eabi-gcc)", gcc),
         ("Ninja", ninja),
-        ("CMake", shutil.which("cmake")),
+        ("CMake", shutil.which("cmake", path=env["PATH"])),
         ("Git", shutil.which("git")),
-        ("Host C compiler (MinGW gcc, needed from lesson 80 and for pioasm)", find_tool("gcc", DEFAULTS["host_gcc"])),
-        ("cppcheck (needed from lesson 83)", shutil.which("cppcheck") or (Path(r"C:\Program Files\Cppcheck\cppcheck.exe") if Path(r"C:\Program Files\Cppcheck\cppcheck.exe").exists() else None)),
+        ("Host C compiler (MinGW gcc, needed from lesson 80 and for pioasm)", find_tool("gcc", DEFAULTS["host_gcc"], env["PATH"])),
+        ("cppcheck (needed from lesson 83)", shutil.which("cppcheck", path=env["PATH"]) or (Path(r"C:\Program Files\Cppcheck\cppcheck.exe") if Path(r"C:\Program Files\Cppcheck\cppcheck.exe").exists() else None)),
         ("Pico SDK", env["PICO_SDK_PATH"] if Path(env["PICO_SDK_PATH"], "pico_sdk_init.cmake").exists() else None),
         ("Wokwi CLI (optional, for automated checks)", next((p for p in (HOME / ".wokwi" / "bin" / "wokwi-cli.exe", HOME / ".wokwi" / "bin" / "wokwi-cli") if p.exists()), None) or shutil.which("wokwi-cli")),
         ("Rust (cargo, needed for lesson 108; optional)", (HOME / ".cargo" / "bin") if any((HOME / ".cargo" / "bin" / c).exists() for c in ("cargo.exe", "cargo")) else shutil.which("cargo")),

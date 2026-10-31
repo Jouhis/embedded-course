@@ -2,6 +2,14 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## Unreleased
+
+- README, and a setup script for Windows, macOS and Linux (`setup.cmd`, `setup.sh`, `tools/setup.py`).
+  It uses winget, Homebrew, apt, dnf or pacman. Without one, it downloads portable tools into
+  `~/.embedded-course-tools` (no admin rights needed).
+- `tools/build.py` finds tools there; tool paths no longer assume Windows.
+- The `.cmd` launchers work when the system PATH starts with an empty entry.
+
 ## 0.0.1 (2026-10-31)
 
 First complete draft: 116 lessons, 6 labs and 8 checkpoints in 11 parts, with reference sheets,
