@@ -7,7 +7,8 @@
  *      { "questions": [
  *        { "type": "mc", "prompt": "HTML allowed", "options": ["A", "B", "C"], "answer": 1, "why": "..." },
  *        { "type": "number", "prompt": "...", "answer": 330, "tolerance": 0.05, "unit": "Ω", "why": "..." },
- *        { "type": "text", "prompt": "...", "accept": ["0x1F", "31"], "why": "..." }
+ *        { "type": "text", "prompt": "...", "accept": ["0x1F", "31"], "why": "..." },
+ *        { "type": "formula", "prompt": "...", "vars": ["I", "R"], "answer": "I^2*R", "why": "..." }
  *      ] }
  *      </script>
  *    </div>
@@ -16,7 +17,15 @@
  *      "answer" is the index of the correct option in the authored list.
  *    - "number": "tolerance" is relative (0.05 = ±5 %). Accepts SI prefixes: 4k7, 4.7k, 10m, 2u.
  *      Also accepts hex (0x..) and binary (0b..).
- *    - "text": compared case-insensitively with whitespace removed.
+ *    - "text": "accept" lists exact answers; case, articles, spaces, hyphens and quotes are ignored.
+ *      Optional "contains": the answer passes if it contains any of these (also normalised).
+ *    - "formula": { "vars": ["I", "R"], "answer": "I^2*R", "display": "P = I² × R" }. Any algebraically
+ *      equivalent input passes (RI^2, I²R, I*I*R, "P = I^2 R"). Optional "range": [lo, hi] for samples.
+ *    - "reflect": think-then-reveal, not scored. "answer" is the model answer (HTML).
+ *    - Any type: optional "hint" (shown on request, and after a wrong attempt). "mc" also takes
+ *      "feedback": one string per option, shown when that option is picked.
+ *    - "formula", "number" and "text" take "wrong": [{ "answer": "V*I", "feedback": "That is a power." }].
+ *      When the learner's answer matches a listed mistake, its feedback explains what went wrong.
  *
  * 2. Progress. Each lesson's <body> has data-lesson="0007". A "Mark complete" bar is
  *    added automatically; progress lives in localStorage and the course index reads it.
@@ -142,12 +151,158 @@
     if (/^-?0x[0-9a-f]+$/i.test(s)) return parseInt(s, 16);
     if (/^-?0b[01]+$/i.test(s)) return parseInt(s.replace(/0b/i, ""), 2) * (s.startsWith("-") ? -1 : 1);
     s = s.replace(/(Ω|ohm|ohms|V|A|W|F|H|Hz|s)$/i, "");          // strip a trailing unit
-    let m = s.match(/^(-?\d+)([pnuµmkKMG])(\d+)$/);               // 4k7 style
-    if (m) return parseFloat(m[1] + "." + m[3]) * SI[m[2]];
+    let m = s.match(/^(-?\d+)([pnuµmkKMGR])(\d+)$/);              // 4k7 style (4R7 = 4.7 ohms)
+    if (m) return parseFloat(m[1] + "." + m[3]) * (m[2] === "R" ? 1 : SI[m[2]]);
+    s = s.replace(/^(-?\d*\.?\d+)R$/, "$1");                         // 330R = 330 ohms
     m = s.match(/^(-?\d*\.?\d+(?:e-?\d+)?)([pnuµmkKMG])?$/);
     if (!m) return NaN;
     return parseFloat(m[1]) * (m[2] ? SI[m[2]] : 1);
   }
+
+  /* Free-text answers: case, surrounding articles, spaces, hyphens, underscores, quotes and a
+   * trailing full stop don't matter ("The pull-up" = "pullup"). */
+  function normText(s) {
+    return String(s).normalize("NFKC").toLowerCase().trim()
+      .replace(/^(the|a|an)\s+/, "")
+      .replace(/[.!?;:]+$/, "")
+      .replace(/[\s\-_`'"“”‘’]/g, "");
+  }
+
+  // ---------- Formula answers ----------
+  /* A formula answer is accepted when it is algebraically equivalent to the reference: both are
+   * evaluated at several sample points. So "I^2*R", "RI^2", "I²R", "I*I*R" and "P = I² × R" all pass.
+   * Implicit multiplication works ("2RC", "I(R1+R2)"); variable names come from q.vars, so "R1R2"
+   * reads as R1*R2. Functions: sqrt, abs, ln, log (base 10), log2, exp, sin, cos, tan; constant pi. */
+  const FUNCS = { sqrt: Math.sqrt, abs: Math.abs, ln: Math.log, log10: Math.log10, log2: Math.log2,
+                  log: Math.log10, exp: Math.exp, sin: Math.sin, cos: Math.cos, tan: Math.tan };
+  const FUNC_NAMES = Object.keys(FUNCS).sort((a, b) => b.length - a.length);
+  const SUBSCRIPTS = "₀₁₂₃₄₅₆₇₈₉";
+
+  function normFormula(s) {
+    return String(s)
+      .replace(/[₀-₉]/g, d => String(SUBSCRIPTS.indexOf(d)))
+      .replace(/[×·∙⋅]/g, "*").replace(/÷/g, "/").replace(/[−–—]/g, "-")
+      .replace(/\*\*/g, "^").replace(/²/g, "^2").replace(/³/g, "^3")
+      .replace(/√/g, "sqrt").replace(/π/g, "pi").replace(/,/g, ".")
+      .replace(/[\s_]+/g, "");
+  }
+
+  function tokenizeFormula(s, vars) {
+    const names = vars.map(v => ({ key: v.replace(/_/g, ""), name: v }))
+                      .sort((a, b) => b.key.length - a.key.length);
+    const lower = s.toLowerCase();
+    const out = [];
+    let i = 0;
+    while (i < s.length) {
+      const c = s[i];
+      const num = s.slice(i).match(/^(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i);
+      if (num) { out.push({ t: "num", v: parseFloat(num[0]) }); i += num[0].length; continue; }
+      if ("+-*/^()".includes(c)) { out.push({ t: c }); i++; continue; }
+      let hit = null;
+      for (const f of FUNC_NAMES) {
+        if (lower.startsWith(f, i) && s[i + f.length] === "(") { hit = { t: "fn", v: f, len: f.length }; break; }
+      }
+      if (!hit) for (const n of names) if (s.startsWith(n.key, i)) { hit = { t: "var", v: n.name, len: n.key.length }; break; }
+      if (!hit && lower.startsWith("pi", i)) hit = { t: "num", v: Math.PI, len: 2 };
+      if (!hit) for (const n of names) {
+        if (lower.startsWith(n.key.toLowerCase(), i)) { hit = { t: "var", v: n.name, len: n.key.length }; break; }
+      }
+      if (!hit) return null;
+      out.push(hit);
+      i += hit.len;
+    }
+    // Implicit multiplication: "2RC", "I(R1+R2)", "(a+b)(c+d)", "2sqrt(x)".
+    const full = [];
+    out.forEach((tok, k) => {
+      const prev = full[full.length - 1];
+      if (k && prev && (prev.t === "num" || prev.t === "var" || prev.t === ")") &&
+          (tok.t === "num" || tok.t === "var" || tok.t === "(" || tok.t === "fn")) full.push({ t: "*" });
+      full.push(tok);
+    });
+    return full;
+  }
+
+  /* Recursive-descent parser: returns a function env -> number, or null if the text doesn't parse. */
+  function compileFormula(text, vars) {
+    const toks = tokenizeFormula(normFormula(text), vars || []);
+    if (!toks || !toks.length) return null;
+    let p = 0;
+    const peek = () => toks[p] && toks[p].t;
+    function expr() {
+      let f = term();
+      while (f && (peek() === "+" || peek() === "-")) {
+        const op = toks[p++].t, a = f, b = term();
+        if (!b) return null;
+        f = op === "+" ? e => a(e) + b(e) : e => a(e) - b(e);
+      }
+      return f;
+    }
+    function term() {
+      let f = unary();
+      while (f && (peek() === "*" || peek() === "/")) {
+        const op = toks[p++].t, a = f, b = unary();
+        if (!b) return null;
+        f = op === "*" ? e => a(e) * b(e) : e => a(e) / b(e);
+      }
+      return f;
+    }
+    function unary() {
+      if (peek() === "-") { p++; const a = unary(); return a && (e => -a(e)); }
+      if (peek() === "+") { p++; return unary(); }
+      return power();
+    }
+    function power() {
+      const a = primary();
+      if (a && peek() === "^") { p++; const b = unary(); return b && (e => Math.pow(a(e), b(e))); }
+      return a;
+    }
+    function primary() {
+      const tok = toks[p++];
+      if (!tok) return null;
+      if (tok.t === "num") return () => tok.v;
+      if (tok.t === "var") return e => e[tok.v];
+      if (tok.t === "(") { const a = expr(); if (!a || peek() !== ")") return null; p++; return a; }
+      if (tok.t === "fn" && peek() === "(") {
+        p++;
+        const a = expr();
+        if (!a || peek() !== ")") return null;
+        p++;
+        const fn = FUNCS[tok.v];
+        return e => fn(a(e));
+      }
+      return null;
+    }
+    const f = expr();
+    return f && p === toks.length ? f : null;
+  }
+
+  /* Same value at 8 sample points (variables drawn from q.range, default 0.5..4)? */
+  function sameFormula(f, g, vars, range) {
+    const lo = range ? range[0] : 0.5, hi = range ? range[1] : 4;
+    let seed = 12345, compared = 0;
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let k = 0; k < 8; k++) {
+      const env = {};
+      vars.forEach(v => { env[v] = lo + (hi - lo) * rand(); });
+      const a = f(env), b = g(env);
+      if (!isFinite(a) && !isFinite(b)) continue;
+      if (!isFinite(a) || !isFinite(b)) return false;
+      if (Math.abs(a - b) > 1e-9 + 1e-6 * Math.max(Math.abs(a), Math.abs(b))) return false;
+      compared++;
+    }
+    return compared >= 3;
+  }
+
+  /* Accept "P = I^2 R" as well as "I^2 R": any side of an equation that matches counts. */
+  function formulaMatches(input, q) {
+    const vars = q.vars || [];
+    const ref = compileFormula(q.answer, vars);
+    if (!ref) return false;
+    return normFormula(input).split("=").filter(Boolean)
+      .some(side => { const f = compileFormula(side, vars); return f && sameFormula(f, ref, vars, q.range); });
+  }
+
+  window.CourseQuizEngine = { parseNumber, normText, compileFormula, formulaMatches };
 
   // ---------- Quiz rendering ----------
 
@@ -164,38 +319,61 @@
     const title = container.dataset.title || "Check your understanding";
     container.appendChild(el("h3", { text: title }));
 
-    const results = new Array(spec.questions.length).fill(null);
+    // "reflect" questions are think-then-reveal prompts: they are not scored.
+    const results = spec.questions.map(q => (q.type === "reflect" ? "skip" : null));
+    const scored = results.filter(r => r !== "skip").length;
     const scoreLine = el("div", { class: "quiz-score" });
 
     function record(qi, ok) {
       if (results[qi] !== null) return;          // only the first attempt counts
       results[qi] = ok;
-      const answered = results.filter(r => r !== null).length;
+      const answered = results.filter(r => r === true || r === false).length;
       const right = results.filter(r => r === true).length;
-      scoreLine.textContent = `Score: ${right} / ${answered} answered (${spec.questions.length} total)`;
-      if (answered === spec.questions.length) {
+      scoreLine.textContent = `Score: ${right} / ${answered} answered (${scored} total)`;
+      if (answered === scored) {
         const lessonId = document.body.dataset.lesson;
         if (lessonId) {
           const key = "quiz" + index;
           const prev = (loadProgress()[lessonId] || {}).quizzes || {};
-          prev[key] = { right, total: spec.questions.length };
+          prev[key] = { right, total: scored };
           updateLesson(lessonId, { quizzes: prev });
         }
       }
     }
 
     spec.questions.forEach((q, qi) => {
-      const block = el("div", { class: "q" });
+      const block = el("div", { class: "q" + (q.type === "reflect" ? " reflect" : "") });
       block.appendChild(el("div", { class: "q-prompt", html: `${qi + 1}. ${q.prompt}` }));
       const feedback = el("div", { class: "q-feedback" });
+      const why = () => (q.why ? `<span class="why">${q.why}</span>` : "");
+
+      // Optional hint: a button before answering, and shown automatically after a wrong attempt.
+      let hintBox = null;
+      const showHint = () => { if (hintBox) hintBox.classList.add("show"); };
+      const hintButton = () => {
+        const b = el("button", { class: "btn secondary", type: "button", text: "Hint" });
+        b.addEventListener("click", () => { showHint(); b.disabled = true; });
+        return b;
+      };
+      if (q.hint) hintBox = el("div", { class: "q-hint", html: "Hint: " + q.hint });
 
       function showFeedback(ok, extra) {
         feedback.className = "q-feedback show " + (ok ? "good" : "bad");
-        feedback.innerHTML = (ok ? "Correct." : "Not quite.") + (extra ? " " + extra : "") +
-          (q.why ? `<span class="why">${q.why}</span>` : "");
+        feedback.innerHTML = (ok ? "Correct." : "Not quite.") + (extra ? " " + extra : "") + why();
       }
 
-      if (q.type === "mc") {
+      if (q.type === "reflect") {
+        // Think first, then compare with a model answer.
+        const reveal = el("button", { class: "btn secondary", type: "button", text: "Show model answer" });
+        reveal.addEventListener("click", () => {
+          feedback.className = "q-feedback show good";
+          feedback.innerHTML = `<strong>Model answer:</strong> ${q.answer}` + why();
+          reveal.disabled = true;
+        });
+        const row = el("div", { class: "q-input-row" }, [reveal]);
+        if (q.hint) row.insertBefore(hintButton(), reveal);
+        block.appendChild(row);
+      } else if (q.type === "mc") {
         const opts = el("div", { class: "q-options" });
         const order = shuffle(q.options.map((text, i) => ({ text, i })));
         order.forEach(o => {
@@ -208,46 +386,74 @@
               const correctBtn = [...opts.children][order.findIndex(x => x.i === q.answer)];
               correctBtn.classList.add("correct");
             }
-            showFeedback(ok);
+            // Per-option feedback explains why the chosen option is right or wrong.
+            const said = q.feedback && q.feedback[o.i] ? q.feedback[o.i] : "";
+            showFeedback(ok, said);
             record(qi, ok);
           });
           opts.appendChild(b);
         });
         block.appendChild(opts);
+        if (q.hint) block.appendChild(el("div", { class: "q-input-row" }, [hintButton()]));
       } else {
-        const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false",
-          placeholder: q.type === "number" ? "e.g. 4.7k or 0x1F" : "your answer" });
+        const placeholder = q.type === "number" ? "e.g. 4.7k or 0x1F"
+          : q.type === "formula" ? `a formula using ${(q.vars || []).join(", ")}` : "your answer";
+        const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder,
+          class: q.type === "number" ? "" : "wide" });
         const check = el("button", { class: "btn", type: "button", text: "Check" });
         const reveal = el("button", { class: "btn secondary", type: "button", text: "Show answer" });
         const row = el("div", { class: "q-input-row" }, [input]);
         if (q.unit) row.appendChild(el("span", { text: q.unit }));
         row.appendChild(check);
+        if (q.hint) row.appendChild(hintButton());
         row.appendChild(reveal);
 
         const evaluate = () => {
           if (input.value.trim() === "") return;
-          let ok;
+          let ok, extra = "";
           if (q.type === "number") {
             const v = parseNumber(input.value);
             const tol = q.tolerance === undefined ? 0.02 : q.tolerance;
             ok = !isNaN(v) && Math.abs(v - q.answer) <= Math.abs(q.answer) * tol + 1e-12;
+            if (isNaN(v)) extra = "Type a number (SI prefixes such as 4.7k work).";
+          } else if (q.type === "formula") {
+            ok = formulaMatches(input.value, q);
+            if (!ok && !compileFormula(normFormula(input.value).split("=").pop() || "", q.vars || [])) {
+              extra = `Write it with ${(q.vars || []).join(", ")}, numbers, + − × / ^ and brackets.`;
+            }
           } else {
-            const norm = s => String(s).toLowerCase().replace(/\s+/g, "");
-            ok = q.accept.map(norm).includes(norm(input.value));
+            const said = normText(input.value);
+            ok = (q.accept || []).map(normText).includes(said) ||
+                 (q.contains || []).map(normText).some(c => c && said.includes(c));
           }
-          showFeedback(ok, ok ? "" : "Try again, or reveal the answer.");
+          if (ok) {
+            showFeedback(true);
+          } else {
+            showHint();
+            // A recognised mistake ("wrong": [{ "answer": ..., "feedback": ... }]) gets its own explanation.
+            const known = (q.wrong || []).find(w => typeof w === "object" && w.feedback && (
+              q.type === "formula" ? formulaMatches(input.value, Object.assign({}, q, { answer: w.answer }))
+              : q.type === "number" ? Math.abs(parseNumber(input.value) - w.answer) <=
+                  Math.abs(w.answer) * (q.tolerance === undefined ? 0.02 : q.tolerance) + 1e-12
+              : normText(input.value) === normText(w.answer)));
+            if (known) extra = known.feedback;
+            feedback.className = "q-feedback show bad";
+            feedback.innerHTML = "Not quite. " + (extra ? extra + " " : "") + "Try again, or reveal the answer.";
+          }
           record(qi, ok);
         };
         check.addEventListener("click", evaluate);
         input.addEventListener("keydown", e => { if (e.key === "Enter") evaluate(); });
         reveal.addEventListener("click", () => {
-          const ans = q.type === "number" ? `${q.answer}${q.unit ? " " + q.unit : ""}` : q.accept[0];
+          const ans = q.type === "number" ? `${q.answer}${q.unit ? " " + q.unit : ""}`
+            : q.type === "formula" ? (q.display || q.answer) : (q.accept || q.contains)[0];
           record(qi, false);
           feedback.className = "q-feedback show bad";
-          feedback.innerHTML = `Answer: <code>${ans}</code>` + (q.why ? `<span class="why">${q.why}</span>` : "");
+          feedback.innerHTML = `Answer: <code>${ans}</code>` + why();
         });
         block.appendChild(row);
       }
+      if (hintBox) block.appendChild(hintBox);
       block.appendChild(feedback);
       container.appendChild(block);
     });

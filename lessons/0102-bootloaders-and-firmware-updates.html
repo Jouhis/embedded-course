@@ -76,7 +76,7 @@
     A <em>magic value</em> is a constant that a valid image stores at a known place, so that a bootloader can tell an image from random flash contents. Erased flash reads as all ones, and an old image left behind by a previous firmware has a different magic, so the check is cheap and catches most mistakes. A magic value is not a proof of integrity, though. It says "this looks like an image", and nothing more.
   </p>
   <p>
-    The header in this lesson follows that idea in a smaller form (<code>projects/0102-bootloader-and-app/solution/app_image.h</code>). It has a magic word <code>APP1</code>, which is 0x41505031 because <code>A</code> is 0x41, <code>P</code> is 0x50, and <code>1</code> is 0x31. It has a version, the address one past the end of the image, the vector table's offset from the header, and four reserved words. The header is 32 bytes: eight words of four bytes each. The reserved words are where a CRC or a signature would go. A real image needs one of them, because a magic word alone cannot tell an interrupted download from a complete one. This build leaves them zero, for a reason the next section explains.
+    The header in this lesson follows that idea in a smaller form (<code>projects/0102-bootloader-and-app/solution/app_image.h</code>). It has a magic word <code>APP1</code>, which is 0x41505031 because <code>A</code> is 0x41, <code>P</code> is 0x50, and <code>1</code> is 0x31. It has a version, the address one past the end of the image, the vector table's offset from the header, and four reserved words. The header is 32 bytes: eight words of four bytes each. The reserved words are where a CRC or a signature would go. A real image needs one of them, because a magic word alone cannot tell an interrupted download from a complete one. This build leaves them zero, because it does not check a CRC or a signature yet.
   </p>
 
   <h2>Boot decision and rollback</h2>
@@ -175,68 +175,118 @@ __set_MSP(sp);                                     <span class="c">/* the app's 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
-      { "type": "mc",
-        "prompt": "Which vector table word does the bootloader read as the initial stack pointer?",
-        "options": ["Word zero of the vector table", "Word one of the vector table", "The image header magic field value", "The address of the reset handler"],
-        "answer": 0,
-        "why": "Word 0 holds the initial stack pointer, and word 1 holds the reset handler. The tempting answer, word one, is the reset handler, which is the branch target, not the stack." },
-      { "type": "text",
-        "prompt": "With the vector table 0x100 into the slot at 0x08004000, what is the table's address? Give it in hex.",
-        "accept": ["0x08004100", "08004100"],
-        "why": "0x08004000 plus 0x100 is 0x08004100. The tempting answer, 0x08000100, forgets that the slot starts at 0x08004000." },
-      { "type": "mc",
-        "prompt": "Why must the bootloader set VTOR before it branches to the application?",
-        "options": ["So exceptions use its table", "So the clock speeds up", "So the header is erased", "So the boot counter resets"],
-        "answer": 0,
-        "why": "VTOR points exceptions at the vector table in use. The tempting answer, the clock, has nothing to do with the table, and the header is read, not erased." },
-      { "type": "mc",
-        "prompt": "A new image never confirms itself after its trial boots. What does a rollback-capable bootloader do?",
-        "options": ["Reverts to the old image", "Erases the old bootloader image", "Halts until a person intervenes", "Keeps running the new image"],
-        "answer": 0,
-        "why": "The revert swaps the old image back, so the device runs a known-good image. The tempting answer, keeping the new image, is what the device does without a confirm step, and that is the failure this design prevents." },
-      { "type": "number",
-        "prompt": "The header is 32 bytes, and the vector table starts 0x100 bytes into the slot. How many bytes lie between the end of the header and the start of the vector table?",
-        "answer": 224, "tolerance": 0, "unit": "bytes",
-        "why": "256 minus 32 is 224. The tempting answer, 256, forgets the header takes its first 32 bytes." },
-      { "type": "text",
-        "prompt": "Which linker MEMORY region holds the application header in boot.ld? Give the region name.",
-        "accept": ["APP"],
-        "why": "The APP region starts at 0x08004000 and holds the header, the vector table and the code. The tempting answer, BOOT, is the bootloader's region." },
-      { "type": "mc",
-        "prompt": "The stack pointer in word 0 is 0x20005000 and the RAM is 20 KiB at 0x20000000. What does the bootloader decide?",
-        "options": ["The stack pointer is valid", "The stack pointer is invalid", "The image needs a header", "The vector offset is wrong"],
-        "answer": 0,
-        "why": "0x20005000 is the top of 20 KiB of RAM, and the check allows values up to and including that top. The tempting answer, invalid, applies to a value above the top, such as 0x20005004." },
-      { "type": "mc",
-        "prompt": "Which check rejects a reset handler address of 0x08004200, which has bit 0 clear?",
-        "options": ["The check on bit zero", "The check on the magic", "The check on the offset", "The check on image end"],
-        "answer": 0,
-        "why": "Bit 0 clear means the address is not Thumb, so the Thumb check rejects it. The tempting answer, the magic, tests the header's first word, which is unrelated to the handler address." },
-      { "type": "mc",
-        "prompt": "Why does the hand-over disable interrupts before it writes VTOR?",
-        "options": ["So no interrupt runs mid hand-over", "So the clock stays at speed", "So the header can be erased", "So the boot counter resets now"],
-        "answer": 0,
-        "why": "Between the VTOR write and the branch, an interrupt would use a half-changed vector setup. The tempting answer, the clock, has nothing to do with interrupts, and the header is only read." },
-      { "type": "number",
-        "prompt": "The application's image ends at 0x08007F00 and its vector table starts at 0x08004100. How many bytes are from the table to the end? Give it in decimal.",
-        "answer": 15872, "tolerance": 0, "unit": "bytes",
-        "why": "0x08007F00 minus 0x08004100 is 0x3E00, which is 15872. The tempting answer, reading 3E00 as decimal, is wrong: those digits are hex, and 0x3E00 is 15872 once converted." }
-    ] }
+  { "type": "mc",
+    "prompt": "After a successful update, the device prints <code>BOOT -> APP OK</code>. Then a button press raises an interrupt, and the bootloader's UART handler runs instead of the application's. What did the hand-over forget?",
+    "options": ["Point VTOR at the app's table", "Erase the bootloader region", "Reset the boot counter", "Start the watchdog timer"],
+    "answer": 0,
+    "feedback": [
+      "Right. VTOR still points at the bootloader's table, so the interrupt reads the bootloader's handler address. The fix is to write VTOR before interrupts are enabled, as the solution does.",
+      "Erasing the bootloader would stop the device from booting at all, so the app could not print its first line. The symptom here is an interrupt in the wrong handler.",
+      "The boot counter lives in the metadata area and only matters for a trial swap. It does not decide which handler an interrupt uses.",
+      "The watchdog resets a stuck chip. It does not choose a vector table, so it cannot redirect this interrupt."
+    ],
+    "hint": "Which register decides which table exceptions read?",
+    "why": "VTOR is the Vector Table Offset Register, and the core reads its exception addresses from whichever table VTOR points to. Mistake 1 in this lesson is this exact bug, and the check is to read VTOR in the debugger. It should read 0x08004100." },
+  { "type": "number",
+    "prompt": "A teammate grows the bootloader to 20 KiB, but the application slot stays at 0x08004000. How many bytes of the bootloader now sit where the application slot is?",
+    "answer": 4096, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 20480, "feedback": "That is the whole 20 KiB bootloader, not the part that overlaps. Only the bytes past 16 KiB reach the slot." },
+      { "answer": 16384, "feedback": "16 KiB is the region's allowed size. The overflow is what goes past it: 20 KiB minus 16 KiB." }
+    ],
+    "hint": "The bootloader starts at 0x08000000 and the slot at 0x08004000. Find the size of the gap between them.",
+    "why": "The gap is 16 KiB, or 16384 bytes, and the bootloader is 20 KiB, or 20480 bytes. Its last 4 KiB, 4096 bytes, lie in the slot. The linker in this lesson reports this as an error, because the BOOT region is limited to 16 KiB." },
+  { "type": "mc",
+    "prompt": "A new image boots, prints its line, and crashes two minutes later, before it sets the confirm flag. The trial counter runs out. What does the bootloader do?",
+    "options": ["Erases the old image to free space", "Halts until someone intervenes", "Reverts to the old image", "Keeps running the new image"],
+    "answer": 2,
+    "feedback": [
+      "Erasing the old image first is the bug this design prevents. A new image that fails then leaves no working image to fall back on.",
+      "A halt would leave a field device dead until a technician arrives. The design keeps a way back, so the device recovers by itself.",
+      "Right. The unconfirmed image is dropped in favour of the old one, which was kept until the new one proved itself. The device stays usable.",
+      "That is what happens without a confirm step, and it is the failure the trial counter exists to stop. An unconfirmed image has not proved it works."
+    ],
+    "hint": "Which image did the bootloader keep, and what did the trial counter decide?",
+    "why": "The trial counter and the confirm flag are the two halves of the test-then-confirm rule. The old image stays in place until the new one confirms, so running out of trials means returning to a known-good image, not losing the device." },
+  { "type": "mc",
+    "prompt": "A slot has been erased, and the bootloader reads its first word as 0xFFFFFFFF. What does it conclude?",
+    "options": ["No image: the magic does not match", "A valid image with an erased header", "The stack pointer is wrong", "The vector offset is too high"],
+    "answer": 0,
+    "feedback": [
+      "Right. Erased flash reads as all ones, so the first word is not the magic 0x41505031. The slot holds no image, and the bootloader must not trust it.",
+      "A valid image has the magic in its first word. 0xFFFFFFFF is erased flash, not a header.",
+      "The stack pointer is in word 0 of the vector table, which is read only after the magic check passes. An erased header never reaches that check.",
+      "The vector offset is in the header's fourth word, and that check never runs if the magic fails first."
+    ],
+    "hint": "What does erased flash read as, and where does the bootloader check first?",
+    "why": "The magic is the first check, and every later check is skipped when it fails. It is cheap, and it catches most mistakes, but it proves only that a slot looks like an image. The reserved words in the header are where a CRC or signature would give a stronger answer." },
+  { "type": "mc",
+    "prompt": "Your image's reset handler is at 0x08004200. The header magic and the vector offset are both correct, but the bootloader refuses the slot. Which check fails?",
+    "options": ["The magic word does not match", "Bit zero is clear: the Thumb check", "The stack pointer is too high", "The image is too big for slot"],
+    "answer": 1,
+    "feedback": [
+      "The magic is the header's first word, and it is correct here. The handler address is a separate value, so it cannot be the cause.",
+      "Right. Cortex-M runs only Thumb code, and an address with bit 0 clear is not a Thumb entry point. The check rejects it before the hand-over, so no branch lands in the wrong state.",
+      "The stack pointer is word 0 of the table, a different value. The handler address does not change it.",
+      "The size check compares the image end with the slot, and this address is inside the slot. The size is not what fails here."
+    ],
+    "hint": "Which bit of a function address marks Thumb code?",
+    "why": "The lowest bit of a function address is the Thumb flag, and a handler address with that bit clear would start the CPU in the wrong state. Lesson 102 treats a clean even address as always a mistake, and it is the check to keep, not to bypass." },
+  { "type": "number",
+    "prompt": "The application's image ends at 0x08007F00, and its vector table starts at 0x08004100. How many bytes lie from the table to the end of the image?",
+    "answer": 15872, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 3584, "feedback": "That is 0xE00. It drops the leading 3 of 0x3E00, a digit lost in the hex subtraction. The whole difference is 0x3E00, which is 15872 bytes." },
+      { "answer": 16128, "feedback": "That is 0x3F00 in decimal. Recheck the subtraction: 0x08007F00 minus 0x08004100 is 0x3E00." }
+    ],
+    "hint": "Subtract the table address from the end address in hex first. Then convert the result to decimal.",
+    "why": "0x08007F00 minus 0x08004100 is 0x3E00, which is 3 × 4096 + 14 × 256 = 15872 bytes. Checking the length this way catches an image that overruns its slot, and a length that is too large is the first sign of one." },
+  { "type": "mc",
+    "prompt": "Which order is correct for the hand-over from the bootloader to the application?",
+    "options": ["Branch, then VTOR, MSP, interrupts off", "Set MSP, branch, then set VTOR", "VTOR, branch, then interrupts off", "Interrupts off, VTOR, MSP, then branch"],
+    "answer": 3,
+    "feedback": [
+      "A branch never returns, so anything after it never runs. Setting VTOR, MSP and the interrupts after the branch is too late.",
+      "Setting VTOR after the branch means the application's first interrupt can still use the bootloader's table.",
+      "Interrupts must be off before the table changes, or one can run half-way through the change.",
+      "Right. Interrupts are off first, so none runs during the change. VTOR moves the table, MSP sets the stack, and then the branch never returns."
+    ],
+    "hint": "A branch never returns. Which steps must be finished before it?",
+    "why": "The hand-over is a fixed order: mask interrupts, move the table, set the stack, then branch. Each step depends on the one before, and the branch is last because nothing after it runs." },
+  { "type": "reflect",
+    "prompt": "A power cut interrupts the update while slot B is being written. Explain how the device should recover, and which order of writes makes that possible.",
+    "hint": "Which write tells the bootloader that slot B is complete, and when should that write happen?",
+    "answer": "Slot B is a candidate only once the metadata says it is complete. The update writes the image first, checks it with its CRC or signature, and writes the metadata flag last. If power fails before that flag, the bootloader finds an incomplete slot B on the next boot, ignores it, and keeps running slot A. If power fails after the flag, the bootloader validates slot B again before it swaps. So the rule is: write the data, verify it, write the flag last, and read the flag first on boot."
+  }
+] }
     </script>
   </div>
 
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 68: what does the KEEP keyword in a linker script stop the linker from doing?",
-        "accept": ["discarding", "discard", "removing", "dropping"],
-        "why": "KEEP stops the linker from discarding a section that nothing references by name, such as the vector table. The tempting answer, placing, is what the rest of the script does." },
-      { "type": "text",
-        "prompt": "From lesson 84: which tool maps a fault address to a source line? Give its name.",
-        "accept": ["addr2line", "arm-none-eabi-addr2line"],
-        "why": "arm-none-eabi-addr2line uses the ELF's debug information to map an address to a file and line. The tempting answer, objdump, shows disassembly, not the source line." }
-    ] }
+  { "type": "mc",
+    "prompt": "A teammate's <code>boot.ld</code> places the vector table in a section called <code>.app_vectors</code>. In the link map the section is missing, so the application never boots. Which change fixes it?",
+    "options": ["Wrap .app_vectors in KEEP()", "Raise the BOOT region to 20 KiB", "Set VTOR to zero in the app", "Delete the ASSERT lines"],
+    "answer": 0,
+    "feedback": [
+      "Right. The linker discards a section that nothing refers to by name, and the vector table is never referred to that way. KEEP() tells it to keep the section in the image.",
+      "A bigger BOOT region gives the bootloader more room, but it does not stop the linker discarding the vector section.",
+      "Zeroing VTOR would point exceptions at address 0, which is the bootloader's table. That is the bug from Mistake 1, not a fix.",
+      "The ASSERT lines check the layout. Deleting them hides a mismatch, and they do not keep a section in the image."
+    ],
+    "hint": "Lesson 68 names the keyword that stops the linker discarding a section nothing refers to. What does it do?",
+    "why": "The vector table is read by the hardware, not by any code the linker can see, so the linker sees it as unused and may drop it. KEEP() is the fix that lesson 68 describes. The link map is where to look when a section is missing." },
+  { "type": "number",
+    "prompt": "A full 48 KiB application image is sent to the device over a UART at 115200 baud, 8N1, with no gaps. How long does the transfer take, in seconds?",
+    "answer": 4.267, "tolerance": 0.01, "unit": "s",
+    "wrong": [
+      { "answer": 3.413, "feedback": "That is 48 × 1024 × 8 ÷ 115200, which counts only the data bits. Each byte also has a start bit and a stop bit, so use 10 bits per byte." },
+      { "answer": 4267, "feedback": "That is in milliseconds. Divide by 1000 to get seconds." }
+    ],
+    "hint": "Work out the number of bytes, then the bit times for each byte, then divide by the baud rate.",
+    "why": "48 KiB is 49,152 bytes, and each byte is 10 bit times, so the image is 491,520 bit times. 491,520 ÷ 115200 = 4.267 s. The transfer alone takes over four seconds before the bootloader can check anything." }
+] }
     </script>
   </div>
 

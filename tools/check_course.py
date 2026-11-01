@@ -18,7 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 LESSONS = ROOT / "lessons"
-CHAR_SPREAD = 0.30          # longest option may be at most 30 % longer than the shortest
+CHAR_SPREAD = 0.50          # longest option may be at most 50 % longer than the shortest
 PLACEHOLDERS = ["LESSON TITLE", "ONE CONCRETE", "DESCRIBE THE CHANGE", "OBSERVABLE RESULT",
                 "TITLE OF THE SINGLE", "SUGGESTED FOLLOW-UP", 'data-lesson="0000"', "TODO", "Lorem"]
 
@@ -58,24 +58,205 @@ class Scan(html.parser.HTMLParser):
             self._buf.append(data)
 
 
+# ---------- Formula answers: a port of the engine in assets/course.js ----------
+# Keep the two in step: same normalisation, tokens, implicit multiplication and precedence.
+import math as _math
+
+_FUNCS = {"sqrt": _math.sqrt, "abs": abs, "ln": _math.log, "log10": _math.log10, "log2": _math.log2,
+          "log": _math.log10, "exp": _math.exp, "sin": _math.sin, "cos": _math.cos, "tan": _math.tan}
+_FUNC_NAMES = sorted(_FUNCS, key=len, reverse=True)
+
+
+def _norm_formula(s):
+    s = str(s)
+    for i, d in enumerate("₀₁₂₃₄₅₆₇₈₉"):
+        s = s.replace(d, str(i))
+    for a, b in (("×", "*"), ("·", "*"), ("∙", "*"), ("⋅", "*"), ("÷", "/"), ("−", "-"), ("–", "-"),
+                 ("—", "-"), ("**", "^"), ("²", "^2"), ("³", "^3"), ("√", "sqrt"), ("π", "pi"), (",", ".")):
+        s = s.replace(a, b)
+    return re.sub(r"[\s_]+", "", s)
+
+
+def _tokenize(s, vars_):
+    names = sorted(((v.replace("_", ""), v) for v in vars_), key=lambda n: len(n[0]), reverse=True)
+    low, out, i = s.lower(), [], 0
+    while i < len(s):
+        m = re.match(r"(\d+\.?\d*|\.\d+)(e[+-]?\d+)?", s[i:], re.I)
+        if m:
+            out.append(("num", float(m.group(0))))
+            i += len(m.group(0))
+            continue
+        if s[i] in "+-*/^()":
+            out.append((s[i], None))
+            i += 1
+            continue
+        hit = None
+        for f in _FUNC_NAMES:
+            if low.startswith(f, i) and s[i + len(f): i + len(f) + 1] == "(":
+                hit = ("fn", f, len(f))
+                break
+        if not hit:
+            hit = next((("var", n, len(k)) for k, n in names if s.startswith(k, i)), None)
+        if not hit and low.startswith("pi", i):
+            hit = ("num", _math.pi, 2)
+        if not hit:
+            hit = next((("var", n, len(k)) for k, n in names if low.startswith(k.lower(), i)), None)
+        if not hit:
+            return None
+        out.append(hit[:2])
+        i += hit[2]
+    full = []
+    for k, tok in enumerate(out):
+        if k and full and full[-1][0] in ("num", "var", ")") and tok[0] in ("num", "var", "(", "fn"):
+            full.append(("*", None))
+        full.append(tok)
+    return full
+
+
+def compile_formula(text, vars_):
+    toks = _tokenize(_norm_formula(text), vars_ or [])
+    if not toks:
+        return None
+    pos = [0]
+
+    def peek():
+        return toks[pos[0]][0] if pos[0] < len(toks) else None
+
+    def take():
+        pos[0] += 1
+        return toks[pos[0] - 1]
+
+    def expr():
+        f = term()
+        while f and peek() in ("+", "-"):
+            op, a, b = take()[0], f, term()
+            if not b:
+                return None
+            f = (lambda a, b: lambda e: a(e) + b(e))(a, b) if op == "+" else (lambda a, b: lambda e: a(e) - b(e))(a, b)
+        return f
+
+    def term():
+        f = unary()
+        while f and peek() in ("*", "/"):
+            op, a, b = take()[0], f, unary()
+            if not b:
+                return None
+            f = (lambda a, b: lambda e: a(e) * b(e))(a, b) if op == "*" else (lambda a, b: lambda e: a(e) / b(e))(a, b)
+        return f
+
+    def unary():
+        if peek() == "-":
+            take()
+            a = unary()
+            return a and (lambda e: -a(e))
+        if peek() == "+":
+            take()
+            return unary()
+        return power()
+
+    def power():
+        a = primary()
+        if a and peek() == "^":
+            take()
+            b = unary()
+            return b and (lambda e: a(e) ** b(e))
+        return a
+
+    def primary():
+        if pos[0] >= len(toks):
+            return None
+        kind, val = take()
+        if kind == "num":
+            return lambda e: val
+        if kind == "var":
+            return lambda e: e[val]
+        if kind == "(":
+            a = expr()
+            if not a or peek() != ")":
+                return None
+            take()
+            return a
+        if kind == "fn" and peek() == "(":
+            take()
+            a = expr()
+            if not a or peek() != ")":
+                return None
+            take()
+            fn = _FUNCS[val]
+            return lambda e: fn(a(e))
+        return None
+
+    f = expr()
+    return f if f and pos[0] == len(toks) else None
+
+
+def _safe(f, env):
+    try:
+        v = f(env)
+        return v if isinstance(v, float) or isinstance(v, int) else float("nan")
+    except (ZeroDivisionError, ValueError, OverflowError, TypeError):
+        return float("nan")
+
+
+def formula_matches(text, q):
+    vars_ = q.get("vars") or []
+    ref = compile_formula(q.get("answer", ""), vars_)
+    if not ref:
+        return False
+    lo, hi = (q.get("range") or [0.5, 4])[:2]
+    seed = [12345]
+
+    def rand():
+        seed[0] = (seed[0] * 1103515245 + 12345) % 2147483648
+        return seed[0] / 2147483648
+
+    envs = [{v: lo + (hi - lo) * rand() for v in vars_} for _ in range(8)]
+    for side in [x for x in _norm_formula(text).split("=") if x]:
+        f = compile_formula(side, vars_)
+        if not f:
+            continue
+        compared, ok = 0, True
+        for env in envs:
+            a, b = _safe(f, env), _safe(ref, env)
+            fa, fb = _math.isfinite(a), _math.isfinite(b)
+            if not fa and not fb:
+                continue
+            if fa != fb or abs(a - b) > 1e-9 + 1e-6 * max(abs(a), abs(b)):
+                ok = False
+                break
+            compared += 1
+        if ok and compared >= 3:
+            return True
+    return False
+
+
+BLAND_PROMPT = re.compile(r"^\s*(\d+\.\s*)?(in|from) lesson \d+[^?]*\b(what is|what's|what was|which|name)\b", re.I)
+
+
 def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s)
 
 
 def check_quiz(raw, label, errors, warnings):
+    """Validate one quiz widget; return the number of scored questions (reflect is not scored)."""
     try:
         spec = json.loads(raw)
     except json.JSONDecodeError as e:
         errors.append(f"{label}: invalid JSON ({e})")
         return 0
     qs = spec.get("questions", [])
+    scored = 0
     for n, q in enumerate(qs, 1):
         where = f"{label} Q{n}"
         t = q.get("type")
         if not q.get("prompt"):
             errors.append(f"{where}: missing prompt")
-        if not q.get("why"):
+        elif BLAND_PROMPT.search(strip_tags(q["prompt"])):
+            warnings.append(f"{where}: recall-style prompt ('In lesson N, what is ...'): ask the learner to use the idea instead")
+        if t != "reflect" and not q.get("why"):
             warnings.append(f"{where}: no 'why' explanation")
+        if "hint" in q and not isinstance(q["hint"], str):
+            errors.append(f"{where}: 'hint' must be a string")
         if t == "mc":
             opts = q.get("options", [])
             if len(opts) < 3:
@@ -84,23 +265,53 @@ def check_quiz(raw, label, errors, warnings):
             if not isinstance(q.get("answer"), int) or not 0 <= q["answer"] < len(opts):
                 errors.append(f"{where}: answer index out of range")
             plain = [strip_tags(o).strip() for o in opts]
-            words = {len(o.split()) for o in plain}
-            if len(words) > 1:
-                errors.append(f"{where}: options differ in word count {[len(o.split()) for o in plain]} (in authored order): {plain}")
             lens = [len(o) for o in plain]
             if min(lens) and max(lens) - min(lens) > 3 and (max(lens) - min(lens)) / min(lens) > CHAR_SPREAD:
                 errors.append(f"{where}: option lengths vary too much {lens} (in authored order): {plain}")
             if len(set(p.lower() for p in plain)) != len(plain):
                 errors.append(f"{where}: duplicate options")
+            fb = q.get("feedback")
+            if fb is None:
+                warnings.append(f"{where}: no per-option 'feedback' (one line per option saying why it is right or wrong)")
+            elif not isinstance(fb, list) or len(fb) != len(opts) or not all(isinstance(x, str) and x for x in fb):
+                errors.append(f"{where}: 'feedback' must be a list of {len(opts)} non-empty strings, one per option")
         elif t == "number":
             if not isinstance(q.get("answer"), (int, float)):
                 errors.append(f"{where}: numeric answer missing")
+            for w in q.get("wrong") or []:
+                if not (isinstance(w, dict) and isinstance(w.get("answer"), (int, float)) and w.get("feedback")):
+                    errors.append(f"{where}: number 'wrong' entries must be {{\"answer\": <number>, \"feedback\": \"...\"}}")
         elif t == "text":
-            if not q.get("accept"):
-                errors.append(f"{where}: 'accept' list missing")
+            if not q.get("accept") and not q.get("contains"):
+                errors.append(f"{where}: 'accept' (or 'contains') list missing")
+        elif t == "formula":
+            vars_ = q.get("vars")
+            if not vars_ or not isinstance(vars_, list):
+                errors.append(f"{where}: 'vars' list missing")
+                continue
+            if not compile_formula(q.get("answer", ""), vars_):
+                errors.append(f"{where}: reference 'answer' does not parse: {q.get('answer')!r}")
+                continue
+            examples = q.get("examples") or []
+            if len(examples) < 2:
+                errors.append(f"{where}: give at least 2 'examples' (other ways a learner may write the answer)")
+            for ex in examples:
+                if not formula_matches(ex, q):
+                    errors.append(f"{where}: example {ex!r} is not accepted as equal to {q['answer']!r}")
+            for ex in q.get("wrong") or []:
+                text = ex.get("answer", "") if isinstance(ex, dict) else ex
+                if isinstance(ex, dict) and not compile_formula(text, vars_):
+                    errors.append(f"{where}: 'wrong' answer {text!r} does not parse, so its feedback never shows")
+                elif formula_matches(text, q):
+                    errors.append(f"{where}: 'wrong' example {text!r} is accepted, but should not be")
+        elif t == "reflect":
+            if not q.get("answer"):
+                errors.append(f"{where}: reflect needs a model 'answer'")
+            continue
         else:
             errors.append(f"{where}: unknown type {t!r}")
-    return len(qs)
+        scored += 1
+    return scored
 
 
 def check_file(path, manifest):
@@ -128,9 +339,9 @@ def check_file(path, manifest):
             errors.append(f"missing required section .{cls}")
 
     total = sum(check_quiz(q, f"quiz {i + 1}", errors, warnings) for i, q in enumerate(s.quizzes))
-    minimum = {"lesson": 4, "lab": 3, "checkpoint": 15}[item["kind"]]
+    minimum = {"lesson": 3, "lab": 3, "checkpoint": 10}[item["kind"]]
     if total < minimum:
-        errors.append(f"only {total} quiz questions (minimum {minimum} for a {item['kind']})")
+        errors.append(f"only {total} scored quiz questions (minimum {minimum} for a {item['kind']})")
 
     if "manifest.js" not in text or "course.js" not in text:
         errors.append("must load ../assets/manifest.js and ../assets/course.js")

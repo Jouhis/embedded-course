@@ -56,12 +56,12 @@
     The master and the device must agree on the mode, and the device's datasheet states which one it expects. The master cannot detect a mismatch by itself, because SPI has no handshake. A mismatch shows up only as wrong data, which is why the first thing to check in a bad SPI capture is the mode.
   </p>
 
-  <h2>Concept 3: the 74HC595 wants mode 0</h2>
+  <h2>Concept 3: the 74HC595 samples on the rising edge</h2>
   <p>
     The 74HC595 has three inputs that matter here. DS is the serial data input. SHCP is the shift clock, and a low-to-high transition on it moves the bit on DS into the shift register. STCP is the storage clock, and a low-to-high transition on it copies the shift register into the eight output latches. The outputs drive the LEDs, so they change only when STCP rises <a href="https://www.onsemi.com/pdf/datasheet/mc74hc595a-d.pdf">onsemi MC74HC595A datasheet, pin descriptions for A, Shift Clock and Latch Clock</a>. The 74HC595 has no separate chip-select pin.
   </p>
   <p>
-    The data bit must be stable when SHCP rises, which means the device samples on the rising edge. With the clock idle low, the rising edge is the first edge. That is CPOL = 0 and CPHA = 0, which is mode 0. The SDK's <code>spi_init()</code> sets mode 0 as its default, and the solution keeps it.
+    The data bit must be stable when SHCP rises, so the 595 samples on the rising edge. With the clock idle low, the rising edge is the first edge. That is CPOL = 0 and CPHA = 0, which is mode 0, so mode 0 (which the project uses) works. The SDK's <code>spi_init()</code> sets mode 0 as its default, and the solution keeps it.
   </p>
   <p>
     The wiring in this project is GP19 to DS, GP18 to SHCP and GP17 to STCP. GP17 is the 74HC595's latch, and the project uses it as the chip select: it goes low before a byte and high after it. For this chip the rule that matters is the rising edge of STCP, which copies the shift register to the outputs. A low level on STCP does nothing, so holding it low during the transfer is safe. The rising edge after the last bit is the moment the new pattern appears on the LEDs.
@@ -83,7 +83,7 @@
     Take a 125 MHz clk_peri and ask for 1,000,000 Hz. The first loop in <code>spi_set_baudrate()</code> finds the smallest prescale that puts the output in range. Its test is whether clk_peri is below prescale × 256 × requested rate. For prescale 2 the right side is 2 × 256 × 1,000,000 = 512,000,000, which is more than 125,000,000, so the loop stops at prescale 2.
   </p>
   <p>
-    The second loop starts at a post-divide of 256 and steps down until the output would be at most the requested rate. It tests 125,000,000 ÷ (2 × (post − 1)). At post-divide 64 the value is 125,000,000 ÷ 126 = 992,063, which is below 1,000,000, so that is too slow. At post-divide 63 the test value is 125,000,000 ÷ 124 = 1,008,064, which is above 1,000,000, so the loop stops there. The rate the code then sets is 125,000,000 ÷ (2 × 63) = 992,063 Hz.
+    The second loop starts at a post-divide of 256 and steps down. At each step it tests 125,000,000 ÷ (2 × (post − 1)), and it stops at the first post-divide where that test is above 1,000,000. At post-divide 64 the test is 125,000,000 ÷ 126 = 992,063, which is not above 1,000,000, so the loop goes on. At post-divide 63 the test is 125,000,000 ÷ 124 = 1,008,064, which is above 1,000,000, so the loop stops with post-divide 63. The rate the code then sets is 125,000,000 ÷ (2 × 63) = 992,063 Hz.
   </p>
   <p>
     So a request for 1 MHz returns 992,063 Hz, about 0.8 % slower, and the register holds SCR = 62. This is the same arithmetic the datasheet describes, and it is why the learner should read the returned value. The numbers here come from reading the SDK code. They are not from a measured run.
@@ -235,40 +235,114 @@ spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which SPI mode is idle low and samples on the rising edge?",
-        "options": ["Mode 0", "Mode 1", "Mode 2", "Mode 3"],
+        "prompt": "Your 74HC595 chase is correct on the serial monitor, but on the logic analyzer each byte lands one bit late. The starter calls <code>spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_1, SPI_MSB_FIRST)</code>. Which change fixes it?",
+        "options": [
+          "Set CPHA to 0, so the bits change on the falling edge",
+          "Halve the bit rate, so each bit has more time",
+          "Add a 4.7 kΩ pull-up resistor on the MOSI pin",
+          "Call spi_is_busy() before writing each byte"
+        ],
         "answer": 0,
-        "why": "Mode 0 has CPOL 0 and CPHA 0: idle low, sampled on the first, rising edge. The tempting answer, mode 1, is also idle low, but it samples on the second, falling edge." },
+        "feedback": [
+          "Right. With CPHA 0 the master changes MOSI on the falling edge, so each bit is stable when the 595 samples it on the rising edge of SHCP.",
+          "A slower clock gives every bit more time, but the bits still change on the same rising edge the chip samples. The bit stays one step late at any speed.",
+          "A pull-up sets the level of a line that nothing drives. It does not change which clock edge the chip samples.",
+          "spi_is_busy() tells you when a transfer has ended. It cannot change when the bits move within a transfer."
+        ],
+        "hint": "Which edge does the 74HC595 sample on, and which edge does CPHA 1 make the master change MOSI on?",
+        "why": "CPOL 0 with CPHA 1 means the master changes MOSI on the first, rising edge. That is the same edge where the 595 samples DS, so the chip reads the previous bit. Mode 0 moves the change to the falling edge. A mode mismatch never shows as an error, only as shifted data, so check the mode against the device's datasheet before you touch the wiring."
+      },
       { "type": "number",
-        "prompt": "clk_peri is 125 MHz, the prescale is 2 and the post-divide is 1. What is the SPI bit rate, in megahertz?",
-        "answer": 62.5, "tolerance": 0.01, "unit": "MHz",
-        "why": "The rate is 125 MHz ÷ (2 × 1) = 62.5 MHz. The tempting answer, 125 MHz, forgets the prescale, which is always at least 2." },
+        "prompt": "A sensor's datasheet says its SPI clock can go up to 2 MHz. Your clk_peri is 125 MHz and the prescale is 2. What is the smallest post-divide that keeps the bit rate at or below 2 MHz?",
+        "answer": 32, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 31, "feedback": "31 gives 125 MHz ÷ (2 × 31) = 2.016 MHz, just over the limit. The SCR register holds post-divide minus one, so check which of the two the question asks for." },
+          { "answer": 16, "feedback": "16 gives 125 MHz ÷ 32 = 3.9 MHz, which is faster still. A bigger divider slows the clock." }
+        ],
+        "hint": "Rate = clk_peri ÷ (prescale × post-divide). Solve that for post-divide, with the rate set to 2 MHz.",
+        "why": "Rearranged, post-divide must be at least 125 MHz ÷ (2 × 2 MHz) = 31.25. Since the divider is a whole number, the smallest value that works is 32, which gives 1.953 MHz. Round the divider up, not to the nearest whole number: rounding down to 31 would break the datasheet limit."
+      },
       { "type": "number",
-        "prompt": "clk_peri is 125 MHz, the prescale is 2 and the post-divide is 50. What is the SPI bit rate, in kilohertz?",
-        "answer": 1250, "tolerance": 0.01, "unit": "kHz",
-        "why": "The rate is 125 MHz ÷ (2 × 50) = 1.25 MHz, which is 1250 kHz. The tempting answer, 125 kHz, drops a factor of ten." },
+        "prompt": "The OLED frame from lesson 61 is 1,112 bytes. Suppose it goes out over SPI at the 992,063 Hz rate from Concept 4 instead of I2C. Ignoring overhead, how long does one frame take, in milliseconds? Lesson 61's I2C frame took about 25 ms.",
+        "answer": 8.97, "tolerance": 0.02, "unit": "ms",
+        "wrong": [
+          { "answer": 1.12, "feedback": "That divides the bytes by the clock. Each byte is eight bits, and each bit is one clock pulse, so count 8,896 pulses." }
+        ],
+        "hint": "Count clock pulses, not bytes. How many bits are in one byte?",
+        "why": "1,112 bytes × 8 bits = 8,896 clock pulses, and 8,896 ÷ 992,063 Hz = 8.97 ms. So SPI would be roughly three times faster than the 25 ms I2C frame. The price is wires: SPI uses four lines where I2C shares two, and each SPI device needs its own chip select."
+      },
       { "type": "mc",
-        "prompt": "Which GPIO pin does this lesson use as the 74HC595 latch and chip select?",
-        "options": ["GP17", "GP18", "GP19", "GP16"],
-        "answer": 0,
-        "why": "GP17 is the latch and chip select in this project. GP18 is SCK and GP19 is MOSI. The tempting answer, GP16, is SPI0 RX, which is not used here." },
-      { "type": "text",
-        "prompt": "Which SDK function reports whether the SPI peripheral is still shifting a byte?",
-        "accept": ["spi_is_busy", "spi_is_busy()"],
-        "why": "spi_is_busy() is true while the controller is still shifting, so the latch must wait for it. The tempting answer, spi_write_blocking, returns the count of bytes written, not a busy flag." },
+        "prompt": "A student's sketch sets the latch pin high in <code>main()</code> and never takes it low. The serial monitor prints every pattern, but the LEDs stay on the first one. What is the most likely cause?",
+        "options": [
+          "The bit rate is too high for the LEDs to follow",
+          "The SPI mode is CPHA 1, so the chip reads nothing",
+          "The latch never falls, so no rising edge copies the register",
+          "The shift register is full, so it ignores new bits"
+        ],
+        "answer": 2,
+        "feedback": [
+          "The LEDs are not the limit. The outputs change only on a latch edge, so a fast shift shows nothing until the latch moves.",
+          "A wrong mode gives wrong bits, not frozen outputs. The register still fills; the outputs just never copy it.",
+          "Right. The outputs copy the shift register only on a rising edge of the latch. With the latch held high, no edge comes, so the LEDs keep the first pattern. Take it low before each byte and high after.",
+          "A shift register does not refuse bits. It keeps shifting, and the outputs still never see the change."
+        ],
+        "hint": "The latch copies the register to the outputs on which edge?",
+        "why": "The 74HC595 separates shifting from showing. Shifting fills an internal register, and the outputs follow it only on a rising edge of the latch. A symptom where the data is right but the outputs never move points at the latch, not at SPI timing. Check the latch edges on the analyzer before you change the clock."
+      },
       { "type": "mc",
-        "prompt": "With CPOL 0 and CPHA 1, on which clock edge does the device sample MOSI?",
-        "options": ["On the rising edge", "On the falling edge", "On the first edge", "On the idle level"],
+        "prompt": "A new SPI sensor's datasheet says its clock idles high, and it samples data on the falling edge. Which mode do you set?",
+        "options": ["Mode 0", "Mode 2", "Mode 1", "Mode 3"],
         "answer": 1,
-        "why": "CPHA 1 means the second edge, and with the clock idle low the second edge is falling. The tempting answer, the first edge, is the rising edge, which is where CPHA 0 samples." },
-      { "type": "number",
-        "prompt": "A 1 MHz SPI request on a 125 MHz clk_peri, with prescale 2, makes the SDK choose which post-divide? Give the post-divide value, not the register value.",
-        "answer": 63, "tolerance": 0, "unit": "",
-        "why": "Post-divide 63 gives 125 MHz ÷ (2 × 63) = 992,063 Hz, the closest rate at or below the request. The tempting answer, 62, is the value written to the SCR register, which is post-divide minus one." },
-      { "type": "number",
-        "prompt": "Bit-bang uses two 1 µs delays per bit. How many microseconds do eight bits take, ignoring the GPIO time?",
-        "answer": 16, "tolerance": 0, "unit": "µs",
-        "why": "Each bit has two delays of 1 µs, so 8 × 2 = 16 µs. The tempting answer, 8 µs, counts one delay per bit, which is half the clock period, not the whole bit." }
+        "feedback": [
+          "Mode 0 idles low and samples on the rising edge. Both the idle level and the edge are wrong here.",
+          "Right. Idle high is CPOL 1. Sampling on the first edge, which is falling when the clock idles high, is CPHA 0, so the mode is 2.",
+          "Mode 1 samples on the falling edge, but its clock idles low. This sensor idles high, so the mode is wrong.",
+          "Mode 3 idles high, but it samples on the second edge, which is rising. A falling-edge sensor needs CPHA 0."
+        ],
+        "hint": "Set the two bits one at a time: first the idle level (CPOL), then the edge (CPHA).",
+        "why": "CPOL comes from the idle level and CPHA from which edge is sampled. Idle high with the first edge is mode 2, which is the row in the table in Concept 2. Read the sampling edge in the datasheet's timing diagram, not in its text, because the diagram shows the idle level directly."
+      },
+      { "type": "mc",
+        "prompt": "A programmer writes the bit-bang loop as <code>for (int bit = 0; bit &lt;= 7; bit++)</code>, so bit 0 goes out first. They send the byte 0x01 and then latch. Which LED lights?",
+        "options": [
+          "Q0, the first LED",
+          "Q7, the eighth LED",
+          "Q1, the second LED",
+          "All eight, one per bit"
+        ],
+        "answer": 1,
+        "feedback": [
+          "That is the answer for MSB-first code. Here bit 0 goes in first, and the first bit in is pushed furthest along the register.",
+          "Right. Bit 0 is the first bit in, and seven later shifts push it to Q7. The byte comes out reversed, which is the classic bit-order bug.",
+          "Q1 would need the bit to be shifted only once. A byte fills all eight stages, so the first bit always reaches the far end.",
+          "0x01 has only one 1 bit, so exactly one LED lights. The LEDs follow the bits, not the number of bits."
+        ],
+        "hint": "Trace the first bit through eight shifts. Where does it end up?",
+        "why": "Lesson 25 uses MSB first, because the first bit in ends up in Q7 after eight shifts. Sending bit 0 first reverses the byte, so 0x01 lights the last LED. Test with an asymmetric pattern such as 0x01 or 0x0F, because a palindrome like 0xA5 looks right either way."
+      },
+      { "type": "formula",
+        "prompt": "A teammate's notes say the SPI bit rate is clk_peri × prescale × postdiv. Write the correct formula for the bit rate, in terms of clk_peri, prescale and postdiv.",
+        "vars": ["clk_peri", "prescale", "postdiv"],
+        "answer": "clk_peri/(prescale*postdiv)",
+        "display": "f = clk_peri ÷ (prescale × postdiv)",
+        "examples": [
+          "clk_peri/(postdiv*prescale)",
+          "clk_peri/prescale/postdiv",
+          "clk_peri*(prescale*postdiv)^-1"
+        ],
+        "wrong": [
+          { "answer": "clk_peri*prescale*postdiv", "feedback": "That multiplies the clock up. Each divider slows the clock, so both values divide it." },
+          { "answer": "clk_peri/prescale", "feedback": "That leaves out the post-divide. It gives 62.5 MHz whatever the post-divide, but with post-divide 50 the real rate is 1.25 MHz." },
+          { "answer": "clk_peri/(prescale+postdiv)", "feedback": "That adds the two dividers. They divide the clock one after the other, so their product sets the rate." }
+        ],
+        "hint": "Two dividers in a row multiply together.",
+        "why": "Two integers divide the peripheral clock in turn, so the rate is clk_peri ÷ (prescale × postdiv). The sanity check is the prescale of at least 2: with a 125 MHz clock and prescale 2, even post-divide 1 gives at most 62.5 MHz."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says bit-bang is fine for the LEDs, because they look right. Explain when that stops being true, using the timing numbers from this lesson.",
+        "hint": "Think about what the LEDs cannot show you: the clock edges themselves.",
+        "answer": "Bit-bang with 1 µs delays takes at least 16 µs per byte, and each bit's timing depends on the code around it. An interrupt or other work stretches a bit, so the clock edges are no longer even. The LEDs hide this, because the 74HC595 copies only on the latch edge. Once the CPU is busy, or a device needs a steady clock or a faster rate, hardware SPI is the choice: it shifts a byte in about 8 µs at 992,063 Hz with an even clock, and the CPU does no per-bit work."
+      }
     ] }
     </script>
   </div>
@@ -277,13 +351,23 @@ spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From <a href=\"0008-voltage-dividers.html\">lesson 8</a>: two equal resistors divide 5 V. What is the midpoint voltage, in volts?",
-        "answer": 2.5, "tolerance": 0.01, "unit": "V",
-        "why": "Equal resistors split the supply in half: 5 V ÷ 2 = 2.5 V. The tempting answer, 5 V, is the supply itself." },
+        "prompt": "A 5 V sensor's MISO line must reach a Pico input at a lower level. You use a <a href=\"0008-voltage-dividers.html\">voltage divider from lesson 8</a> with 10 kΩ on top and 20 kΩ on the bottom, and nothing else draws current from the midpoint. What voltage reaches the pin, in volts?",
+        "answer": 3.33, "tolerance": 0.02, "unit": "V",
+        "wrong": [
+          { "answer": 1.67, "feedback": "That swaps the resistors. The output is across the bottom resistor, which is 20 kΩ: 5 V × 20 kΩ ÷ 30 kΩ = 3.33 V." }
+        ],
+        "hint": "Vout = Vin × R2 ÷ (R1 + R2). Which resistor is R2?",
+        "why": "Vout = 5 V × 20 kΩ ÷ (10 kΩ + 20 kΩ) = 3.33 V. The ratio, not the size, sets the level, so 3.33 V is the same whether the resistors are 10 kΩ and 20 kΩ or 100 kΩ and 200 kΩ. Bigger resistors waste less current, but the ratio stays the same."
+      },
       { "type": "number",
-        "prompt": "From <a href=\"0047-pointers-to-registers-and-struct.html\">lesson 47</a>: GPIOC starts at 0x40011000 and ODR is at offset 0x0C. What is the ODR address in decimal?",
-        "answer": 1073811468, "tolerance": 0, "unit": "",
-        "why": "0x40011000 + 0x0C = 0x4001100C, which is 1073811468 in decimal. The tempting answer, 0x40011010, is BSRR at offset 0x10." }
+        "prompt": "Two 74HC595s are chained, so the first chip's serial output feeds the second chip's DS pin. Your code sends 16 bits and then pulses the latch once. How many rising edges on SHCP does it take to fill both chips?",
+        "answer": 16, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 8, "feedback": "Eight edges fill only one chip. The bits for the second chip pass through the first, so the chain needs 16 edges, one per bit." }
+        ],
+        "hint": "Each SHCP edge moves every bit one place along the whole chain.",
+        "why": "Each rising edge of SHCP moves each bit one place, and the chain of two chips has 16 places. So 16 edges fill both chips, and a single rising edge on STCP latches all 16 outputs. This is how lesson 25's shift register scales up: the chain behaves as one longer register."
+      }
     ] }
     </script>
   </div>

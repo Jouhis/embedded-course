@@ -273,59 +273,99 @@ hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, <span class="k">const</span>
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "You switch the LED from the GPIO backend to the fake. Which file must change for the switch?",
+        "prompt": "Your PC unit-test build stops with 'No such file or directory: hardware/gpio.h', pointing at led.h. Which fix keeps the interface chip-free?",
         "options": [
-          "CMakeLists.txt, the build choice",
-          "main.c, the blink function",
-          "led.h, the interface header",
-          "led_gpio.c, the pin driver"
+          "Move that include from led.h into led_gpio.c",
+          "Add the Pico SDK include path to the PC build",
+          "Copy gpio.h into the test folder by hand",
+          "Include led_gpio.c from inside led.h"
         ],
         "answer": 0,
-        "why": "The build selects the backend, so CMakeLists.txt changes. The tempting answer, main.c, is the application, and it never names a backend. led.h is the interface, which both backends share, so it does not change either." },
+        "feedback": [
+          "Right. The include belongs to the backend that uses the pin functions. led.h then names only plain types, and the PC build never needs the SDK.",
+          "The PC has no Pico SDK, so there is no SDK path to add. Even with one, the caller's header would still depend on a chip, and the test would need the board's SDK.",
+          "A copied chip header goes stale when the SDK changes, and the interface would still name a chip. Copying hides the design error instead of fixing it.",
+          "Including a backend from the header links that backend into every caller. That removes the choice made at link time, which was the point of the design."
+        ],
+        "hint": "Which file is allowed to know about the chip, and which must stay chip-free?",
+        "why": "Only the layer that touches the chip should include a chip header. The rule is the dependency direction: a header that names hardware makes every caller depend on that hardware, and the PC build then cannot compile at all."
+      },
+      { "type": "mc",
+        "prompt": "A student lists both led_gpio.c and led_fake.c in add_executable(). Which symptom do they see?",
+        "options": [
+          "A link error about multiple definitions",
+          "A compile error inside main.c itself",
+          "Fake output printed twice per call",
+          "The GPIO pin is driven twice per call"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Both files define the same LED functions, and only the linker sees both at once, so it stops with multiple definition errors.",
+          "main.c includes only led.h, which is the same for both backends, so it compiles without trouble.",
+          "The program never links, so nothing runs and nothing prints. Two definitions of one name are caught before the program exists.",
+          "No pin is driven either, because the link fails first. The error is at build time, not on the board."
+        ],
+        "hint": "When does each kind of error appear: while compiling a file, or when the objects are joined?",
+        "why": "The duplicate-symbol error is useful: it proves the program has one backend, and it names the function you must look for. Adding only the file the cache variable selects, as the CMake if block does, avoids the problem."
+      },
       { "type": "number",
-        "prompt": "The solution blinks three times, and each blink calls led_set() twice, once for on and once for off. How many lines does the fake backend print from led_set() in one run, without counting init?",
-        "answer": 6, "tolerance": 0, "unit": "lines",
-        "why": "Three blinks times two calls each gives six calls, and each call prints one line. The tempting answer, 3, counts the blinks and forgets the off step." },
+        "prompt": "On a Cortex-M0+, a caller runs led_set(&led, true) through the ops table. Counting only memory reads, how many loads happen before the jump into the backend?",
+        "answer": 3, "tolerance": 0, "unit": "loads",
+        "wrong": [
+          { "answer": 2, "feedback": "That misses one read. The caller loads led->ops, then the set pointer from the table, then led->ctx: three reads." },
+          { "answer": 1, "feedback": "The table pointer is one read. The call also loads the set entry and the context, so there are three." }
+        ],
+        "hint": "Follow the pointers in order: the handle, then the table, then the context.",
+        "why": "led->ops is one load, ops->set is a second, and led->ctx is a third, before the indirect jump. The link-time version has none of these loads. The difference is a few cycles, which matters only in a tight sampling loop, but you can count it in the disassembly."
+      },
+      { "type": "number",
+        "prompt": "A board drives four LEDs, each with its own ops-table handle (led_t). The table itself is one static const table in flash, shared by all four. On a 32-bit core, how many bytes of RAM do the four handles take?",
+        "answer": 32, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 8, "feedback": "That is one handle. Each LED has its own, and each handle is 8 bytes, so four take 32." },
+          { "answer": 40, "feedback": "That adds a table copy per LED. The table is static const and lives in flash, so each LED adds only its handle to RAM." }
+        ],
+        "hint": "A handle holds two pointers. How many bytes is one pointer on a 32-bit core?",
+        "why": "led_t holds two 4-byte pointers, so each handle is 8 bytes, and four handles take 32 bytes. Sharing one static const table keeps the per-device cost this small, which is why the table is written once and not per LED."
+      },
       { "type": "mc",
-        "prompt": "An ops table lets the program choose its backend at run time. What does it cost on every call, compared with link-time choice?",
+        "prompt": "Two identical I2C sensors sit on two separate buses, and both must be read at the same time through one driver. Which design do you need?",
         "options": [
-          "One indirect call on every use",
-          "A larger binary with every backend",
-          "A heap allocation at each startup",
-          "Tests could never use a fake"
+          "An opaque handle per bus, passed to every call",
+          "One static bus state that both sensors share",
+          "A link-time backend chosen by the CMake file",
+          "A global error flag checked after each call"
         ],
         "answer": 0,
-        "why": "Each call loads a pointer and branches through it, which the compiler cannot inline. The tempting answer, a larger binary, is true of both designs, since a backend is compiled in either way. The table itself is static, so it needs no heap, and tests can use a fake." },
-      { "type": "text",
-        "prompt": "Which header file may a caller include to use the LED, and must it name any pin? Give the file name only.",
-        "accept": ["led.h"],
-        "why": "led.h declares the interface and names no pin. The tempting answer, led_gpio.c, is a backend, and including it would tie the caller to one board." },
+        "feedback": [
+          "Right. Each bus gets its own handle, and every call names the instance it works on, so the two reads cannot interfere.",
+          "A shared state gives both sensors one bus record. That is the Lab 4 weakness: a second instance cannot have its own state.",
+          "A link-time choice picks one backend for the whole program. It cannot give two instances of the same driver their own state.",
+          "A global flag reports that something failed, but both sensors still share one state. It does not give each one its own instance."
+        ],
+        "hint": "What lets one driver keep two separate sets of state at once?",
+        "why": "An opaque handle is the C version of an object: each instance has its own state, and the caller cannot reach inside it. Two instances of one driver need that, and neither a global nor a build choice can provide it."
+      },
       { "type": "mc",
-        "prompt": "Lab 4's hal.h changes so two I2C buses can run at once. Which change does that most directly?",
+        "prompt": "Your log says 'I2C write failed' for two boards: one has an unplugged sensor, the other has a bus locked by a stuck SDA line. The calling code cannot tell them apart. Which weakness from the critique is behind that?",
         "options": [
-          "Pass a handle to every call",
-          "Return an int error from init",
-          "Split the pin enum in two",
-          "Add units to the timeout name"
+          "hal_i2c_write returns only 0 or -1",
+          "hal_init returns void and hides errors",
+          "The pin enum is shared by in and out",
+          "All state is global, with no context"
         ],
         "answer": 0,
-        "why": "A handle selects which instance a call uses, so two buses have two handles. The tempting answer, the error return, reports failures but still uses one global bus. Splitting the pin enum helps type checking, and the unit name helps readers." },
-      { "type": "mc",
-        "prompt": "An init function returns void, so a missing I2C device is never reported. Which change lets the caller see the failure?",
-        "options": [
-          "Return a status from init",
-          "Print the error in init",
-          "Remove the init call entirely",
-          "Use a global error variable"
+        "feedback": [
+          "Right. Every failure comes back as the same integer, so a NACK and a timeout look identical. The fix is a status enum with HAL_ERR_BUS and HAL_ERR_TIMEOUT.",
+          "void init is a real weakness, but it concerns start-up. This failure happens later, during a write.",
+          "A shared pin enum lets a write to an input pin compile. It says nothing about how a write fails.",
+          "Global state stops two instances from coexisting. It does not tell a NACK from a timeout."
         ],
-        "answer": 0,
-        "why": "A returned status reaches the caller, which can branch on it. The tempting answer, printing, reaches only a log that the application may never read. A global variable is a hidden channel that callers forget to check." },
-      { "type": "text",
-        "prompt": "An ops table gives the pointer that carries each backend's private data a name. Write that name in one word.",
-        "accept": ["ctx", "context"],
-        "why": "The ctx pointer is passed to every function in the table, so one backend can serve several instances. The tempting answer, handle, is the caller's word for the object, not the field inside the table." },
+        "hint": "Which return value would let the caller tell a missing device from a stuck bus?",
+        "why": "The two failures have different fixes: a missing sensor needs a retry or a check of the wiring, and a stuck bus needs a bus reset. With one integer, the code cannot choose between them, and the log only says 'failed'."
+      },
       { "type": "mc",
-        "prompt": "A table is built with the set entry left out, and main calls led_set. What is the likely first symptom on the board?",
+        "prompt": "A test builds the ops table with the set entry left out, then main calls led_set. What is the likely first symptom on the board?",
         "options": [
           "The LED blinks at double the rate",
           "A fault at the first LED call",
@@ -333,7 +373,38 @@ hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, <span class="k">const</span>
           "The monitor prints a bad count value"
         ],
         "answer": 1,
-        "why": "The call jumps through a NULL pointer, which faults at once. The tempting answer, a link error, applies to two backends in one build. A missing entry in a designated initialiser compiles, so the failure appears only when the call runs." }
+        "feedback": [
+          "A missing entry does not change the blink rate. The call never gets as far as the blink: it jumps to a bad address first.",
+          "Right. The missing pointer is NULL, so the call jumps to address zero and faults at once, on the first LED call.",
+          "The link is fine here. The table is a normal C initialiser, and a missing field compiles, so the failure appears only when the call runs.",
+          "Nothing counts or prints in this code path, so no count value appears. The fault comes first."
+        ],
+        "hint": "What does a NULL function pointer do when you call it?",
+        "why": "A table entry left out of a designated initialiser is set to NULL, and the compiler accepts that. Filling every entry, and checking each pointer at init, turns this silent fault into an error you can catch in review."
+      },
+      { "type": "mc",
+        "prompt": "In the ops-table design, the led_t handle stores a pointer to the table and a pointer for the backend's private data, such as a pin number boxed as a pointer. Which field holds the private data?",
+        "options": [
+          "ctx",
+          "ops",
+          "set",
+          "init"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. ctx is the context pointer. It is passed to every table function, so one backend can serve several instances.",
+          "ops is the table pointer. It says which backend the handle uses, and it holds no per-LED data.",
+          "set is one function pointer inside the table. It is code, not data, and it is not a field of the handle.",
+          "init is another table entry. Like set, it is a function, so it does not hold any state."
+        ],
+        "hint": "The table holds functions. Which field of the handle is the data the functions receive?",
+        "why": "Keeping the instance's data behind a context pointer is what lets one table serve many LEDs. The caller never reads ctx, so the backend can change its data without changing the caller."
+      },
+      { "type": "reflect",
+        "prompt": "Your product has one LED on one board. A colleague proposes an ops table, so the same code can swap backends at run time. Argue for or against, using this lesson's costs.",
+        "hint": "Count the cost on each call, and ask whether the program ever needs two backends at once.",
+        "answer": "Against, for this product. An ops table adds an indirect jump and about three loads to every call, plus a context pointer and a table to store. The benefit is run-time choice and several devices of one kind, and this product has neither: one board, one LED, and the backend is fixed when the product is built. Link-time choice gives the same test seam at no run-time cost, since the fake can be selected in CMake, and the code stays simpler to review. I would switch to an ops table only if the product gained a second LED with a different backend, or needed to change the backend while it runs."
+      }
     ] }
     </script>
   </div>
@@ -341,14 +412,42 @@ hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, <span class="k">const</span>
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 49: a struct of function pointers gets a pointer that tells each function which instance to use. What is that pointer called? Write one word.",
-        "accept": ["context", "ctx"],
-        "why": "The context pointer carries the instance's data to every function in the table. The tempting answer, handle, is the caller's name for the object, not the word the callback pattern uses." },
-      { "type": "text",
-        "prompt": "From lesson 46: which C keyword stops the compiler from caching a register read in a variable? Write it in lower case.",
-        "accept": ["volatile"],
-        "why": "volatile tells the compiler that each read or write must reach the device. The tempting answer, const, promises the value will not change, which is the opposite." }
+      { "type": "mc",
+        "prompt": "led_init() creates the LED handle as a local variable, then gives its address to a timer callback as the user data. The callback runs later, from an interrupt. What goes wrong, and what is the fix?",
+        "options": [
+          "The frame is gone later: make the handle static",
+          "Nothing: a pointer to a local stays valid",
+          "The callback should take the handle as const",
+          "The table must be NULL, so the call is skipped"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The local's stack frame is reused once led_init returns, so the pointer then points at other data. A static handle lives for the whole program, so the callback can always reach it.",
+          "A local lives only as long as its function. After led_init returns, that memory is reused by other calls, so the pointer goes stale.",
+          "const would stop writes through the handle, but it does nothing about the lifetime. The handle would still be gone when the callback runs.",
+          "A NULL table would make the call fail, not skip. The problem is the callback's data, not the table."
+        ],
+        "hint": "How long does a local variable live, compared with when the callback runs?",
+        "why": "Lesson 49's warning applies to every callback: it runs later than its registration, often from an interrupt, so its user data must outlive the registration. Making the handle static, or placing it in a long-lived struct, fixes it."
+      },
+      { "type": "mc",
+        "prompt": "A status register that the hardware updates on its own is read by led_get(). Which qualifier must the pointer to that register have (lesson 46)?",
+        "options": [
+          "volatile",
+          "const",
+          "static",
+          "register"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. volatile tells the compiler that each read must reach the hardware, because the value can change outside the code it can see.",
+          "const forbids writes through the pointer, but it does not stop the compiler from reusing an old read. The hardware can still change the value.",
+          "static controls how long a variable lives and who can see it. It does not stop the compiler from caching a read.",
+          "register is a request to keep a variable in a CPU register. That is exactly the caching volatile is there to prevent for hardware reads."
+        ],
+        "hint": "Which qualifier means the value can change without any write from this code?",
+        "why": "Lesson 46's rule holds for every hardware register: the CMSIS __IO macro is volatile, so the struct fields of a peripheral already carry it. A plain pointer to a register must carry it too."
+      }
     ] }
     </script>
   </div>

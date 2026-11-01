@@ -156,7 +156,7 @@
   <ol>
     <li><strong>A byte counter for a longer loop.</strong> The code <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> compares <code>i</code> with 300. The variable can only hold 0 to 255. After 255, <code>i++</code> stores 256 as 0, so <code>i</code> never reaches 300 and the loop never stops. The symptom is a program that stops printing, or a watchdog reset that happens at the same point each time. The compiler warns about it with <code>-Wextra</code> (<code>-Wtype-limits</code>). The fix is a counter wide enough for the bound: <code>uint16_t</code> here, or <code>int</code> if the range is not part of the design.</li>
     <li><strong>A signed overflow check that the optimiser removes.</strong> A test such as <code>if (x + 1 &gt; x)</code> is meant to catch an overflow when <code>x</code> is <code>INT_MAX</code>. Because signed overflow is undefined, the compiler may assume the sum is always greater, and it may remove the check. We compiled <code>int plus_one_greater(int x) { return x + 1 &gt; x; }</code> with GCC at <code>-O2</code>, and the output was a function that returns 1 with no comparison in it. The symptom is a guard that never fires in an optimised build. The fix is to check before the addition: test <code>x &gt; INT_MAX - 1</code> first.</li>
-    <li><strong>A negative index that passes a size check.</strong> A check such as <code>if (index &lt; sizeof(buf))</code> compares an <code>int</code> with a <code>size_t</code>, which is unsigned. A negative index becomes a huge number and passes the check, and then the code reads far outside the buffer. The symptom is a corrupted value or a fault that depends on the input. The fix is to test the sign first, or to use the same type on both sides before you compare.</li>
+    <li><strong>A negative index that passes a size check.</strong> A check such as <code>if (index &lt; (int)sizeof(buf))</code> tests only the top end of the buffer. A negative index such as −1 is below the size, so it passes, and the code then reads before the start of the buffer. The symptom is a corrupted value or a fault that depends on the input. The fix is to test the sign as well, as in <code>if (index &gt;= 0 &amp;&amp; index &lt; (int)sizeof(buf))</code>.</li>
     <li><strong>Trusting the sum of two bytes.</strong> A sensor total built as <code>uint8_t total = a + b + c</code> loses the carry at each store, so the total is wrong by a multiple of 256. The symptom is a total that is always smaller than expected for large inputs. The fix is to sum in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c;</code>, and to convert to a byte only when you must.</li>
   </ol>
 
@@ -212,49 +212,82 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "<code>uint8_t a = 200; uint8_t b = 100; int s = a + b;</code> What is <code>s</code>?",
-        "answer": 300, "tolerance": 0,
-        "why": "a and b are promoted to int before the addition, and int holds 300, so s is 300. The tempting answer is 44, which is what you get if the sum is first stored in a uint8_t." },
-      { "type": "number",
-        "prompt": "Same <code>a</code> and <code>b</code>. What is <code>c</code> after <code>uint8_t c = a + b;</code>?",
-        "answer": 44, "tolerance": 0,
-        "why": "The sum 300 is converted to uint8_t, which is modulo 256: 300 − 256 = 44. The tempting answer is 300, which is the value before the store, but c cannot hold it." },
-      { "type": "mc",
-        "prompt": "What does <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> do?",
-        "options": [
-          "Never ends, because i wraps",
-          "Runs exactly three hundred times",
-          "Is undefined behaviour in C",
-          "Fails to compile with errors"
+        "prompt": "A sensor sends three one-byte readings: <code>uint8_t a = 200; uint8_t b = 100; uint8_t c = 90;</code>. The code is <code>uint8_t total = a + b + c;</code>. What is <code>total</code> after the store?",
+        "answer": 134, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 390, "feedback": "390 is the sum, computed in int. The store into a uint8_t keeps only the low 8 bits, so 390 becomes 390 − 256 = 134." }
         ],
+        "hint": "The sum is computed in int and holds 390. Only the store into an 8-bit variable can lose bits.",
+        "why": "The sum 390 does not fit in a byte, and the store keeps it modulo 256, which is 134. The total is wrong by a full 256 and no compiler error appears. Sum in a uint32_t and narrow once, at the end, as the lesson recommends." },
+      { "type": "mc",
+        "prompt": "The firmware has <code>uint8_t i; for (i = 0; i &lt; 300; i++) { log_sample(i); }</code>. What happens on the board?",
+        "options": ["Never ends: i wraps from 255 to 0", "Runs 300 times, then stops", "Stops at 255 with a compile error", "Runs 255 times, then stops"],
         "answer": 0,
-        "why": "i can hold only 0 to 255, so after 255 it wraps to 0 and never reaches 300. The unsigned wrap is defined, so the second option is wrong too. The tempting answer is the third: it is the signed-overflow rule, which does not apply to an unsigned counter." },
-      { "type": "mc",
-        "prompt": "With <code>int x = INT_MAX;</code>, what does <code>x + 1</code> do?",
-        "options": [
-          "It always wraps to INT_MIN quietly",
-          "It is undefined behaviour in C",
-          "It always stops at INT_MAX safely",
-          "It becomes zero, as unsigned does"
+        "feedback": [
+          "Right. An 8-bit i holds 0 to 255. After 255, i++ stores 256 as 0, so i never reaches 300 and the loop never stops.",
+          "That assumes i can count to 300. A uint8_t cannot hold 300, so the wrap happens before the bound is reached.",
+          "The code compiles. A compiler may warn with -Wextra, but nothing stops the build, and the loop does not fail at 255 with an error.",
+          "i does reach 255, but then it wraps back to 0 instead of stopping. The loop starts again from 0 and never reaches 300."
         ],
+        "hint": "Work out the largest value a uint8_t can hold, then what i++ stores after that.",
+        "why": "The wrap is defined and silent. The symptom is a program that stops printing, or a watchdog reset at the same point each time. The fix is a counter wide enough for the bound, here uint16_t." },
+      { "type": "mc",
+        "prompt": "A driver guards against overflow with <code>int plus_one_greater(int x) { return x + 1 &gt; x; }</code>, and the check never fires in a -O2 build. Why?",
+        "options": ["The optimiser ignores all if statements at -O2", "Signed overflow is undefined, so the check can be removed", "Compilers never compare signed int values", "The value was promoted to uint8_t first"],
         "answer": 1,
-        "why": "Signed overflow is undefined behaviour, so the compiler may assume it never happens. The tempting answer is the first: many CPUs wrap, but the C standard does not promise it, and the optimiser can exploit that. The last option copies the unsigned rule, which does not apply to a signed int." },
-      { "type": "text",
-        "prompt": "Which <code>&lt;stdint.h&gt;</code> type holds exactly 8 unsigned bits?",
-        "accept": ["uint8_t"],
-        "why": "uint8_t is the exact-width unsigned 8-bit type. uint_least8_t is a tempting alternative, but it guarantees only at least 8 bits, which is not the same promise." },
+        "feedback": [
+          "Optimisers do not drop every if. This check is removed because of a rule about signed arithmetic, not a blanket rule about if statements.",
+          "Right. A signed overflow has no defined result, so the compiler may assume x + 1 never overflows, and then x + 1 > x is always true. Test before the addition, for example x > INT_MAX - 1.",
+          "Compilers compare signed ints all the time. The problem is the assumption about the overflow, not the comparison itself.",
+          "The value is an int, and promotion only widens small types. Nothing narrows it to uint8_t here."
+        ],
+        "hint": "Ask what the standard promises when a signed sum does not fit.",
+        "why": "A check written after the overflow is too late, and the optimiser may assume the overflow never happens. Put the test before the addition. Unsigned values wrap by definition, so this rule applies only to signed ints." },
+      { "type": "mc",
+        "prompt": "A driver writes <code>if (index &lt; (int)sizeof(buf)) buf[index] = v;</code>. It is called with <code>index = -1</code>. What happens?",
+        "options": ["The check passes, and buf[-1] is written", "The check fails, so nothing is written", "The compiler refuses to build the line", "The index wraps to 255, so buf[255] is written"],
+        "answer": 0,
+        "feedback": [
+          "Right. Both sides are signed, so -1 is less than the size and the check passes. buf[-1] lies before the array, and the symptom is corrupted memory that depends on the input.",
+          "That is the result for an unsigned index. Here both sides are signed, so -1 stays negative and is less than the size.",
+          "C builds this line without complaint. The problem is a logic error in the bound, not a syntax error.",
+          "Wrapping to 255 happens to an unsigned byte. The index is an int here, so -1 stays -1."
+        ],
+        "hint": "Compare -1 and the size as ordinary signed integers. What does the check see?",
+        "why": "A bounds check must test the sign as well as the top: index < 0 || index >= (int)sizeof(buf). A check that compares only the top end passes every negative index." },
       { "type": "number",
-        "prompt": "<code>int n = -1; unsigned int u = 1;</code> What does <code>n &lt; u</code> evaluate to? Use 1 for true and 0 for false.",
-        "answer": 0, "tolerance": 0,
-        "why": "n is converted to unsigned int, so it becomes UINT_MAX, which is larger than 1. The comparison is false, so the answer is 0. The tempting answer is 1, which is what you expect from the sign of n, but the conversion happens first." },
+        "prompt": "A ring buffer keeps its write position in a <code>uint8_t</code>. It is at 250, and the code runs <code>pos = pos + 10;</code>. What is <code>pos</code> afterwards?",
+        "answer": 4, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 260, "feedback": "260 is the sum, computed in int. Stored in a uint8_t it keeps only the low 8 bits, so 260 becomes 4." }
+        ],
+        "hint": "Add first in a wide type, then ask what an 8-bit variable can hold: 0 to 255.",
+        "why": "The sum 260 is computed in int, then stored modulo 256: 260 − 256 = 4. The position wraps to the start, which is correct only if the ring really has 256 slots." },
       { "type": "number",
-        "prompt": "<code>uint8_t a = 250; uint8_t b = 10; uint8_t c = a + b;</code> What is <code>c</code>?",
-        "answer": 4, "tolerance": 0,
-        "why": "The sum 260 is computed in int, then stored modulo 256: 260 − 256 = 4. The tempting answer is 260, which the sum is in int, but c is an 8-bit variable and cannot hold it." },
-      { "type": "number",
-        "prompt": "The loop <code>uint16_t i; for (i = 0; i &lt; 300; i++)</code> runs its body how many times?",
-        "answer": 300, "tolerance": 0,
-        "why": "A uint16_t holds up to 65,535, so i reaches 300 and the loop stops after 300 passes, from 0 to 299. The tempting answer is that it never ends, which is the byte version in the first question." }
+        "prompt": "A sensor returns -1 to mean 'no reading', and the code stores it in an <code>int n</code>. The limit is an <code>unsigned int</code> with the value 1. Does the branch <code>if (n &lt; limit)</code> run? Answer 1 for yes and 0 for no.",
+        "answer": 0, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 1, "feedback": "You would expect the sign to decide, but the mixed comparison converts n to unsigned first. -1 becomes 4,294,967,295, which is not less than 1." }
+        ],
+        "hint": "When an int and an unsigned int meet in a comparison, which one is converted first?",
+        "why": "A negative int meets an unsigned int of the same size, so the int is converted first: on a 32-bit int, -1 becomes UINT_MAX. The 'no reading' value then looks like the largest number. Test n < 0 first, or compare with signed types on both sides." },
+      { "type": "mc",
+        "prompt": "You define a packet header that a sensor sends over a serial link. It has a 16-bit length field. Which type should the struct member use?",
+        "options": ["uint16_t, an exact 16-bit unsigned type", "int, because it is the natural size for the CPU", "unsigned long long, to be safe on any target", "uint_least16_t, which is at least 16 bits"],
+        "answer": 0,
+        "feedback": [
+          "Right. The width is part of the wire format. uint16_t is exactly 16 bits, so the sender and the receiver agree on it.",
+          "int is not a fixed width. It is at least 16 bits, and 32 bits on the Cortex-M3 used here, so the field's size would change with the compiler.",
+          "A wider type holds the value, but it changes the size and layout of the header, so the receiver reads the wrong bytes.",
+          "uint_least16_t promises at least 16 bits, not exactly 16. The header needs the exact width, so the weaker promise is the wrong tool."
+        ],
+        "hint": "Which property must the sender and the receiver agree on?",
+        "why": "Use an exact-width type when the width is the contract. Use plain int for an ordinary counter where the range is not part of the design." },
+      { "type": "reflect",
+        "prompt": "You must add 64 one-byte sensor readings into one total, and the total must be exact. Explain which type you would use for the total, where the narrowing should happen, and how you would test that the wrap is gone.",
+        "hint": "What is the largest possible total of 64 readings, each up to 255?",
+        "answer": "Sum in a wide type such as uint32_t, converting each reading before the add, for example total = total + (uint32_t)r. The largest possible total is 64 × 255 = 16,320, which fits in a uint16_t, but uint32_t leaves room for larger inputs. Narrow to a byte only if the protocol needs one, and only after you have checked the range. For the test, feed values whose sum passes 255, such as 200 and 100, and check that the total is 300, not 44."
+      }
     ] }
     </script>
   </div>
@@ -262,14 +295,23 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 2: which file in a Wokwi project lists the parts and the connections?",
-        "accept": ["diagram.json"],
-        "why": "diagram.json describes the simulated board. main.c is the program, and wokwi.toml points at the firmware file and the debug port." },
       { "type": "number",
-        "prompt": "From lesson 5: a 5 V supply is across a 100 Ω resistor. What current flows, in amperes?",
-        "answer": 0.05, "tolerance": 0.02, "unit": "A",
-        "why": "I = V ÷ R = 5 V ÷ 100 Ω = 0.05 A. The tempting answer, 0.5 A, comes from dividing by 10 instead of 100." }
+        "prompt": "From lesson 21: Q15 holds values from -1.0 up to just under +1.0. Two filter inputs of 0.9, each stored as 29491, are added in a 16-bit signed integer, and the sum wraps. What does the stored sum read as, to one decimal place?",
+        "answer": -0.2, "tolerance": 0.05, "unit": "",
+        "wrong": [
+          { "answer": 1.8, "feedback": "1.8 is the true sum, but Q15 cannot hold it. The stored integer wraps, so the value reads as -0.2." }
+        ],
+        "hint": "Add 29491 and 29491. The sum is above 32767, so subtract 65536 to get the wrapped 16-bit value.",
+        "why": "0.9 + 0.9 = 1.8 does not fit Q15, so the 16-bit integer wraps: 58982 − 65536 = −6554, and −6554 ÷ 32768 is about −0.2. It is the same wrap as a uint8_t store, one size up. Check the range before the add, or saturate." },
+      { "type": "number",
+        "prompt": "Using the mask idea from lesson 20, which keeps only the bits it selects: a uint32_t sum holds 390. Work out 390 AND 0xFF, in decimal.",
+        "answer": 134, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 390, "feedback": "0xFF selects only the low 8 bits, so the high bits are cleared and the value shrinks." },
+          { "answer": 6, "feedback": "6 comes from the low 4 bits, 0x0F. The mask 0xFF keeps all eight low bits." }
+        ],
+        "hint": "Write 390 in hex first. Then keep only the two low hex digits.",
+        "why": "390 is 0x186. Its low eight bits, 0x86, are 134. That is exactly what a uint8_t store keeps, so for an unsigned value the mask and the narrowing do the same job." }
     ] }
     </script>
   </div>

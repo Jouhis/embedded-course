@@ -254,36 +254,93 @@
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which C object is placed in flash at run time?",
-        "options": ["A const lookup table", "A global counter value", "A local loop variable", "A zeroed global buffer"],
+        "prompt": "A teammate writes <code>const uint8_t font[256] = {...};</code> for the font bitmaps, and <code>static uint8_t frame[256];</code> for the frame buffer the program redraws every frame. Where does each live at run time?",
+        "options": ["The font in flash, the frame in SRAM", "The font in SRAM, the frame in flash", "Both in SRAM, because both are data", "Both in flash, since the program stores them"],
         "answer": 0,
-        "why": "A const object is read-only, so the linker places it in .rodata in flash. The tempting answer is the global counter: its starting value is stored in flash, but the variable itself lives in SRAM. The local loop variable lives on the stack, and the zeroed buffer lives in .bss in SRAM." },
+        "feedback": [
+          "Right. The const font is read-only, so the linker puts it in .rodata in flash. The frame is writable and starts zeroed, so it sits in .bss in SRAM.",
+          "Backwards. The frame changes on every redraw, and flash is written only in slow erase-and-write blocks, so the frame belongs in SRAM.",
+          "The font is const, so it does not need SRAM. Copying it there would waste RAM that the frame needs.",
+          "Flash is written only in slow blocks after an erase. A frame that changes every redraw belongs in SRAM, which takes single-word writes at bus speed."
+        ],
+        "hint": "Which object does the program only read, and which one does it write while it runs?",
+        "why": "Read-only data stays in flash, and writable data lives in SRAM. The frame buffer is written all the time, and SRAM takes a word write at bus speed, so it belongs there."
+      },
       { "type": "mc",
-        "prompt": "On an RP2040 with XIP caching enabled, what does a read that hits the XIP cache cost?",
-        "options": ["one cycle inside the cache", "a full serial flash read", "one cycle inside the bootrom", "a fixed sixteen cycle penalty"],
-        "answer": 0,
-        "why": "The datasheet gives the XIP cache a one-cycle hit (section 2.6.3.1). A full serial flash read is the miss path, the tempting answer, which is the slow case. The bootrom is a separate ROM and is not the cache, and the datasheet gives no fixed sixteen-cycle penalty." },
-      { "type": "number",
-        "prompt": "How many kilobytes is the RP2040 XIP cache? Type the number only.",
-        "answer": 16, "tolerance": 0, "unit": "kB",
-        "why": "RP2040 datasheet section 2.6.3.1: the cache is 16 kB. The tempting answer, 264, is the total on-chip SRAM from section 2.6.2, which does not include the cache." },
-      { "type": "text",
-        "prompt": "What is the name of the STM32F1 FLASH_ACR field that sets the number of flash wait states?",
-        "accept": ["LATENCY", "FLASH_ACR_LATENCY", "FLASH_ACR.LATENCY"],
-        "why": "FLASH_ACR_LATENCY is defined in the ST device header (stm32f103xb.h). The tempting answer, PRFTBE, is the prefetch buffer enable bit, which hides some delay but does not set the wait-state count." },
+        "prompt": "The linker reports that RAM is full. You added <code>uint32_t table[500] = {...};</code>, without <code>const</code>, as a lookup table that never changes. Which change frees the most SRAM?",
+        "options": ["Lower the CPU clock to save RAM", "Enlarge the stack to fit it", "Declare it const, so it goes to flash", "Make it a local inside main"],
+        "answer": 2,
+        "feedback": [
+          "The clock sets speed, not memory size. Lowering it frees no bytes of SRAM.",
+          "The stack is in SRAM too. A bigger stack takes more of the same RAM, not less.",
+          "Right. A const table is read-only, so the linker puts it in .rodata in flash, and its bytes leave SRAM.",
+          "A local is also in SRAM, on the stack. Moving the table there uses the same RAM."
+        ],
+        "hint": "Where does a const object live at run time?",
+        "why": "Every initialised global takes SRAM as well as a copy in flash, but a const object needs only flash. The map file shows which sections use the space, so check it after the change."
+      },
       { "type": "mc",
-        "prompt": "The map shows ram_counter at 0x20000000, with its load address at 0x080004E0. Where does its starting value 7 come from at reset?",
-        "options": ["Copied from flash at startup", "Read from flash each access", "Stored in SRAM by linker"],
+        "prompt": "You raise the Blue Pill's core clock to 72 MHz. The program works at the old clock, but at 72 MHz it fails only on some instructions. Which step did you most likely skip?",
+        "options": ["Clearing the .bss section at startup", "Raising the flash LATENCY before the clock", "Enabling the prefetch buffer afterwards", "Moving the constants into SRAM"],
+        "answer": 1,
+        "feedback": [
+          "Startup clears .bss before main runs, whatever the clock does. It has no control over flash timing.",
+          "Right. Flash needs wait states at a high clock. The HAL raises LATENCY first, so the flash is never asked for data faster than it can supply it. Read the field back to confirm.",
+          "The prefetch buffer hides some flash delay, but it does not set the wait-state count, so it cannot replace the LATENCY step.",
+          "Moving the constants would change where some reads go, but this failure comes from flash timing at the new clock, so that move does not fix it."
+        ],
+        "hint": "Which register field sets the number of wait states, and which must change first?",
+        "why": "Raise the latency before the clock rises, and lower it only after the clock falls. The rule goes one way, and it is the mistake from the common-mistakes section."
+      },
+      { "type": "number",
+        "prompt": "Illustration only: a hit costs 1 cycle and a miss costs 20 cycles. A long run of different functions hits the cache on 80 per cent of reads. What is the average cost, in cycles?",
+        "answer": 4.8, "tolerance": 0.01, "unit": "cycles",
+        "wrong": [
+          { "answer": 16.2, "feedback": "You multiplied the hit rate by the miss cost. The shares are 0.8 for hits at 1 cycle and 0.2 for misses at 20 cycles: 0.8 × 1 + 0.2 × 20 = 4.8." }
+        ],
+        "hint": "Average = (share of hits × 1) + (share of misses × 20).",
+        "why": "0.8 × 1 + 0.2 × 20 = 0.8 + 4 = 4.8 cycles. Hits are cheap, but each miss costs twenty times as much, so a few misses dominate the average."
+      },
+      { "type": "number",
+        "prompt": "Your <code>.data</code> and <code>.bss</code> end with their last used byte at <code>0x20004F7F</code>. RAM ends at <code>0x20005000</code>, and that end address is not included. How many bytes are free above the last used byte?",
+        "answer": 128, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 127, "feedback": "127 drops one byte. The free bytes run from 0x20004F80 up to 0x20004FFF inclusive, and that is 0x80 = 128 bytes." }
+        ],
+        "hint": "The first free byte is one above the last used one. Count from there to the end of RAM.",
+        "why": "The gap is 0x20005000 − 0x20004F80 = 0x80 = 128 bytes. A stack that grows down from the top of RAM has to fit in what is left, along with everything else, so keep this gap in mind when you size it."
+      },
+      { "type": "mc",
+        "prompt": "Your Pico program erases and rewrites a flash sector to save settings, and it runs from flash the whole time. The crash starts right after the write. Which fix addresses the cause?",
+        "options": ["Mark the writer __not_in_flash_func", "Make the settings variable const", "Move the settings onto the stack", "Enlarge the XIP cache in software"],
         "answer": 0,
-        "why": "The linker script puts .data in RAM with its stored bytes in flash (AT> FLASH), and the startup code copies them across before main runs. The tempting answer is that it is read from flash on each access, which is how a const object behaves, not a writable global." },
-      { "type": "number",
-        "prompt": "Illustration only: a cache hit costs 1 cycle and a miss costs 20 cycles. If 95 per cent of reads hit, what is the average cost, in cycles?",
-        "answer": 1.95, "tolerance": 0.01, "unit": "cycles",
-        "why": "The average is 0.95 × 1 + 0.05 × 20 = 1.95 cycles. The tempting answer is 1, which forgets the misses that still cost 20 cycles each." },
-      { "type": "number",
-        "prompt": "The Blue Pill's SRAM is 20 KB and starts at 0x20000000. What is the first address above the RAM, in hex? Type it in hex, for example 0x1234.",
-        "answer": 536891392, "tolerance": 0,
-        "why": "20 KB is 0x5000 bytes, so the first address above the RAM is 0x20005000, which is 536891392 in decimal. The tempting answer, 0x20004FFF, is the last byte inside the RAM, not the first one above it." }
+        "feedback": [
+          "Right. While the flash is erased or written, the core must not fetch from it. __not_in_flash_func places the writer in RAM, so the core runs it from there.",
+          "const makes the settings read-only, which is the opposite of what saving them needs. It does not stop the core fetching from the flash being written.",
+          "Moving the settings does not move the code. The core still fetches the writer's instructions from the flash that is being erased.",
+          "The cache does not fix this. The writer's code is still fetched from the same flash while that flash changes."
+        ],
+        "hint": "Which code is the core running while the flash is being erased?",
+        "why": "Flash programming is the one case where the cache matters: the core can fetch half-written or erased instructions. Keep the flash-writing function in RAM, as the common-mistakes section says."
+      },
+      { "type": "mc",
+        "prompt": "A timing loop is small enough to stay in the XIP cache, so every read after the first pass hits. What does each of those reads cost on the RP2040?",
+        "options": ["A full serial flash read, every time", "Twenty cycles, the miss cost in the illustration", "One cycle, served from the XIP cache", "Zero cycles, since the loop never reads flash"],
+        "answer": 2,
+        "feedback": [
+          "That is the miss path. After the first pass the cache serves the loop, so the serial read happens only on misses.",
+          "Twenty is the illustration's miss cost, not a datasheet value. These reads hit, and a hit costs one cycle.",
+          "Right. The XIP cache hit costs one cycle (datasheet section 2.6.3.1). A loop that fits in the cache keeps hitting, so its reads stay cheap.",
+          "Code in the XIP window is still fetched through the cache. The loop does read flash, just through the cache, and a hit takes one cycle."
+        ],
+        "hint": "The datasheet gives one number for a hit. What is it?",
+        "why": "The cost of a read depends on whether it hits. A tight loop is the best case for a cache. The miss path matters when the loop is too large, or runs too many different functions, to stay cached."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague says: \"The XIP cache makes flash as fast as SRAM, so we can leave everything in flash.\" Explain what is right and what is wrong in that claim, using this lesson's numbers.",
+        "hint": "What does a hit cost and what does a miss cost? Which one happens more often for a long, varied program?",
+        "answer": "Partly right. A hit costs one cycle, and a tight loop that stays in the cache runs close to the speed of a fast memory. It is wrong as a general rule. A miss goes out over the serial interface and costs far more, and the average depends on the hit rate. A long program that jumps between many functions misses often, so its average can be several times the hit cost. SRAM does not go through the cache, so its cost is steady, which is why timing-critical code and data are often placed there. The claim holds only for code that fits in the cache."
+      }
     ] }
     </script>
   </div>
@@ -292,13 +349,23 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 5: a 5 V supply is across a 100 Ω resistor. What current flows, in amperes?",
-        "answer": 0.05, "tolerance": 0.02, "unit": "A",
-        "why": "I = V ÷ R = 5 V ÷ 100 Ω = 0.05 A. The tempting answer, 0.5 A, comes from dividing by 10 instead of 100." },
+        "prompt": "A loop body is four 16-bit instructions, fetched from flash that adds 2 wait states to every access. Ignoring prefetch, how many extra cycles does one pass of the loop lose to wait states?",
+        "answer": 8, "tolerance": 0, "unit": "cycles",
+        "wrong": [
+          { "answer": 2, "feedback": "2 counts only one fetch. Each of the four instructions is fetched once per pass, so four fetches × 2 wait states = 8 extra cycles." }
+        ],
+        "hint": "Each instruction is fetched once per pass, and each wait state adds one cycle to a fetch.",
+        "why": "Lesson 28's fetch step runs for every instruction, so a slow fetch is paid on every pass, not once. Four fetches at two wait states each cost 8 cycles per pass."
+      },
       { "type": "number",
-        "prompt": "From lesson 9: a 3.3 V GPIO drives a red LED with Vf = 2.0 V at 4 mA. What is the E12 resistor in ohms?",
-        "answer": 330, "tolerance": 0.01, "unit": "Ω",
-        "why": "R = (3.3 V − 2.0 V) ÷ 0.004 A = 325 Ω, and rounding up to the next E12 value gives 330 Ω. The tempting answer, 270 Ω, is below 325 Ω and draws more than 4 mA." }
+        "prompt": "A friend's board has a linker map that lists its RAM length as 0x8000. How many kilobytes of RAM is that?",
+        "answer": 32, "tolerance": 0, "unit": "KB",
+        "wrong": [
+          { "answer": 7.8, "feedback": "7.8 KB is what you get by reading 0x8000 as the decimal number 8000. In hex, 0x8000 is 32,768 bytes, which is 32 KB." }
+        ],
+        "hint": "Convert 0x8000 to bytes first: 8 × 16³ = 32768. Then divide by 1024.",
+        "why": "0x8000 is 32,768 bytes, which is 32 KB. The map writes lengths in hex, as the 0x5000 length did in this lesson, so read the number as hex before you size anything."
+      }
     ] }
     </script>
   </div>

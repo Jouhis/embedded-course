@@ -269,37 +269,113 @@ GPIOA-&gt;BSRR = GPIO_BSRR_BS0;               <span class="c">/* ODR bit 0 = 1 s
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "RING_SIZE is 16. What mask turns a free-running counter into a slot index? Give it in decimal.",
-        "answer": 15, "tolerance": 0, "unit": "",
-        "why": "The index is counter AND (SIZE − 1), so the mask is 15, which is 0x0F. The tempting answer, 16, is the size, and as a mask it would keep only the bit above the array." },
+        "prompt": "A GPS module sends back-to-back bytes at 115200 baud, each with one start bit, eight data bits and one stop bit. How many microseconds pass from the start of one byte to the start of the next?",
+        "answer": 86.8, "tolerance": 0.01, "unit": "µs",
+        "wrong": [
+          { "answer": 69.4, "feedback": "That counts only the eight data bits. The start and stop bits are part of every byte, so a byte takes 10 bit times, not 8." }
+        ],
+        "hint": "A byte is 10 bit times here. One bit time at 115200 baud is 1 ÷ 115200 seconds.",
+        "why": "10 ÷ 115200 s is 86.8 µs. Main has to read each byte before the next one arrives about 87 µs later. A loop that takes a few milliseconds will lose bytes at this speed, which is the whole reason for the interrupt."
+      },
       { "type": "mc",
-        "prompt": "Why does the producer write the slot before it updates <code>head</code>?",
-        "options": ["so the consumer never reads an unwritten slot", "so the RX interrupt runs faster overall now", "so the compiler may drop the store here"],
+        "prompt": "The button count rises by several per press, and the debugger shows bit 0 of <code>EXTI-&gt;PR</code> still set when the handler returns. Which line is missing?",
+        "options": [
+          "The handler does not write 1 to EXTI-&gt;PR",
+          "The handler writes IMR back, not PR",
+          "The AFIO clock is off, so the route is missing",
+          "The NVIC priority is set to 2, not 0 here"
+        ],
         "answer": 0,
-        "why": "The consumer treats a slot as valid once it sees the new head, so the slot must be written first. The tempting answer, speed, is not a reason for the order. Volatile stops the compiler from dropping the store, and it is the ordering that matters." },
+        "feedback": [
+          "Right. A write of 1 to a pending bit clears it. Without that write the bit stays set, and the interrupt is taken again as soon as the handler returns.",
+          "IMR is the mask that enables the line. Writing it does not touch the pending bit, so the flag stays set.",
+          "AFIO routes the pin to the line. With the route missing, the press would never reach EXTI, so the count would stay at zero rather than climb.",
+          "Priority decides which interrupt goes first. It does not clear a pending bit, so the handler still needs the write."
+        ],
+        "hint": "Which register holds the pending bit, and what clears it?",
+        "why": "Write-1-to-clear flags need a write of 1 from the handler. A write of 0 does nothing. After a press, read PR in the debugger: bit 0 should be 0 once the handler has run."
+      },
       { "type": "mc",
-        "prompt": "Which AFIO_EXTICR1 field value routes port B to EXTI line 0?",
-        "options": ["0x0", "0x1", "0x2"],
-        "answer": 1,
-        "why": "The port codes are 0 for A, 1 for B and 2 for C. The tempting answer, 0x0, routes port A, which is what the solution uses for PA0." },
-      { "type": "text",
-        "prompt": "Which register do you write a 1 to, to clear the pending flag of EXTI line 0? Give the register name.",
-        "accept": ["EXTI->PR", "EXTI_PR", "PR", "EXTI PR"],
-        "why": "EXTI_PR is cleared by writing 1 to its bit. The tempting answer, IMR, is the mask, which enables the line and does not hold the pending flag." },
-      { "type": "mc",
-        "prompt": "The RX handler found ORE set and RXNE set. Which step clears ORE?",
-        "options": ["read SR first, then read DR", "read DR twice to clear ORE", "write one to the ORE flag"],
+        "prompt": "A sensor sends one byte every 87 µs at 115200 baud. The main loop sometimes spends 5 ms updating a display, and bytes go missing during those updates. What is the best fix?",
+        "options": [
+          "Receive in an interrupt that fills a ring; main drains it",
+          "Poll RXNE inside the display code, once for each update",
+          "Raise the baud rate to 921600 and keep the polling loop",
+          "Add HAL_Delay(5) between bytes so the sender waits for you"
+        ],
         "answer": 0,
-        "why": "Reading SR and then DR is the sequence that clears ORE and RXNE. The tempting answer, reading DR twice, consumes two bytes. ORE is read-only, so writing a 1 to it does nothing." },
+        "feedback": [
+          "Right. The interrupt takes every byte within a few microseconds, and the ring holds them while the display runs. Nothing is lost unless the ring fills.",
+          "A poll inside the display code is still late for a 5 ms update. Bytes that arrive during the update overwrite the one that is waiting.",
+          "A faster baud shortens each byte, but a 5 ms update still misses several of them. The problem moves rather than goes away.",
+          "The sender does not wait for your code. A delay only postpones the reads, and the next byte still overwrites the last one."
+        ],
+        "hint": "Where should a byte wait, so that main can take its time?",
+        "why": "An interrupt that copies each byte into a ring, with main draining it later, is the standard pattern. The handler should still count overruns, as step 2 does, so an overflow shows up in the numbers instead of being silent."
+      },
+      { "type": "mc",
+        "prompt": "A colleague moves the tail update in <code>ring_get</code> above the line that reads the slot. Which bug can now appear?",
+        "options": [
+          "The interrupt can overwrite the slot before main reads it",
+          "The consumer reads the head twice and misses a byte",
+          "The 16-bit difference head − tail goes negative",
+          "Nothing changes, because the two lines do not interact"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Once the tail moves, the producer sees the slot as free and may write into it. If the interrupt runs between the two lines, main reads the new byte, and the old one is lost.",
+          "The consumer reads head once, at the start of ring_get. Moving the tail line does not add a second read of head.",
+          "The difference is computed in 16 bits, so it wraps and stays correct. The count cannot go negative.",
+          "They do interact. The moment the tail moves, the slot counts as free for the interrupt to reuse."
+        ],
+        "hint": "After the tail moves, who is allowed to write to that slot?",
+        "why": "The consumer's half of the protocol is to read the slot, then free it. The producer may reuse a slot only after the tail has moved past it, so the free has to come last."
+      },
+      { "type": "mc",
+        "prompt": "The button moves from PA0 to PB0, and you keep the handler as <code>EXTI0_IRQHandler</code>. Which change to the EXTI setup is needed?",
+        "options": [
+          "Set the line-0 field of EXTICR[0] to 0x1",
+          "Use EXTI1_IRQn, because the button is on port B",
+          "Change FTSR to RTSR, so the edge matches the port",
+          "Put line 0 in EXTICR[1], the second register"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The port code for B is 1, and it goes in the four bits that select the port for line 0. The line number still follows the pin number.",
+          "Line numbers follow the pin number, not the port. PB0 is pin 0, so it still uses line 0 and EXTI0_IRQn.",
+          "RTSR and FTSR choose the edge, not the port. Changing them alters the edge the button triggers on, which is a different bug.",
+          "EXTICR[0] holds lines 0 to 3, so line 0 stays in the first register."
+        ],
+        "hint": "Two things are involved: the pin number picks the line, and the port code in EXTICR picks the port.",
+        "why": "AFIO's EXTICR picks the port, the pin number picks the line, and the line picks the vector. A button on PB3 would move to line 3 and to its own handler, and the pending-bit check in that handler would change too."
+      },
       { "type": "number",
-        "prompt": "In the trace, head is 0 and tail is 65534, with 16-bit arithmetic. How many bytes are queued?",
-        "answer": 2, "tolerance": 0, "unit": "bytes",
-        "why": "(0 − 65534) computed in 16 bits is 2, because the head is two counts past the tail across the wrap. The tempting answer, 65534, is the plain subtraction without the wrap, which is wrong." },
-      { "type": "mc",
-        "prompt": "RING OK prints, but typing never echoes. Which setting is most likely missing?",
-        "options": ["the RXNE interrupt enable", "the GPIOA output mode", "the SysTick reload value"],
-        "answer": 0,
-        "why": "Without RXNEIE the receive flag never raises an interrupt, so the ring stays empty. The GPIO output mode and SysTick do not touch the receive path, so they cannot stop the echo." }
+        "prompt": "The ring has 16 slots. In 16-bit counters, head is 5 and tail is 65530. How many bytes are queued?",
+        "answer": 11, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": -65525, "feedback": "That is the plain subtraction, 5 − 65530, with no wrap. In 16-bit arithmetic it wraps to 11, the true count." }
+        ],
+        "hint": "Count the steps from the tail up through the wrap at 65536 to the head.",
+        "why": "The tail is 6 counts below the wrap and the head is 5 counts above it, so 6 + 5 = 11. Eleven is less than 16, so the ring is not full and the producer can still write. The full test in ring_put uses the same 16-bit difference."
+      },
+      { "type": "formula",
+        "prompt": "A ring has <em>SIZE</em> slots and currently holds <em>n</em> bytes. Write the number of slots the producer can still fill.",
+        "vars": ["SIZE", "n"],
+        "answer": "SIZE-n",
+        "display": "free = SIZE − n",
+        "examples": ["-n+SIZE", "SIZE+(-n)", "SIZE-1*n"],
+        "wrong": [
+          { "answer": "n", "feedback": "n is the number of bytes already queued. The free slots are what is left of the ring." },
+          { "answer": "SIZE+n", "feedback": "The free count shrinks as bytes arrive, so adding n is backwards." }
+        ],
+        "hint": "A full ring holds SIZE bytes and has no free slots.",
+        "why": "Free slots are the total minus the queued bytes. The full test in ring_put is the same fact with n equal to SIZE, which is why it compares the difference with 16."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague says: 'The ring has no lock, so <code>volatile</code> is not needed on head, tail or data.' Explain what <code>volatile</code> still does here, and what it does not do.",
+        "hint": "What would the compiler do with head if it could see that main never changes it?",
+        "answer": "volatile tells the compiler that these values can change outside the code it can see: the interrupt writes head, and main writes tail. So the compiler reloads them on each access instead of keeping them in a register. It also keeps the store to the slot before the store to head, so the consumer never sees a head that points at an unwritten slot. It does not make anything atomic, and it does not protect against a second writer. The lock-free argument needs both the ordering that volatile gives and the rule of one writer per index, so removing volatile breaks it."
+      }
     ] }
     </script>
   </div>
@@ -307,14 +383,37 @@ GPIOA-&gt;BSRR = GPIO_BSRR_BS0;               <span class="c">/* ODR bit 0 = 1 s
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 46: does volatile make a read-modify-write of a shared variable atomic? Answer yes or no.",
-        "accept": ["no"],
-        "why": "volatile forces each access to happen, but it does not make a load, change and store one step. The tempting answer, yes, confuses the forced access with atomicity." },
-      { "type": "text",
-        "prompt": "From lesson 20: what is 0xA5 OR 0x0F, in hex? Give the value with the 0x prefix.",
-        "accept": ["0xAF", "AF"],
-        "why": "0xA5 OR 0x0F is 0xAF, because the low nibble becomes F. The tempting answer, 0x0A, is the AND of the two values." }
+      { "type": "mc",
+        "prompt": "Your ISR increments <code>g_rx_dropped</code>, and main reads it to report overruns (the qualifier rules from lesson 46). Pick the declaration that lets main see every update.",
+        "options": [
+          "volatile uint32_t g_rx_dropped;",
+          "const uint32_t g_rx_dropped;",
+          "static uint32_t g_rx_dropped;",
+          "uint32_t g_rx_dropped;"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. volatile makes main reload the value each time, so it sees each increment. The ISR's write is a change the compiler cannot see in main.",
+          "const forbids writes, and the ISR must increment the count. The qualifier has to allow changes.",
+          "static gives internal linkage, which is good for a helper, but it does not make the value volatile. Main may still read a stale copy.",
+          "Without volatile the compiler may load the value once in main and reuse it, so the count looks stuck."
+        ],
+        "hint": "Which qualifier tells the compiler that something outside the visible code writes the value?",
+        "why": "An ISR-written variable needs volatile. Static and const do not replace it, because they control visibility and writability, not whether the compiler may reuse a value it has already loaded."
+      },
+      { "type": "mc",
+        "prompt": "The handler tests ORE and RXNE together with one mask (the bit masks from lesson 20). In hex, what mask does <code>sr &amp; (USART_SR_RXNE | USART_SR_ORE)</code> use?",
+        "options": ["0x28", "0x20", "0x18", "0x2A"],
+        "answer": 0,
+        "feedback": [
+          "Right. ORE is bit 3, which is 0x08, and RXNE is bit 5, which is 0x20. OR-ing the two masks sets both bits, giving 0x28.",
+          "0x20 is RXNE alone. The test would miss overruns, which is the case the handler counts.",
+          "0x18 includes bit 4, which the handler does not test. It would react to a flag that has nothing to do with the byte.",
+          "0x2A sets bit 1 as well. That is an extra flag, and the handler does not test it."
+        ],
+        "hint": "Each flag is one bit. Put bit 5 and bit 3 side by side in binary.",
+        "why": "A combined mask works because each flag has its own bit. OR keeps both bits, and AND with the status word tests either one, so the handler's first if is true when either event happened."
+      }
     ] }
     </script>
   </div>

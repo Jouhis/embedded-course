@@ -4,6 +4,31 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
 ## Unreleased
 
+### Quizzes that teach
+
+- Every quiz rewritten (all 130 pages). The questions are now situations: predict what code prints,
+  diagnose a symptom, fix a line, calculate and interpret, or choose a design. The old ones were
+  mostly vocabulary and "In lesson N, what is…" recall. Spaced reviews apply an earlier lesson to the
+  current topic. The question count now follows the lesson's content.
+- Quiz engine (`assets/course.js`):
+  - New `formula` type accepts any equivalent form (`RI^2`, `I²R`, `P = I*I*R`, `R₂`, implicit
+    multiplication), checked by evaluating both sides.
+  - Text answers ignore case, articles, hyphens and quotes.
+  - Numbers also accept `330R` and `4R7`.
+  - Multiple choice explains every option.
+  - Typical mistakes listed in `wrong` get their own explanation.
+  - New `hint` field, and a new `reflect` type: think it through, then compare with a model answer.
+- `check_course.py` verifies every formula question's alternative answers and listed mistakes with a
+  Python port of the engine, and warns about recall-style prompts and missing feedback. The rule that
+  multiple-choice options have equal word counts is gone, and the minimum is now 3 questions.
+  LESSON-SPEC section 5 is rewritten around questions that teach.
+- 36 prose errors found by the quiz writers were checked against their sources and fixed. Examples:
+  - The negative-index example in lesson 45 could not happen as written.
+  - In lesson 89, a FreeRTOS queue copies the item, so the real bug is queuing a pointer to dead data.
+  - The xTaskCreate stack-depth argument is the third, not the last (lesson 91).
+  - The COBS 254-byte case encodes to 256 bytes (lesson 101).
+  - Modbus 3.5 characters at 115200 8N1 is 304 µs (lesson 113).
+
 - README, and a setup script for Windows, macOS and Linux (`setup.cmd`, `setup.sh`, `tools/setup.py`).
   It uses winget, Homebrew, apt, dnf or pacman. Without one, it downloads portable tools into
   `~/.embedded-course-tools` (no admin rights needed).

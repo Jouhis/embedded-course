@@ -65,7 +65,7 @@
   </p>
   <ul>
     <li><strong>C is the unsigned flag.</strong> It says whether the true unsigned result left the 32-bit range. After a compare, C = 1 means the first operand was at least the second, unsigned. The branch <code>BHS</code> (branch if higher or same) reads C = 1. The branch <code>BLO</code> (branch if lower) reads C = 0.</li>
-    <li><strong>V is the signed overflow flag.</strong> It says whether the signed result has the wrong sign, which happens when the true answer is outside the signed range. The rule is simple: two operands with the same sign produced a result with the other sign. Signed comparisons use V together with N.</li>
+    <li><strong>V is the signed overflow flag.</strong> It says whether the signed result has the wrong sign, which happens when the true answer is outside the signed range. The rule is simple: two operands with the same sign produced a result with the other sign. For a subtraction a − b, the adder actually adds a and NOT b plus 1, so the rule applies to those inputs: a and NOT b have the same sign when a and b have different signs. Signed comparisons use V together with N.</li>
     <li><strong>N is the sign of the 32-bit result.</strong> On its own it is just bit 31. Combined with V, it tells you whether the true signed result is negative, and that is what a signed less-than needs. The branch <code>BLT</code> (signed less than) branches when N differs from V, and <code>BGE</code> (signed greater or equal) branches when N equals V.</li>
   </ul>
   <p>
@@ -176,36 +176,75 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "A 32-bit <code>ADDS</code> adds 0xFFFFFFFF and 1. What is the C flag, 0 or 1?",
+        "prompt": "A 32-bit unsigned counter holds <code>0xFFFFFFFF</code>. You run <code>ADDS R1, R0, #1</code>. What is the C flag after it, 0 or 1?",
         "answer": 1, "tolerance": 0,
-        "why": "The sum 0xFFFFFFFF + 1 = 0x1_0000_0000 carries out of bit 31, so C = 1, and the result is 0 with Z = 1. The tempting answer, 0, assumes an unsigned add cannot overflow, but it does: it wraps." },
+        "wrong": [
+          { "answer": 0, "feedback": "Zero would mean the add cannot overflow. It can: the sum 0x1_0000_0000 carries out of bit 31, and the 32-bit result wraps to 0." }
+        ],
+        "hint": "Work out the sum with one extra bit, then look at what leaves bit 31.",
+        "why": "The sum is 0xFFFFFFFF + 1 = 0x1_0000_0000. The carry out of bit 31 sets C = 1, and the 32-bit result is 0, so Z = 1 as well. A counter that wraps is the everyday case the C flag exists for." },
       { "type": "mc",
-        "prompt": "For signed 8-bit <code>0x7F + 1</code>, which flag reports that the signed result is wrong?",
-        "options": ["V (overflow) flag", "C (carry) flag", "N (negative) flag"],
-        "answer": 0,
-        "why": "127 + 1 = 128 is out of signed range, so V = 1. C = 0, because there is no carry out of bit 7. N is also 1 here, because bit 7 of the result is set, but N only reports the sign bit, not that the result is wrong. The tempting answer, C, confuses signed overflow with an unsigned carry." },
+        "prompt": "Your firmware has<pre><code>uint32_t gap = 0;\nif (gap - 1 &lt; 5) {\n    /* ... */\n}</code></pre>Does the body run?",
+        "options": ["Yes, the body runs", "No, the body is skipped", "It depends on the compiler"],
+        "answer": 1,
+        "feedback": [
+          "That assumes gap - 1 is -1, which is less than 5. For an unsigned type, 0 - 1 wraps to 0xFFFFFFFF, which is a very large number.",
+          "Right. 0 - 1 wraps to 0xFFFFFFFF, which is not less than 5, so the unsigned compare branches around the body.",
+          "C defines unsigned wrap-around, so every compiler gives this result. A compiler chooses the instructions, not the answer."
+        ],
+        "hint": "What is 0 - 1 when the type is 32-bit unsigned?",
+        "why": "This is the unsigned wrap that catches firmware out. The subtraction is done modulo 2 to the 32nd, so the compare sees 0xFFFFFFFF, and the branch that means 'less than' finds it false. In review, when an unsigned subtraction feeds a comparison, ask what the value is at its smallest, usually zero." },
       { "type": "mc",
-        "prompt": "Which flag tells you that an unsigned subtraction borrowed?",
-        "options": ["the C flag is clear", "the C flag is set", "the V flag is set"],
+        "prompt": "A signed 8-bit sum in your firmware is <code>0x7F + 1</code> (127 + 1), done with <code>ADDS</code>. Which flag tells you the signed answer is wrong?",
+        "options": ["V (overflow)", "C (carry)", "N (negative)"],
         "answer": 0,
-        "why": "On an Arm subtract, C = 1 means no borrow, so a borrow shows as C = 0. The tempting answer, C set, is the no-borrow case. V is not involved for unsigned numbers." },
-      { "type": "number",
-        "prompt": "An 8-bit subtract gives the result <code>0xFE</code>. What is the N flag, 0 or 1?",
-        "answer": 1, "tolerance": 0,
-        "why": "N is bit 7 of the result. 0xFE has bit 7 set, so N = 1. The tempting answer, 0, looks at bit 0, which is also 0 in 0xFE but is not the sign bit." },
+        "feedback": [
+          "Right. 127 + 1 = 128 is out of the signed range, so V = 1. V is the flag that reports a signed overflow.",
+          "C stays 0 here, because no carry leaves bit 7. C is the unsigned flag, and 127 + 1 is not an unsigned overflow.",
+          "N is set too, because bit 7 of the result is 1. But N alone cannot tell a wrong sign from a genuinely negative value, so it does not report the overflow."
+        ],
+        "why": "127 + 1 = 128 does not fit in signed 8 bits, so V = 1. C = 0 because there is no carry out of bit 7. The tempting answer, C, mixes signed overflow up with the unsigned carry. Use V for signed values and C for unsigned ones." },
+      { "type": "mc",
+        "prompt": "Your code computes <code>a - b</code> with unsigned values, and <code>a</code> is smaller, so the true result is negative. After the <code>SUBS</code>, which flag shows the borrow?",
+        "options": ["C is clear (0)", "C is set (1)", "V is set (1)"],
+        "answer": 0,
+        "feedback": [
+          "Right. On an Arm subtract, C = 0 means a borrow happened, so the first value was smaller.",
+          "That is the no-borrow case. C = 1 means a was at least b, which is the opposite of what you are looking for.",
+          "V reports signed overflow. For unsigned values the borrow is in C, so V is the wrong flag to read."
+        ],
+        "why": "After a subtract, C is the carry out of bit 31 of a + NOT b + 1. No carry means a borrow, so C = 0 says a was less than b. A borrow is the one case where the unsigned result would have gone below zero." },
+      { "type": "formula",
+        "prompt": "An <em>n</em>-bit unsigned counter sits at its largest value. Write that value in terms of <em>n</em>.",
+        "vars": ["n"],
+        "answer": "2^n-1",
+        "display": "2<sup>n</sup> − 1",
+        "examples": ["2^n - 1", "-1+2^n", "(2^n)-1"],
+        "wrong": [
+          { "answer": "2^n", "feedback": "That is one more than the largest value. An add that reaches 2^n has already wrapped to 0." },
+          { "answer": "n-1", "feedback": "n is the number of bits, not the value. The largest unsigned value grows as 2 to the power n, so n - 1 is far too small." }
+        ],
+        "hint": "An 8-bit value runs from 0 to 255. What is 255 in terms of 8?",
+        "why": "The largest n-bit unsigned value is 2^n − 1. For 8 bits that is 255, for 16 bits 65 535, and for 32 bits 4 294 967 295. When that value gets one more, the add wraps to 0 and C = 1, which is the case in the first question." },
       { "type": "text",
-        "prompt": "Which flag, together with N, does a signed less-than (<code>BLT</code>) branch read?",
+        "prompt": "Your signed comparison compiles to <code>BLT</code>. Besides N, which flag does <code>BLT</code> read? Give the letter.",
         "accept": ["V", "V flag", "the V flag", "overflow"],
-        "why": "BLT branches when N differs from V. The tempting answer, C, is the flag for unsigned comparisons, which is a different branch." },
+        "hint": "BLT branches when N differs from this flag.",
+        "why": "BLT branches when N differs from V, so a signed less-than stays correct when the subtraction overflows. C is the flag for unsigned branches, which is the tempting wrong answer. Check the signedness of the variables before you trust the branch." },
       { "type": "mc",
-        "prompt": "Which branch reads only the C flag after a compare?",
-        "options": ["BHS for unsigned values", "BLT for signed values", "BEQ for equal values"],
+        "prompt": "After a <code>CMP</code> of two unsigned values, which branch is taken when the first is greater than or equal to the second?",
+        "options": ["BHS (reads C)", "BLT (reads N, V)", "BEQ (reads Z)"],
         "answer": 0,
-        "why": "BHS branches when C = 1, which is an unsigned greater-or-equal test. BLT reads N and V, and BEQ reads Z. The tempting answer, BLT, is the less-than branch most people reach for first, but it is signed." },
-      { "type": "number",
-        "prompt": "R0 holds 0xFFFFFFFF. After <code>CMP R0, #1</code>, what is the N flag, 0 or 1?",
-        "answer": 1, "tolerance": 0,
-        "why": "The compare computes 0xFFFFFFFF − 1 = 0xFFFFFFFE, and bit 31 of that result is 1, so N = 1. The tempting answer, 0, reads the unsigned meaning of R0 as a large positive value and forgets that N only looks at the bits of the result." }
+        "feedback": [
+          "Right. After a compare, C = 1 means the first value was at least the second, unsigned. BHS branches on exactly that.",
+          "BLT is the signed less-than test. It reads N and V, so it is the wrong branch for unsigned values, even though it looks like the same comparison.",
+          "BEQ branches only when the values are equal. That is one case of greater-or-equal, not the whole of it."
+        ],
+        "why": "BHS (branch if higher or same) reads C, and C = 1 is the no-borrow case from the compare. The tempting answer is BLT, which most people reach for first, but it tests the signed order and gives different answers for values with the top bit set." },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'After a subtract, C = 1 means a borrow, so I can test C to find out whether a is smaller.' Explain what is wrong with that, using the carry out of bit 31.",
+        "hint": "Look at what C is after a + NOT b + 1, and what the carry means when a equals b.",
+        "answer": "After a subtract, C is the carry out of bit 31 of a + NOT b + 1. C = 1 means no borrow, so a is at least b (unsigned). The teammate has the sense reversed. a is smaller exactly when C = 0, which is what BLO tests. Check the boundary: when a = b, C must be 1, so a test that treats C = 1 as a borrow would wrongly say a is smaller." }
     ] }
     </script>
   </div>
@@ -213,15 +252,24 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
+      { "type": "number",
+        "prompt": "The ALU result settles 6 ns after the clock edge that starts the cycle. The result register captures on the next edge, 10 ns later, and needs 2 ns of setup time. How much slack is left before the setup limit, in ns?",
+        "answer": 2, "tolerance": 0, "unit": "ns",
+        "wrong": [
+          { "answer": 4, "feedback": "That is 10 − 6, the time between settling and the edge. It leaves out the 2 ns setup time, which must also fit before the edge." }
+        ],
+        "hint": "Setup time means the data must be stable a little before the edge. Work out the latest moment the result can settle.",
+        "why": "Setup time is the stable window before the active edge, so the result must settle by 10 − 2 = 8 ns. It settles at 6 ns, which leaves 8 − 6 = 2 ns of slack. A bus or ALU path that settles later than the setup limit makes the register capture the wrong value." },
       { "type": "mc",
-        "prompt": "In lesson 24, setup time is measured before which event?",
-        "options": ["the clock edge", "the reset pin", "the output pin"],
+        "prompt": "The ALU's subtract needs NOT b. Imagine a chip with only NAND gates. Which gate, with both inputs tied to the same signal, works as an inverter?",
+        "options": ["NAND", "XOR", "AND"],
         "answer": 0,
-        "why": "Setup time is the window before the active clock edge in which D must be stable. The tempting answer, the output pin, is where the result appears, after the edge." },
-      { "type": "text",
-        "prompt": "In lesson 22, which single gate type can build every other logic gate on its own?",
-        "accept": ["NAND", "NAND gate"],
-        "why": "NAND is universal: NOT, AND and OR can all be built from it. The tempting answer, XOR, is not universal, because XOR alone cannot build NOT." }
+        "feedback": [
+          "Right. NAND of a signal with itself gives NOT of that signal. NAND is universal, which is why a NAND-only chip can build every other gate (lesson 22).",
+          "XOR with both inputs tied together always gives 0, so it cannot invert anything.",
+          "AND with both inputs tied together passes the signal through unchanged, with no inversion."
+        ],
+        "why": "NAND(a, a) = NOT a, so tying the inputs together turns a NAND into an inverter. That is how a NAND-only design builds the NOT a subtract needs, without a separate part." }
     ] }
     </script>
   </div>

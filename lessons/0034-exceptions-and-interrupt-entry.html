@@ -43,7 +43,7 @@
     A handler can run at any instruction of the main program. The main program may be halfway through a calculation with values in R0 to R3. The handler is an ordinary C function, and it will use those registers for its own work. If nothing put the values back, the main program would resume with the handler's numbers in its registers. So the core does the saving itself, before the handler's first instruction runs.
   </p>
   <p>
-    The core saves a fixed set of eight words, called the <a href="../reference/glossary.html#stacked-frame">stacked frame</a>. The TRM lists them in this order: the program counter (PC), the status register (xPSR), R0, R1, R2, R3, R12 and the link register (LR). The TRM says that "the SP is decremented by eight words by the completion of the stack push" (DDI0337G §5.5.1). Each word is four bytes, so the frame takes 32 bytes.
+    The core saves a fixed set of eight words, called the <a href="../reference/glossary.html#stacked-frame">stacked frame</a>. The TRM lists them in this order: the program counter (PC), the status register (xPSR), R0, R1, R2, R3, R12 and the link register (LR). That is the order the TRM names them in, not their order in memory: from the lowest address up, the frame holds R0, R1, R2, R3, R12, LR, PC and xPSR (Figure 1). The TRM says that "the SP is decremented by eight words by the completion of the stack push" (DDI0337G §5.5.1). Each word is four bytes, so the frame takes 32 bytes.
   </p>
   <p>
     Each word in the frame has a reason to be there. PC is the address of the instruction the main program was about to run, so the core can resume there. xPSR holds the condition flags, the exception number that is active and the Thumb bit. R0 to R3 and R12 are the registers that an AAPCS callee is allowed to change (lesson 33), so the hardware saves them for the handler. LR is saved because the core is about to overwrite it. The registers R4 to R11 are not in the frame. A handler that uses one of them must save it. The TRM makes the same point when it describes the kernel: it "only requires to save the eight registers not pushed by hardware, r4-r11" (§5.4). This is why the C compiler saves R4 to R11 in a handler that uses them.
@@ -264,7 +264,7 @@
   <ul>
     <li>An exception stops the program and runs a handler. An interrupt is an exception raised by a peripheral or a pin.</li>
     <li>The vector table maps each exception number to a handler address. On the STM32F1 the names are in the startup file.</li>
-    <li>On entry the core pushes eight words onto the stack: PC, xPSR, R0 to R3, R12 and LR. Registers R4 to R11 are not pushed.</li>
+    <li>On entry the core pushes eight words onto the stack. From the lowest address up, they are R0, R1, R2, R3, R12, LR, PC and xPSR. Registers R4 to R11 are not pushed.</li>
     <li>LR is loaded with EXC_RETURN. A handler returns by loading that value into PC, which triggers the unstacking. A plain branch does not return.</li>
     <li>The TRM shows twelve cycles from the interrupt to the first ISR instruction, and six cycles for a tail-chained handler.</li>
     <li>Changes to R0 to R3 are undone on return, so a handler passes results through memory.</li>
@@ -277,40 +277,98 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "How many words does the core push onto the stack when it takes an interrupt?",
-        "answer": 8, "tolerance": 0,
-        "why": "The core stacks eight words: PC, xPSR, R0 to R3, R12 and LR (DDI0337G §5.5.1). The tempting answer is 16, which counts both the saved registers and the restored copies." },
+        "prompt": "The endstop interrupt fires while the main loop runs with SP at <code>0x20000100</code>. After the core has pushed its frame, and before the handler's first instruction, what is SP? Give it in hex or decimal.",
+        "answer": 536871136, "tolerance": 0,
+        "wrong": [
+          { "answer": 536871152, "feedback": "That is 0x200000F0, only 16 bytes down, which is four words. The frame is eight words, 32 bytes, so SP lands on 0x200000E0." }
+        ],
+        "hint": "Count the words the core pushes. Each word is 4 bytes.",
+        "why": "The core pushes eight words, 32 bytes, so SP moves from 0x20000100 to 0x200000E0. The handler then runs on the same stack, so anything it pushes goes below that address."
+      },
       { "type": "mc",
-        "prompt": "Which register sits at the lowest address of the stacked frame?",
-        "options": ["R0", "xPSR", "LR"],
+        "prompt": "Your endstop handler is named <code>EXTI0_Handler</code>, but the startup file names the entry <code>EXTI0_IRQHandler</code>. The carriage runs past the switch, and the debugger shows the PC inside <code>Infinite_Loop</code> after the switch closes. What is happening?",
+        "options": ["Default_Handler runs, and it loops forever", "The switch closes too fast to be seen", "The handler saves too many registers", "The main loop rewrites the vector table"],
         "answer": 0,
-        "why": "In the usual layout, which the simulator uses, R0 is at the lowest address and xPSR at the highest (check Figure 5-1 in DDI0337G). The tempting answer is xPSR, because it is the last register in the frame, which does not decide its address." },
+        "feedback": [
+          "Right. No vector entry names your function, so the core jumps to the startup file's Default_Handler, which is Infinite_Loop: b Infinite_Loop. Copy the name from the startup file exactly.",
+          "The interrupt does not depend on how fast the switch moves. The symptom in the debugger points at the handler's name, not at the switch's speed.",
+          "The hardware saves the same eight words for every handler, so the number of saved registers is not what the debugger shows.",
+          "The main loop does not touch the vector table. The core reads the table on each entry, and the bug is the name that does not match."
+        ],
+        "hint": "When no name matches, which handler does the table fall back to?",
+        "why": "The linker connects each name in the vector table to a function with that name. A misspelt handler is never called, and the core falls back to the weak Default_Handler, which loops forever. Compare the name with the startup file before you debug anything else."
+      },
+      { "type": "mc",
+        "prompt": "A handler ends with <code>B main_loop</code> instead of <code>BX LR</code>. After a few interrupts, the stack view shows SP falling by 0x20 each time and never coming back. What is the cause?",
+        "options": ["The frame is never popped, so 32 bytes stay", "The handler runs twice on each interrupt", "The B instruction is too slow for the core", "Every branch resets the stack pointer"],
+        "answer": 0,
+        "feedback": [
+          "Right. Only loading an EXC_RETURN value into PC unstacks the frame. A plain branch leaves the eight words on the stack, so SP drops 32 bytes each time.",
+          "The body runs once per interrupt. The stack changes because the frame is never popped, not because the code runs twice.",
+          "A branch is one of the cheapest instructions on the core. Its speed has nothing to do with the stack growing.",
+          "A branch changes PC only. Nothing about it moves SP, so the stack grows only from frames that are pushed and never popped."
+        ],
+        "hint": "What must the handler's last instruction load into PC for the core to unstack the frame?",
+        "why": "The frame is undone only by the EXC_RETURN exit. Left alone, the stack eventually runs into the variables below it, which is the failure in the mistakes section. The fix is to end the handler with BX LR."
+      },
+      { "type": "mc",
+        "prompt": "Your handler computes a new temperature reading into R0. The main loop reads R0 after the interrupt and still sees the old value. What is the fix?",
+        "options": ["Store it in a volatile variable the main loop reads", "Leave it in R0 and push R0 at the top", "Put the reading in R12, which the core keeps", "Load the reading into LR before BX LR"],
+        "answer": 0,
+        "feedback": [
+          "Right. Memory is not part of the frame, so a write to a volatile variable survives the return. The main loop then reads the new value.",
+          "A push inside the handler does not stop the frame restoring R0. The core restores the saved words on return, whatever the handler did with its own registers.",
+          "R12 is one of the eight saved words, so the core restores it on return too. A value put there is undone.",
+          "LR is also one of the saved words, so the core restores it on return. A reading placed there is undone."
+        ],
+        "hint": "After the return, which survives: a register value or a value in memory?",
+        "why": "The frame restores R0 to R3, R12, LR, PC and xPSR, so a result left in a register is always undone. Memory survives, which is why handlers pass results through a volatile variable or a buffer."
+      },
+      { "type": "mc",
+        "prompt": "A hand-written handler uses R5 as a loop counter, and it neither pushes nor pops R5. Later, a main-loop variable kept in R5 reads a wrong value. Why?",
+        "options": ["The hardware does not save R5 in the frame", "The core saved R5 along with xPSR", "BX LR restores all of R4 to R11", "The main loop used R5 as the stack pointer"],
+        "answer": 0,
+        "feedback": [
+          "Right. The frame holds PC, xPSR, R0 to R3, R12 and LR. R4 to R11 are not in it, so a handler must push and pop any of them it uses.",
+          "The core saves only the eight words of the frame. xPSR is one of those, and R5 is not in the frame.",
+          "BX LR is the return. It restores nothing in R4 to R11, so any value there stays as the handler left it.",
+          "R5 is an ordinary register. The stack pointer is SP, which is R13."
+        ],
+        "hint": "Which registers are in the eight-word frame?",
+        "why": "The hardware saves only R0 to R3, R12, LR, PC and xPSR. A handler that uses R4 to R11 must push them on entry and pop them before it returns, as the C compiler does."
+      },
       { "type": "number",
-        "prompt": "On a Cortex-M3, how many cycles pass from asserting the interrupt to the first instruction of the ISR?",
-        "answer": 12, "tolerance": 0,
-        "why": "The TRM's exception entry figure gives a twelve-cycle latency (DDI0337G §5.5, Figure 5-2). The tempting answer is 1, which is the cost of a single instruction, not the entry sequence." },
-      { "type": "mc",
-        "prompt": "A handler finishes, and a second interrupt is already pending. The core starts the second handler without restoring and saving the frame again. What is this?",
-        "options": ["Tail-chaining", "Late-arrival", "Pre-emption"],
-        "answer": 0,
-        "why": "That is tail-chaining (DDI0337G §5.6). Late arrival is a higher-priority interrupt that comes in before the first instruction of the earlier handler executes, and pre-emption is a higher-priority handler interrupting a running one. The tempting answer is late-arrival, which sounds similar but happens during entry." },
-      { "type": "text",
-        "prompt": "In the simulator's IRQ_Handler, which instruction returns to the interrupted code?",
-        "accept": ["BX LR", "bxlr", "BX LR "],
-        "why": "BX LR branches to the address in LR, which holds the EXC_RETURN value in a handler, so the core unstacks the frame. The tempting answer is B loop, which jumps to a fixed label and skips the unstacking." },
-      { "type": "mc",
-        "prompt": "The name of EXTI0_IRQHandler is misspelt in your C code. What does the startup file's Default_Handler do?",
-        "options": ["It loops forever", "It returns now", "It resets chip"],
-        "answer": 0,
-        "why": "The startup file defines Default_Handler as an infinite loop (Infinite_Loop: b Infinite_Loop, lines 112 to 116). The tempting answer is that it returns now, which is how an empty handler behaves but not what the startup file does. Resetting the chip is not in the file." },
+        "prompt": "A bug makes the endstop interrupt fire again before each handler finishes, so the frames pile up. If 1 KB (1024 bytes) of stack is free and each frame is eight 4-byte words, how many whole frames fit?",
+        "answer": 32, "tolerance": 0,
+        "wrong": [
+          { "answer": 8, "feedback": "8 is the number of words in one frame. Each word is 4 bytes, so a frame is 32 bytes, and 1024 ÷ 32 = 32 frames." }
+        ],
+        "hint": "Work out the frame's size in bytes first, then divide the free space by it.",
+        "why": "A frame is 32 bytes, so 1024 bytes holds 32 frames. On a real board, a stack that overruns does not announce itself: it runs into the variables below it, so count the frames before you size the stack."
+      },
       { "type": "number",
-        "prompt": "A handler uses R4 and never pushes it. How many of the registers R4 to R11 does the hardware push on entry? Type the number only.",
-        "answer": 0, "tolerance": 0,
-        "why": "The hardware pushes only PC, xPSR, R0 to R3, R12 and LR, so none of R4 to R11 (DDI0337G §5.5.1). The tempting answer is 8, which counts the registers in the range but forgets that the frame does not include them." },
+        "prompt": "Two endstop interrupts arrive close together. The second is already pending when the first handler's last instruction runs, and the core tail-chains into it. Using the TRM figures on this page, how many cycles does that save compared with a fresh entry?",
+        "answer": 6, "tolerance": 0,
+        "wrong": [
+          { "answer": 12, "feedback": "12 is the cost of a fresh entry, not the saving. Tail-chaining takes 6 cycles, so the saving is 12 − 6 = 6." }
+        ],
+        "hint": "Compare the two figures: a fresh entry, and a tail-chained entry.",
+        "why": "A fresh entry takes twelve cycles to the first ISR instruction, and tail-chaining takes six, because the core skips the unstacking and the stacking. The figures are the Cortex-M3's in the TRM, so check your chip's numbers before you budget with them."
+      },
       { "type": "text",
-        "prompt": "A handler is entered and returns to thread mode on the process stack. What EXC_RETURN value must be in LR? Write it in hex.",
+        "prompt": "A handler is entered from thread mode and must return to thread mode on the process stack. What EXC_RETURN value must be in LR? Write it in hex.",
         "accept": ["0xFFFFFFFD", "FFFFFFFD", "0xfffffffd", "fffffffd"],
-        "why": "Table 5-6 gives 0b1101 for a return to thread mode on the process stack, which is 0xFFFFFFFD. The tempting answer is 0xFFFFFFF9, which returns to thread mode on the main stack." }
+        "wrong": [
+          { "answer": "0xFFFFFFF9", "feedback": "That returns to thread mode on the main stack. The process stack is 1101 in bits [3:0], which is 0xFFFFFFFD." }
+        ],
+        "hint": "Find the table row for thread mode on the process stack, and read its low four bits.",
+        "why": "The low four bits of EXC_RETURN choose the return mode and the stack. 1101 is thread mode on the process stack, so the value is 0xFFFFFFFD. The wrong stack makes the unstacking read from the wrong place."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague's handler writes its result into R0 and says, \"The main loop should see it, because I stored it right before returning.\" Explain to them why it does not, using the frame, and what to change.",
+        "hint": "What does the core save at entry, and what does it load back on return?",
+        "answer": "The core saved R0 in the eight-word frame when the interrupt started. On the return it loads the frame's values back into R0 to R3, R12, LR, PC and xPSR, so whatever the handler left in R0 is replaced by the value from before the interrupt, and the main loop sees the old value. To pass a result back, the handler should write it to memory: a volatile variable or a buffer that the main loop reads. Memory is not part of the frame, so that write survives the return."
+      }
     ] }
     </script>
   </div>
@@ -318,14 +376,27 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
+      { "type": "mc",
+        "prompt": "An endstop switch connects its pin to ground when the carriage reaches the end of travel. A pull-up holds the pin high the rest of the time. What level does the pin read at the moment the switch closes?",
+        "options": ["Low, pulled to about 0 V", "High, pulled to about 3.3 V", "Floating, at some random level"],
+        "answer": 0,
+        "feedback": [
+          "Right. Closing the switch joins the pin to ground, so the pin goes low. That change of level is what raises the interrupt.",
+          "That is the level with the switch open. The pull-up holds the pin high only while nothing pulls it down.",
+          "A pull-up gives the pin a definite level. Lesson 16 showed that a pin without one reads at random, and the closed switch does not leave the pin floating."
+        ],
+        "hint": "Which way does the closed switch pull the pin, and what does the pull-up do when nothing pulls it down?",
+        "why": "With a pull-up, the pin is high while the switch is open and low once it closes. The interrupt fires on that change of state. Without a pull-up, the open switch would leave the pin floating, and the handler would fire at random."
+      },
       { "type": "number",
-        "prompt": "In lesson 6, a 5 V supply feeds 20 mA into a load. What is the power, in milliwatts?",
-        "answer": 100, "tolerance": 0.02, "unit": "mW",
-        "why": "P = V × I = 5 V × 0.020 A = 0.100 W, which is 100 mW. The tempting answer is 10 mW, which moves the decimal point the wrong way." },
-      { "type": "text",
-        "prompt": "In lesson 2, what does the sleep_ms call do to the CPU while it waits?",
-        "accept": ["blocks", "blocking", "waits", "it blocks"],
-        "why": "sleep_ms is a blocking call: the CPU does nothing else until the time has passed. The tempting answer is runs in the background, which describes a timer interrupt, not sleep_ms." }
+        "prompt": "The endstop's pull-up is a 10 kΩ resistor to 3.3 V. When the switch closes, current flows from the 3.3 V pin through the resistor and the switch to ground. How many milliamps flow?",
+        "answer": 0.33, "tolerance": 0.02, "unit": "mA",
+        "wrong": [
+          { "answer": 330, "feedback": "330 mA is what you get by reading 10 kΩ as 10 Ω. The k means 10,000 Ω, so I = 3.3 V ÷ 10,000 Ω = 0.33 mA." }
+        ],
+        "hint": "Convert 10 kΩ to ohms first, then use I = V ÷ R.",
+        "why": "3.3 V ÷ 10,000 Ω = 0.00033 A, which is 0.33 mA. A third of a milliamp is almost nothing, which is why a pull-up can stay on a switch all the time. The same current flows only while the switch is closed."
+      }
     ] }
     </script>
   </div>

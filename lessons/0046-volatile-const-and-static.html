@@ -181,57 +181,90 @@ wait_v:
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which change stops the compiler keeping a shared flag in a register across a polling loop?",
-        "options": [
-          "Add the volatile keyword",
-          "Declare the flag const",
-          "Declare the flag static",
-          "Store flag in flash"
-        ],
+        "prompt": "A button ISR sets <code>flag = 1</code>. In main, <code>while (!flag) { }</code> works in a debug build and hangs at -O2. What is the smallest correct fix?",
+        "options": ["Declare flag volatile", "Declare flag const", "Add a delay in the loop", "Make it a local in main"],
         "answer": 0,
-        "why": "volatile makes every access an observable side effect, so the compiler reloads the flag each pass. const forbids writes, so it cannot be the fix. static gives internal linkage and does not force a reload. The flash option is a placement, not a rule about reads." },
+        "feedback": [
+          "Right. volatile makes each read a real load, so the loop sees the ISR's write on the next pass. The fix is one keyword on the declaration.",
+          "const forbids writes, so the ISR could not set the flag at all. The flag has to stay writable.",
+          "A delay makes the bug less visible, not impossible. It does not tell the compiler that the flag changes, so the fix belongs on the declaration.",
+          "A local in main cannot be written by the ISR, so the loop would wait forever. The flag must be shared, so it lives at file scope."
+        ],
+        "hint": "The compiler sees no write to the flag inside main. Which keyword says that the object can change outside the code it can see?",
+        "why": "Without volatile, the compiler may keep the value it read first in a register and skip later reads. volatile means 'this can change outside my view', so every pass reads memory again." },
       { "type": "mc",
-        "prompt": "Is volatile alone enough to share a counter between an ISR and main on a Cortex-M?",
-        "options": [
-          "No, it is not atomic",
-          "Yes, it is always atomic",
-          "Yes, for any single read",
-          "Yes, it adds a lock"
-        ],
+        "prompt": "Both an ISR and main do <code>count++</code> on one shared counter, declared volatile. Under load the totals drift low. What is the right fix?",
+        "options": ["A critical section around shared access", "Declare count const as well", "Make count a uint8_t to halve the work", "Nothing: volatile makes count++ atomic"],
         "answer": 0,
-        "why": "volatile gives no atomicity or synchronisation. A read-modify-write such as count++ can still be interrupted in the middle. The tempting answer is the third: one read may be fine, but the increment is not one read. Lesson 57 covers critical sections." },
+        "feedback": [
+          "Right. count++ is a load, an add and a store, and an ISR can run between them. A critical section blocks the ISR for that short span, so no increment is lost.",
+          "const forbids the increment, so the counter could not count at all. The problem is an interrupt in the middle of the update, not write permission.",
+          "A smaller type does not stop an interrupt from splitting the update. It only changes where the count wraps.",
+          "volatile gives no atomicity. The increment is still several steps, and an ISR can run between them. This is the most common misunderstanding of the keyword."
+        ],
+        "hint": "Count the separate machine steps in count++. Which of them can an interrupt split?",
+        "why": "volatile stops the compiler from caching the value. It does not stop the CPU from being interrupted in the middle of an update. Use a critical section or an atomic operation for any read-modify-write (lesson 57)." },
       { "type": "mc",
-        "prompt": "What does a <code>static</code> local variable do?",
-        "options": [
-          "Keeps its value between calls",
-          "Lives on the call stack",
-          "Is visible to other files",
-          "Is copied into flash memory"
-        ],
+        "prompt": "A driver polls with <code>extern uint32_t gflag;</code> and <code>while (gflag == 0) { }</code>, defined in another file and compiled at -O2 without volatile. What does the loop do?",
+        "options": ["Loads once, then spins forever", "Reloads gflag on every pass", "Calls the ISR on every pass", "Runs once, then exits"],
         "answer": 0,
-        "why": "A static local has static storage duration: it is initialised once and keeps its value between calls. The tempting answer is the second, which describes an ordinary automatic local. The third describes file-scope static linkage, which a local static does not have." },
-      { "type": "text",
-        "prompt": "In the STM32 linker script, which output section holds <code>const</code> globals in flash?",
-        "accept": [".rodata", "rodata"],
-        "why": ".rodata is the read-only data section, placed in FLASH by the course linker script. The tempting answer is .data, which holds initialised writable globals: their starting values are in flash, but the variables themselves live in RAM." },
+        "feedback": [
+          "Right. Nothing in the loop writes gflag, so the compiler keeps the first value in a register. The ISR's writes never reach the loop, and the branch to itself never ends.",
+          "That is what volatile would make it do. Without it, the compiler has no reason to read memory again.",
+          "The compiler does not call the ISR. An interrupt happens when the hardware raises it, not because of a call in the loop.",
+          "It exits only if the flag was already set on the first read. Otherwise it spins for ever, because nothing reloads the value."
+        ],
+        "hint": "Look at what the loop body contains. Is there anything in it that writes gflag?",
+        "why": "A loop whose body has no load of the flag is the bug. In the disassembly, the wait loop should contain a load and a branch back to it. If it ends in a branch to itself, the flag is not reloaded." },
+      { "type": "mc",
+        "prompt": "A lookup table of 256 sensor values never changes. You declare it <code>const</code> at file scope on an STM32. Where does the linker put it?",
+        "options": ["Flash, in .rodata", "RAM, in .bss", "Flash, in .data", "On the stack"],
+        "answer": 0,
+        "feedback": [
+          "Right. const data is read-only, and the course linker script places .rodata in FLASH, so the table uses flash and no RAM.",
+          ".bss holds zero-initialised writable globals. A const table has values, and it stays in flash.",
+          ".data holds initialised writable globals. Their starting values are in flash and are copied to RAM, which costs RAM. A const table is not copied.",
+          "Stack space is for locals that live for one call. A lookup table lives for the whole run, in flash."
+        ],
+        "hint": "Ask whether the data is writable. Then ask where the linker puts read-only data.",
+        "why": "On a 20 KiB device a const table that stays in flash leaves RAM free. Check the .rodata size in the build output, and you will see the table there, not in .data." },
+      { "type": "mc",
+        "prompt": "In one file: <code>static int retries = 0;</code> at file scope. In another file: <code>extern int retries;</code>, then a read of retries. What happens?",
+        "options": ["Link fails: undefined reference", "It reads 0: the name is shared", "It is always placed in flash", "It is zeroed on every call"],
+        "answer": 0,
+        "feedback": [
+          "Right. Internal linkage means the linker does not export the name, so the second file's reference has no definition to bind to.",
+          "A file-scope static is not shared. Its name is private to its own file, so the other file cannot see it.",
+          "Static does not decide flash or RAM for a writable variable. A zero-initialised one goes in .bss, in RAM.",
+          "A file-scope static lives for the whole run. It is zeroed once at startup, not on every call."
+        ],
+        "hint": "What does static at file scope do to the name, as seen by the linker?",
+        "why": "Use static for file-private helpers and state. Use an extern declaration in a header only when you mean to share a variable on purpose." },
+      { "type": "mc",
+        "prompt": "You wait for a status bit in an STM32 timer register inside a loop. Which C access reads the hardware on every pass?",
+        "options": ["The CMSIS struct field, which is volatile", "A local copy made before the loop", "A const pointer to the address", "A static local that holds the status"],
+        "answer": 0,
+        "feedback": [
+          "Right. __IO expands to volatile, so each read of the struct field is a real access to the hardware register.",
+          "A local copy is read once, so the loop never sees the hardware change. That is the same bug as the flag.",
+          "const says the program will not write through the pointer. It says nothing about the hardware changing, so reads may still be merged.",
+          "A static local keeps its value between calls, but it is one copy in RAM. The hardware never writes to that copy."
+        ],
+        "hint": "Which declaration keeps the register access volatile on every read?",
+        "why": "Use the vendor's struct or macro for registers, not a raw number. The CMSIS struct declares each field with __IO, so the compiler treats each read as a side effect." },
       { "type": "number",
-        "prompt": "A repeating timer sets the flag every 100 ms. How many times per second does the callback run?",
-        "answer": 10, "tolerance": 0.01, "unit": "Hz",
-        "why": "The period is 0.1 s, so the rate is 1 ÷ 0.1 s = 10 Hz. The tempting answer is 100, which mixes up milliseconds with the rate per second." },
-      { "type": "mc",
-        "prompt": "A file-scope variable is declared static. Which statement is true?",
-        "options": [
-          "other files cannot see the name",
-          "it is re-initialised on every call",
-          "it is always placed in flash",
-          "it is always volatile by default"
+        "prompt": "A sensor driver's <code>read_sample()</code> has a <code>static uint32_t n = 0;</code> local that it increments on every call. After 5 calls, what is <code>n</code>?",
+        "answer": 5, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 1, "feedback": "1 is what an ordinary local gives on every call. The static local keeps its value, so each call adds to the last one." }
         ],
-        "answer": 0,
-        "why": "File-scope static gives internal linkage, so other files cannot name it. The tempting answer is the second, which describes a local variable, not a file-scope one. Static does not make a variable volatile, so the fourth option is wrong too." },
-      { "type": "number",
-        "prompt": "A <code>static uint32_t n = 0;</code> local is incremented once per call, and the function is called 5 times. What is <code>n</code> after the fifth call?",
-        "answer": 5, "tolerance": 0,
-        "why": "The static local keeps its value between calls, so it counts all five calls: 5. The tempting answer is 1, which is what you would see if the variable were an ordinary local that resets on every call." }
+        "hint": "Ask how many times the initialiser runs, and whether the value survives the return.",
+        "why": "The initialiser runs once, and the static local keeps its value between calls, so it counts all five calls. Set the value explicitly if you need a reset on a given call." },
+      { "type": "reflect",
+        "prompt": "A colleague says: 'I will make every flag and counter in the project volatile, to be safe.' Explain whether that is a good rule, what volatile does not fix, and what you would check instead.",
+        "hint": "Think about what volatile costs on every access, and what it does not promise.",
+        "answer": "It is not a good rule. volatile is for objects that change outside the code the compiler can see: flags shared with an ISR and hardware registers. Applied everywhere, it forces a memory access on every use of ordinary variables, which makes code slower and larger, and it still gives no atomicity. A counter shared with an ISR still needs a critical section or an atomic operation, because an interrupt can run between the read and the write. Instead, mark only the ISR-shared objects and the registers, check each access path, protect every read-modify-write, and read the disassembly of each wait loop to confirm it reloads the flag."
+      }
     ] }
     </script>
   </div>
@@ -240,13 +273,25 @@ wait_v:
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 9: a 3.3 V GPIO drives a red LED with Vf = 2.0 V at 4 mA. What is the exact series resistance, in ohms?",
+        "prompt": "A red LED with Vf 2.0 V is driven from a 3.3 V GPIO, and the design target is 4 mA. Using the method from lesson 9, what exact resistance, in ohms, does the calculation give?",
         "answer": 325, "tolerance": 0.01, "unit": "Ω",
-        "why": "R = (3.3 V − 2.0 V) ÷ 0.004 A = 325 Ω. The tempting answer, 330 Ω, is the E12 value you round up to, not the exact value." },
-      { "type": "text",
-        "prompt": "From lesson 2: in <code>wokwi.toml</code>, which key names the ELF file the simulator loads?",
-        "accept": ["elf"],
-        "why": "elf = 'build/blink.elf' tells the simulator which firmware to run. gdbServerPort is the debug port, and firmware is the hex file, which is a different format." }
+        "wrong": [
+          { "answer": 330, "feedback": "330 Ω is the E12 value you round up to, not the exact result. It gives 3.9 mA, a little under the target." }
+        ],
+        "hint": "The voltage across the resistor is the supply minus the LED's forward voltage. Then divide by the current.",
+        "why": "R = (3.3 V − 2.0 V) ÷ 0.004 A = 325 Ω. The exact value comes first, and only then do you choose a standard value. The lesson's rule is to round up, so the current stays at or below the target." },
+      { "type": "mc",
+        "prompt": "Using the mask idea from lesson 20, a timer status register has its ready flag in bit 5. Which C test checks only that bit?",
+        "options": ["(status & 0x20) != 0", "(status | 0x20)", "status == 0x20", "(status & 0x20) == 0"],
+        "answer": 0,
+        "feedback": [
+          "Right. The mask 0x20 keeps only bit 5, so the test is non-zero exactly when that bit is set, whatever the other bits are.",
+          "OR with the mask sets bit 5, so the result is non-zero every time. The test never tells you anything about the flag.",
+          "That is true only if every other bit is 0. A status register usually has other bits set, so the test misses the flag.",
+          "That is the inverse. It is true when the flag is clear, so a loop built on it waits for the flag to go away."
+        ],
+        "hint": "A mask keeps only the bits it selects. What value does a clear bit 5 give after the AND?",
+        "why": "Test a bit with AND, and compare the result with zero. The register is volatile, so read it into a local once per check and test that local, to avoid two reads of a register that may change between them." }
     ] }
     </script>
   </div>

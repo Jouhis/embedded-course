@@ -261,42 +261,124 @@ i2c_read_blocking(i2c0, 0x68, &amp;value, 1, <span class="k">false</span>);  <sp
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "The write address byte on the wire is 0xD0. What is the device's 7-bit address?",
-        "options": ["0x68", "0xD0", "0x34", "0x69"],
-        "answer": 0,
-        "why": "The 7-bit address is the byte shifted right, 0xD0 ÷ 2 = 0x68, and the lowest bit is the R/W flag. The tempting answer, 0x69, is the address with AD0 high, which is a different device on the same board." },
-      { "type": "mc",
-        "prompt": "Which condition joins a register pointer write and the read that follows it?",
-        "options": ["Repeated start", "Stop condition", "Clock stretching", "Hardware reset"],
-        "answer": 0,
-        "why": "A repeated start keeps the bus held between the write and the read. A stop releases the bus, so another master could take it in between. Clock stretching is a slave holding SCL low, and a reset clears the device, neither of which joins two transfers." },
-      { "type": "number",
-        "prompt": "A 4.7 kΩ pull-up is on a 3.3 V bus. When a device pulls the line to 0 V, how many milliamps flow through the pull-up?",
-        "answer": 0.702, "tolerance": 0.01, "unit": "mA",
-        "why": "I = 3.3 V ÷ 4.7 kΩ = 0.702 mA. The tempting answer, 0.07 mA, is off by a factor of ten because the kilohm was not converted." },
-      { "type": "mc",
-        "prompt": "Why does I2C need a pull-up on SDA and SCL?",
-        "options": ["Devices can only pull lines low", "The clock needs a fixed source", "The chips need more supply voltage", "Pull-ups set the maximum bus speed"],
-        "answer": 0,
-        "why": "The lines are open-drain, so the only way to drive them high is the pull-up. The tempting answer is the clock: SCL is also open-drain, so the master does not drive it high either. The supply voltage and the speed are set elsewhere." },
-      { "type": "text",
-        "prompt": "Which SDK function sends the register pointer, and leaves the bus held with nostop set?",
-        "accept": ["i2c_write_blocking", "i2c_write_blocking()"],
-        "why": "i2c_write_blocking() sends the bytes and can keep the bus with nostop. The tempting answer, i2c_read_blocking, reads and does not send the register pointer." },
-      { "type": "number",
-        "prompt": "An MPU6050 has its AD0 pin tied high. What is its 7-bit address, in decimal?",
-        "answer": 105, "tolerance": 0, "unit": "",
-        "why": "AD0 high sets the lowest address bit, so 0x68 becomes 0x69, which is 105 in decimal. The tempting answer, 104, is 0x68, which needs AD0 low." },
-      { "type": "mc",
-        "prompt": "The register pointer write ends with a STOP, and the read comes after it. What is the main risk?",
+        "prompt": "A logic-analyzer capture shows the address byte 0xD0 with the write bit, and no ACK follows it. The code calls <code>i2c_write_blocking()</code> with address 0xD0, and the board's AD0 pin is low. What is the bug?",
         "options": [
-          "Another master can seize the bus in between",
-          "The sensor clears its register pointer at once",
-          "The pull-up resistors may fail or drift here",
-          "The address byte loses its R/W bit here"
+          "The code passes the 8-bit byte, and the SDK shifts it again",
+          "The sensor is asleep, and sleeping devices never acknowledge their address",
+          "The pull-ups are too weak, so the ACK bit never pulls SDA low",
+          "The register pointer must be sent first, so the address cannot be acknowledged yet"
         ],
         "answer": 0,
-        "why": "A STOP ends the transfer and frees the bus, so another master may start before the read. The bus is free after a STOP (UM10204, section 3.1.4). The tempting answer about the pointer is not caused by a STOP, and the pull-ups and the R/W bit do not change." }
+        "feedback": [
+          "Right. The SDK adds the R/W bit by shifting the address left. Given 0xD0, the wire carries a different byte, which no device answers. The fix is to pass 0x68.",
+          "A sleeping sensor still answers its address. Sleep changes what it measures, not whether it acknowledges.",
+          "A weak pull-up makes edges slow, which the analyzer shows as rounded lines. It does not stop the device from pulling SDA low on the ACK clock.",
+          "The address is sent before the register byte, so the register cannot be the cause of a NACK on the address."
+        ],
+        "hint": "Compare the 7-bit address the SDK expects with the 8-bit byte on the wire.",
+        "why": "The analyzer shows the 8-bit byte, and the code takes the 7-bit address. Passing the wire byte is the most common I2C mistake, and the fix is to compare the two forms before you change the bus. A NACK straight after the address means the address is wrong, not the wiring."
+      },
+      { "type": "mc",
+        "prompt": "The MPU6050's AD0 pin is tied high. Which byte goes on the wire for a read from this device?",
+        "options": [
+          "0xD0, the write byte of the default address",
+          "0xD1, the read byte of the default address",
+          "0xD2, the address shifted left with no R/W bit",
+          "0xD3, the address 0x69 shifted left, plus 1 for read"
+        ],
+        "answer": 3,
+        "feedback": [
+          "0xD0 ends in 0, which is a write. A read needs the lowest bit set.",
+          "0xD1 is the default address, 0x68, with the read bit. AD0 high changes the address to 0x69, so the wire byte changes too.",
+          "0xD2 is 0x69 shifted left, but the R/W bit is missing. Without it the device sees a write.",
+          "Right. 0x69 is 0110 1001. Shifted left it is 1101 0010, or 0xD2, and adding the read bit gives 0xD3."
+        ],
+        "hint": "Write 0x69 in binary, shift it left by one, then set the lowest bit for a read.",
+        "why": "The 7-bit address and the R/W bit share one byte. Changing AD0 changes the address, and so the byte on the wire for both a read and a write. Writing the bits out is the safest check when the analyzer and the code disagree."
+      },
+      { "type": "number",
+        "prompt": "On a bus of 100 pF, with 4.7 kΩ pull-ups, the rise time is 0.8473 × R × C. What is the rise time, in nanoseconds?",
+        "answer": 398, "tolerance": 0.02, "unit": "ns",
+        "wrong": [
+          { "answer": 0.398, "feedback": "0.398 is the time in microseconds. The question asks for nanoseconds, so the answer is 398 ns." }
+        ],
+        "hint": "Multiply R in ohms by C in farads, then by 0.8473, then convert seconds to nanoseconds.",
+        "why": "0.8473 × 4700 Ω × 100 pF = 398 ns, which is inside the 1000 ns limit for standard mode. The rule is the 30 % to 70 % rise time. A bus with more capacitance needs a smaller pull-up to keep the same rise time."
+      },
+      { "type": "number",
+        "prompt": "The same 100 pF bus needs a rise time under 1000 ns. What is the largest pull-up resistor that meets the limit, in kΩ?",
+        "answer": 11.8, "tolerance": 0.02, "unit": "kΩ",
+        "wrong": [
+          { "answer": 1.18, "feedback": "1.18 kΩ is what you get if the capacitance is 1000 pF. The bus has 100 pF, so the largest resistor is about 11.8 kΩ." }
+        ],
+        "hint": "R = rise time ÷ (0.8473 × C). Use 1000 ns for the rise time and 100 pF for C.",
+        "why": "1000 ns ÷ (0.8473 × 100 pF) = 11,800 Ω, which is 11.8 kΩ. A 4.7 kΩ resistor has room to spare, so it is a safe choice here. The same rule shows why a longer bus needs a stronger pull-up, which means a smaller resistor."
+      },
+      { "type": "mc",
+        "prompt": "A team removes the 4.7 kΩ pull-ups and enables the RP2040's internal pull-ups, about 65 kΩ each, on the same 100 pF bus. What happens?",
+        "options": [
+          "The rise time is about 5.5 µs, far over the 1000 ns limit, so transfers may fail",
+          "Nothing changes, because the internal pull-up is always stronger",
+          "The bus runs faster, because the internal pull-up is quicker to rise",
+          "The sensor's address changes to 0x69, because the pull-up sets AD0"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. 0.8473 × 65 kΩ × 100 pF is about 5.5 µs, which is five times too slow. On a long bench wire, the failure may show up only as intermittent errors.",
+          "The internal pull-up is weaker than the 4.7 kΩ resistors, not stronger. A larger resistor rises more slowly.",
+          "A higher resistance rises more slowly, so the bus gets slower, not faster. The speed is set by the master's clock.",
+          "AD0 is a pin on the sensor that the board ties high or low. A pull-up on SDA or SCL does not change it."
+        ],
+        "hint": "A larger pull-up resistor makes a slower rise. Use the rule from the lesson with R = 65 kΩ.",
+        "why": "The internal pull-up is weak, so it is fine on a short bench wire and fails on a real bus. That is why the diagram adds external resistors, and why a bus that works on the bench can fail later. Check the rise time with the formula before you trust the bus."
+      },
+      { "type": "mc",
+        "prompt": "The register pointer write ends with a STOP, and the read starts after it. The value on the bench is correct, but the analyzer shows two separate transactions. What is the risk?",
+        "options": [
+          "Another master can start a transfer in the gap and change the bus state",
+          "The sensor clears its register pointer as soon as the STOP is sent",
+          "The pull-ups drift and the read returns the wrong bit",
+          "The R/W bit of the read address is lost in the gap"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A STOP frees the bus, so another master may start before this read. A single master on a quiet bus gets away with it, which is why the bug hides.",
+          "A STOP does not clear the pointer. The sensor kept its pointer, and the risk is about the bus, not the register.",
+          "Pull-ups do not drift because of a STOP. The gap changes who owns the bus, not the level on the wire.",
+          "The read address still carries its R/W bit. The bit is set by the SDK in each transfer, not carried across a STOP."
+        ],
+        "hint": "What does a STOP do to the bus, and what can happen to the bus before the read starts?",
+        "why": "The repeated START keeps the bus held, so no other master can change the transaction. Mistake 2 in this lesson is this exact case. Pass nostop = true on the pointer write, and the decoder shows one transaction."
+      },
+      { "type": "mc",
+        "prompt": "The wake write to the sensor at 0x68 gets an ACK on every byte, and the analyzer shows a clean STOP. Yet the measurement registers stay at zero. What is the most likely cause?",
+        "options": [
+          "The address byte gets a NACK, so the device is missing",
+          "The sensor is still asleep, so the wake value must be written again",
+          "A STOP after the address means the bus was released too early",
+          "The data is inverted on the wire, so the value reads as zero"
+        ],
+        "answer": 1,
+        "feedback": [
+          "The address is acknowledged in this capture, so the device is present. A NACK on the address would mean the device is missing.",
+          "Right. A sleeping sensor answers its address and accepts writes, but it does not measure until the SLEEP bit is cleared. Check PWR_MGMT_1 (0x6B) for the bit.",
+          "The STOP after the data is the normal end of a write. It is not early, because nothing else follows the write.",
+          "I2C does not invert data. A wrong value would show on the wire as the same bits the code sent."
+        ],
+        "hint": "A device that answers its address can still be asleep. Which register holds the SLEEP bit?",
+        "why": "A sleeping sensor answers its address, so an ACK does not prove that it is measuring. Check the sensor's power state and read it back, because the register tells you whether the wake write worked."
+      },
+      { "type": "text",
+        "prompt": "Your read helper must send the register pointer and keep the bus held, so that the read is a repeated START. Which SDK function sends the pointer, using its nostop argument?",
+        "accept": ["i2c_write_blocking", "i2c_write_blocking()"],
+        "hint": "The function that writes the bytes. The read function does not send the pointer.",
+        "why": "i2c_write_blocking() sends the register number and, with nostop set to true, leaves the bus held for the read. The read call sends the repeated START and the read address, and ends with a STOP."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague's register read sometimes returns the right value and sometimes returns another one. The analyzer shows a STOP between the pointer write and the read in the failing runs. Explain how a second master could cause this, and what you would check first.",
+        "hint": "What does the STOP release, and what can another master do with the bus in that gap?",
+        "answer": "The STOP releases the bus. Another master may start a transfer in the gap and move the sensor's register pointer, or change what the sensor is doing, so this read returns the wrong register. I would check first that the pointer write uses nostop = true, so the read is a repeated START. If the problem stays, I would look at the bus with the analyzer and look for a second master, and add a timeout in the driver, because clock stretching can make a transfer take longer than the code expects."
+      }
     ] }
     </script>
   </div>
@@ -305,13 +387,32 @@ i2c_read_blocking(i2c0, 0x68, &amp;value, 1, <span class="k">false</span>);  <sp
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a>: a 50 kΩ internal pull-up sits on 3.3 V and a button shorts it to ground. What current flows, in microamps?",
+        "prompt": "A bus line on 3.3 V has the RP2040's weakest internal pull-up, 50 kΩ, as <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a> describes. A device pulls SDA to 0 V. How many microamps flow through the pull-up?",
         "answer": 66, "tolerance": 0.02, "unit": "µA",
-        "why": "I = 3.3 V ÷ 50 kΩ = 66 µA. The tempting answer, 6.6 µA, moves the decimal point by one place." },
-      { "type": "text",
-        "prompt": "From <a href=\"0046-volatile-const-and-static.html\">lesson 46</a>: which qualifier stops the compiler from caching a memory-mapped read?",
-        "accept": ["volatile"],
-        "why": "volatile makes every access happen. The tempting answer, const, forbids writing the object, which does not stop caching a read." }
+        "wrong": [
+          { "answer": 6.6, "feedback": "6.6 µA is one tenth of the answer. Check the decimal point: 3.3 V ÷ 50,000 Ω is 0.000066 A, which is 66 µA." }
+        ],
+        "hint": "I = V ÷ R. Convert 50 kΩ to ohms first, then give the answer in microamps.",
+        "why": "3.3 V ÷ 50 kΩ = 66 µA. This small current is why the internal pull-up is fine for a short bench wire, and too weak for a bus with real capacitance, as the rise-time section shows."
+      },
+      { "type": "mc",
+        "prompt": "The MPU6050 raises a data-ready pin, and an interrupt handler sets a flag that the main loop checks before each I2C read. The flag is a plain <code>bool</code>. As <a href=\"0046-volatile-const-and-static.html\">lesson 46</a> teaches, what is the fix?",
+        "options": [
+          "Declare the flag volatile, so the loop rereads it every time",
+          "Declare the flag const, so the handler cannot change it",
+          "Declare the flag register, so the value stays in a CPU register",
+          "Nothing, because a bool is always reread from memory"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Without volatile, the compiler may keep the flag in a register and never see the handler's write. volatile makes each read go to memory.",
+          "const forbids the write the handler has to make, so the flag would never change. The fix is the opposite.",
+          "register asks the compiler to keep the value in a CPU register, which is the opposite of what a shared flag needs.",
+          "The compiler is allowed to reuse a value it has already read, so a bool is not reread on every pass by default."
+        ],
+        "hint": "The handler writes the flag and the main loop reads it. What qualifier tells the compiler to read the memory every time?",
+        "why": "volatile is the tool for a value that changes outside the code's view, such as a flag set by an interrupt or a register. It does not make an operation atomic, so a read-and-clear still needs a critical section, as lesson 57 showed."
+      }
     ] }
     </script>
   </div>

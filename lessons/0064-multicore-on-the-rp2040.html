@@ -179,36 +179,51 @@
   <div class="widget quiz" data-title="Predict the race">
     <script type="application/json">
     { "questions": [
-      { "type": "mc",
-        "prompt": "Core 0 and core 1 each run <code>shared++</code> 100000 times, with no lock. What can the final value be?",
-        "options": [
-          "Possibly below the sum",
-          "Always exactly the sum",
-          "Always twice one core",
-          "Always zero, writes fail"
+      { "type": "number",
+        "prompt": "Core 0 and core 1 each run <code>shared++</code> 100000 times with no lock. The run ends with <code>shared</code> at 173412. How many increments were lost?",
+        "answer": 26588, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 173412, "feedback": "That is the final value, not the loss. The loss is the expected total minus the result: 200,000 − 173,412." }
         ],
-        "answer": 0,
-        "why": "Each increment is load, add and store, and the two cores can interleave, so increments can be lost. The true sum is 200000, and the result can be lower. The tempting answer is the second: it sounds right, but nothing orders the two cores' steps. Revisit the race section above." },
+        "hint": "The expected total is 2 × 100000. Subtract what the run actually stored.",
+        "why": "Each increment is a load, an add and a store, so two cores can overwrite each other's store. The expected total is 200,000, and this run lost 26,588 of them. The run was still a 'plausible' number, which is why a race can slip through a test that only checks the output once."
+      },
       { "type": "mc",
-        "prompt": "Core 0 and core 1 call <code>spin_lock_blocking</code> on the same lock in the same clock cycle. What happens?",
+        "prompt": "Core 0 and core 1 each run <code>count++</code> once, with no lock, starting from <code>count = 5</code>. Which final values are possible?",
         "options": [
-          "Core 0 claims the lock",
-          "Core 1 claims the lock",
-          "Both wait and then retry",
-          "Both claim the lock together"
+          "7 only",
+          "6 or 7",
+          "5 or 6",
+          "6 only"
         ],
-        "answer": 0,
-        "why": "The datasheet says that when both cores claim a spinlock in the same cycle, core 0 succeeds. The tempting answer is that both wait: the losing core spins, but the winner is decided by the hardware, not by a retry." },
+        "answer": 1,
+        "feedback": [
+          "7 is the result when the two increments do not overlap. Nothing orders the cores, so the overlap can happen, and it gives 6.",
+          "Right. Without overlap both increments count, giving 7. With overlap both cores load 5 and both store 6. Nothing lower is possible, because each store is one more than the value that core loaded.",
+          "The count cannot stay at 5. Each core stores the value it loaded plus one, so the final value is at least 6.",
+          "6 is possible, but so is 7, when the two increments do not overlap. The result depends on the timing."
+        ],
+        "hint": "Write out each core's load, add and store, and try both orders of the steps.",
+        "why": "Two increments with no overlap give 7. If both load 5 before either stores, both store 6 and one increment is lost. Because each store is the loaded value plus one, the result never drops below 6."
+      },
       { "type": "mc",
-        "prompt": "Core 1 calls <code>multicore_fifo_pop_blocking()</code> while its incoming FIFO is empty. What happens?",
+        "prompt": "A test prints <code>shared = 200000</code> on 99 runs out of 100, with both cores running <code>shared++</code> and no lock. A colleague says the code is ready to ship. What is the right call?",
         "options": [
-          "It waits until data arrives",
-          "It returns zero at once",
-          "It reads the old value",
-          "It corrupts the FIFO state"
+          "Ship: the test passes, so the race is gone",
+          "Do not ship: a race can pass many tests, so add a lock",
+          "Ship after making the counter 64 bits wide",
+          "Ship after adding volatile to the counter"
         ],
-        "answer": 0,
-        "why": "The blocking pop waits until the FIFO has data, sleeping with WFE between checks. The non-blocking forms return at once, and the tempting answer, zero, is what a raw read of an empty FIFO can give, not what the blocking call does." }
+        "answer": 1,
+        "feedback": [
+          "Passing 99 runs of 100 does not prove the race is gone. Each lost update is rare, so a test can pass again and again.",
+          "Right. A lost update is rare on any one step, so a test may pass most of the time. Shared data needs one owner or a lock around every access, whatever the tests show.",
+          "A wider type does not stop two cores from loading the same value. The lost update is a timing problem, not an overflow.",
+          "volatile forces a reload on each access but does not make the increment atomic, so the lost update remains."
+        ],
+        "hint": "Ask how often the bug would show in a test, and whether the test can show it at all.",
+        "why": "Multicore races are found by design review, not by counting passing runs. The fix is a lock or a single owner, not a bigger type or a keyword that changes only what the compiler reloads."
+      }
     ] }
     </script>
   </div>
@@ -224,33 +239,75 @@
       { "type": "mc",
         "prompt": "Core 1 runs <code>frames++</code> in a loop, and core 0 also runs <code>frames++</code>, with no lock. What is the main bug?",
         "options": [
-          "Shared counter has no lock",
-          "Counter needs a bigger type",
+          "The shared counter has no lock",
+          "The counter needs a bigger type",
           "A FIFO would fix this",
-          "Loop should have a delay"
+          "The loop needs a delay"
         ],
         "answer": 0,
-        "why": "Two cores increment the same variable with no lock, so increments can be lost. A bigger type does not fix that, and a delay does not either. The FIFO option is wrong because a FIFO passes messages; it is not needed for a plain counter, which needs a lock." },
+        "feedback": [
+          "Right. Both cores do a load, add and store on one variable with no lock, so increments can be lost. Give the counter one owner, or take a lock around every access.",
+          "A bigger type does not stop lost updates. Both cores can still load the same value before either one stores.",
+          "A FIFO passes messages. It could carry the increments to one owner, but a plain shared counter is fixed directly by a lock.",
+          "A delay makes the race rarer, not impossible. The two cores' steps can still interleave in any order."
+        ],
+        "hint": "Which two steps of frames++ can the other core run in the middle of?",
+        "why": "Two cores increment the same variable with no lock, so increments can be lost. A bigger type does not fix that, and a delay does not either. A FIFO is a message channel, and it is only worth using when one core should own the count."
+      },
       { "type": "mc",
         "prompt": "This code is called from both cores: <code>uint32_t s = spin_lock_blocking(l); if (full) return; buf[h++] = b; spin_unlock(l, s);</code>. What is wrong?",
         "options": [
-          "Early return keeps the lock",
-          "Index h is not volatile",
           "Interrupts stay off too long",
+          "Index h is not volatile",
+          "Early return keeps the lock",
           "The buffer should be static"
         ],
-        "answer": 0,
-        "why": "The early return skips spin_unlock, so the lock stays claimed and the other core spins forever. Every exit path must release the lock. The tempting answer is the volatile index: h is only touched under the lock, so it does not need volatile for this." },
+        "answer": 2,
+        "feedback": [
+          "Interrupts are off only for this short critical section. The length is not the bug here.",
+          "h is only touched while the lock is held, so the lock already orders its use. volatile would not fix an early return.",
+          "Right. The early return skips spin_unlock, so the lock stays claimed and the other core spins forever. Every path must reach the unlock.",
+          "A static buffer would not change who holds the lock. The bug is the path that skips the unlock."
+        ],
+        "hint": "Follow the path where full is true. Which line runs after it?",
+        "why": "The early return skips spin_unlock, so the lock stays claimed and the other core spins forever. Every exit path must release the lock. Store the result, let every branch reach the unlock, and return at the end."
+      },
       { "type": "mc",
         "prompt": "Core 0 sets <code>ready = 1</code> and then fills <code>data[]</code>. Core 1 spins on <code>ready</code>, then reads <code>data[]</code> with no lock. What is the bug?",
         "options": [
-          "Core 1 reads partial data",
           "Setting ready twice fixes it",
+          "Core 1 reads partial data",
           "Core 1 should not spin",
           "The array should be const"
         ],
-        "answer": 0,
-        "why": "The flag is set before the data is written, and nothing orders the two cores, so core 1 may see ready with partial data. The fix is to fill the data first and hand over with a FIFO message, or with a lock that covers both. The tempting answer is the second, which does not change the order." }
+        "answer": 1,
+        "feedback": [
+          "Writing the flag again does not change the order. The data is still written after the flag.",
+          "Right. Core 0 sets ready before the data, and nothing orders the two cores, so core 1 can see ready and still read old or partial data. Fill the data first, then hand over.",
+          "Spinning is how core 1 waits, and it is fine. The problem is what it reads once the flag is set.",
+          "const would forbid core 0 from writing data[], so the fill could not happen. The problem is the order of the writes, not the type."
+        ],
+        "hint": "Which write must come first, and does the code guarantee that order across the two cores?",
+        "why": "The flag is set before the data is written, and nothing orders the two cores, so core 1 may see ready with partial data. The fix is to fill the data first and hand over with a FIFO message, or with a lock that covers both."
+      },
+      { "type": "mc",
+        "prompt": "A helper <code>bump_len()</code> takes <code>spin_lock_blocking(l)</code>. A caller already holds <code>l</code> and calls <code>bump_len()</code> before it releases. What happens on that core?",
+        "options": [
+          "Core 1 takes the lock while core 0 waits",
+          "The second claim returns at once, with no wait",
+          "Core 0 takes the lock twice and releases it twice",
+          "Core 0 spins forever on its own lock"
+        ],
+        "answer": 3,
+        "feedback": [
+          "Core 1 cannot take a lock that core 0 holds. Core 1 is not the problem here.",
+          "A claim that finds the lock held does not return. The call waits, as the name spin_lock_blocking says.",
+          "A hardware spinlock is not a counter, so the inner claim has nothing to release. It just waits for a release that never comes.",
+          "Right. The spinlock does not count claims. The only release would come from the code that holds it, and that code is stuck in the inner call. The fix is an outer function that takes the lock and an inner one that assumes it is held."
+        ],
+        "hint": "Does a hardware spinlock keep a count of how many times it was claimed?",
+        "why": "The SDK comments say a hardware spinlock may not be acquired re-entrantly. The inner claim spins on a lock its own core holds, so the core hangs while the other core carries on."
+      }
     ] }
     </script>
   </div>
@@ -283,32 +340,78 @@
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
-      { "type": "number",
-        "prompt": "How many hardware spinlocks does the SIO provide?",
-        "answer": 32, "tolerance": 0,
-        "why": "The SIO has 32 spinlocks, numbered 0 to 31 (section 2.3.1.3). The tempting answer is 8, which is the depth of each inter-core FIFO, not the number of locks." },
-      { "type": "number",
-        "prompt": "How many entries deep is each inter-core FIFO on the RP2040?",
-        "answer": 8, "tolerance": 0,
-        "why": "Each FIFO is 32 bits wide and eight entries deep (section 2.3.1.4). The tempting answer is 32, which is the width in bits, not the depth." },
-      { "type": "text",
-        "prompt": "Does <code>volatile</code> make <code>count++</code> safe between two cores? Answer yes or no.",
-        "accept": ["no"],
-        "why": "volatile gives no atomicity and no ordering between cores, so the read-modify-write can still interleave. The tempting answer is yes, because volatile fixes the reload problem from lesson 46, but that is a different problem." },
       { "type": "mc",
-        "prompt": "After reset, which core runs the main boot sequence?",
+        "prompt": "A sensor sampler on core 1 produces one 16-bit reading every millisecond, and core 0 logs each reading once. Which tool fits?",
         "options": [
-          "Core 0 runs it",
-          "Core 1 runs it",
-          "Both run at once",
-          "No core runs it"
+          "A spinlock around the reading",
+          "A FIFO message carrying the value",
+          "Disable interrupts on core 1",
+          "volatile on the reading"
         ],
-        "answer": 0,
-        "why": "Core 0 runs the boot sequence, and core 1 goes into deep sleep until user code wakes it (section 2.3.1.1). The tempting answer is both at once: both cores start, but core 1 falls asleep straight away, and the lockstep handshake happens only when the SDK launches it." },
+        "answer": 1,
+        "feedback": [
+          "A lock works, but it makes both cores touch the same variable for every sample. The reading is handed over once, so a message does it with no shared access.",
+          "Right. Each reading is handed over once, the receiving core owns it after the pop, and no data is shared while both cores can touch it.",
+          "Disabling interrupts on core 1 protects only core 1. Core 0 keeps running its own steps, so nothing is protected against it.",
+          "volatile forces a reload on each access, but it gives no atomicity and no ordering between the cores."
+        ],
+        "hint": "Who needs the value, and does it need to be in shared memory at all?",
+        "why": "Pass a message when one core produces and the other consumes. The FIFO is 32 bits wide, so a 16-bit reading fits in one word. Use a lock for data both cores change, and keep its critical section short."
+      },
       { "type": "number",
-        "prompt": "Which IRQ number does the FIFO interrupt for core 1 use?",
-        "answer": 16, "tolerance": 0,
-        "why": "SIO_IRQ_PROC1 is system interrupt 16, and core 0 typically uses 15 (section 2.3.2, Table 80). The tempting answer is 15, which is the core 0 line. The datasheet recommends the pairing, because each core can read only its own FIFO status." },
+        "prompt": "Core 1 pushes one word every millisecond with no check on fullness. Core 0 stalls for 12 ms and pops nothing. How many words are in the outgoing FIFO at the end of the stall?",
+        "answer": 8, "tolerance": 0, "unit": "words",
+        "wrong": [
+          { "answer": 12, "feedback": "Twelve pushes reach a FIFO only eight deep. It keeps eight words, and the other pushes set a sticky overflow flag (WOF) that marks the protocol bug." }
+        ],
+        "hint": "What is the depth of each inter-core FIFO?",
+        "why": "Each inter-core FIFO is 8 entries deep. Once it is full, extra writes are not stored. The blocking push in the SDK waits for room instead, which is why a flow-control rule belongs in the protocol, not in a check after the fact."
+      },
+      { "type": "mc",
+        "prompt": "A colleague says: 'I marked the counter <code>volatile</code>, so both cores see every update, and <code>count++</code> is safe now.' What is the best reply?",
+        "options": [
+          "Yes: a 64-bit counter gets rid of the lost updates",
+          "Yes: volatile makes core 0 and core 1 take turns on it",
+          "No: volatile stops caching, but count++ is still load, add, store",
+          "Yes: volatile makes the update atomic between the cores"
+        ],
+        "answer": 2,
+        "feedback": [
+          "A wider type does not stop two cores from loading the same value. The lost update is a timing problem, not an overflow.",
+          "volatile does not schedule the cores. Nothing makes them take turns, so both can run their steps at once.",
+          "Right. volatile only forces a reload on each access. Nothing makes the three steps of count++ indivisible, so two cores can still lose an update.",
+          "volatile gives no atomicity. The read and the write are still two separate steps that the other core can interleave."
+        ],
+        "hint": "What does volatile control, and what does it leave to the hardware?",
+        "why": "volatile tells the compiler not to cache the value, which matters for a loop that waits on another core. It does not make a read-modify-write atomic or ordered, so count++ still needs a lock or one owner."
+      },
+      { "type": "mc",
+        "prompt": "Your debugger shows core 1 in a deep sleep, and core 0 is running its own main(). Why is core 1 asleep?",
+        "options": [
+          "Running its own copy of main() beside core 0",
+          "Spinning on a lock until core 0 releases it",
+          "Asleep, until user code wakes it through the FIFO",
+          "Halted until the next full power cycle"
+        ],
+        "answer": 2,
+        "feedback": [
+          "Only core 0 runs the boot sequence and main(). Core 1 runs the function you launch on it, and only after you start it.",
+          "No lock is involved at reset. Core 1 is asleep, and no lock has been taken yet.",
+          "Right. The datasheet puts core 1 into a deep sleep after reset, and the SDK wakes it through the inter-core FIFO when you call multicore_launch_core1().",
+          "Core 1 is not halted for good. Its sleep ends when user code wakes it through the FIFO handshake."
+        ],
+        "hint": "What does multicore_launch_core1() do to core 1?",
+        "why": "Core 1 needs a stack pointer, an entry point and a vector table before it runs, and the SDK's handshake provides them. Until your code calls multicore_launch_core1(), core 1 does nothing, so a program that expects two busy cores must launch the second one."
+      },
+      { "type": "number",
+        "prompt": "Your core 0 handler for the FIFO interrupt is enabled on IRQ 15. You copy the setup to core 1 and change only the function name. Which IRQ number must core 1 enable for its incoming FIFO?",
+        "answer": 16, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 15, "feedback": "15 is SIO_IRQ_PROC0, core 0's line. Core 1 needs its own line, 16, or its handler will not see its FIFO interrupt." }
+        ],
+        "hint": "The datasheet lists one system interrupt per core for the FIFO.",
+        "why": "SIO_IRQ_PROC1 is system interrupt 16, and core 0 uses 15 (RP2040 datasheet, section 2.3.2). A handler copied from core 0 keeps the wrong line, so it never wakes for core 1's FIFO."
+      },
       { "type": "mc",
         "prompt": "Core 0 holds a lock and waits in <code>multicore_fifo_pop_blocking()</code>. Core 1 spins on that lock before it sends. What happens?",
         "options": [
@@ -318,7 +421,20 @@
           "Core 0 wakes early"
         ],
         "answer": 0,
-        "why": "Core 0 waits for a message that core 1 cannot send while it spins on a lock core 0 holds, so neither can move. This is a deadlock. The tempting answer is that core 1 sends first, but it never reaches the send. Put the wait before taking the lock, or send before taking it." }
+        "feedback": [
+          "Right. Core 0 waits for a reply that core 1 cannot send, because core 1 spins on a lock that core 0 holds. Neither can move: a deadlock. Wait before taking the lock, or send before taking it.",
+          "Core 1 never reaches the send. It is stuck at the lock before it can send anything.",
+          "A spinlock stays held until the core that holds it releases it. Nothing frees it on a timer.",
+          "Core 0 waits in the pop until a message arrives. No message is coming, so it does not wake early."
+        ],
+        "hint": "Who holds the lock, and who must send before the lock is released?",
+        "why": "This is a deadlock: each core waits for the other. The fix is to finish the wait before taking the lock, or to send before taking it."
+      },
+      { "type": "reflect",
+        "prompt": "Core 1 streams sensor samples into a 4 KB buffer that core 0 displays. A teammate wraps the whole buffer in one spinlock. Explain what that costs, and what you would do instead.",
+        "hint": "While the lock is held, who waits, and for how long?",
+        "answer": "The lock makes the buffer safe, but it holds core 0 for the whole time core 1 fills or copies the buffer. Core 0 spins, and the display stalls. A better design gives each sample slot one owner and hands the slot number over the FIFO, so no lock is held while the data is processed. Keep a lock for a small shared list, and keep its critical section to a few lines."
+      }
     ] }
     </script>
   </div>
@@ -326,20 +442,33 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 46: which keyword stops the compiler from keeping a flag in a register across a polling loop? One word.",
-        "accept": ["volatile"],
-        "why": "volatile makes each access an observable side effect, so the flag is reloaded on each pass. The tempting answer is static, which gives internal linkage and does not force a reload." },
-      { "type": "mc",
-        "prompt": "From lesson 47: which write sets PC13 on GPIOC without a read-modify-write?",
-        "options": [
-          "Write bit 13 of BSRR",
-          "Write bit 29 of BSRR",
-          "Write bit 13 of ODR",
-          "Write bit 16 of BSRR"
+      { "type": "number",
+        "prompt": "Core 1 keeps a frame counter in a <code>uint8_t</code> and increments it once per finished frame. Core 0 shows the value on a display. After how many increments from 0 does the display read 0 again? (Lesson 45 covers the wrap.)",
+        "answer": 256, "tolerance": 0, "unit": "increments",
+        "wrong": [
+          { "answer": 255, "feedback": "After 255 increments the counter reads 255. The next increment wraps it to 0, so it takes 256 increments." }
         ],
-        "answer": 0,
-        "why": "BSRR bits 0 to 15 set their pins with a single store, and bit 13 is PC13. The tempting answer is bit 29, which resets PC13. The ODR option is a read-modify-write, which is the thing this lesson warns against." }
+        "hint": "A uint8_t holds 256 values, 0 to 255. Which increment is the first one that stores 0?",
+        "why": "An unsigned 8-bit counter wraps modulo 256, so the 256th increment stores 0 again. A display that shows a frame count wraps the same way, so a counter that is shared between cores needs its wrap planned for, not discovered on a board."
+      },
+      { "type": "mc",
+        "prompt": "Core 0 sets PA5 and core 1 clears PA6, and both pins are on the same GPIO output register. Which write cannot lose the other core's change?",
+        "options": [
+          "Read OUT, change one bit, write OUT back",
+          "Keep a shared copy of OUT and write it back",
+          "Write the SIO's SET or CLR alias for the one bit",
+          "Make OUT volatile so each read is fresh"
+        ],
+        "answer": 2,
+        "feedback": [
+          "That is the read-modify-write the lesson warns against. Between the read and the write, the other core can change OUT, and that change is lost.",
+          "A shared copy is older than the real register as soon as the other core writes. Writing it back overwrites that change.",
+          "Right. A write to SET or CLR changes only the bits you name, in one store, so the other core's bit is untouched. Lesson 47's BSRR works the same way on STM32.",
+          "volatile forces a fresh read, but the read and the write are still two steps. The other core can change OUT between them."
+        ],
+        "hint": "Which write names only the bit to change, and does a single store leave room for the other core?",
+        "why": "The SIO's SET and CLR aliases apply one store to only the bits you name. The datasheet says both cores can use them, so a set or clear from one core cannot undo a change from the other."
+      }
     ] }
     </script>
   </div>

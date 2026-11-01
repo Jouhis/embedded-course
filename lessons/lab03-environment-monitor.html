@@ -19,7 +19,7 @@
 
   <h2>The idea</h2>
   <p>
-    The device has one loop. The loop never waits for hardware. It checks three deadlines: take a sensor sample every 200 ms, redraw the screen every 500 ms, and print a log line every second. The buttons work differently. Their interrupts only record a press, and the loop acts on the record. That split keeps the loop short, which is the rule from lesson <a href="0057-interrupts-in-practice.html">57</a> and the timing rule from lesson <a href="0055-timing-and-non-blocking-super.html">55</a>.
+    The device has one loop. The loop never waits without a bound. It checks three deadlines: take a sensor sample every 200 ms, redraw the screen every 500 ms, and print a log line every second. The buttons work differently. Their interrupts only record a press, and the loop acts on the record. That split keeps the loop short, which is the rule from lesson <a href="0057-interrupts-in-practice.html">57</a> and the timing rule from lesson <a href="0055-timing-and-non-blocking-super.html">55</a>.
     <span class="sidenote">The sensor and the OLED share one I2C bus, I2C0 on GP4 and GP5. Two devices on one bus is normal in industry. Each has its own address, and the bus has only one set of pull-ups. The bus is covered in <a href="0060-the-i2c-protocol.html">lesson 60</a>, and the OLED driver is <a href="0061-an-i2c-oled-display-and.html">lesson 61</a>'s, which this lab reuses unchanged except for six extra glyphs. <a href="0062-spi.html">Lesson 62</a> shows the same kind of panel on SPI, which you can compare with this I2C version.</span>
   </p>
 
@@ -286,47 +286,96 @@
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Why must <code>sensor_poll</code> return at once when no sample is ready?",
+        "prompt": "The device freezes when the sensor is unplugged: the screen stops, the buttons lag, and the log stalls for half a second at a time. The poll is written as <code>while ((status &amp; 1) == 0) { }</code>. Which change fixes it?",
         "options": [
-          "So the loop can keep going",
-          "So the next sample is sooner",
-          "So the bus is never used",
-          "So the sensor clears its flags"
+          "Lower the loop's delay so the wait is shorter",
+          "Remove the bus pull-up resistors from the wiring",
+          "Read STATUS once and return SENSOR_IDLE if DRDY is clear",
+          "Poll TEMP_H in a while loop until it changes"
         ],
-        "answer": 0,
-        "why": "A blocking poll would stall the loop, so the buttons, the display and the log would wait for the sensor. The sample rate is set by the sensor, not by how often you poll, so the tempting answer, faster samples, is wrong. The bus is used on every poll, so the third option is false." },
-      { "type": "mc",
-        "prompt": "Why does the button interrupt only set a flag?",
-        "options": [
-          "Keep the handler short and fast",
-          "Drawing the display is very slow",
-          "Flags use much less memory here",
-          "The compiler forbids all function calls"
+        "answer": 2,
+        "feedback": [
+          "A shorter wait still blocks the loop. The loop must not wait for the sensor at all, however short the wait is.",
+          "The pull-ups are needed for the bus to work at all. Removing them does not stop the loop from waiting on the sensor.",
+          "Right. One read that returns at once keeps the loop going. If DRDY is clear, the loop moves on and tries again at its next 200 ms deadline.",
+          "Reading TEMP_H can clear the flag, but the while loop still waits for the sensor, so the freeze stays."
         ],
-        "answer": 0,
-        "why": "Lesson 57's rule is that the handler runs in the middle of other code, so it must be short. Drawing is slow, but that is a reason to keep it out of the handler, not the whole reason. The compiler does allow calls, so the fourth option is false." },
+        "hint": "Ask what the loop is doing while the sensor has no new sample.",
+        "why": "A while loop around the STATUS read stops every other job until DRDY is set, which can take up to 500 ms, and it never returns if the sensor is gone. Read STATUS once, return SENSOR_IDLE when DRDY is clear, and the loop goes on to the screen and the buttons. The rule to carry to other code: no call in the loop waits on a device without a known bound." },
       { "type": "number",
-        "prompt": "The loop reads the sensor every 200 ms. The sensor makes a new sample every 500 ms. At most how many new samples per second does the log see?",
-        "answer": 2, "tolerance": 0.01, "unit": "samples per second",
-        "why": "One new sample every 500 ms is 2 per second, and the loop cannot see more than the sensor makes. The tempting answer is 5, which is the poll rate, 1000 ÷ 200. Polling faster than the sensor only sees the same sample twice, and the data-ready flag stops that." },
-      { "type": "text",
-        "prompt": "Which GPIO pin is button A on? Type the number.",
-        "accept": ["14", "GP14"],
-        "why": "Button A is on GP14 and button B is on GP15, as the requirements and the diagram say. The tempting answer is 15, which is button B." },
-      { "type": "number",
-        "prompt": "The log deadline is 1000 ms after boot. The loop reaches it at 1007 ms, 7 ms late. With the lab's rule, what is the next log deadline in ms since boot?",
-        "answer": 2000, "tolerance": 0, "unit": "ms",
-        "why": "The rule adds the period to the deadline, so 1000 + 1000 = 2000. The tempting answer is 2007, which adds it to the late time now, and drifts the log off its one-second grid every time the loop is late." },
+        "prompt": "On the SETPOINT screen the threshold is 35 °C, and button B is pressed once. What is the threshold now, in °C?",
+        "answer": 20, "tolerance": 0, "unit": "°C",
+        "wrong": [ { "answer": 36, "feedback": "36 is the arithmetic without the wrap. The threshold runs from 20 to 35, and the press after 35 goes back to 20." } ],
+        "hint": "Requirement 5 says what happens after 35.",
+        "why": "Button B adds 1 °C, but the range is 20 to 35, so the step after 35 wraps to 20. The wrap is in the requirements, so the code must check the range, not just add one. A threshold that could leave its range would sit at a value the screen never shows." },
       { "type": "mc",
-        "prompt": "Button A bounces, with falling edges at 0.0, 0.8, 2.1 and 4.5 ms. The lockout is 30 ms. How many presses are recorded?",
+        "prompt": "A bench test shows the log's T= value changing about every half second, but the loop reads the sensor every 200 ms. Is that a bug?",
         "options": [
+          "Yes: the loop should read the sensor every 500 ms",
+          "Yes, the sensor may be faulty, check it",
+          "Yes: the log should print on every poll",
+          "No: the sensor makes one new sample every 500 ms"
+        ],
+        "answer": 3,
+        "feedback": [
+          "Polling at 500 ms would miss samples and gain nothing. The sample rate belongs to the sensor, so the loop polls faster to see each sample soon after it arrives.",
+          "Nothing here suggests a fault. A sensor that makes a sample every 500 ms looks like this at any poll rate.",
+          "The log prints on its own one-second deadline. Printing on every poll would repeat the same old value five times a second.",
+          "Right. The data-ready flag marks each new sample, and the loop polls five times a second, so it sees each one within 200 ms. The value itself changes every 500 ms."
+        ],
+        "hint": "Compare the sensor's sample period with the loop's poll period.",
+        "why": "The sensor's sample period sets the rate of new values, not the loop's. Polling faster than the sensor only reads the same value again, and the data-ready flag tells the loop when a new one exists. When a value changes more slowly than the poll rate, check the sensor's period first." },
+      { "type": "number",
+        "prompt": "The loop's deadline is 0xFFFFFFF0 ms, and the 32-bit clock has just wrapped, so now is 0x00000005. What does <code>(int32_t)(now - deadline)</code> give, in ms?",
+        "answer": 21, "tolerance": 0, "unit": "ms",
+        "wrong": [ { "answer": -21, "feedback": "That is deadline minus now, the wrong order. The formula is now minus deadline, so the result is +21 and the job is due." } ],
+        "hint": "Do the subtraction in unsigned 32-bit arithmetic, then read the result as a signed number.",
+        "why": "5 minus 0xFFFFFFF0 wraps around to 21 in unsigned arithmetic, and the signed cast keeps +21. A positive result means the deadline has passed, so the job runs. A plain now &gt;= deadline would be false here, and the job would wait about 49.7 days for the clock to come round." },
+      { "type": "number",
+        "prompt": "The log's deadline is 2000 ms after boot. The loop reaches it at 2013 ms, 13 ms late. Using the lab's rule, what is the next log deadline, in ms since boot?",
+        "answer": 3000, "tolerance": 0, "unit": "ms",
+        "wrong": [ { "answer": 3013, "feedback": "That adds the period to the late time, now. The rule adds it to the deadline, so the log stays on its one-second grid." } ],
+        "hint": "Add the period to the deadline, not to now.",
+        "why": "2000 + 1000 = 3000. The 13 ms of lateness is spent once. Adding to now would give 3013, and every late pass would push the grid further off, so the log would drift away from the sensor's samples over minutes." },
+      { "type": "mc",
+        "prompt": "Button A's pin produces falling edges at 0.0, 0.8, 2.1 and 4.5 ms after one press. The lockout is 30 ms. How many presses does the device record?",
+        "options": [
+          "Two presses, at 0 and 2.1 ms",
           "One press, from the first edge",
-          "Two presses, at 0 and 2.1ms",
-          "Four presses, every edge is one",
-          "Zero, all of it was bounce"
+          "Four presses, one for every edge",
+          "Zero, because all of it was bounce"
         ],
-        "answer": 0,
-        "why": "The first edge is accepted, and the later edges all fall within 30 ms of it, so the lockout drops them. The tempting answer is four, because every edge is a change on the pin, but the lockout counts presses, not edges. The option of two would be right only if the second edge came after 30 ms." }
+        "answer": 1,
+        "feedback": [
+          "The edge at 2.1 ms is well inside the 30 ms lockout, so it is dropped. Only an edge 30 ms or more after the accepted press counts.",
+          "Right. The first edge is accepted, and the three later edges all fall within 30 ms of it, so the lockout drops them.",
+          "Each edge is a change on the pin, but the lockout counts presses, not edges.",
+          "The first edge is a real press. The lockout removes the extra edges, not the press."
+        ],
+        "hint": "Measure each edge against the last accepted press, not against the previous edge.",
+        "why": "The lockout measures from the last accepted press. The edges at 0.8, 2.1 and 4.5 ms all fall within 30 ms of the press at 0.0, so they are dropped, and one press is recorded. The lab's rule is written that way on purpose, and a reviewer should check that the window starts at the accepted press." },
+      { "type": "mc",
+        "prompt": "The threshold is 22 °C and the newest reading is exactly 22.00 °C. What does the log print for ALARM?",
+        "options": [
+          "ALARM=1: a reading at the threshold counts",
+          "ALARM=0: 22.00 is not above 22",
+          "ALARM=1, but only from the second sample",
+          "ALARM=0 because the threshold is not logged"
+        ],
+        "answer": 1,
+        "feedback": [
+          "The alarm is on when the reading is above the threshold. A reading equal to the threshold is not above it.",
+          "Right. Above means strictly greater, so 22.00 against 22 leaves the alarm off.",
+          "The alarm is computed on each sample, so the first reading decides, not the second one.",
+          "The log prints the threshold as SET=, and the alarm flag is printed on every line, so the threshold does not hide the alarm."
+        ],
+        "hint": "Read the requirement on the alarm word by word.",
+        "why": "The alarm is on when the newest reading is above the threshold, and equal values leave it off. A check written with greater-or-equal turns the alarm on at exactly the threshold, which is a real change in behaviour that tests with round numbers can miss." },
+      { "type": "reflect",
+        "prompt": "Explain to a colleague why the button interrupt only sets a flag, and draws nothing.",
+        "hint": "Think about when the handler runs, and what the loop is doing at that moment.",
+        "answer": "The handler runs at a moment the loop does not choose, in the middle of whatever the CPU was doing, so it must be short. Drawing the screen takes about 24 ms of I2C time, and printing takes time too. If the handler did that work, the loop would be paused for that time, and the sensor and the other button would wait. The handler records the press in one volatile flag, and the loop acts on it at its own pace, reading and clearing the flag with interrupts off."
+      }
     ] }
     </script>
   </div>

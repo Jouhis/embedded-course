@@ -223,49 +223,16 @@ then DMA_CCR_EN bit 0 = 0x01, written last: 0xA7</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "A UART receives at 115200 baud into a circular buffer of 256 bytes. Each byte takes 10 bit times (start, 8 data, stop). How many milliseconds does it take to fill the first half, 128 bytes? Give 2 decimal places.",
+        "prompt": "Your board receives GPS sentences at 115200 baud into a 256-byte circular DMA buffer. Each byte takes 10 bit times on the line (start, 8 data, stop). How many milliseconds pass before the DMA has written the first 128 bytes? Give 2 decimal places.",
         "answer": 11.11, "tolerance": 0.01, "unit": "ms",
-        "why": "128 bytes × 10 bits = 1280 bit times, and 1280 ÷ 115200 = 0.01111 s, which is 11.11 ms. The tempting answer, 1.11 ms, uses 1 bit per byte instead of 10." },
-      { "type": "mc",
-        "prompt": "A DMA receive buffer must not lose data. Which setting makes the transfer restart by itself at the end of the buffer?",
-        "options": [
-          "Circular mode with the DMA",
-          "Normal mode with a restart",
-          "Memory increment with no loop",
-          "Peripheral increment in the DMA"
+        "wrong": [
+          { "answer": 1.11, "feedback": "That counts 1 bit per byte. A byte on the line is 10 bit times, so multiply the 128 bytes by 10 before you divide by the baud rate." },
+          { "answer": 8.89, "feedback": "That counts only the 8 data bits. The start and stop bits also take line time, which is why one byte is 10 bit times." }
         ],
-        "answer": 0,
-        "why": "Circular mode (DMA_CCR_CIRC) reloads the count and the address at the end, so the DMA keeps writing. Normal mode stops at zero. The tempting answer, memory increment, only moves the write pointer and does not wrap it." },
+        "hint": "Work in bits first: 128 bytes × 10 bits per byte, then divide by 115200 bits per second.",
+        "why": "128 × 10 = 1280 bit times, and 1280 ÷ 115200 = 0.01111 s, or 11.11 ms. The handler's real deadline is the same length again: the DMA needs another 11.11 ms to fill the second half, and then it wraps to the first half. That is the window the handler has to read a half and get out of the way." },
       { "type": "mc",
-        "prompt": "Which interrupt lets the CPU start processing the first half of a circular buffer while the DMA fills the second half?",
-        "options": [
-          "The half transfer interrupt",
-          "The transfer error interrupt",
-          "The clock enable interrupt",
-          "The channel priority interrupt"
-        ],
-        "answer": 0,
-        "why": "The half-transfer interrupt (DMA_CCR_HTIE) fires when the first half is full, so the first half can be processed in parallel with the DMA. The tempting answer, the error interrupt, is for failed transfers, not for progress." },
-      { "type": "text",
-        "prompt": "Which control bit enables the half-transfer interrupt in a DMA channel's CCR register? Write the CMSIS macro name.",
-        "accept": ["DMA_CCR_HTIE", "HTIE"],
-        "why": "DMA_CCR_HTIE is that bit. The tempting answer, DMA_CCR_TCIE, enables the transfer-complete interrupt at the end of the whole buffer." },
-      { "type": "mc",
-        "prompt": "On which core does a DMA write to RAM need a cache invalidate before the CPU reads it?",
-        "options": [
-          "A core with a data cache",
-          "A core with no FPU unit",
-          "A core with an MPU unit",
-          "A core with a debug unit"
-        ],
-        "answer": 0,
-        "why": "The problem is a stale copy in the data cache, so the core needs a data cache. The Cortex-M3 on the STM32F1 has no data cache, so the course's Blue Pill does not need the invalidate. The tempting answer, a core with an MPU, is about memory protection, not caching." },
-      { "type": "number",
-        "prompt": "A receive channel was started with CNDTR = 256. The register now reads 200. How many items has the DMA written since it started?",
-        "answer": 56, "tolerance": 0, "unit": "items",
-        "why": "CNDTR counts down, so 256 − 200 = 56 items have been written. The tempting answer, 200, reads the remaining count as the number written." },
-      { "type": "mc",
-        "prompt": "A receive buffer ends with only the last byte repeated across all its elements. Which control bit is missing?",
+        "prompt": "Your UART receive buffer ends up holding only the last byte received, repeated in all 256 slots. CNDTR counts down normally and the channel keeps running. Which CCR bit is most likely missing?",
         "options": [
           "Memory increment, DMA_CCR_MINC",
           "Circular mode, DMA_CCR_CIRC",
@@ -273,7 +240,86 @@ then DMA_CCR_EN bit 0 = 0x01, written last: 0xA7</code></pre>
           "Channel enable, DMA_CCR_EN"
         ],
         "answer": 0,
-        "why": "Without MINC the memory address never moves, so every byte lands on the same element. The tempting answer, circular mode, controls what happens at the end of the buffer, not how the address moves inside it." }
+        "feedback": [
+          "Right. Without MINC the memory address never moves, so every byte is written to the same slot. With the bit set, each byte gets its own address.",
+          "Circular mode decides what happens at the end of the buffer. It does not change where bytes go inside the buffer, so this symptom would stay.",
+          "HTIE only decides when the CPU is interrupted. It has no effect on where the DMA writes, so the buffer would still fill with one byte.",
+          "EN starts the channel. The symptom says the channel keeps running, so the enable bit is not the missing piece."
+        ],
+        "hint": "Ask what moves the write address from one slot to the next, and which bit controls that.",
+        "why": "The address only steps through the buffer when the memory increment bit is set. A quick test confirms the fix: send ABCDEFGH and check that all eight letters are in the buffer. This is the most common DMA bug, and its symptom is always the same repeated byte." },
+      { "type": "number",
+        "prompt": "The handler for this buffer calls a logging function that takes 14 ms per half. The UART runs at 115200 baud with 10 bit times per byte. What is the smallest total buffer size, in bytes, so that one half takes longer than 14 ms to fill? Both halves are the same size.",
+        "answer": 324, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 322, "feedback": "That gives 161 bytes per half, which fills in 13.98 ms. That is less than 14 ms, so the logger would still fall behind. Find the half size first, then double it." },
+          { "answer": 256, "feedback": "256 bytes is the size from the lesson's example, where a half fills in 11.11 ms. The logger is slower than that, so the handler loses bytes." }
+        ],
+        "hint": "Find how many bytes arrive in 14 ms, then double the answer, because the buffer has two halves.",
+        "why": "In 14 ms the line delivers about 161.3 bytes at 86.8 µs each, so a half must be at least 162 bytes, and the buffer 324 bytes. Real designs round up and leave margin, because the handler also needs time to enter and leave. The buffer size is a timing decision, not a guess." },
+      { "type": "number",
+        "prompt": "A debugger shows CNDTR at 200 on a receive channel that was started with CNDTR = 256 and has not wrapped yet. How many bytes has the DMA written since it started?",
+        "answer": 56, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 200, "feedback": "200 is the count still to go, not the count done. CNDTR counts down from 256, so 200 left means 56 written." }
+        ],
+        "hint": "CNDTR counts down. Subtract what is left from the starting value.",
+        "why": "256 − 200 = 56. Reading the register the wrong way round is a common debugging slip. CNDTR holds what is left to move, so the written count is the part that is missing from the start value." },
+      { "type": "mc",
+        "prompt": "Your teammate adds a cache invalidate before the CPU reads the DMA buffer on the Blue Pill (STM32F103, a Cortex-M3). Is that call needed?",
+        "options": [
+          "Needed, because the DMA writes RAM and the CPU may read stale data",
+          "Not needed, because the Cortex-M3 on the F1 has no data cache",
+          "Needed only when circular mode is switched on in CCR",
+          "Needed only when the memory increment bit is set"
+        ],
+        "answer": 1,
+        "feedback": [
+          "That is the cache problem in general, but this core has no data cache to hold a stale copy. The CPU reads RAM directly, so the DMA's writes are already visible.",
+          "Right. The problem needs a stale copy in a data cache. The F1 core has none, so the invalidate is not needed here. On a Cortex-M7 it would be.",
+          "Circular mode controls what happens at the end of the buffer. Whether the CPU needs an invalidate depends on the core, not on the DMA mode.",
+          "MINC moves the memory address. It does not decide whether the CPU's reads go through a cache."
+        ],
+        "hint": "What does an invalidate remove? Then ask whether this core keeps a data cache.",
+        "why": "The problem is a cache holding old data while the DMA changes RAM behind its back. The Cortex-M3 on the STM32F1 has no data cache, so no stale copy can exist. The Cortex-M7 parts in larger products do have one, and there the invalidate, or a non-cacheable buffer, is the fix. The core decides the answer." },
+      { "type": "mc",
+        "prompt": "Your handler should process bytes 0 to 127 while the DMA fills bytes 128 to 255. Which CCR enable bit gives you the interrupt that says bytes 0 to 127 are full?",
+        "options": [
+          "DMA_CCR_HTIE",
+          "DMA_CCR_TCIE",
+          "DMA_CCR_TEIE",
+          "DMA_CCR_DIR"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. HTIE fires at the half-way point, when the first half is full, so the handler can read it while the DMA works on the second half.",
+          "TCIE fires when the second half is full and the DMA wraps. It tells you bytes 128 to 255 are ready, which is the other half.",
+          "TEIE reports a transfer error. It says nothing about how far the buffer has filled.",
+          "DIR sets the direction of the copy. It enables no interrupt, so the handler would never run."
+        ],
+        "hint": "Which event happens at the half-way point of the buffer?",
+        "why": "The two interrupts split the buffer into halves that take turns being safe to read. The half-transfer interrupt covers the first half and the transfer-complete interrupt covers the second. Enable both, as the lesson's code does, so the handler never has to guess which half is ready." },
+      { "type": "mc",
+        "prompt": "A circular receive channel has just written its 256th byte and wrapped to the start. What value should CNDTR show now?",
+        "options": [
+          "0, because the channel has stopped",
+          "256, because the count reloads for the next lap",
+          "1, because one slot is always kept free",
+          "255, because the last slot was just used"
+        ],
+        "answer": 1,
+        "feedback": [
+          "That is normal mode. In circular mode the channel does not stop at the end: the count is reloaded and the DMA keeps writing.",
+          "Right. Circular mode reloads CNDTR and the address at the end of the buffer, so the next lap starts at once.",
+          "The DMA has no reader index to protect. The hardware reloads the full count, and it is the reader that has to stay behind the writer.",
+          "The count is not one short. The reload happens at the end, so the value is the full 256 again."
+        ],
+        "hint": "In normal mode the count runs down to zero and stops. What does circular mode do at zero instead?",
+        "why": "The reload is what makes the buffer a ring. The DMA does not wait for the reader, so after the reload it overwrites the start of the buffer if the handler has not finished. That is why the half-transfer and transfer-complete interrupts exist." },
+      { "type": "reflect",
+        "prompt": "A colleague wants to replace the DMA receive with one interrupt per byte, because a circular buffer with half and full interrupts is hard to size. Using the numbers from this lesson, argue for or against the change at 115200 baud.",
+        "hint": "Count the interrupts per second in each design, and compare the time each handler gets with the work it does.",
+        "answer": "Against, for this case. Per byte at 115200 baud is one interrupt every 86.8 µs, about 11,520 a second, and each one pays the entry and exit cost. The handler then has under 87 µs for all its work. With DMA and a 256-byte buffer, the CPU is interrupted about 90 times a second, and the handler has 11.11 ms for each half. Sizing is one calculation: bytes per half × 10 bits ÷ baud rate must be longer than the handler's worst-case time. Per-byte interrupts are fine at low rates or when the CPU has spare time, but for a steady stream the DMA design has far more margin." }
     ] }
     </script>
   </div>
@@ -282,13 +328,30 @@ then DMA_CCR_EN bit 0 = 0x01, written last: 0xA7</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 40: the HSI oscillator runs at 8 MHz. How many microseconds is one HSI cycle?",
-        "answer": 0.125, "tolerance": 0.001, "unit": "µs",
-        "why": "One cycle is 1 ÷ 8 MHz = 0.125 µs. The tempting answer, 8 µs, inverts the division and gives the frequency's period in the wrong unit." },
-      { "type": "text",
-        "prompt": "From lesson 46: which qualifier must a flag have when an ISR or a DMA changes it outside the normal flow? One word.",
-        "accept": ["volatile"],
-        "why": "volatile stops the compiler from caching the value in a register. The tempting answer, const, forbids writes and does not help." }
+        "prompt": "Your board runs from its internal 8 MHz HSI oscillator, which it uses straight after reset (lesson 40). The UART is set to 115200 baud. How many CPU clock cycles fit in one bit time? Give 1 decimal place.",
+        "answer": 69.44, "tolerance": 0.001, "unit": "cycles",
+        "wrong": [
+          { "answer": 694.4, "feedback": "That is the number of cycles in a whole byte, which is 10 bit times. One bit time is 8,000,000 ÷ 115,200 = 69.44 cycles." }
+        ],
+        "hint": "Cycles per second divided by bits per second gives cycles per bit.",
+        "why": "A bit lasts 1 ÷ 115200 s, and each clock cycle lasts 1 ÷ 8 MHz, so a bit spans 69.44 cycles. The baud divider is calculated from the clock, so a wrong clock setting gives a wrong baud rate, and the receiver then samples the bits in the wrong place." },
+      { "type": "mc",
+        "prompt": "The DMA handler sets half_ready to 1 when the first half is full. The main loop spins on while (!half_ready) with an empty body. With optimisation switched on, the loop never ends. What is the right fix?",
+        "options": [
+          "Declare half_ready volatile",
+          "Declare half_ready const",
+          "Make half_ready a local in main",
+          "Call printf inside the loop"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. volatile tells the compiler that the handler can change the flag at any time, so every check reads memory instead of a copy kept in a register.",
+          "const forbids writes, so the handler could not set the flag at all. That makes the problem worse.",
+          "A local is private to main. The handler still writes its own copy, and the loop never sees the change.",
+          "Slowing the loop down does not fix it. The compiler may still keep the flag in a register, so the loop can still miss the change."
+        ],
+        "hint": "Which keyword tells the compiler that a variable can change outside the code it can see?",
+        "why": "The rule from lesson 46 applies: any flag written by an interrupt handler must be volatile. The DMA's own registers follow the same rule, because the hardware changes them behind the compiler's back." }
     ] }
     </script>
   </div>

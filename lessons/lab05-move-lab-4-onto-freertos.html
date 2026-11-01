@@ -269,37 +269,124 @@ LAB5 T=23.50 MIN=23.50 MAX=23.50 SET=28 SCREEN=LIVE
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Why does the lab give the sensor task priority 3, above the UI task?",
-        "options": ["Its deadline is much tighter", "It draws the whole screen", "It owns the UART logger"],
-        "answer": 0,
-        "why": "The sensor samples every 200 ms, and its window is short, so it needs the CPU first. The UI draws every 500 ms and can wait a little. The tempting answer is that the sensor draws the screen, which it does not: the UI task owns the display." },
-      { "type": "mc",
-        "prompt": "Why does only the logger task call hal_log()?",
-        "options": ["One task owns the UART", "The UART is then faster", "It saves some stack RAM"],
-        "answer": 0,
-        "why": "Two tasks writing one UART would interleave their characters, so one task owns it and the others queue their lines. The tempting answer, speed, is not the reason: the UART is no faster. Stack memory is unchanged." },
-      { "type": "mc",
-        "prompt": "What does the mutex on the I2C bus stop?",
-        "options": ["It serialises two bus users", "It stops the tick counting", "It stops the button interrupt"],
-        "answer": 0,
-        "why": "The mutex serialises the sensor and the display on the bus. The tick keeps running, and the button interrupt is not blocked by a mutex, because interrupts never take one. The tempting answer, the tick, is a common mistake." },
+        "prompt": "The UI task is in the middle of a display flush and holds <code>i2c_mutex</code>. The sensor's 200 ms deadline arrives, and the sensor has priority 3, above the UI's 2. What happens to the sensor's sample?",
+        "options": [
+          "The sensor runs at once and mixes bytes on the bus",
+          "The sensor waits for the flush to release the mutex",
+          "The sensor skips this sample and reports an error",
+          "The flush is cancelled so the sensor goes first"
+        ],
+        "answer": 1,
+        "feedback": [
+          "The sensor does preempt the UI, since its priority is higher. Its first step is to take i2c_mutex, though, so it cannot start a transfer while the flush holds the bus.",
+          "Right. The sensor blocks on the mutex with portMAX_DELAY. While the UI holds the bus it inherits the sensor's priority, so it finishes the flush sooner and gives the mutex back.",
+          "The sensor waits with portMAX_DELAY, so it does not give up. It samples once the bus is free.",
+          "A flush is never cancelled to make room. The mutex is what orders the two users."
+        ],
+        "hint": "Which task holds the mutex, and what does the sensor do first?",
+        "why": "A higher priority does not give anyone a bus that is in use. The sensor's wait is bounded by the rest of the flush, and priority inheritance makes the UI finish it sooner. A reviewer should ask how long a mutex holder can keep the bus, because that number is the sensor's worst-case wait." },
       { "type": "number",
-        "prompt": "A draw holds the I2C mutex for 90 ms at once. The sensor task wants the bus just after the draw starts. What is the longest it can wait for the bus, in ms?",
-        "answer": 90, "tolerance": 0, "unit": "ms",
-        "why": "The sensor waits until the draw gives the mutex back, which is at most the 90 ms transfer. The tempting answer is 500 ms, the draw period, which is how often the draw happens, not how long it holds the bus." },
-      { "type": "text",
-        "prompt": "Which FreeRTOS call gives a stack's free space, which the stats task prints?",
-        "accept": ["uxTaskGetStackHighWaterMark", "high water mark", "highwatermark"],
-        "why": "uxTaskGetStackHighWaterMark returns the fewest free words since the task started. The tempting answer is xTaskGetTickCount, which returns the time, not the stack." },
+        "prompt": "The display flush holds <code>i2c_mutex</code> for 90 ms. The sensor becomes ready 30 ms after the flush starts. How long does the sensor wait for the bus, in ms?",
+        "answer": 60, "tolerance": 0, "unit": "ms",
+        "wrong": [ { "answer": 90, "feedback": "90 is the whole hold. The sensor arrived 30 ms in, so it waits only for the rest of the 90 ms." } ],
+        "hint": "Subtract the time that has already passed from the hold time.",
+        "why": "90 − 30 = 60 ms. The wait is the part of the hold still to come. The tempting answer, 500 ms, is the draw period, which is how often the flush happens, not how long it holds the bus." },
       { "type": "mc",
-        "prompt": "What does configMAX_SYSCALL_INTERRUPT_PRIORITY decide?",
-        "options": ["Interrupts that may call FromISR", "Interrupts that set the tick", "Interrupts that stop the tick"],
+        "prompt": "The second stats report shows <code>ui free=3 words</code>, after five seconds of running. The acceptance rule is 16 words. What is the right next step?",
+        "options": [
+          "Delete the stats task to save stack",
+          "Lower the ui task's priority to free stack",
+          "Ignore it: 3 words is enough for the first run",
+          "Raise the ui stack depth and read the report again"
+        ],
+        "answer": 3,
+        "feedback": [
+          "The stats task is a single report, and removing it gives the ui task no stack. The margin is what the ui task has left.",
+          "Priority does not change a task's stack size. A lower priority only changes when the task runs.",
+          "The margin is the point. Three free words on one run is a warning that a deeper path could overflow the stack.",
+          "Right. The high-water mark is the fewest free words ever seen. Raise the depth in xTaskCreate by a margin, then check the second report again, because the simulator may not run the worst path."
+        ],
+        "hint": "A stack is sized in words. What sets its depth?",
+        "why": "A high-water mark is the fewest words that were ever free, so 3 words means the stack came close to overflowing. An overflow stops the system through its hook. Raising the depth in xTaskCreate is the fix, and keeping a margin is a judgement a reviewer will check." },
+      { "type": "mc",
+        "prompt": "After the first button press the board freezes. The EXTI callback calls <code>xQueueSend</code>, not <code>xQueueSendFromISR</code>. Which explanation fits?",
+        "options": [
+          "A plain send may block in an interrupt, and the port asserts",
+          "The queue is too short to hold a button event",
+          "The button's EXTI flag was never cleared",
+          "The tick hook stopped counting at the press"
+        ],
         "answer": 0,
-        "why": "It is the most urgent interrupt priority that may call the FromISR functions. The tempting answer, interrupts that set the tick, confuses it with the tick setup, which is the SysTick configuration." },
+        "feedback": [
+          "Right. Inside an interrupt only the FromISR calls are safe. The port's assertion catches the plain call and stops the board.",
+          "The queue holds small events. A full queue would drop the event, not freeze the board.",
+          "A late flag clear makes the interrupt fire again, which gives repeated events. It does not freeze the board.",
+          "The tick comes from SysTick, not from the button, so the press does not stop it."
+        ],
+        "hint": "What may an interrupt call, and what does the port check?",
+        "why": "Inside an interrupt, a call that can block is not safe, and the port's assertion stops the board when one is made. The fix is xQueueSendFromISR with portYIELD_FROM_ISR, which never waits. Check every handler: a call without the FromISR suffix is a bug there." },
+      { "type": "mc",
+        "prompt": "One press advances the screen two steps. The EXTI handler calls the callback first and clears the pending flag last. What causes the extra step?",
+        "options": [
+          "The callback posts two events to the queue",
+          "The debounce window is switched off by the callback",
+          "The UI task draws the screen twice per press",
+          "The flag is still set on return, so the interrupt fires again"
+        ],
+        "answer": 3,
+        "feedback": [
+          "The callback posts one event, and the queue does not duplicate it. The extra step comes from the interrupt, not the queue.",
+          "The debounce lives in the UI task, and the callback does not touch it. The extra step is a second interrupt.",
+          "Drawing twice would not move the menu twice. The menu moves on each event, so the events are the cause.",
+          "Right. The flag is still pending when the handler returns, so the interrupt is taken again, and each repeat is a new event."
+        ],
+        "hint": "Clear the flag first, then ask what happens if it is still set when the handler returns.",
+        "why": "The handler must clear the pending flag before it calls the callback. Left set, the flag fires the interrupt again at once, and each repeat is a separate event that moves the menu. Count the interrupts for one press, not the lines of code, to find this bug." },
+      { "type": "mc",
+        "prompt": "The sensor task takes <code>i2c_mutex</code>, reads the sensor, and then sends its sample to a full <code>ui_queue</code> with <code>portMAX_DELAY</code>, before it gives the mutex back. What is the symptom?",
+        "options": [
+          "The sensor sends two samples for every reading",
+          "Only the log line is lost, and the display keeps going",
+          "The display and the samples both stop, with no error",
+          "The stats task reports a stack overflow"
+        ],
+        "answer": 2,
+        "feedback": [
+          "A duplicate send needs a second call to xQueueSend in the code. Holding a mutex does not duplicate anything.",
+          "The log is a different queue. This tangle is between the sensor and the UI, and it stops the display too.",
+          "Right. The UI task needs the bus to draw, so it waits for the mutex. The sensor waits for ui_queue to drain. Neither can move, so the display and the samples stop, with no error.",
+          "Nothing here overflows a stack. The fault is a wait that never ends."
+        ],
+        "hint": "Who is waiting for whom?",
+        "why": "Holding a mutex across a blocking call ties the bus to the queue. The UI cannot draw without the bus, and the bus is held by a sensor that waits on the UI. The fix is to give the mutex back before the queue send, as the solution does. A reviewer should look for any blocking call between a take and a give." },
+      { "type": "mc",
+        "prompt": "The button's EXTI interrupt is set to priority 3, and <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code> is 5. Can its handler call <code>xQueueSendFromISR</code>?",
+        "options": [
+          "Yes: 3 is the highest priority, so it is safe",
+          "Yes: FromISR calls work at any priority",
+          "No: the tick uses priority 3, so the call waits",
+          "No: 3 is more urgent than 5, so raise it to 5 or more"
+        ],
+        "answer": 3,
+        "feedback": [
+          "A lower number is more urgent, so 3 is more urgent than 5, not the safe end. FromISR calls need a priority of 5 or more.",
+          "The FromISR calls are the right ones, but only at a priority of 5 or more. At 3 this handler is unsafe.",
+          "The tick is driven by SysTick, and its priority is not the reason here. The EXTI priority alone decides this.",
+          "Right. Priority 3 is more urgent than the limit of 5, so the handler must move to 5 or more. Then the FromISR call is allowed."
+        ],
+        "hint": "Lower numbers are more urgent. Compare 3 with the limit.",
+        "why": "configMAX_SYSCALL_INTERRUPT_PRIORITY is the most urgent priority from which an ISR may call the FromISR functions. An interrupt more urgent than that limit is not masked by the kernel, so it must not call them. The lab sets the button's EXTI at 5 or more for this reason." },
       { "type": "number",
-        "prompt": "The ui task's stack is 256 words, and a word is 4 bytes on the Cortex-M3. How many bytes is that?",
+        "prompt": "A teammate writes <code>xTaskCreate</code> with a stack depth of 256 and assumes it means 256 bytes. A Cortex-M3 word is 4 bytes. How many bytes does the ui stack really get?",
         "answer": 1024, "tolerance": 0, "unit": "bytes",
-        "why": "256 words times 4 bytes is 1024 bytes. The tempting answer, 256, forgets that the depth counts words, not bytes." }
+        "wrong": [ { "answer": 256, "feedback": "The depth counts words, not bytes. 256 words is 256 times 4 bytes, which is 1024." } ],
+        "hint": "xTaskCreate takes its depth in words.",
+        "why": "256 words × 4 bytes = 1024 bytes. A teammate who reads the depth as bytes gives the task a quarter of the stack they meant, and the stats line would show almost no free words." },
+      { "type": "reflect",
+        "prompt": "A colleague proposes a binary semaphore instead of a mutex for the I2C bus, because 'it also stops two users at once'. Explain what a mutex gives you that the semaphore does not.",
+        "hint": "Think about who may give the lock back, and what the scheduler does when a more urgent task waits.",
+        "answer": "Both stop two users at once, but a mutex has an owner: only the task that took it may give it back, so a task cannot release a lock it does not hold. A mutex also supports priority inheritance, so a low-priority owner is raised while a more urgent task waits. A binary semaphore has neither. A bug can release a bus it never took, and a high-priority sensor can wait behind a low-priority UI with no help. For a shared bus, the owner and the inheritance are what matter."
+      }
     ] }
     </script>
   </div>
@@ -308,13 +395,28 @@ LAB5 T=23.50 MIN=23.50 MAX=23.50 SET=28 SCREEN=LIVE
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 73: the tick is 1 kHz. The HAL's I2C timeout is 100 ms. How many ticks is the timeout?",
-        "answer": 100, "tolerance": 0,
-        "why": "At 1 kHz one tick is 1 ms, so 100 ms is 100 ticks. The tempting answer is 1000, which is the number of ticks in a second." },
-      { "type": "text",
-        "prompt": "From lesson 57: must an ISR ever take a mutex? Answer yes or no.",
-        "accept": ["no", "n"],
-        "why": "An ISR may not take a mutex, because a mutex can block. The tempting answer, yes, comes from thinking of a mutex as just a lock." }
+        "prompt": "The tick runs at 1 kHz. A device stops answering, and the HAL's I2C timeout is 100 ms. How many ticks pass before the call returns an error?",
+        "answer": 100, "tolerance": 0, "unit": "ticks",
+        "wrong": [ { "answer": 1000, "feedback": "1000 ticks is a second at 1 kHz. The timeout is 100 ms, which is 100 ticks." } ],
+        "hint": "At 1 kHz one tick is 1 ms.",
+        "why": "100 ms at 1 ms per tick is 100 ticks. The tick hook must keep HAL_IncTick running, or this count never reaches 100 and the stuck call hangs instead of returning an error." },
+      { "type": "mc",
+        "prompt": "A developer wants the button interrupt to refresh the display at once, so the handler takes <code>i2c_mutex</code> and draws. What is wrong with this?",
+        "options": [
+          "Mutexes are slower than queue sends",
+          "An ISR can only print to the UART",
+          "A mutex needs a task's stack to live in",
+          "An ISR must not block, and a mutex can wait"
+        ],
+        "answer": 3,
+        "feedback": [
+          "The speed of a mutex is not the issue. The problem is that the handler would wait inside an interrupt, which the lab forbids.",
+          "An ISR may use the FromISR queue calls, not only the UART. The problem is the wait.",
+          "A mutex uses no more stack than a queue. The problem is waiting inside the interrupt.",
+          "Right. Lesson 57's rule is not to block in an ISR. A mutex take can wait for its holder, so the handler would stall the rest of the system."
+        ],
+        "hint": "Lesson 57: what must an interrupt handler never do?",
+        "why": "An interrupt must return quickly, and a mutex take can wait for the task that holds it. The lab keeps the ISR to a queue send and a flag, and the UI task does the drawing and the bus work. The fix is to post an event with the FromISR call and let the task take the mutex." }
     ] }
     </script>
   </div>

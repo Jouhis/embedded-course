@@ -112,7 +112,7 @@ PI FIXED: high waited 270 ms with a binary semaphore, 150 ms with a mutex</code>
 
   <h2>The fix: a mutex</h2>
   <p>
-    Phase 2 changes one call: <code>xSemaphoreCreateMutex()</code> in place of <code>xSemaphoreCreateBinary()</code>. The take and give calls are the same. The owner is recorded, so when high blocks, the kernel raises low's priority, and medium can no longer preempt it. The starter's phase 2 deliberately keeps the binary semaphore, so the output ends with <code>PI NOT FIXED</code>.
+    Phase 2 changes the constructor: <code>xSemaphoreCreateMutex()</code> in place of <code>xSemaphoreCreateBinary()</code>, and the give that makes the binary semaphore available is deleted, because a mutex is available when it is created. The take and give calls in the tasks are the same. The owner is recorded, so when high blocks, the kernel raises low's priority, and medium can no longer preempt it. The starter's phase 2 deliberately keeps the binary semaphore, so the output ends with <code>PI NOT FIXED</code>.
   </p>
   <table>
     <thead>
@@ -202,37 +202,93 @@ PI FIXED: high waited 270 ms with a binary semaphore, 150 ms with a mutex</code>
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "In priority inversion, which task is the one that is blocked too long?",
-        "options": ["The high-priority task", "The low-priority task", "The medium-priority task"],
+        "prompt": "Your sensor task (high) logs through a lock held by the logging task (low). Each delay of the sensor's log lines tracks how long the UI task (medium, which never uses the lock) runs. What is the fix?",
+        "options": ["Create the lock with xSemaphoreCreateMutex()", "Give the sensor task a longer take timeout", "Raise the UI task's priority number", "Add a second binary semaphore for the log"],
         "answer": 0,
-        "why": "The high-priority task waits for the resource, so it is the one blocked too long. The low-priority task holds the resource, and the medium task is the one that runs. The tempting answer is the low task, which is the cause of the wait, but the damage falls on the high task." },
+        "feedback": [
+          "Right. A mutex records its owner, so when the sensor task blocks on it, the logging task inherits the sensor's priority and the UI task can no longer preempt it.",
+          "A longer timeout makes the sensor wait longer before it gives up. The UI still preempts the lock holder, so the delay stays.",
+          "Raising the UI task makes it preempt more often, which is the wrong way round. The problem is that the lock holder is pushed aside.",
+          "A second binary semaphore still has no owner, so the kernel cannot raise the logger's priority. The delay stays."
+        ],
+        "hint": "Which kind of lock lets the kernel find the task that is holding it?",
+        "why": "This is priority inversion: the high task waits for a medium task that does not need the lock. Inheritance is the mechanism that stops the medium task from getting in the way, and the same take and give calls keep working."
+      },
       { "type": "mc",
-        "prompt": "What does priority inheritance change?",
-        "options": ["The owner's priority rises", "The waiter's stack grows", "The tick rate changes"],
-        "answer": 0,
-        "why": "While a high-priority task waits on a mutex, the owner runs at the waiter's priority. The tempting answer, the waiter's stack, is unrelated: the waiter does not change at all." },
+        "prompt": "With the mutex fix in phase 2, the sensor (high) is blocked on the mutex and the logger (low) holds it. What happens to the logger's priority while high waits?",
+        "options": ["It drops to the idle level so high can run", "It rises to medium's level, then stays there", "It rises to high's priority until the mutex is given back", "It stays unchanged; only medium's priority matters"],
+        "answer": 2,
+        "feedback": [
+          "Dropping it would let the UI task run ahead of the logger, which is the bug itself.",
+          "Medium's level is not enough. Medium would still compete with the logger for the core, and high would still wait behind it.",
+          "Right. The kernel raises the logger to high's priority, so medium (priority 2) cannot preempt it. The logger drops back to its own priority when it gives the mutex.",
+          "Medium's priority does not change. What changes is the logger's, and that is what keeps medium off the core."
+        ],
+        "hint": "Which task does the kernel know is holding the mutex, and what can it raise?",
+        "why": "The kernel knows the owner, so it can raise the owner. A binary semaphore gives the kernel no owner to raise, which is why that object cannot fix this."
+      },
       { "type": "number",
-        "prompt": "In phase 2, low takes the mutex at 0 ms and holds it for 200 ms. When does the high task get the resource, in ms? Use the timeline in the lesson.",
-        "answer": 200, "tolerance": 0, "unit": "ms",
-        "why": "Low finishes its 200 ms critical section at 200 ms, and high gets the mutex then. The tempting answer is 320 ms, which is phase 1, where medium blocks low." },
+        "prompt": "Suppose the logger's critical section were 120 ms instead of 200 ms, with the same timeline as the lesson's phase 2. In ms, how long does the sensor (high) wait for the mutex, counting from its request at 50 ms?",
+        "answer": 70, "tolerance": 0, "unit": "ms",
+        "wrong": [
+          { "answer": 120, "feedback": "That is the time the sensor gets the mutex, not how long it waited. Subtract its request time, 50 ms." }
+        ],
+        "hint": "The logger's hold is measured from 0 ms, as in the lesson. When does its 120 ms end?",
+        "why": "The logger releases at 120 ms, and the sensor takes the mutex then, so it waited 120 − 50 = 70 ms. The wait is bounded by the logger's critical section, not by the UI task's run, which is the point of the fix."
+      },
       { "type": "mc",
-        "prompt": "Two tasks take locks A and B. Task 1 takes A then B, and task 2 takes B then A. What is the fix?",
-        "options": ["Take locks in fixed order", "Use a longer lock timeout", "Give both tasks more priority"],
-        "answer": 0,
-        "why": "A fixed global order removes the circular wait, which is the cause of deadlock. A longer timeout only hides the deadlock until it happens under load. Raising priorities does not change the order of the locks, so the cycle remains." },
-      { "type": "text",
-        "prompt": "Which FreeRTOS call creates the lock that gives priority inheritance?",
-        "accept": ["xSemaphoreCreateMutex", "xSemaphoreCreateMutex()"],
-        "why": "xSemaphoreCreateMutex creates the mutex with an owner and inheritance. The tempting answer is xSemaphoreCreateBinary, which creates a semaphore without an owner." },
+        "prompt": "Your bus driver takes the bus mutex, then the log mutex. The logger takes the log mutex, then the bus mutex. The device freezes at random. What is the fix?",
+        "options": ["Give the logger a higher priority than the sensor", "Make both tasks take the bus mutex, then the log mutex", "Add a longer timeout to each lock take", "Use a binary semaphore for each lock"],
+        "answer": 1,
+        "feedback": [
+          "Priority changes who runs first, not the order of the locks. The cycle remains, and the freeze can still happen.",
+          "Right. With one global order, a cycle cannot form: both tasks wait for the bus first, so one of them always gets through.",
+          "A timeout only turns the freeze into an error. The cycle is still there, so keep the order and use timeouts as a backstop.",
+          "A binary semaphore has no owner and still deadlocks. The cycle is the problem, not the type of the lock."
+        ],
+        "hint": "Deadlock needs a circular wait. Which rule removes it?",
+        "why": "Deadlock needs a circular wait, and a fixed global lock order removes that. The rule is cheap to write down, so put the order next to the locks in the code."
+      },
+      { "type": "mc",
+        "prompt": "An interrupt handler takes the UART mutex to print a fault. What is wrong with that?",
+        "options": ["The mutex is too slow to take in an interrupt", "A mutex can block, and an interrupt cannot block", "The UART has no interrupt for faults", "The mutex must be taken twice from an interrupt"],
+        "answer": 1,
+        "feedback": [
+          "Speed is not the issue. The rule is that a mutex take may block, and an interrupt has no task to sleep.",
+          "Right. Set a flag or queue the event in the handler, and let a task take the mutex and print.",
+          "The fault interrupt can exist. The problem is the mutex take inside it.",
+          "Taking it twice would still block. A mutex is for tasks, and it is never taken in an interrupt."
+        ],
+        "hint": "What does a task have that an interrupt handler does not?",
+        "why": "An interrupt can wake a task, and the task does the printing. That keeps the handler short, and the mutex is taken where blocking is allowed."
+      },
       { "type": "number",
-        "prompt": "In phase 1, medium runs from 20 ms to 320 ms and high asks for the lock at 50 ms. How long does high wait, in ms?",
-        "answer": 270, "tolerance": 0, "unit": "ms",
-        "why": "High waits from 50 ms until 320 ms, which is 270 ms. The tempting answer is 300 ms, which is the length of medium's run, not the time high actually waits from its own request." },
+        "prompt": "In phase 1, the UI (medium) task starts at 20 ms but runs for only 100 ms. The logger (low) still holds the lock for its 200 ms, counted from 0 ms. The sensor (high) asks at 50 ms. In ms, how long does the sensor wait?",
+        "answer": 150, "tolerance": 0, "unit": "ms",
+        "wrong": [
+          { "answer": 70, "feedback": "That assumes the logger releases at 120 ms, when the UI stops. The logger still has to reach 200 ms, so it releases at 200 ms." },
+          { "answer": 270, "feedback": "That is the lesson's case, with the UI running 300 ms. Here the UI stops at 120 ms, and the logger releases at 200 ms." }
+        ],
+        "hint": "When the UI task stops, does the logger's hold end, or is there still some time left in it?",
+        "why": "The logger's busy-wait is measured from 0 ms, so it ends at 200 ms. With a semaphore and no inheritance, the sensor waits from 50 ms until 200 ms, which is 150 ms. Shorter medium work does not shorten the wait below what the holder still needs."
+      },
       { "type": "mc",
-        "prompt": "A task takes a plain mutex it already holds. What happens?",
-        "options": ["It waits forever for its own lock", "It takes the lock a second time", "It returns an error code at once"],
-        "answer": 0,
-        "why": "A plain FreeRTOS mutex is not recursive, so the task waits for a lock that only it can give, and it never returns. A recursive mutex is needed for a second take. The tempting answer is a second take, which is what a recursive mutex does, not a plain one." }
+        "prompt": "The starter's phase 2 is still wrong and prints PI NOT FIXED. Which change is the core of the fix?",
+        "options": ["Remove the take call before the busy-wait", "Add a second xSemaphoreGive() after the take", "Replace xSemaphoreCreateBinary() with xSemaphoreCreateMutex()"],
+        "answer": 2,
+        "feedback": [
+          "Removing the take removes the protection. The inheritance comes from the mutex that the take uses, not from the take being absent.",
+          "A second give releases the lock early and breaks the exclusion. Only one give belongs after the work.",
+          "Right. The take and give calls stay the same. The mutex records its owner, and that is what lets the kernel raise the logger's priority."
+        ],
+        "hint": "Which constructor records an owner?",
+        "why": "The fix is the constructor, because only a mutex records its owner. The take and give calls are the same as before, so the change that matters is the object the code creates, not the calls around it."
+      },
+      { "type": "reflect",
+        "prompt": "With the mutex fix, the sensor still waits while the logger holds the lock. Why does inheritance bound the wait but not remove it, and what would you change to shorten it further?",
+        "hint": "What is the sensor waiting for, and which part of the code controls how long it is held?",
+        "answer": "The sensor must wait for the owner to finish with the resource, because the lock protects data it needs. Inheritance stops medium-priority work from stretching that wait, so the wait is bounded by the owner's critical section. To shorten it further, shorten the critical section: move slow work, such as a bus transfer's waiting, a delay or a print, outside the lock, and hold the lock only for the update itself."
+      }
     ] }
     </script>
   </div>
@@ -241,13 +297,23 @@ PI FIXED: high waited 270 ms with a binary semaphore, 150 ms with a mutex</code>
     <script type="application/json">
     { "questions": [
       { "type": "text",
-        "prompt": "From lesson 57: may an ISR take a mutex? Answer yes or no.",
-        "accept": ["no", "n"],
-        "why": "A mutex is for tasks, so an ISR must not take one. The tempting answer, yes, comes from thinking of a mutex as a lock, but it blocks and needs a task context." },
+        "prompt": "Lesson 57's rule for a counter that an ISR increments and a task reads: the read and the clear must be one step, which means a critical section that masks which interrupts?",
+        "accept": ["interrupts", "interrupt", "all interrupts", "the interrupts", "irqs", "isr"],
+        "wrong": [
+          { "answer": "tasks", "feedback": "A critical section masks interrupts, not tasks. The mutex is the task-level lock, and it cannot be used inside an ISR (lesson 57)." }
+        ],
+        "hint": "What does the ISR do that could split the read from the clear?",
+        "why": "A critical section runs with interrupts disabled, so the ISR cannot land between the read and the clear. A mutex cannot do this job, because it is a task lock and an ISR cannot take it."
+      },
       { "type": "number",
-        "prompt": "From lesson 71: a timer counts at 1 MHz. How many counts is 2.5 ms?",
-        "answer": 2500, "tolerance": 0,
-        "why": "At 1 MHz one count is 1 µs, so 2.5 ms is 2500 counts. The tempting answer is 250, which uses 10 µs per count." }
+        "prompt": "Lesson 71's timer runs at 1 MHz, and this lesson's log lock holds a critical section for 2.5 ms. How many timer counts is that hold?",
+        "answer": 2500, "tolerance": 0, "unit": "counts",
+        "wrong": [
+          { "answer": 250, "feedback": "That uses 10 µs per count. At 1 MHz one count is 1 µs, so 2.5 ms is 2500 counts." }
+        ],
+        "hint": "At 1 MHz, how long is one count?",
+        "why": "At 1 MHz one count is 1 µs, so 2.5 ms is 2500 counts. Converting a hold time into timer counts is how you check a lock's worst case against a timer's range."
+      }
     ] }
     </script>
   </div>

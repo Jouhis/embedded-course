@@ -43,13 +43,49 @@ File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/ma
 
 Leave `<p class="lesson-meta"></p>` empty, and don't write a pager or "mark complete" button: `course.js` adds those.
 
-## 5. Quiz rules (the checker enforces the first four)
-1. Multiple-choice options must have **exactly the same number of words** (count them before saving; run the checker early, not only at the end), and character lengths within 30% of each other (options within 3 characters of each other, like `R0`/`R12`, always pass). Write them so length gives no clue.
-2. At least 3 options, no duplicates, and `answer` is a valid index. Options are shuffled at runtime, but still vary which authored position is correct.
-3. Every question has a `why` that explains the right answer **and** why the most tempting wrong answer is wrong.
-4. `number` questions accept SI prefixes (`4k7`, `10m`) and hex or binary. Set a sensible `tolerance` (e.g. 0.05 when E12 resistor rounding is involved).
-5. Test **retrieval and application**, not recognition: "which value…", "what happens if…", "what's wrong with this code…". Avoid "which of these is true".
-6. Spaced-review questions must come from lessons at least 2 lessons back, with interleaved topics.
+## 5. Quizzes: questions that teach
+A quiz is part of the teaching, not a memory test. A good question makes the learner **use** the idea in a situation they could meet at work, and its feedback leaves them knowing something they didn't before. The engine and its JSON format are documented at the top of `assets/course.js`.
+
+### What a question looks like
+- **Put the learner in a situation.** For example: a bug report, a serial-monitor log, a short code snippet (`<pre><code>` is allowed in prompts), a datasheet line, a scope reading, a design choice with a budget, or a real product. Then ask them to predict, diagnose, fix, calculate, estimate or choose.
+- **Mix the kinds of question:**
+  - *Predict*: what does this code print, and what does the LED do?
+  - *Diagnose*: symptom to cause.
+  - *Fix*: which one-line change works?
+  - *Calculate in context*: then interpret the result ("is a 0.25 W resistor enough?").
+  - *Sanity-check*: an estimate or a claimed result.
+  - *Choose*: a design, and its trade-off.
+  - *Spot the mistake*: in a snippet or a wiring description.
+- **Avoid:**
+  - Pure vocabulary ("what is the name of…").
+  - "Which of these is true".
+  - "In lesson N, what is…".
+  - Questions answered by finding a keyword in the paragraph above.
+  - Trick questions.
+  - Free text for anything with many valid phrasings.
+
+### Feedback that teaches
+- `why` explains the reasoning **and** adds one useful insight beyond the answer: a rule of thumb, what happens on real hardware, the common mistake, or how it connects to a later topic.
+- Every `mc` option gets a `feedback` line (same order as `options`). For a wrong option, it names the misconception behind it and why it fails. For the right option, it confirms the key step. Distractors must be real beginner mistakes, never filler.
+- `hint` (optional, any type) nudges toward the method ("start from P = V × I and replace V"), never the answer. It shows on request and after a wrong attempt.
+- `reflect` (unscored): an "explain it to a colleague" or design-reasoning prompt with a strong model `answer`. Use 0–2 per lesson, where the reasoning matters more than a single value.
+
+### Answer formats: accept every correct way of writing it
+- **Formulas** use `"type": "formula"`. Give `vars` (the variable names exactly as the lesson writes them, e.g. `["Vin", "R1", "R2"]`), `answer` in plain ASCII (`Vin*R2/(R1+R2)`), and `display` (the pretty form shown on "Show answer").
+  - `examples`: at least 2 other ways a learner might write it, such as reordered, implicit multiplication, `²` or `×` (`R2*Vin/(R2+R1)`, `Vout = Vin × R₂/(R₁+R₂)`).
+  - `wrong`: the tempting mistakes, each with feedback that explains it: `{"answer": "Vin*R1/(R1+R2)", "feedback": "That is the voltage across R1, the top resistor."}`. When a learner types one, they see that explanation instead of a bare "Not quite". `number` and `text` questions take the same `wrong` list (for a number, `answer` is a number, matched within the tolerance).
+  - The checker verifies all of these with the same engine the page uses. The engine accepts any algebraically equivalent input, with or without a `P =` left side. If the variables can be zero or negative, set `range`.
+- **Numbers** use `"type": "number"`, with `unit` and a sensible `tolerance` (0.05 when E-series rounding or reading a graph is involved). SI prefixes (`4k7`, `10m`), `330R`, hex and binary are accepted automatically.
+- **Text** is only for short, canonical tokens: a register or field name, a keyword, a pin name. List the variants in `accept`. Case, spaces, hyphens, quotes and a leading "the" are ignored. Use `contains` when any answer containing a key word is right. If an answer can be phrased many ways, use `mc` or `reflect` instead.
+- **Multiple choice**: 3–5 options, no duplicates, and lengths within 50 % of each other (the checker enforces it, so the right answer is never the obvious longest). Vary which authored position is correct. Options are shuffled at runtime.
+
+### How many
+- **Check your understanding**: as many as the lesson's ideas deserve, usually 4–8. A short concept lesson may have 3; a dense one up to 10. No fixed count. The checker requires at least 3 scored questions per lesson or lab, and 10 per checkpoint.
+- **Spaced review**: 2–3 questions that **apply** an idea from at least 2 lessons back to this lesson's context. For example, in the I²C lesson: "the bus has 4.7 kΩ pull-ups from lesson 16; how long does SDA take to rise…".
+- **Checkpoints**: 10–15 mixed, scenario-heavy questions across the part, plus one or two `reflect` design questions.
+
+### Correctness
+Every question must be answerable from this lesson and earlier ones. Work out every number yourself before writing it down. Options and feedback must not introduce unchecked facts (section 6).
 
 ## 6. Facts and citations: never trust your memory
 - Every hardware or protocol fact needs a citation link, preferably to a vendor primary source in `RESOURCES.md` (with the section or page).
@@ -157,7 +193,7 @@ Then the hands-on task, `.win`, quizzes, `.interview`, `.source` and `.ask` as i
 
 Rules:
 - Keep everything already correct in the lesson: facts, citations, links, project references, quizzes, diagrams and the interview drill. You are expanding and improving, not replacing. Fix anything wrong you find, and verify every new fact (section 6).
-- Add at least 2 quiz questions to "Check your understanding" that test the new material (keep the section 5 quiz rules).
+- Quizzes follow section 5: questions that make the learner use the new material, with feedback that teaches.
 - Every new fact, number, register name, bit position or API signature must come from a source you checked (section 6), not from memory. If you cannot verify something, leave it out.
 - Diagrams: add one when it explains something better than words (timing, memory layout, signal flow). Follow the style of the existing diagrams: `currentColor` strokes and text, `font-family="JetBrains Mono, monospace"`, `role="img"` and an `aria-label`. Check them by rendering (see the diagram notes in NOTES.md if any); never add a diagram you have not looked at.
 - Don't change the Wokwi projects unless the lesson text and project disagree; if they do, fix the lesson text to match the working project and mention it in your report.

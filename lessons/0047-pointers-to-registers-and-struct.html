@@ -211,62 +211,87 @@ MY_GPIOC-&gt;BSRR = 1U &lt;&lt; LED_PIN_BIT;           <span class="c">/* PC13 h
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
+      { "type": "mc",
+        "prompt": "The debugger shows the program writing to 0x40010810 when the code meant to write GPIOC's ODR. Which register did the write actually hit?",
+        "options": ["GPIOA's BSRR", "GPIOA's ODR", "GPIOC's BSRR", "GPIOC's ODR"],
+        "answer": 0,
+        "feedback": [
+          "Right. 0x40010800 is the base of GPIOA, and 0x10 is the BSRR offset. The address is valid, so nothing faults; it is simply the wrong port.",
+          "ODR is at offset 0x0C. The offset here is 0x10, so the write is not to ODR.",
+          "GPIOC starts at 0x40011000. The address 0x40010810 is below that, so it belongs to port A, not port C.",
+          "That is what the code meant. The address is not 0x4001100C, so the write went somewhere else."
+        ],
+        "hint": "Subtract each port's base from the address, and see which offset is left.",
+        "why": "A wrong base is a classic bug, because the address is valid and no fault appears. Compare each base with the CMSIS header, as the mistakes section says." },
       { "type": "number",
-        "prompt": "GPIOC starts at 0x40011000 and ODR is at offset 0x0C. What is the address of GPIOC ODR? Type it in hex.",
-        "answer": 1073811468, "tolerance": 0, "unit": "",
-        "why": "0x40011000 + 0x0C = 0x4001100C, which is 1073811468 in decimal. The tempting answer is 0x40011010, which is BSRR, the register at offset 0x10." },
-      { "type": "mc",
-        "prompt": "Which BSRR write turns PC13 high, so the LED goes off?",
-        "options": [
-          "Write bit 13 of BSRR",
-          "Write bit 29 of BSRR",
-          "Write bit 16 of BSRR",
-          "Clear bit 13 of BSRR"
+        "prompt": "A debugger memory view should show the GPIOC BSRR write, which is the fifth member of the port struct. Type its address in hex.",
+        "answer": 1073811472, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 1073811468, "feedback": "That is ODR, at 0x4001100C. BSRR is the fifth member, at offset 0x10, so its address is 0x40011010." }
         ],
-        "answer": 0,
-        "why": "Bits 0 to 15 of BSRR set the pin, so bit 13 sets PC13 high. Bit 29 is the reset half for PC13, which drives it low and turns the active-low LED on. Clearing a bit does nothing: writing 0 to a BSRR bit has no effect." },
+        "hint": "Start from the base 0x40011000. Count the members in the struct before BSRR, and multiply the count by 4.",
+        "why": "Each member is 4 bytes, and BSRR is the fifth member, at offset 4 × 4 = 16 = 0x10. The address is 0x40011000 + 0x10 = 0x40011010." },
       { "type": "mc",
-        "prompt": "Why is BSRR safer than <code>ODR |= bit</code> for a pin an ISR also uses?",
-        "options": [
-          "A single write cannot race",
-          "It needs no clock enable",
-          "It skips the bus entirely",
-          "It is needed for input"
-        ],
+        "prompt": "Your code runs <code>GPIOC-&gt;ODR |= 1u &lt;&lt; 13;</code> in main, and an ISR changes PC5 on the same port. What can go wrong, and what is the fix?",
+        "options": ["An ISR write to PC5 can be lost; use BSRR", "Nothing: ODR |= is atomic on Cortex-M3", "PC13 stops, because it is an input", "Clear PC5 first; the rest is safe"],
         "answer": 0,
-        "why": "ODR |= bit loads the register, changes a bit and stores it, so an interrupt between the load and the store can be overwritten. BSRR is one store that names only the pins to change. The tempting answer is the second: the port clock must still be enabled in RCC, so the claim is false." },
-      { "type": "text",
-        "prompt": "For PC13, which configuration register holds the mode and configuration bits? Write its name.",
-        "accept": ["CRH"],
-        "why": "PC13 is pin 13, and CRH configures pins 8 to 15. The tempting answer is CRL, which holds pins 0 to 7." },
+        "feedback": [
+          "Right. The load, OR and store can overwrite a change the ISR made between the load and the store. BSRR changes only PC13 in one store, so the ISR's pin is safe.",
+          "ODR |= is several steps: a load, an OR and a store. The core does not make it one step, so an interrupt can land in the middle.",
+          "PC13 is an output in this scenario. A read-modify-write does not change its direction; the risk is the lost change to the other pin.",
+          "Clearing the other pin first does nothing useful, because the ISR can run at any time, including between the load and the store."
+        ],
+        "hint": "Count the steps in the ODR line. Where could an interrupt come in between them?",
+        "why": "Setup code can use read-modify-write before interrupts are enabled. Run-time code that changes one pin while another context changes a different pin on the same port should use BSRR." },
+      { "type": "mc",
+        "prompt": "Your code sets PC13 to output in CRH, and then writes BSRR. The LED never changes, yet reading back CRH shows the value you wrote. What is the most likely cause?",
+        "options": ["The port clock is not enabled in RCC", "BSRR needs a 16-bit write instead", "The LED is wired active high", "PC13 is configured in CRL, not CRH"],
+        "answer": 0,
+        "feedback": [
+          "Right. Until the clock is on, the port does not respond, so the configuration and BSRR writes do nothing. Set the RCC enable bit first, then check the pin.",
+          "BSRR is a 32-bit register, and a 32-bit write is the normal size. Width is not the problem here.",
+          "Polarity changes which level turns the LED on. It cannot stop the pin from changing state at all.",
+          "PC13 is pin 13, and CRH configures pins 8 to 15, so CRH is right. CRL covers pins 0 to 7."
+        ],
+        "hint": "A port that does not respond would still let you read back a value from a register that is written. What must be on before the port responds?",
+        "why": "The write to the enable bit must come before any write to the port. A pin that never changes, while the register reads back correctly, points at the clock first." },
       { "type": "number",
-        "prompt": "What is the BSRR bit number that sets PC13?",
-        "answer": 13, "tolerance": 0,
-        "why": "The set half of BSRR uses bits 0 to 15, so PC13 is bit 13. The tempting answer is 29, which is the reset bit for the same pin." },
-      { "type": "number",
-        "prompt": "What is the BSRR bit number that resets PC13?",
-        "answer": 29, "tolerance": 0,
-        "why": "The reset half of BSRR uses bits 16 to 31, so the reset bit for pin 13 is 13 + 16 = 29. The tempting answer is 13, which is the set bit for the same pin." },
-      { "type": "mc",
-        "prompt": "Which address is the CRH register of GPIOC?",
-        "options": [
-          "0x40011004",
-          "0x40010804",
-          "0x40011000",
-          "0x40011014"
+        "prompt": "Your code must drive PC13 low with a single BSRR write. What value do you write? Type it in hex.",
+        "answer": 536870912, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 8192, "feedback": "8192 is 0x2000, which is bit 13 alone. Bit 13 is the set bit, and it drives PC13 high. To drive it low, use the reset bit, 13 + 16 = 29." }
         ],
-        "answer": 0,
-        "why": "GPIOC starts at 0x40011000, and CRH is at offset 0x04, which gives 0x40011004. The tempting answer is 0x40010804, which is CRH of GPIOA: the same offset on the wrong port." },
+        "hint": "The reset half of BSRR starts at bit 16. Which bit is pin 13's reset bit?",
+        "why": "The reset bit for pin 13 is 29, so the value is 1 << 29 = 0x20000000, which is 536870912. One store resets PC13 and leaves every other pin unchanged." },
       { "type": "mc",
-        "prompt": "What does writing a 0 to one bit of BSRR do to its pin?",
-        "options": [
-          "Leaves the pin alone",
-          "Drives the pin low",
-          "Toggles the pin state",
-          "Resets the whole port"
-        ],
+        "prompt": "A teammate writes <code>MY_GPIOC-&gt;BSRR = 0;</code> to turn the LED off, and the LED stays on. Why?",
+        "options": ["0 bits do nothing, so the pin keeps its state", "BSRR = 0 resets the whole port, LED on", "The write must go to ODR instead", "BSRR is read-only, so the write is ignored"],
         "answer": 0,
-        "why": "A 0 in a BSRR bit does nothing, so the pin keeps its state. The tempting answer is the second: the reset half drives pins low only when its bit is 1, not when it is 0." }
+        "feedback": [
+          "Right. A 0 in a BSRR bit does nothing. The LED is active low, so it is on while PC13 is low. To turn it off, write bit 13: that drives PC13 high.",
+          "BSRR has no whole-port reset. A 0 is a no-op on every bit, so no pin changes at all.",
+          "Writing ODR = 0 would also clear every other output on the port. The fix is the set bit in BSRR, which changes only PC13.",
+          "BSRR accepts writes. The 0 is accepted and does nothing, so the LED keeps its state."
+        ],
+        "hint": "A 0 in BSRR leaves a pin alone. Which bit in BSRR changes PC13 to high?",
+        "why": "BSRR works per bit: a 1 changes that pin, and a 0 leaves it alone. The LED is active low, so turning it off means driving PC13 high, which is writing bit 13." },
+      { "type": "mc",
+        "prompt": "A timer ISR toggles an LED on PC13, while main toggles PC5 on the same port. Which write should each one use for its pin?",
+        "options": ["BSRR for both: each store touches one pin", "ODR for both, since it is shorter", "ODR in main, BSRR in the ISR, for speed", "Any register, since they share a port"],
+        "answer": 0,
+        "feedback": [
+          "Right. Each BSRR store names only its pin, so the two writes cannot undo each other. This is the default for any pin that run-time code changes.",
+          "Shorter code does not make the update safe. Two read-modify-writes on one port can each overwrite the other's change.",
+          "Speed is not the reason. The ODR path is the one that can lose a change, so the mixed choice keeps the same risk in main.",
+          "Sharing a port is exactly the case that causes the problem. A store to the shared ODR can overwrite the other pin's bit."
+        ],
+        "hint": "Ask which write can overwrite a bit it did not mean to change.",
+        "why": "A pin that another context touches needs its own single-store write. Setup code can use read-modify-write, because it runs before any interrupt is enabled." },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'The vendor header is magic. I will paste the register addresses into my code as plain numbers, which is faster.' Explain the risk, and what you would do instead.",
+        "hint": "What does the lesson's code review checklist ask about each address and offset?",
+        "answer": "A typed-in address is valid to the compiler and the linker, so a wrong port or offset compiles and runs with no fault. The LED simply never changes, or the wrong pin changes. Instead, take each address and offset from the vendor header or the reference manual's memory map, keep the struct in the manual's order with the offset comments, check the offsets at compile time if you can, use BSRR for run-time pins, and enable the peripheral clock before the first access."
+      }
     ] }
     </script>
   </div>
@@ -275,13 +300,25 @@ MY_GPIOC-&gt;BSRR = 1U &lt;&lt; LED_PIN_BIT;           <span class="c">/* PC13 h
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 5: a 5 V supply is across a 100 Ω resistor. What current flows, in milliamps?",
-        "answer": 50, "tolerance": 0.02, "unit": "mA",
-        "why": "I = V ÷ R = 5 V ÷ 100 Ω = 0.05 A, which is 50 mA. The tempting answer, 500 mA, is off by a factor of ten from the unit change." },
-      { "type": "text",
-        "prompt": "From lesson 9: a series resistor in an LED circuit limits which quantity? One word.",
-        "accept": ["current"],
-        "why": "The resistor limits the current, which sets the LED's brightness and protects the pin. The tempting answer is voltage: the resistor shares the supply voltage, but it is the current it fixes." }
+        "prompt": "A GPIO at 3.3 V drives an LED with a forward voltage of 2.0 V through a 220 Ω resistor. Using lesson 9's method, what is the current, in milliamps?",
+        "answer": 5.9, "tolerance": 0.02, "unit": "mA",
+        "wrong": [
+          { "answer": 15, "feedback": "15 mA is 3.3 V ÷ 220 Ω, which ignores the LED's 2.0 V. The LED takes part of the supply voltage, so only 1.3 V is across the resistor." }
+        ],
+        "hint": "Subtract the LED's forward voltage from the supply first, then use I = V ÷ R.",
+        "why": "(3.3 V − 2.0 V) ÷ 220 Ω = 0.0059 A, which is 5.9 mA. The resistor sets the current, and the LED's own drop leaves less voltage for it to act on." },
+      { "type": "mc",
+        "prompt": "Using the masks from lesson 20, which expression clears bit 13 of <code>reg</code> and leaves the other bits as they were?",
+        "options": ["reg &= ~(1u &lt;&lt; 13);", "reg |= (1u &lt;&lt; 13);", "reg ^= (1u &lt;&lt; 12);", "reg &= (1u &lt;&lt; 13);"],
+        "answer": 0,
+        "feedback": [
+          "Right. The inverted mask has a 0 only at bit 13, so the AND clears that bit and keeps the others.",
+          "That sets bit 13. OR with the mask forces the bit to 1.",
+          "That flips bit 12, not bit 13. A flip is not a clear either.",
+          "That keeps only bit 13 and clears every other bit. The mask is not inverted, so it destroys the rest of the register."
+        ],
+        "hint": "AND with 0 forces a bit to 0. Which mask has a 0 only in bit 13?",
+        "why": "This is the same read-modify-write as the BSRR discussion, and it is safe only where no other code changes the register in between. For a pin that run-time code changes, use BSRR instead." }
     ] }
     </script>
   </div>

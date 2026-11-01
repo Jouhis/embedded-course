@@ -266,41 +266,86 @@ static BLINK_ENABLED: Mutex&lt;Cell&lt;bool&gt;&gt; = Mutex::new(Cell::new(true)
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "What does <code>Peripherals::take()</code> return on its second call?",
-        "options": ["None, so unwrap() panics", "Another copy of pins", "Some with same pins"],
+        "prompt": "A teammate's startup code runs these two lines. What happens?<pre><code>let pac = pac::Peripherals::take().unwrap();\nlet pac2 = pac::Peripherals::take().unwrap();</code></pre>",
+        "options": ["It panics at the second unwrap", "Both handles share the chip silently", "The second call returns a copy"],
         "answer": 0,
-        "why": "The first call returns Some and gives up the only owner, so later calls return None, and unwrap() panics. The tempting answer, a second copy, is what C allows, and it is exactly the duplicate that Rust rules out." },
+        "feedback": [
+          "Right. The first take() returns Some and keeps the only owner. The second returns None, and unwrap() panics at run time. That is the singleton rule doing its job.",
+          "In C, two handles to the same registers would compile and run. Rust allows one owner, so the second take() gives nothing.",
+          "take() does not copy the pins. Once the peripherals are taken, nothing is handed out again."
+        ],
+        "hint": "How many owners may the peripherals have, and what does take() return after the first call?",
+        "why": "A singleton makes two parts of the program unable to hold the same GPIO block. In C the duplicate compiles, and the two writers fight over the registers with no warning."
+      },
       { "type": "mc",
-        "prompt": "What happens when code calls <code>set_high()</code> on a pin configured as a pulled-up input?",
+        "prompt": "A teammate adds <code>button.set_high().unwrap();</code> after the solution sets GP14 up with <code>into_pull_up_input()</code>. What happens?",
         "options": ["The compiler rejects the program", "The pin silently goes high", "The program panics at runtime"],
         "answer": 0,
-        "why": "The output methods exist only on the output pin type, so the call is a compile error, as the E0599 output above shows. The tempting answer, silently going high, is the C behaviour; a panic is also wrong, because the check is at compile time, not at run time." },
+        "feedback": [
+          "Right. The output methods exist only on output pin types. A pulled-up input has no set_high, so the build fails with E0599 before the board sees the code.",
+          "That is what the same write does in C, where gpio_put on an input compiles and changes nothing visible. Rust stops it at the type.",
+          "A panic would need the code to compile first. The type check happens at compile time, so no run-time check is involved here."
+        ],
+        "hint": "The type of button says it is an input. Which methods does the input type have?",
+        "why": "Type-state pins turn a wrong-mode write into a compile error. The check costs nothing at run time, and it catches the bug that a C project would only show as a pin that never changes."
+      },
       { "type": "mc",
-        "prompt": "Why can't a handler write to a plain <code>static mut</code> flag without <code>unsafe</code>?",
-        "options": ["Safe Rust forbids unguarded statics", "Linker puts statics in flash", "NVIC clears statics on entry"],
+        "prompt": "Your interrupt handler and <code>main</code> both do <code>COUNT += 1</code> on a plain <code>static mut</code>, and the build stops with E0133. What is the right fix?",
+        "options": ["Wrap it in a critical-section Mutex", "Mark the static as volatile", "Put the update in unsafe block"],
         "answer": 0,
-        "why": "Safe Rust does not let code mutate a shared static without a type that synchronises access, so the Mutex is the safe way. The tempting answer about flash is wrong: the linker places a static in RAM, and no hardware clears it on entry." },
+        "feedback": [
+          "Right. The Mutex hands out the value only inside a critical section, so the compiler checks that the two accesses cannot overlap.",
+          "volatile stops the compiler caching the value, but it does not stop an interrupt and main from racing on the read-modify-write. Lesson 57 made the same point in C.",
+          "An unsafe block silences the check without fixing the race. It can be right with a comment that explains why no interrupt can overlap, but it is the last resort, not the first fix."
+        ],
+        "hint": "Which type makes the compiler check that access happens inside a critical section?",
+        "why": "The compiler's note names the risk: an interrupt is another thread of execution for this purpose. A Mutex makes the critical section explicit, so a reviewer can see every access that needs protection."
+      },
       { "type": "number",
-        "prompt": "In the solution, <code>TICK_MS</code> is 50 and <code>LED2_TICKS</code> is 5. How many milliseconds is one half period of LED 2?",
-        "answer": 250, "tolerance": 0, "unit": "ms",
-        "why": "LED 2 toggles every 5 ticks of 50 ms each, so 5 × 50 = 250 ms. The tempting answer, 50, forgets the tick count and gives the loop period instead." },
+        "prompt": "The solution uses <code>TICK_MS</code> = 50 and <code>LED2_TICKS</code> = 5. How many milliseconds is one half period of LED 2?",
+        "answer": 250,
+        "tolerance": 0,
+        "unit": "ms",
+        "wrong": [
+          { "answer": 500, "feedback": "That is what LED2_TICKS = 10 gives: the half period doubles. With 5 ticks of 50 ms, the half period is 250 ms." },
+          { "answer": 50, "feedback": "That is one tick, the loop period. A half period is the number of ticks times the tick length: 5 × 50 = 250 ms." }
+        ],
+        "hint": "A half period is the tick count times the length of one tick.",
+        "why": "The LEDs are timed by counting ticks, so a wrong count changes the blink period without any compile error. Work out each half period from the tick count, and check the ratio of the two LEDs against it."
+      },
+      { "type": "mc",
+        "prompt": "After a project change, the vector table has no Reset entry, and the reset handler is missing. Which crate normally supplies that code?",
+        "options": ["cortex-m-rt", "rp2040-hal", "rp2040-pac"],
+        "answer": 0,
+        "feedback": [
+          "Right. cortex-m-rt provides the vector table and the Reset handler, which copies .data and zeroes .bss before main runs. Look there first, and check the crate is still in Cargo.toml.",
+          "rp2040-hal gives safe wrappers for pins, clocks and interrupts. It does not write the reset code.",
+          "rp2040-pac has the register structs and interrupt numbers, generated from the SVD. It is the register layer, not the startup code."
+        ],
+        "hint": "Which layer of the stack in the figure touches the vector table?",
+        "why": "The Rust stack has one crate per layer, as Figure 1 shows. When startup breaks, the fault is in the bottom layer, and the same rule applies in C: the startup file and the linker script are where a missing reset handler comes from."
+      },
+      { "type": "number",
+        "prompt": "The solution waits 50 ms per loop pass, on the RP2040's 125 MHz system clock. How many clock cycles pass in one wait?",
+        "answer": 6250000,
+        "tolerance": 0,
+        "wrong": [
+          { "answer": 6250, "feedback": "That is 50 µs in cycles. The wait is 50 ms, so the count is 50 × 10⁻³ s × 125 × 10⁶ = 6,250,000 cycles." }
+        ],
+        "hint": "Cycles = clock frequency × time. Convert 50 ms to seconds first.",
+        "why": "The delay call is in milliseconds, but the core counts in cycles. Knowing the cycle count helps when a loop must fit a budget, or when you read a timer value that is in ticks."
+      },
       { "type": "text",
-        "prompt": "Which crate supplies the vector table and the reset handler for the Rust Pico project?",
-        "accept": ["cortex-m-rt", "cortex_m_rt"],
-        "why": "cortex-m-rt provides the vector table and Reset, which copies .data and zeroes .bss before main. The tempting answer, rp2040-hal, provides peripherals and the entry attribute, not the startup code." },
-      { "type": "mc",
-        "prompt": "In the bank 0 handler, what does the solution check before it acts on the event?",
-        "options": ["Its own pin's status", "Every pin's voltage level", "The system clock rate"],
-        "answer": 0,
-        "why": "Bank 0 is shared by every GPIO, so the handler asks interrupt_status for its own pin first. Every pin's voltage is the tempting idea, but the handler reads the latched event, not the level of each pin." },
-      { "type": "number",
-        "prompt": "The solution waits 50 ms per loop pass. On the RP2040's 125 MHz system clock, how many clock cycles pass in one wait?",
-        "answer": 6250000, "tolerance": 0,
-        "why": "50 x 10^-3 s x 125 x 10^6 cycles per second = 6,250,000. The tempting answer, 6,250, forgets the milli prefix and gives 50 microseconds instead of 50 milliseconds." },
-      { "type": "number",
-        "prompt": "The memory.x file places the BOOT2 region at 0x10000000. How many bytes long is it?",
-        "answer": 256, "tolerance": 0, "unit": "bytes",
-        "why": "LENGTH = 0x100, which is 256 bytes, and the vector table starts right after it at 0x10000100. The tempting answer, 2048, is the length of the FLASH region in kilobytes, not the BOOT2 region." }
+        "prompt": "The memory.x file places BOOT2 at 0x10000000 with a length of 0x100. In hex, where does the vector table start?",
+        "accept": ["0x10000100", "10000100"],
+        "hint": "BOOT2 is the first 256 bytes of flash. Add 256 to the start address, and write the result in hex.",
+        "why": "256 bytes is 0x100, so the vector table starts at 0x10000100. A table placed at 0x10000000 would collide with the second-stage bootloader, which the boot ROM runs first."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague wants to replace the critical-section Mutex around BLINK_ENABLED with a plain static mut and an unsafe block, because the Mutex looks slower. Explain the trade-off, and say what you would check before accepting the change.",
+        "hint": "Compare what each version proves to the compiler, and what the unsafe block asks the reviewer to take on trust.",
+        "answer": "A Mutex costs a short critical section, which turns interrupts off for a few instructions, and it lets the compiler check that every access happens inside one. An unsafe block costs nothing at run time, but the programmer must argue that no interrupt can overlap the access, and the compiler will no longer check it. Before accepting the change, measure the critical section's cost on the real timing (it is usually small), confirm that the flag's accesses are all in one place, and require a comment that states why no interrupt can race with it. Otherwise the saving is not worth losing the check."
+      }
     ] }
     </script>
   </div>
@@ -309,14 +354,29 @@ static BLINK_ENABLED: Mutex&lt;Cell&lt;bool&gt;&gt; = Mutex::new(Cell::new(true)
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "From lesson 57: does <code>volatile</code> make a read-and-clear of a shared flag atomic?",
-        "options": ["No, it only stops caching", "Yes, every access is atomic", "Only with a critical section"],
+        "prompt": "An interrupt sets a shared flag, and <code>main</code> reads it and then clears it. The flag is declared <code>volatile</code>. Two events arrive just as <code>main</code> reads the flag. What is still missing? Use <a href=\"0057-interrupts-in-practice.html\">lesson 57</a>.",
+        "options": ["A critical section around read and clear", "Nothing, because volatile covers it", "A flag of a wider integer type"],
         "answer": 0,
-        "why": "volatile forces each access to reload from memory, and nothing more. The tempting answer, only with a critical section, is partly true, but it describes what the critical section adds, not what volatile does." },
-      { "type": "number",
-        "prompt": "From lesson 9: a yellow LED with a forward voltage of 2.1 V is driven from a 3.3 V pin at 3 mA. What resistor value, in ohms, does the calculation give before E12 rounding?",
-        "answer": 400, "tolerance": 0.05, "unit": "Ω",
-        "why": "R = (3.3 − 2.1) ÷ 0.003 = 400 Ω. The nearest E12 value is 390 Ω. The tempting answer, 2.1 V, is the forward voltage, not the resistor value." }
+        "feedback": [
+          "Right. volatile stops the compiler caching the flag, but read-then-clear is two steps that an interrupt can split. A critical section makes them one step, as lesson 57 showed.",
+          "volatile forces each access to reload from memory. It does not make two accesses atomic, so the interrupt can still arrive between them.",
+          "A wider type does not make the read and the clear one step. The interrupt can still land between them."
+        ],
+        "hint": "Count the steps in read-then-clear. Can an interrupt arrive between two of them?",
+        "why": "Lesson 57's rule: volatile is for the compiler, and the critical section is for the interrupt. A shared flag needs both, and this is the exact point where a missed event goes unnoticed."
+      },
+      { "type": "mc",
+        "prompt": "A yellow LED with a 2.1 V forward drop is driven from a 3.3 V pin, and the design limit is 3 mA. The calculation from <a href=\"0009-diodes-leds-and-current-limiting.html\">lesson 9</a> gives 400 Ω. Which E12 value should you pick?",
+        "options": ["390 Ω", "470 Ω", "330 Ω"],
+        "answer": 1,
+        "feedback": [
+          "390 Ω gives 1.2 V ÷ 390 Ω = 3.08 mA, a little over the 3 mA limit. Round up on the E12 list, not down, when the limit matters.",
+          "Right. 470 Ω gives 1.2 V ÷ 470 Ω = 2.55 mA, under the limit. Lesson 9's rule rounds up to the next E12 value at or above the calculation.",
+          "330 Ω gives 1.2 V ÷ 330 Ω = 3.6 mA, well over the limit. It is the lower E12 value, not the safe one."
+        ],
+        "hint": "Work out the current for the two E12 values on either side of 400 Ω, and compare each with 3 mA.",
+        "why": "A resistor from the E12 list should keep the current at or below the limit. Rounding to the nearest value can push it over, which is why the rule is to round up."
+      }
     ] }
     </script>
   </div>

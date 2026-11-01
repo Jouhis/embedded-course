@@ -190,54 +190,109 @@
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
-      { "type": "mc",
-        "prompt": "A request has the right slave address but a CRC that does not match its bytes. What does the slave do?",
-        "options": ["Stays silent and sends nothing", "Sends an illegal function exception", "Sends an illegal address exception", "Resends its last register value"],
-        "answer": 0,
-        "why": "A frame with a bad CRC was damaged on the wire, so the slave cannot trust its contents and stays silent. The tempting answer, an exception, would send a reply the master may act on, based on a request that was never received." },
-      { "type": "number",
-        "prompt": "A master reads 3 registers with function 03. What is the byte count field in the reply?",
-        "answer": 6, "tolerance": 0, "unit": "bytes",
-        "why": "Each register is 16 bits, so 3 registers are 6 bytes. The tempting answer, 3, counts registers, not bytes." },
-      { "type": "mc",
-        "prompt": "In an RTU frame, which CRC byte goes on the wire first?",
-        "options": ["The low byte is sent first", "The high byte is sent first", "Only one CRC byte is sent", "Both bytes are sent at once"],
-        "answer": 0,
-        "why": "The CRC is sent low byte first, which is the opposite of the big-endian data fields. The tempting answer, high byte first, is the usual order for data, and it would fail the check." },
-      { "type": "text",
-        "prompt": "Which function code reads holding registers? Give the two-digit hex code.",
-        "accept": ["0x03", "03", "3"],
-        "why": "03 is read holding registers. The tempting answer, 06, is write single register, which changes a value and does not read one." },
-      { "type": "mc",
-        "prompt": "A master writes 0x2A to register 1 with function 06. What does a healthy slave send back?",
-        "options": ["It echoes the request frame", "It sends only the value", "It sends an exception reply", "It sends nothing at all"],
-        "answer": 0,
-        "why": "A successful write is answered with an echo of the request, so the master can check that the write arrived. The tempting answer, nothing, is what a bad CRC gets, not a good write." },
-      { "type": "number",
-        "prompt": "How many bit times does one 8N1 character take on the wire, counting the start and stop bits?",
-        "answer": 10, "tolerance": 0, "unit": "bits",
-        "why": "One start bit, eight data bits and one stop bit make ten. The tempting answer, eight, counts only the data bits, and the start bit is what lets the receiver find each byte." },
-      { "type": "mc",
-        "prompt": "A slave with address 1 receives a valid-CRC request addressed to slave 2. What does it do?",
-        "options": ["It sends nothing back", "It raises an exception", "It echoes the request", "It returns register zero"],
-        "answer": 0,
-        "why": "A frame for another address is ignored, so the slave stays silent. The tempting answer, an exception, would tell the master that its request was refused, which only a valid request for this slave can receive." }
-    ] }
+  { "type": "mc",
+    "prompt": "Your master sends the request <code>01 03 00 00 00 02</code>. Its code appends the CRC high byte first, so the frame ends <code>0B C4</code>. The slave's serial monitor shows the bytes arrived. What does the slave send back?",
+    "options": ["Nothing, because the CRC fails", "An illegal function exception", "The two registers, as normal", "A reply with a CRC error flag"],
+    "answer": 0,
+    "feedback": [
+      "Right. The slave checks the CRC over all six bytes plus the two it received. Sent high byte first, the CRC does not match, so the frame is discarded and the slave stays silent. Your master then sees a timeout, not an error code.",
+      "An exception is a reply to a valid request that the slave cannot serve. A frame with a bad CRC gets no reply at all, so the master sees silence.",
+      "The request itself is fine, but the slave only trusts a frame whose CRC matches. The byte order of the CRC is the bug, so the slave never gets far enough to read the registers.",
+      "Modbus RTU has no error-frame type. A bad CRC simply produces no reply, which is why a master has to time out and retry."
+    ],
+    "hint": "Modbus sends the CRC low byte first, even though the data fields go high byte first. Check what the master's code does with the two CRC bytes.",
+    "why": "The CRC of <code>01 03 00 00 00 02</code> is 0x0BC4, which goes on the wire as <code>C4 0B</code>. Swapping the bytes makes a valid request look damaged, and the symptom is silence, not an error. A master that prints <code>reply: (none)</code> for a valid request should check its CRC byte order first." },
+  { "type": "number",
+    "prompt": "A slave holds 5 registers. The master asks function 03 for registers 1 to 4 (four registers). What byte count does the slave put in the reply?",
+    "answer": 8, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 4, "feedback": "That is the number of registers, not the number of bytes. Each register is 16 bits, so each one takes two bytes." },
+      { "answer": 10, "feedback": "That is 5 registers × 2, which counts the whole table. The reply carries only the quantity the master asked for." }
+    ],
+    "hint": "The byte count is the quantity asked for, times the bytes in one register.",
+    "why": "Four registers at two bytes each make 8 bytes, and the reply is <code>01 03 08</code> followed by those 8 bytes and the CRC. The count follows the quantity in the request, not the size of the register table. A request that runs past the end of the table gets an exception instead." },
+  { "type": "mc",
+    "prompt": "At 115200 baud the firmware uses a 1.750 ms silence to end a frame. A master's request arrives with a 1 ms pause between its 3rd and 4th bytes. How does the slave treat the request?",
+    "options": ["As two frames, since 1 ms is over a byte", "As one frame, since 1 ms is under the silence", "As one frame, but only after a reset", "As a frame that always fails its CRC"],
+    "answer": 1,
+    "feedback": [
+      "A byte time is about 87 µs at 115200 baud, so 1 ms is much longer than one byte. But the frame ends only at the silence, which is 1.750 ms, and a 1 ms pause is shorter than that.",
+      "Right. The slave waits for 1.750 ms of silence before it treats the bytes as a frame. A 1 ms pause is inside the frame, so the slave reads the whole request at once.",
+      "No reset is needed. The silence timer only ends a frame when the line has been quiet for the full interval.",
+      "The pause does not change the bytes. The CRC is the same whether the bytes arrive together or with a gap, so the frame passes."
+    ],
+    "hint": "Compare the pause with the silence the firmware waits for, not with one byte time.",
+    "why": "The silence that ends an RTU frame is the one rule to remember, and it is longer than a byte time. The lesson gives 3.5 characters, about 304 µs at 115200 baud, and the firmware uses 1,750 µs, the figure the lesson takes from the serial-line specification above 19200 baud. A pause shorter than that is part of the same frame." },
+  { "type": "mc",
+    "prompt": "Your slave answers one request, then ignores every later request, even valid ones. The code clears <code>rx_len</code> only after a successful reply. A bad-CRC frame came in before the silence. What is the most likely cause?",
+    "options": ["The old bad frame stayed in the buffer", "The baud rate drifted after the reply", "The reply overwrote the register map", "The address changed to zero after the reply"],
+    "answer": 0,
+    "feedback": [
+      "Right. A bad-CRC frame gets no reply, so the reset never ran. The old bytes stay in the buffer, and each new request is appended to them, so its CRC fails from then on.",
+      "A baud-rate drift would corrupt bytes at random, not stop every later request in the same way. The buffer that was never cleared explains the pattern.",
+      "The reply is built in its own buffer, and it does not write the register map. The stuck buffer is the cause here.",
+      "The address is set once at start-up, so it does not change after a reply. A zero address would make the slave ignore every request, which is a different symptom."
+    ],
+    "hint": "What happens to the receive buffer when a frame gets no reply?",
+    "why": "The fix is to reset the length after every frame, whether or not a reply was sent. The mistake is easy to make because a silent slave looks like a broken wire. Look at what the code does on the path that sends nothing." },
+  { "type": "mc",
+    "prompt": "On a real RS-485 board, a slave sends its reply, but its DE pin is never lowered afterwards. The master then starts its next request. What goes wrong?",
+    "options": ["The slave keeps driving the line", "The slave's baud rate is too high", "The slave's CRC becomes zero", "The slave's register values reset"],
+    "answer": 0,
+    "feedback": [
+      "Right. With DE high, the slave's driver stays on, so it pulls the bus against the master. The result is garbage on the line, which is the classic half-duplex fault.",
+      "The baud rate is not the cause. Both sides run at the same speed, and a driver left on corrupts the line whatever the speed.",
+      "The CRC is calculated from the frame's bytes. Leaving the driver on does not change those bytes, so the CRC is not affected.",
+      "Register values live in memory and the bus cannot reach them. Leaving DE high does not reset anything inside the slave."
+    ],
+    "hint": "RS-485 is half-duplex. Only one node may drive the pair at a time. Who is driving it after the reply?",
+    "why": "On a real board you raise DE just before the reply and lower it after the last byte has gone out, so the line returns to the master's control. A bench test with only a UART and no transceiver never shows this, which is why the fault is found on the board, not in the host tests." },
+  { "type": "mc",
+    "prompt": "You run the CRC over a received frame that includes its two CRC bytes, and the result is zero. What can you conclude?",
+    "options": ["The bytes match, so the frame is intact", "The slave is at the right address", "The register values are the ones wanted", "It is the same as the reference frame"],
+    "answer": 0,
+    "feedback": [
+      "Right. A zero residue means the CRC bytes are in the right order and match the frame's bytes, so the frame arrived as it was sent, with a high probability.",
+      "The residue says nothing about the address. The address is a separate byte that you check after the CRC passes.",
+      "The residue is about the bytes, not the meaning of the registers. Values are checked by reading them back, not by the CRC.",
+      "No frame is compared with a reference here. The check value 0x4B37 belongs to the ASCII string 123456789, and a zero residue is a different check."
+    ],
+    "hint": "The CRC is calculated over the bytes, and the frame includes the CRC bytes too. What does a match tell you?",
+    "why": "This residue check is a quick self-test: a wrong byte order or a wrong polynomial breaks it. It tells you the frame was not damaged on the wire. It does not prove the address or the values are right, so the parser still checks them separately." },
+  { "type": "reflect",
+    "prompt": "Your Modbus slave passes all nine host tests, but a field engineer says the master gets no reply on a real board, with a 40 m cable. Name two things outside the frame parser that you would check, and explain why the host tests cannot catch them.",
+    "hint": "Think about what the host test runs on, and what the parser never sees.",
+    "answer": "First, the direction control: check that DE goes high before each reply and low after the last byte. The host tests have no transceiver, so no test can see it. Second, the bus itself: check the termination resistor at each end of the 40 m cable and the length of the stubs. The parser only handles bytes in memory, so it cannot see a reflection or a collision on the wire. The host tests check the frame logic, not the hardware, which is why a board test is still needed."
+  }
+] }
     </script>
   </div>
 
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 70: in the USART ring buffer, which index does the interrupt write?",
-        "accept": ["head"],
-        "why": "The interrupt is the producer, and it writes the head. The tempting answer, tail, is the consumer's index, which main writes." },
-      { "type": "number",
-        "prompt": "From lesson 80: how many tests pass in the debounce suite when its starter is fixed and all seven tests run?",
-        "answer": 7, "tolerance": 0, "unit": "tests",
-        "why": "The debounce suite has seven tests, and all seven pass when the logic is right. The tempting answer, three, counts only the tests that failed on the starter." }
-    ] }
+  { "type": "mc",
+    "prompt": "From lesson 98: a noise spike lifts both wires of a differential pair by 1 V, by the same amount. A receiver reads CANH minus CANL. What happens to the value it reads?",
+    "options": ["It is unchanged, so the bit reads correctly", "It doubles, so the bit reads as dominant", "It drops by 1 V, so the bit may flip", "It depends on which wire is longer"],
+    "answer": 0,
+    "feedback": [
+      "Right. Both wires move together, so the subtraction cancels the spike. This is why a differential pair survives noisy wiring: the receiver never sees the noise that both wires share.",
+      "Adding the two wires would double the noise, but the receiver subtracts them. The shared 1 V cancels, so nothing doubles.",
+      "That would be true for a single-ended wire read against ground. A differential receiver compares the two wires with each other, so a shared shift drops out.",
+      "Wire length does not enter the subtraction. Twisting the pair makes each wire pick up about the same noise, which is what cancels it."
+    ],
+    "hint": "Write the receiver's value as (CANH + 1 V) minus (CANL + 1 V). What is left?",
+    "why": "The differential pair rejects noise that reaches both wires equally, and that is the reason RS-485 uses the same idea. A single-ended line has no such cancellation, so the same spike would read as a bit change on it." },
+  { "type": "number",
+    "prompt": "A 30-byte read reply goes out from the slave at 115200 baud, 8N1, with no gaps. How long does the reply take on the wire, in milliseconds?",
+    "answer": 2.604, "tolerance": 0.02, "unit": "ms",
+    "wrong": [
+      { "answer": 2.083, "feedback": "That is 30 × 8 ÷ 115200. It counts only the data bits. Each byte also has a start bit and a stop bit, so there are 10 bit times per byte." },
+      { "answer": 0.002604, "feedback": "That number is in seconds. Multiply by 1000 to get milliseconds." }
+    ],
+    "hint": "How many bit times does one byte take, counting the start and stop bits?",
+    "why": "Each byte is 10 bit times, so 30 bytes are 300 bit times. 300 ÷ 115200 = 0.002604 s, or 2.604 ms. The start and stop bits are overhead on every byte, which is why a long Modbus reply takes longer than its data alone suggests." }
+] }
     </script>
   </div>
 

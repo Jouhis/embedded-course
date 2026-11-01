@@ -200,7 +200,7 @@
 
   <h3>3. A read-modify-write that an interrupt can break</h3>
   <p>
-    Suppose the main loop sets an output bit with <code>reg |= bit</code>, and an interrupt also changes a bit in the same register. If the interrupt lands between the read and the write, its change is lost when the main loop writes back. The symptom is an output that is wrong only now and then, and that is hard to reproduce. The fix is the atomic path: the set or clear alias on RP2040, or the BSRR register on STM32, which changes one bit per store.
+    Suppose the main loop sets an output bit with <code>reg |= bit</code>, and an interrupt also changes a bit in the same register. If the interrupt lands between the read and the write, its change is lost when the main loop writes back. The symptom is an output that is wrong only now and then, and that is hard to reproduce. The fix is the atomic path: the set or clear alias on RP2040, or the BSRR register on STM32, which changes only the pins whose bits are 1 in that store and leaves the others alone.
   </p>
 
   <h3>4. Writing a set alias to a register that does not support one</h3>
@@ -239,36 +239,93 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "On the RP2040, how many extra cycles does the APB bridge add to a write access, beyond the minimum? Type the number only.",
-        "answer": 2, "tolerance": 0, "unit": "cycles",
-        "why": "RP2040 datasheet section 2.1.3: the bridge adds one cycle to a read and two cycles to a write. The tempting answer, 1, is the read figure." },
+        "prompt": "Your loop writes a UART0 register 1,000 times, and every write goes through the APB bridge on the RP2040. Counting the bridge's added cycles, what is the least number of cycles the writes can take?",
+        "answer": 4000, "tolerance": 0, "unit": "cycles",
+        "wrong": [
+          { "answer": 3000, "feedback": "3000 uses the read cost of 3 cycles. A write takes at least 2 + 2 = 4 cycles through the bridge, so 1,000 writes take at least 4,000." }
+        ],
+        "hint": "An APB write takes at least 2 cycles plus the bridge's extra cycles for a write. Multiply by 1,000.",
+        "why": "The datasheet's bridge figures give 4 cycles per APB write, so 1,000 writes cost at least 4,000 cycles, which is 32 µs at 125 MHz. That is why a loop that writes a peripheral register should write it only when the value changes."
+      },
       { "type": "mc",
-        "prompt": "Two masters access two different SRAM banks in the same cycle. What does the RP2040 crossbar do?",
-        "options": ["both finish in the same cycle", "one must wait a whole cycle", "the second one is silently dropped", "the bus raises a hard fault"],
-        "answer": 0,
-        "why": "Each SRAM bank has its own crossbar port, and the fabric adds no wait states (section 2.1). The tempting answer, one waiting, applies only when two masters want the same port." },
+        "prompt": "Core 0 reads <code>0x20000000</code> and the DMA writes <code>0x20000004</code> in the same cycle. Does either one have to wait?",
+        "options": ["Yes, one waits a full cycle", "No, different banks, so both finish", "Yes, the DMA write gets dropped", "Yes, the bus raises a fault"],
+        "answer": 1,
+        "feedback": [
+          "Only when two masters want the same bank. These two addresses fall in different banks, so the crossbar serves both at once.",
+          "Right. Consecutive words are striped across the banks, so 0x20000000 and 0x20000004 are in banks 0 and 1. Each bank has its own port, and the fabric adds no wait states.",
+          "Nothing is dropped. Each bank has its own crossbar port, and the write completes in the cycle it was issued.",
+          "Nothing faults. Both addresses are valid SRAM, and the fabric adds no wait states to an AHB-Lite access."
+        ],
+        "hint": "Which bank does each address fall in, using the striping table?",
+        "why": "Accesses to different banks rarely collide, which is why the SRAM is striped. Only two masters that want the same bank take turns."
+      },
       { "type": "mc",
-        "prompt": "Why does the RP2040 give each peripheral a set alias at offset +0x2000?",
-        "options": ["so a set cannot race an interrupt", "so the writes run twice as quickly", "so the DMA can skip the bridge", "so the cache is always flushed too"],
+        "prompt": "Core 0 and the DMA both read <code>0x20000000</code> in the same cycle. What happens?",
+        "options": ["One waits while the bank serves the other", "Both finish together in the same cycle", "Both read a wrong word back from the bank", "The bus raises a bus fault instead"],
         "answer": 0,
-        "why": "The set alias applies the bitmask in one bus write, so an interrupt cannot land between a read and a write-back (section 2.1.2). The tempting answer is speed: native atomic writes take the same time as normal writes, so the alias is not faster." },
+        "feedback": [
+          "Right. Both masters want the same bank port, so the crossbar arbitrates, and one master waits until the bank is free.",
+          "They want the same bank port, so they cannot both be served in one cycle. Only different banks can run in parallel.",
+          "The bank returns the right word to whichever master it serves. The problem is the wait, not the data.",
+          "Nothing faults. Two masters reading one valid address simply take turns at the bank."
+        ],
+        "hint": "What happens when two masters want the same slave port?",
+        "why": "Two masters on one slave take turns, which is the arbitration the lesson describes. Four masters on one bank would take four turns, so the striping is designed to spread the accesses out."
+      },
+      { "type": "mc",
+        "prompt": "Your main loop sets bit 5 of a GPIO register with a read-modify-write, and an interrupt sets bit 2 in the same register. Sometimes bit 2 is lost. Which change fixes it on the RP2040?",
+        "options": ["Make the interrupt run twice as often", "Add a delay before the read", "Write the +0x2000 set alias for bit 5", "Use the +0x1000 XOR alias for everything"],
+        "answer": 2,
+        "feedback": [
+          "A faster interrupt makes the race more frequent, not less.",
+          "A delay changes the timing but not the race. An interrupt can still land between the read and the write-back.",
+          "Right. The set alias forces bit 5 on in one bus write, with no read, so an interrupt cannot land between a read and a write-back.",
+          "XOR flips the bits in the mask, so it would toggle bit 5 rather than set it. The set alias is the one that sets bits."
+        ],
+        "hint": "Which alias changes a bit in one write, without a read?",
+        "why": "The atomic alias makes one bus write that changes only the masked bits, so there is no read-modify-write for an interrupt to split. The datasheet states that the alias has the same timing as a normal write."
+      },
+      { "type": "mc",
+        "prompt": "A sensor logger needs 1.5 GB/s of sustained SRAM bandwidth. The datasheet gives 2.0 GB/s sustained at 125 MHz. Does the design fit, and how much is left?",
+        "options": ["Yes, with 0.5 GB/s to spare", "No, it needs 3 GB/s in total", "No, the peak is only 0.5 GB/s", "Yes, but only with two masters"],
+        "answer": 0,
+        "feedback": [
+          "Right. 2.0 − 1.5 = 0.5 GB/s is left over, so the design fits with room for more traffic.",
+          "3 GB/s is 1.5 doubled, not a comparison with the bus limit. The bus gives 2.0 GB/s, so 3 does not fit.",
+          "0.5 is the gap, not the peak. The bus peak is 2.0 GB/s, and 1.5 fits inside it.",
+          "The number of masters is not the limit here. The 2.0 GB/s figure is the whole bus, and 1.5 fits inside it."
+        ],
+        "hint": "Compare the needed bandwidth with the bus figure. What is left over?",
+        "why": "Bandwidth is a budget, like a current budget. Subtract what the design needs from what the bus can give, and leave room for the bursts you have not counted yet."
+      },
+      { "type": "mc",
+        "prompt": "Four consecutive words of a buffer sit at <code>0x20000000</code> to <code>0x2000000C</code>. Four masters each read one word in the same cycle. Which layout lets all four finish without waiting?",
+        "options": ["Each word is in a different bank", "All four words are in bank 0", "Each master reads the same word", "The words share one 64 kB bank"],
+        "answer": 0,
+        "feedback": [
+          "Right. The first 256 kB is word-striped, so the four words use banks 0 to 3, one port each.",
+          "Four masters on bank 0 take turns, so the last one waits three times longer than the first.",
+          "Masters reading the same word still contend for the same bank port, so they take turns.",
+          "The striping spreads consecutive words over the banks, so they are not kept together in one bank."
+        ],
+        "hint": "The striping table shows which bank each consecutive word is in.",
+        "why": "Striping is how the SRAM supports parallel access. Consecutive words spread over four banks, so four masters reading neighbouring words rarely collide."
+      },
       { "type": "text",
-        "prompt": "What is the RP2040 XOR alias offset, added to a peripheral register address? Write it in hex.",
+        "prompt": "A register needs one bit flipped with a single write and no read. Which alias offset do you add to the register address? Write it in hex.",
         "accept": ["0x1000", "1000", "+0x1000"],
-        "why": "Section 2.1.2 lists +0x1000 for atomic XOR on write. The tempting answer, +0x3000, is the clear alias." },
-      { "type": "number",
-        "prompt": "An RP2040 runs at 125 MHz. Four masters each move one 32-bit word per cycle. What is the maximum sustained bandwidth, in GB/s?",
-        "answer": 2.0, "tolerance": 0.02, "unit": "GB/s",
-        "why": "4 masters × 4 bytes × 125 MHz = 2,000 MB/s, which is 2.0 GB/s, as section 2.1 states. The tempting answer, 0.5, assumes that only one master moves one word per cycle." },
-      { "type": "mc",
-        "prompt": "Four consecutive words start at 0x20000000. Where does the RP2040 put them?",
-        "options": ["One word in each bank", "All four in bank 0", "Each word in SRAM 4"],
-        "answer": 0,
-        "why": "The first 256 kB is word-striped across four 64 kB banks (Table 153). The tempting answer is bank 0 only, which is how a plain array would behave in one linear memory. SRAM4 is a non-striped 4 kB bank above the striped region." },
-      { "type": "text",
-        "prompt": "What is the RP2040 offset that makes a peripheral register clear the bits in a mask on write? Write it in hex.",
-        "accept": ["0x3000", "3000", "+0x3000"],
-        "why": "Section 2.1.2 gives +0x3000 for the atomic bitmask clear. The tempting answer, +0x2000, is the set alias." }
+        "wrong": [
+          { "answer": "0x2000", "feedback": "0x2000 is the set alias. It forces the masked bits on, so a bit that is already 1 stays 1, which is not a flip." }
+        ],
+        "hint": "The XOR alias is the one that flips bits.",
+        "why": "XOR on write flips each bit in the mask, in one bus write with no read. Set and clear force bits on and off, so only XOR gives a flip."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague wants to change 16 GPIO pins one at a time, with 16 separate APB writes, inside an interrupt. Explain the cost, using this lesson's numbers, and suggest a change.",
+        "hint": "How many cycles does one APB write cost at least, and how many writes does the plan make?",
+        "answer": "Each APB write takes at least 4 cycles through the bridge, so 16 writes cost at least 64 cycles, and the interrupt stays busy for that whole time. The change is to make one write that changes many pins at once. On the STM32, BSRR does this in one store: one write can set some pins and reset others. On the RP2040, the GPIO set and clear aliases change the masked bits in one write, and the SIO sits on the cores' own IO ports rather than behind the bridge. Either way the interrupt finishes in one write's time instead of sixteen."
+      }
     ] }
     </script>
   </div>
@@ -277,13 +334,27 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 19: what is the hex value 0x10 in decimal?",
-        "answer": 16, "tolerance": 0, "unit": "",
-        "why": "0x10 is one sixteen, so the answer is 16. The tempting answer, 10, reads the hex digits as decimal." },
-      { "type": "text",
-        "prompt": "From lesson 16: which resistor makes an open-drain line read high when nothing pulls it low?",
-        "accept": ["pull-up", "pull-up resistor"],
-        "why": "A pull-up connects the line to the supply, so it reads high when the open-drain output releases it. The tempting answer, a pull-down, pulls the line low instead." }
+        "prompt": "A set-alias write is aimed at setting bits 2 and 5 of a GPIO register in one go. Which mask value does the write carry? Give it in decimal.",
+        "answer": 36, "tolerance": 0,
+        "wrong": [
+          { "answer": 20, "feedback": "20 is 0x14, which sets bits 2 and 4. Bit 5 is worth 32, so the mask is 0x04 + 0x20 = 0x24 = 36." }
+        ],
+        "hint": "Each bit n is worth 2 to the power n. Add the values of bits 2 and 5.",
+        "why": "The mask for bits 2 and 5 is 2² + 2⁵ = 4 + 32 = 36, which is 0x24. One write with that mask changes those two bits and nothing else. That is the masking pattern from lesson 20, used with the alias."
+      },
+      { "type": "mc",
+        "prompt": "A GPIO input has no pull-up, and the switch on it is open. What does the pin read?",
+        "options": ["Random 0 or 1, since it floats", "Always 1, since inputs default high", "Always 0, since inputs default low", "Whatever the last write left"],
+        "answer": 0,
+        "feedback": [
+          "Right. An open input with no pull-up has no level to hold it, so it can read either value. Lesson 16 showed that a button on a floating pin reads at random.",
+          "A floating input has no default level, so it does not default high. A pull-up would give it a definite high, and this input has none.",
+          "A floating input has no default level, so it does not default low either. It needs a pull-down or a pull-up to read a definite value.",
+          "A pin input is not a stored value that a write leaves behind. Its level comes from what is connected to it."
+        ],
+        "hint": "What holds the pin at a level when the switch is open and nothing else drives it?",
+        "why": "A pull-up or pull-down sets the level that an open input sees. Without one, the input floats and the reading can change from one read to the next."
+      }
     ] }
     </script>
   </div>

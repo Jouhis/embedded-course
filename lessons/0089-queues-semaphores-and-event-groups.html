@@ -120,7 +120,7 @@
     <strong>Mistake 4: a binary semaphore counting presses.</strong> A developer expects each of three quick presses to print a line, and sees only one. The symptom is that the printed count is lower than the number of presses. The binary semaphore remembers at most one give. The fix is a counting semaphore, or a queue of press events, when every event matters.
   </p>
   <p>
-    <strong>Mistake 5: a pointer to a local through a queue.</strong> A producer sends <code>&amp;value</code>, where <code>value</code> is a local in a loop. The symptom is that the consumer prints garbage, because the local has changed or gone by the time it is read. The fix is to pass the value, not its address, which the queue then copies. The project does this with <code>&amp;i</code>, which is safe only because the queue copies <code>i</code> at the send.
+    <strong>Mistake 5: a pointer to a local through a queue.</strong> A producer declares the queue item as a pointer, <code>int *</code>, and sends the address of a local, <code>value</code>, from a loop. The queue copies the pointer, not the number it points to. The symptom is that the consumer prints garbage, because the local has changed or gone out of scope by the time it is read through the pointer. The fix is to queue the value itself, so the queue copies the number, or to point at storage that outlives the send. The project's <code>xQueueSend(work_queue, &amp;i, ...)</code> is safe because the item is a <code>uint32_t</code>, so the queue copies the value of <code>i</code> at the send.
   </p>
 
   <h2>In real projects</h2>
@@ -162,37 +162,91 @@
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "A binary semaphore is given twice before the waiting task runs. How many times does the task wake?",
-        "options": ["Wakes once", "Wakes twice", "Never wakes"],
-        "answer": 0,
-        "why": "A binary semaphore holds at most one give, so the two gives collapse into one and the task wakes once. The tempting answer is twice, which holds for a counting semaphore or a queue, not for a binary one." },
+        "prompt": "A button ISR gives a binary semaphore. In a test, a user presses the button three times quickly, and the UI prints one line. What is the right fix?",
+        "options": ["Give it with xSemaphoreGive() from the ISR", "Use a counting semaphore or a queue of presses", "Lower the button interrupt's priority", "Raise the UI task's priority number"],
+        "answer": 1,
+        "feedback": [
+          "That is the plain call, which is wrong in an ISR. It would still remember only one press, because a binary semaphore holds at most one give.",
+          "Right. A counting semaphore keeps each give up to its limit, and a queue keeps every event as an item. Either keeps all three presses.",
+          "Priority changes when the handler runs, not how many gives the semaphore remembers. Three presses still collapse into one.",
+          "Priority decides which task runs first. The binary semaphore still holds only one give, so the UI still sees one press."
+        ],
+        "hint": "How many gives does a binary semaphore remember before a take?",
+        "why": "A binary semaphore is for a single event, such as 'the button was pressed'. When each press must count, use an object that counts, and the UI loop reads one event per press."
+      },
       { "type": "mc",
-        "prompt": "Why must an ISR call the FromISR version of a kernel function?",
-        "options": ["It must never block", "It runs more urgently", "It needs no stack"],
+        "prompt": "A button handler calls xSemaphoreGive() directly. The UI task wakes late, sometimes not at all, and the log lines come out of order. Which fix is right?",
+        "options": ["Call xSemaphoreGiveFromISR, then portYIELD_FROM_ISR(woken)", "Wrap the plain give in a loop that retries until it works", "Call taskYIELD() right after the give call", "Raise the ISR's priority to the most urgent level"],
         "answer": 0,
-        "why": "An ISR cannot block, and the FromISR calls are the ones written not to. The tempting answer, more urgent, is true of interrupts but is not why the FromISR calls exist." },
+        "feedback": [
+          "Right. The FromISR call never blocks and sets woken if a task is waiting, and portYIELD_FROM_ISR switches at once when that task is more urgent.",
+          "A retry loop still calls a function written for tasks inside an interrupt. The bug stays, and the loop can block the interrupt.",
+          "taskYIELD() is for tasks. In an ISR it is the wrong macro, and portYIELD_FROM_ISR is the ISR version.",
+          "Priority 0 is above the FreeRTOS limit, so the FromISR call fails its check. Urgency is not the fix for a plain call."
+        ],
+        "hint": "Which calls are safe to make from an interrupt, and which macro ends the ISR?",
+        "why": "The plain calls may block or change the kernel's lists, which an interrupt cannot allow. The bug can look fine in a short test and fail later, which is why the FromISR rule is a review item in real projects."
+      },
       { "type": "number",
-        "prompt": "A queue has length 4 and items of 4 bytes. How many bytes does the queue's item storage hold?",
-        "answer": 16, "tolerance": 0, "unit": "bytes",
-        "why": "Four items of four bytes each is 16 bytes. The tempting answer is 4, which counts items, not bytes; the storage is what the kernel allocates from the heap." },
-      { "type": "text",
-        "prompt": "What must an ISR do after giving a semaphore with a FromISR call, so that a more urgent task runs at once? Name the macro.",
-        "accept": ["portYIELD_FROM_ISR", "portyield_from_isr", "portEND_SWITCHING_ISR"],
-        "why": "portYIELD_FROM_ISR(woken) requests the switch if the woken flag is set (portmacro.h line 111). The tempting answer is portYIELD(), which is for tasks, not interrupts." },
+        "prompt": "A consumer needs a queue that holds 10 sensor readings, each a 16-bit value (2 bytes). How many bytes of item storage does the kernel allocate for the queue?",
+        "answer": 20, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 10, "feedback": "That counts items. The storage is items times item size: 10 × 2 bytes." }
+        ],
+        "hint": "Storage is the queue length times the size of one item.",
+        "why": "10 items of 2 bytes is 20 bytes. The kernel's own bookkeeping adds to this, but the item storage is what you size. A queue of 10 readings of 4 bytes would need 40 bytes, so the item size is the number to check."
+      },
       { "type": "mc",
-        "prompt": "A task waits for both a sensor flag and a button flag before it acts. Which kernel object fits best?",
-        "options": ["An event group with flags", "A binary semaphore, one signal", "A queue, copying bytes out"],
-        "answer": 0,
-        "why": "An event group waits on a combination of bits set by different sources, all or any. A single binary semaphore carries one signal, and a queue carries data, which is not what the task needs." },
+        "prompt": "A display must redraw only after the sensor has a new reading and the user has pressed the button, in either order. Which object fits?",
+        "options": ["A binary semaphore that both sources give", "A queue that both sources send into", "An event group, waiting for both bits"],
+        "answer": 2,
+        "feedback": [
+          "A single binary semaphore carries one signal. Two sources giving it cannot tell the display which of the two conditions has happened.",
+          "A queue would work but is more than needed. The display needs two conditions, not an ordered list of data.",
+          "Right. Each source sets its own bit, and the display waits for both bits with an all-bits wait, in either order."
+        ],
+        "hint": "Which object waits for a combination of conditions set by different sources?",
+        "why": "An event group is the right choice when a task waits for a combination of conditions. The bits are not counted, so a repeated press still sets its bit once, which is the right answer for a condition."
+      },
       { "type": "mc",
-        "prompt": "Which NVIC priority number may an ISR use to call xSemaphoreGiveFromISR, given configMAX_SYSCALL_INTERRUPT_PRIORITY is 5 << 4?",
-        "options": ["Numerically 5 or higher", "Numerically 4 or lower", "Exactly zero, the default"],
+        "prompt": "A producer puts the address of a local buffer into a queue, so the item is a pointer. The consumer reads it after the producer's function has returned. What is the problem?",
+        "options": ["The buffer may be gone or changed when it is read", "The queue copied the buffer, so it is safe", "Queues cannot carry pointers at all", "The consumer's priority is too low to read it"],
         "answer": 0,
-        "why": "The port requires the interrupt's number to be equal to or numerically higher than the limit, so 5 or higher is valid. The tempting answer, 4 or lower, is more urgent than the limit, which the check forbids. Zero is the default and the most urgent level, so it fails too." },
+        "feedback": [
+          "Right. A pointer is copied, but the buffer it points to is not. Once the function returns, the local's memory belongs to whatever uses that stack next.",
+          "The queue copies the pointer, not the buffer. The consumer then reads the buffer, which is no longer safe to read.",
+          "A queue can carry pointers, and many firmware designs do it. The problem is the lifetime of what the pointer points to.",
+          "Priority decides when the consumer runs, not what the buffer holds. Even a high-priority consumer would read memory that has gone."
+        ],
+        "hint": "Which copy is made by the queue: the pointer, or what the pointer points to?",
+        "why": "Pass the value itself when the item is small, so the queue copies it, or make the buffer outlive the send, for example a static or a pool. A pointer that outlives its owner is one of the most common bugs in task code."
+      },
       { "type": "number",
-        "prompt": "The STM32F1 implements 4 priority bits (__NVIC_PRIO_BITS is 4). How many interrupt priority levels does it have?",
-        "answer": 16, "tolerance": 0, "unit": "levels",
-        "why": "Four bits give 16 levels, numbered 0 to 15. The tempting answer is 256, which is the full 8-bit priority field of a Cortex-M that implements every bit, not this chip." }
+        "prompt": "The STM32F1 has 16 interrupt priority levels, numbered 0 to 15. Which levels may an ISR use to call FromISR functions, given the limit is 5? How many levels are valid?",
+        "answer": 11, "tolerance": 0, "unit": "levels",
+        "wrong": [
+          { "answer": 5, "feedback": "That counts levels 0 to 4, which are the forbidden ones. The valid levels are 5 to 15, which is 11 levels." }
+        ],
+        "hint": "The valid numbers are equal to or higher than 5. Count from 5 to 15, both included.",
+        "why": "The valid levels are 5 to 15, which is 11 levels, and levels 0 to 4 are the ones that must not call FromISR functions. The tempting answer, 5, counts the forbidden side, so it has the rule backwards."
+      },
+      { "type": "mc",
+        "prompt": "An EXTI handler runs its body but never clears the pending flag. What does the system do?",
+        "options": ["The button is ignored from then on", "The bit clears itself after one read", "The interrupt fires again as soon as it returns"],
+        "answer": 2,
+        "feedback": [
+          "The button is not ignored. The flag stays set, so the interrupt keeps being taken, and the handler runs again at once.",
+          "The pending bit does not clear by itself. It stays set until the handler writes 1 to it.",
+          "Right. A set pending flag is taken again as soon as the handler returns, so the system appears stuck inside the interrupt."
+        ],
+        "hint": "What happens to an interrupt whose flag is still set when the handler returns?",
+        "why": "The fix is to clear the flag first, by writing 1 to it, as the project does. The symptom looks like a stuck system, so a debugger that shows the pending register is the fastest way to find it."
+      },
+      { "type": "reflect",
+        "prompt": "The Lab 5 display needs sensor readings, which must arrive in order and not be lost, and it must react to the button at once. Choose the object for each, and say what the button ISR does.",
+        "hint": "Which events carry data, and which only need to say that something happened?",
+        "answer": "Use a queue for the sensor readings. Each reading is data, the queue copies it, and it keeps order. For the button, the ISR should use the FromISR calls: give a binary semaphore if one press is enough, or a counting semaphore or queue of presses if each press must count. The ISR clears the EXTI flag first, passes woken to portYIELD_FROM_ISR, and returns quickly, so the display task does the rest."
+      }
     ] }
     </script>
   </div>
@@ -200,14 +254,28 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 57: what should an ISR do with a long calculation?",
-        "accept": ["defer it", "defer", "move it to a task", "do it in a task", "task"],
-        "why": "A long calculation belongs in a task, which the interrupt wakes. The tempting answer is to do it in the ISR, which delays every other interrupt." },
+      { "type": "mc",
+        "prompt": "A UART interrupt must handle a 40-byte command that takes 2 ms to parse. Lesson 57's keep-it-short rule applies. What should the ISR do with the command?",
+        "options": ["Set a flag, return, and let the main loop parse", "Parse it inside the ISR so the main loop never waits", "Disable interrupts for the whole parse", "Parse it twice to be sure it is right"],
+        "answer": 0,
+        "feedback": [
+          "Right. The ISR does the short part and returns, which holds off other interrupts for as little time as possible. The slow parse runs in the main loop.",
+          "That holds off every other interrupt at this priority and below for 2 ms, which is exactly what lesson 57 warns against.",
+          "Disabling all interrupts for 2 ms is worse than parsing in the ISR. Nothing else in the system can run in that time.",
+          "Parsing twice doubles the time the ISR is held off, and it does not make the result any more correct."
+        ],
+        "hint": "Lesson 57 says what the ISR should do: keep it short, set a flag or add to a counter, then return.",
+        "why": "The ISR holds off the interrupts at its priority and below while it runs. Moving the slow part out of the ISR keeps the other interrupts responsive, which is the reason for the keep-it-short rule."
+      },
       { "type": "number",
-        "prompt": "From lesson 73: how many milliseconds is one tick at 1 kHz?",
-        "answer": 1, "tolerance": 0, "unit": "ms",
-        "why": "1 kHz is 1000 ticks per second, so one tick is 1 ms. The tempting answer is 1000, which is the number of ticks in a second." }
+        "prompt": "A consumer waits on a queue with a timeout of 2.5 seconds, on a 1 kHz tick (lesson 73's millisecond time base). How many ticks is the timeout?",
+        "answer": 2500, "tolerance": 0, "unit": "ticks",
+        "wrong": [
+          { "answer": 250, "feedback": "That treats 2.5 seconds as 250 ms. At 1 kHz there are 1000 ticks per second, so 2.5 seconds is 2500 ticks." }
+        ],
+        "hint": "How many ticks are in one second at 1 kHz?",
+        "why": "At 1 kHz there are 1000 ticks per second, so 2.5 s × 1000 = 2500 ticks, and pdMS_TO_TICKS(2500) gives the same value. The tempting answer, 250, is off by a factor of ten."
+      }
     ] }
     </script>
   </div>

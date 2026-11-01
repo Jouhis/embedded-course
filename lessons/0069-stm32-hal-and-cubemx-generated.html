@@ -112,7 +112,7 @@ if (uart_init() != HAL_OK) {
 
   <h2>The time base: HAL_Init, SysTick and HAL_Delay</h2>
   <p>
-    <code>HAL_Init()</code> does three things that matter here. It sets the NVIC priority grouping to 4, which means four bits of the priority are the preemption part. It starts the SysTick timer through <code>HAL_InitTick()</code>, configured to interrupt once per millisecond. And it sets the SysTick interrupt priority. The tick count is then read with <code>HAL_GetTick()</code>, and <code>HAL_Delay()</code> waits on it. The HAL source defines all four of these functions as weak, which means a project can replace any of them.
+    <code>HAL_Init()</code> does three things that matter here. It sets the NVIC priority grouping to 4, which means four bits of the priority are the preemption part. It starts the SysTick timer through <code>HAL_InitTick()</code>, configured to interrupt once per millisecond. And it sets the SysTick interrupt priority. The tick count is then read with <code>HAL_GetTick()</code>, and <code>HAL_Delay()</code> waits on it. The HAL source marks HAL_InitTick, HAL_IncTick, HAL_GetTick and HAL_Delay as weak, so a project can replace any of them. HAL_Init itself is not weak.
     <a href="https://www.st.com/resource/en/user_manual/um1850-description-of-stm32f1-hal-and-lowlayer-drivers-stmicroelectronics.pdf">UM1850</a>, and <code>third_party/stm32f1xx-hal-driver/Src/stm32f1xx_hal.c</code>.
   </p>
   <p>
@@ -231,38 +231,124 @@ if (uart_init() != HAL_OK) {
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "What type do HAL init functions such as <code>HAL_UART_Init()</code> return? Give the type name.",
-        "accept": ["HAL_StatusTypeDef"],
-        "why": "They return HAL_StatusTypeDef, an enum of HAL_OK, HAL_ERROR, HAL_BUSY and HAL_TIMEOUT. The tempting answer, HAL_Status, is not the name in the headers." },
       { "type": "number",
-        "prompt": "HAL_GetTick() reads 1200 at one call and 1450 at a later call, with a 1 ms tick. How many milliseconds passed?",
+        "prompt": "A deadline is stored as <code>0xFFFFFFF0</code>. The tick has just wrapped, and <code>HAL_GetTick()</code> returns <code>0x00000010</code>. The code tests <code>(int32_t)(now − next) &gt;= 0</code>. How many milliseconds past the deadline is the LED now?",
+        "answer": 32, "tolerance": 0, "unit": "ms",
+        "wrong": [
+          { "answer": -4294967264, "feedback": "That is the plain difference, 16 − 4,294,967,280, with no wrap. The 32-bit subtraction wraps it to +32, which is the true distance." }
+        ],
+        "hint": "Subtract in unsigned 32-bit arithmetic: 0x10 − 0xFFFFFFF0 wraps to 0x20.",
+        "why": "0xFFFFFFF0 + 0x20 wraps to 0x10, so the deadline passed 32 ms ago. A naive now &gt;= next test is false here, and the LED would wait almost 50 days. Subtracting first and reading the result as signed is what makes the check work across the wrap."
+      },
+      { "type": "mc",
+        "prompt": "The debugger shows <code>uwTick</code> stuck at 0, and <code>HAL_Delay(500)</code> never returns. What is the most likely cause?",
+        "options": [
+          "SysTick_Handler does not call HAL_IncTick()",
+          "HAL_Delay was given seconds, not milliseconds",
+          "The UART baud rate is wrong for the monitor",
+          "PC13 is set as an input, not an output"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. HAL_Delay waits until HAL_GetTick() moves past its target, and the tick moves only when SysTick calls HAL_IncTick(). A counter stuck at zero is the sign.",
+          "That would make the delay long, but uwTick would still count, so the delay would end eventually. Here the count itself is stuck at zero.",
+          "A wrong baud rate garbles the text on the monitor. It does not stop the tick from counting.",
+          "A pin mode changes the LED, not the clock. A stuck counter points at the time base, not at the pin."
+        ],
+        "hint": "Look at the counter, not the LED. Which function is supposed to move it?",
+        "why": "The HAL delay is a loop that waits for the tick, so a stuck tick means a stuck delay, and nothing reports an error. Check uwTick in the debugger first. If it stays at zero, look for the missing handler call. Lesson 73 builds the same time base without the HAL, so you can compare the two."
+      },
+      { "type": "mc",
+        "prompt": "A colleague writes <code>HAL_UART_Init(&huart1);</code> and ignores the return value. The UART then fails silently, and the monitor stays blank. Which change reports the failure where it happens?",
+        "options": [
+          "if (HAL_UART_Init(&huart1) != HAL_OK) { Error_Handler(); }",
+          "Call HAL_UART_Init a second time to confirm the setup worked",
+          "Move huart1 from a static variable to a global variable",
+          "Wrap the HAL_UART_Transmit call in a while loop until it passes"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The return value is the only report the init gives. Checking it at once stops the program where the setup failed, which is the rule from this lesson.",
+          "A second init repeats the same setup and returns a status again. The first failure is still ignored, so nothing is reported where it happens.",
+          "Scope decides who can see a variable, not whether a return value is checked. The silent failure would be the same with a global.",
+          "A loop that waits for success can spin forever and hides the failure. Check the status once, at the place where the init happens."
+        ],
+        "hint": "Every HAL init returns a status. Where should you read it?",
+        "why": "Ignoring the status turns a failed setup into a silent symptom that appears later, in a different function. Check it right after the call, and stop with Error_Handler() as the project does, so the failure is visible while you still know where it came from."
+      },
+      { "type": "mc",
+        "prompt": "You are writing a driver. The team wants named functions for each step, the register sequence visible in review, and no hidden status logic. Which layer fits best?",
+        "options": [
+          "LL, with named inline functions and the register steps visible",
+          "HAL, because its status codes make the driver faster",
+          "printf in each step, so every step is logged",
+          "Registers only, because LL does not exist on the STM32F1"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. LL keeps the register sequence visible, and its functions are inline, so the call costs little. It is the middle row of the table in this lesson.",
+          "Status codes report failures. They do not make code run faster, and the HAL adds calls and checks that the table lists as the largest code.",
+          "Logging shows values at run time. It does not show or change the register sequence, and it can slow a driver down.",
+          "The F1 family has an LL driver, as UM1850's title says. Registers are the lowest layer, not the only one."
+        ],
+        "hint": "Compare the table's rows: who checks, how much is visible, and how much code.",
+        "why": "This is the trade-off the lesson names. Use the lowest layer you can justify, and keep the reason in a comment. LL is the usual answer when a driver needs named functions and visible register steps at once."
+      },
+      { "type": "mc",
+        "prompt": "The monitor prints <code>button pressed</code> four or five times for each click, a few milliseconds apart. The code counts each falling edge of PA0. What is the cause and the fix?",
+        "options": [
+          "The contact bounces: a 20 ms lockout after each counted press",
+          "The pull-up is missing: enable it and the bounces stop",
+          "The loop runs too fast: add HAL_Delay(1000) at the top",
+          "The handler runs twice per edge: remove one of the calls"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Mechanical contacts bounce for a few milliseconds, and each bounce is a real edge on the pin. A lockout after a counted press ignores them, as the solution does.",
+          "A pull-up sets the idle level. It does not stop a switch from bouncing. Keep the pull-up you set in step 2, and add the lockout.",
+          "A slower loop can hide some bounces, but it misses short presses and delays every reaction. The lockout fixes the cause.",
+          "The extra lines come from the pin changing state several times, not from a second call to the handler."
+        ],
+        "hint": "The lines are a few milliseconds apart. What is the switch doing in that time?",
+        "why": "One press is one physical event but several electrical edges, so the code has to decide which edges count. The lockout is the simplest rule. Lesson 52 has an integrator, which suits a polled loop better when you need to tell a bounce from a real press."
+      },
+      { "type": "number",
+        "prompt": "A counted press happens at tick 500, with the 20 ms lockout running. A bounce arrives at tick 505. How many milliseconds of lockout are left at tick 505?",
+        "answer": 15, "tolerance": 0, "unit": "ms",
+        "wrong": [
+          { "answer": 20, "feedback": "20 is the whole lockout. Five ms have passed since the press at tick 500, so 15 ms remain." },
+          { "answer": 5, "feedback": "5 is the time that has already passed. The question asks what remains of the 20 ms." }
+        ],
+        "hint": "The lockout ends at tick 520. Subtract the current tick from that end.",
+        "why": "The lockout ends at 500 + 20 = 520, and 520 − 505 = 15 ms. A bounce inside the window is ignored, and a press after it counts. The window must be longer than the bounce and shorter than the fastest real press you need to catch."
+      },
+      { "type": "formula",
+        "prompt": "The LED toggles every <em>P</em> ms, and the first deadline is <em>d0</em>. Write the tick value of the deadline after <em>n</em> toggles, using the fixed-step rule from lesson 67.",
+        "vars": ["d0", "P", "n"],
+        "answer": "d0+P*n",
+        "display": "deadline = d0 + n × P",
+        "examples": ["d0+n*P", "P*n+d0", "n*P+d0"],
+        "wrong": [
+          { "answer": "d0+n", "feedback": "n counts toggles, not milliseconds. Each toggle adds P ms, so the total is n × P." },
+          { "answer": "d0+P", "feedback": "That is the deadline after one toggle. Each of the n toggles adds another P, so the steps add up." }
+        ],
+        "hint": "Start at d0. Each toggle moves the deadline forward by P.",
+        "why": "Lesson 67 moves each deadline by a fixed step, not to now + P. After n toggles the deadline sits on a fixed grid, d0 + n × P, so a late loop pass does not push every later blink back."
+      },
+      { "type": "number",
+        "prompt": "A logger records <code>HAL_GetTick()</code> as 1200 before a sensor read and 1450 after it. How many milliseconds did the read take?",
         "answer": 250, "tolerance": 0, "unit": "ms",
-        "why": "1450 − 1200 = 250 ticks, and each tick is 1 ms. The tempting answer, 1450, is the later reading, not the difference between two readings." },
-      { "type": "mc",
-        "prompt": "You want code to run when a UART transmit finishes. Which is the right way?",
-        "options": ["Override HAL_UART_TxCpltCallback in your code", "Edit the HAL's stm32f1xx_hal_uart.c file", "Call HAL_UART_Transmit a second time"],
-        "answer": 0,
-        "why": "The HAL calls its weak callback when the transmit completes, and your override replaces it. Editing the vendor file is lost on the next update. A second transmit starts another send and does not report that the first one finished." },
-      { "type": "mc",
-        "prompt": "Compared with the HAL, what does the LL layer trade away?",
-        "options": ["less code and more register knowledge", "more checks and slower code overall", "same code on every vendor part"],
-        "answer": 0,
-        "why": "LL keeps the register sequence visible, so you need more register knowledge but less code. The tempting answer, more checks, describes the HAL, which adds them. Neither layer runs unchanged on any other vendor's chip." },
-      { "type": "mc",
-        "prompt": "Which statement describes the HAL's millisecond tick correctly?",
-        "options": ["The SysTick handler calls HAL_IncTick", "HAL_Delay calls the SysTick register", "main calls HAL_Init every loop"],
-        "answer": 0,
-        "why": "HAL_Init starts SysTick, but the count moves only when your SysTick_Handler calls HAL_IncTick. The tempting answer, HAL_Delay driving SysTick, has it backwards: HAL_Delay only reads the tick." },
-      { "type": "number",
-        "prompt": "A button lockout is 20 ms, and a counted press happens at tick 500. What is the first tick at which another press can count?",
-        "answer": 520, "tolerance": 0, "unit": "",
-        "why": "The lockout ends 20 ms after the last counted press, so 500 + 20 = 520. The tempting answer, 500, is the press itself, and presses at that tick are still inside the lockout." },
-      { "type": "mc",
-        "prompt": "PC13 never blinks, and HAL_Delay never returns. Which is most likely?",
-        "options": ["tick never increments", "wrong baud divisor", "LED wired wrongly"],
-        "answer": 0,
-        "why": "HAL_Delay waits on HAL_GetTick, which moves only through HAL_IncTick. A wrong baud divisor garbles the text but does not stop time, and wiring does not affect the tick." }
+        "wrong": [
+          { "answer": 1450, "feedback": "1450 is the reading after the read, not how long it took. Subtract the start tick from the end tick." }
+        ],
+        "hint": "Subtract the first reading from the second. Each tick is 1 ms.",
+        "why": "1450 − 1200 = 250 ms. The same subtraction stays correct across the 32-bit wrap, which is why the deadline rule uses subtraction and not a comparison of two raw readings."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague's main loop calls <code>HAL_Delay(150)</code> to toggle the LED, then reads the button. They say the button is fine because the loop is fast. Explain what goes wrong, and how a deadline changes it.",
+        "hint": "What does the loop do while HAL_Delay is waiting?",
+        "answer": "During HAL_Delay the loop reads nothing, so the button is not sampled for 150 ms at a time. A short press, or a bounce that starts and ends inside that wait, is never seen. A deadline check does not wait: the loop reads the button on every pass, and it toggles the LED only when the tick passes the LED's deadline. Both events are then seen on time. The loop is fast only when nothing blocks it, and the blocking call is what breaks it."
+      }
     ] }
     </script>
   </div>
@@ -270,14 +356,38 @@ if (uart_init() != HAL_OK) {
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "number",
-        "prompt": "From lesson 47: which BSRR bit resets PC13? Give the bit number.",
-        "answer": 29, "tolerance": 0, "unit": "",
-        "why": "PC13 is bit 13 in the set half, and the reset half is 13 + 16 = 29. The tempting answer, 13, sets the pin high, which turns the active-low LED off." },
-      { "type": "text",
-        "prompt": "From lesson 42: which handler is word 1 of the STM32F103 vector table, the first code the core runs after reset?",
-        "accept": ["Reset_Handler", "Reset Handler"],
-        "why": "Word 1 is the reset handler. The tempting answer, SystemInit, is called by the reset handler, so it runs later." }
+      { "type": "mc",
+        "prompt": "This project's onboard LED is on PC13, and it is active low (the LED wiring from lesson 67). Pick the call that turns the LED on.",
+        "options": [
+          "HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);",
+          "HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);",
+          "HAL_GPIO_WritePin(GPIOC, GPIO_PIN_12, GPIO_PIN_RESET);"
+        ],
+        "answer": 1,
+        "feedback": [
+          "That drives PC13 high. An active-low LED is lit only when its pin is low, so this turns it off.",
+          "Right. Driving PC13 low lights an active-low LED. The HAL turns that into the reset half of BSRR, the bit 29 you met in lesson 67.",
+          "That drives PC12, a different pin, so the onboard LED does not change."
+        ],
+        "hint": "Active low: the LED is lit when the pin is low.",
+        "why": "Check the polarity on the schematic before you assume it, because an active-low LED looks backwards in code. The same polarity applies to the BSRR bit you write when you skip the HAL."
+      },
+      { "type": "mc",
+        "prompt": "A switch bounces for about 3 ms, and the loop samples the pin every 1 ms. Pick the integrator window (lesson 52) that keeps one press from counting twice.",
+        "options": [
+          "10 samples, so the counter must climb to the top to change state",
+          "1 sample, so a change is accepted on the first read",
+          "2 samples, so the state changes after two equal reads"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A 3 ms bounce never fills a 10-sample window, so the stable state does not change. A real press holds long enough to reach the top.",
+          "That is the naive edge detector from lesson 52. Every bounce is accepted as a new change, so one click counts several times.",
+          "Two samples is shorter than the 3 ms bounce. A bounce can then reach the top of the window and count, which the integrator is meant to stop."
+        ],
+        "hint": "Compare the window with the length of the bounce.",
+        "why": "The window must be longer than the bounce and shorter than the shortest real press you need to catch. Lesson 52's DEBOUNCE_SAMPLES constant is that window, and it is the number you tune for a given switch."
+      }
     ] }
     </script>
   </div>

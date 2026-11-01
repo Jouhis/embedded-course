@@ -227,7 +227,7 @@ restore: LDR R0, [R3]            @ R0 = the next task's saved block
     The setup at the top of <code>main</code> builds two fake hardware frames, one per task, so that the first switch has something to return from. Each store is a word write into the simulator's RAM. The first pair of stores writes the slot at <code>0x20000000</code>, which holds the current task, with 2, meaning none yet. Then the PSP slots at <code>0x20000004</code> and <code>0x20000008</code> get the saved-block addresses of the two tasks.
   </p>
   <p>
-    The frame for task A is written next. <code>LDR R0, =task_a</code> loads the address of the label, and the store to <code>0x20000078</code> puts it in the PC slot of the frame, 0x18 bytes above the saved block. The store to <code>0x2000007C</code> puts the value <code>0x01000000</code> in the xPSR slot. That value has only the Thumb bit set, which is the state a Cortex-M3 must be in to run this code. The R0 to R3, R12 and LR slots keep zero, because nothing has set them. Task B's frame is written the same way at <code>0x200000B8</code> and <code>0x200000BC</code>, which is 32 bytes above its saved block at <code>0x20000080</code>.
+    The frame for task A is written next. <code>LDR R0, =task_a</code> loads the address of the label, and the store to <code>0x20000078</code> puts it in the PC slot of the frame, 0x18 bytes above the frame's base at 0x60, which is 0x38 bytes above the saved block at 0x40. The store to <code>0x2000007C</code> puts the value <code>0x01000000</code> in the xPSR slot. That value has only the Thumb bit set, which is the state a Cortex-M3 must be in to run this code. The R0 to R3, R12 and LR slots keep zero, because nothing has set them. Task B's frame is written the same way at <code>0x200000B8</code> and <code>0x200000BC</code>, which is 32 bytes above its saved block at <code>0x20000080</code>.
   </p>
   <p>
     <code>SVC #0</code> is a supervisor call. It is an exception, and on the simulator it jumps to the label <code>SVC_Handler</code>. The core stacks its own frame on the MSP, because it was in thread mode on the MSP at reset, and sets LR to <code>0xFFFFFFF9</code>. The handler then sees CUR equal to 2 and takes the <code>first</code> path, which sets the next task to A and loads A's registers. Its saved block at <code>0x20000040</code> holds zeros, so R4 starts at 0. The restore adds 32 to the block's address to find A's frame at <code>0x20000060</code>, writes that into PSP, and returns with <code>0xFFFFFFFD</code>. That return pops the frame, which loads PC with <code>task_a</code>, and task A runs for the first time.
@@ -336,41 +336,92 @@ restore: LDR R0, [R3]            @ R0 = the next task's saved block
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which registers does the hardware stack on exception entry?",
-        "options": ["R0-R3, R12, LR, PC, xPSR", "R4-R11 and nothing else too", "R0-R12 and the stack pointer"],
+        "prompt": "After a switch, task A resumes with an R4 value that belongs to task B, not its own. Which part of the handler is missing?",
+        "options": ["The eight STR lines that save R4 to R11 under the frame", "The MSR PSP line that sets the stack pointer", "The LDR LR line that sets the EXC_RETURN value", "The CMP R2, #2 test for the first switch"],
         "answer": 0,
-        "why": "The hardware stacks the caller-saved set: R0 to R3, R12, LR, PC and xPSR (DDI0337G §5.5.1). The tempting answer, R4 to R11, is the set the kernel saves itself, because the hardware leaves those alone." },
-      { "type": "mc",
-        "prompt": "Why does the switch handler save R4 to R11 in software?",
-        "options": ["C handlers preserve R4-R11 themselves", "Stacking them would be slower", "The hardware cannot write memory"],
-        "answer": 0,
-        "why": "A C interrupt handler follows the AAPCS, which requires it to preserve R4 to R11 before it returns, so the core leaves them alone on entry. A context switch is different: it changes which task owns those registers, so the kernel must save them itself. The tempting answer is speed, which is not the reason: the hardware could stack them, but the architecture stacks only the caller-saved set." },
+        "feedback": [
+          "Right. Without those stores, A's block holds old values, so the restore gives A the wrong R4. Every task's R4 to R11 must be saved below its frame.",
+          "Without MSR PSP the return uses the wrong frame, so the PC and the xPSR are wrong. That breaks where A resumes, not the value of R4.",
+          "EXC_RETURN picks the stack for the return. A wrong value pops the frame from the wrong stack, which is a different bug from a stale R4.",
+          "That test only chooses the path for the very first switch. Removing it does not hand B's R4 to A on later switches."
+        ],
+        "hint": "Which registers does the hardware save on entry, and which must the kernel save itself?",
+        "why": "The hardware saves R0 to R3, R12, LR, PC and xPSR. R4 to R11 are not saved for a handler, so a switch has to save them for the task that is leaving, or the next task gets the wrong values. A quick check on a bug like this is to watch R4 in the simulator across two switches."
+      },
       { "type": "number",
-        "prompt": "In the simulator's first switch, task A's hardware frame is at 0x20000060. What is the lowest address of its saved R4 to R11 block, in decimal?",
-        "answer": 536870976, "tolerance": 0,
-        "why": "The R4 to R11 block is 32 bytes below the hardware frame, so it starts at 0x20000060 − 0x20 = 0x20000040, which is 536870976 in decimal. The tempting answer is 0x20000060, the frame itself, which is 32 bytes higher." },
-      { "type": "text",
-        "prompt": "Which exception does the FreeRTOS port use to perform the context switch, as written in port.c?",
-        "accept": ["PendSV", "pendsv", "PendSV_Handler", "xPortPendSVHandler"],
-        "why": "The switch is in xPortPendSVHandler (port.c line 455). SVC only starts the first task. The tempting answer is SVC, which the simulator uses for every switch, so the port and the simulator differ here on purpose." },
+        "prompt": "The simulator runs task B's third visit. What is B's R4 after its ADD on that visit, in decimal?",
+        "answer": 300, "tolerance": 0,
+        "wrong": [
+          { "answer": 200, "feedback": "That is B's second visit. Count the visits: B's first visit gives 100, the second 200, and the third 300." }
+        ],
+        "hint": "B adds 100 on every visit, and keeps its own R4 between visits.",
+        "why": "Task B's R4 starts at 0, then 100, 200 and 300 at its first, second and third visits. Task A's ADD never touches B's saved block, so each task counts up in its own steps. The tempting answer, 200, is the second visit."
+      },
+      { "type": "formula",
+        "prompt": "A task's hardware frame starts at address F, and the handler saves R4 to R11 just below it. The kernel stores the address of that saved block as the task's stack top. Write the stored stack top in terms of F.",
+        "vars": ["F"],
+        "answer": "F-32",
+        "display": "saved block = F − 32",
+        "examples": ["F - 32", "-32+F", "F+(-32)"],
+        "wrong": [
+          { "answer": "F+32", "feedback": "That is 32 bytes above the frame, which is above the block. The block is below the frame, so the subtraction is the one that is right." },
+          { "answer": "F", "feedback": "That is the frame itself. The saved block is eight words lower, at F minus 32, which is why the handler subtracts 32 before it stores." }
+        ],
+        "hint": "Look at the first instruction after MRS R0, PSP in the handler.",
+        "why": "The handler does SUB R0, R0, #32 and stores R4 to R11 at R0. The stored stack top is the block, and the restore adds 32 to find the frame again. If the stored value were F, the restore would read the frame as R4 to R11."
+      },
       { "type": "mc",
-        "prompt": "Why is PendSV set to the lowest interrupt priority in the port?",
-        "options": ["Other interrupts finish before it", "It makes the switch faster", "It shrinks every task stack"],
-        "answer": 0,
-        "why": "PendSV runs only when no other interrupt is active, so a task is never switched out while an ISR still uses the same stack. A faster switch is not the reason, and the stack RAM is unchanged; the tempting answer is speed, which is at most a side effect." },
-      { "type": "number",
-        "prompt": "In the simulator's first switch, what is the value of LR inside SVC_Handler, in decimal? (Hex 0xFFFFFFF9 is accepted as well.)",
-        "answer": 4294967289, "tolerance": 0,
-        "why": "The core loads LR with the EXC_RETURN value for thread mode on the MSP, which is 0xFFFFFFF9, or 4294967289 in decimal. The tempting answer is 0xFFFFFFFD, which is the PSP version the handler returns with later, not the value on entry." },
-      { "type": "number",
-        "prompt": "In the simulator, what is R4 in task B after its first visit, in decimal?",
-        "answer": 100, "tolerance": 0,
-        "why": "Task B starts with its own saved R4 at 0 and adds 100 on its first visit, so R4 is 100. The tempting answer is 1, which is task A's R4 after its first visit, not B's." },
+        "prompt": "A port's handler returns with 0xFFFFFFF9 while the task it resumes is running on the PSP. What is the likely symptom?",
+        "options": ["The LED blinks twice as fast as expected", "The tick count stops and never moves", "The task's PC is read from the wrong stack", "The first task never starts, because SVC is blocked"],
+        "answer": 2,
+        "feedback": [
+          "The blink rate depends on the tick and the delays, and an EXC_RETURN value does not change either of them.",
+          "The tick count is kept by the kernel's tick handler, which is separate from the return. A wrong EXC_RETURN does not reset it.",
+          "Right. 0xFFFFFFF9 pops the frame from the MSP, but the frame is on the PSP. The return reads the wrong place, so the PC comes from the wrong stack.",
+          "The first task starts through the SVC path. A wrong EXC_RETURN on a later switch does not stop that path from working."
+        ],
+        "hint": "Which EXC_RETURN value selects the PSP?",
+        "why": "EXC_RETURN chooses the stack for the return: 0xFFFFFFFD for thread mode on the PSP, and 0xFFFFFFF9 for the MSP. The mistake is easy to make because both values look the same in a register dump. Check the value against the stack the task is on."
+      },
       { "type": "mc",
-        "prompt": "Why does task A's R4 still hold 1 while task B runs?",
-        "options": ["The handler saved it in A's block", "The hardware stacks R4 on each entry", "Tasks never change R4 at any time"],
+        "prompt": "A developer writes the switch as a C function with inline assembly, without the naked attribute. It passes a short test and fails under load. What is the likely cause?",
+        "options": ["A prologue moves the stack before the assembly reads PSP", "The compiler sets the Thumb bit too late", "The FreeRTOS heap is too small for the switch"],
         "answer": 0,
-        "why": "The switch handler stored R4 to R11 in task A's saved block before it switched, and reloaded them when A came back. The tempting answer, that the hardware stacks R4, is wrong, because the hardware stacks only the caller-saved registers. The third answer is wrong too: task A's ADD changes R4 on every visit." }
+        "feedback": [
+          "Right. A prologue that pushes registers runs before the assembly reads PSP, so the switch saves the wrong stack and works only by luck in a short test.",
+          "The Thumb bit is part of the frame the port builds, and it is not set by the compiler at the switch. This is not the cause.",
+          "The heap is for task objects, and the switch does not allocate anything. A small heap would fail the task creation, not the switch."
+        ],
+        "hint": "What does the compiler add to a C function before the first line of assembly?",
+        "why": "The port's handler is declared naked, so the assembly is the whole function and the compiler adds no prologue or epilogue. A switch that is correct only in a short test is often a stack-layout bug like this one, which shows up when a stack is deeper or the interrupts are busier."
+      },
+      { "type": "mc",
+        "prompt": "A team sets PendSV to a higher priority than a UART interrupt. The UART handler is running when a switch is requested. What can go wrong?",
+        "options": ["The switch saves a task while the UART ISR still runs", "The tick is missed, so the timer runs slow", "SVC, which starts the first task, stops working", "The UART interrupt is disabled for the whole switch"],
+        "answer": 0,
+        "feedback": [
+          "Right. PendSV at a higher priority can run inside the UART handler, and then the task is saved in the middle of an ISR. That is a rare stack corruption that looks like random data.",
+          "The tick is set by SysTick, not by PendSV. The danger is the switch running inside the ISR, not the tick rate.",
+          "SVC is a separate exception, and it is used only to start the first task. The PendSV priority does not change it.",
+          "The PendSV priority does not disable other interrupts. The problem is the switch running while the UART handler is still active."
+        ],
+        "hint": "PendSV runs when it can. What does it do with the stack, and when is that safe?",
+        "why": "The port sets PendSV to the lowest priority, so it runs only when no other interrupt is active. That is what makes it safe to save a task. The same comparison in lesson 72 applies: a more urgent source can run inside a less urgent handler, and this is the case the lowest priority avoids."
+      },
+      { "type": "number",
+        "prompt": "In the simulator, task A's frame starts at 0x20000060. The PC slot is the seventh word of the frame, counting from the lowest word. How many bytes above the frame's lowest word is the PC slot, in decimal?",
+        "answer": 24, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 56, "feedback": "That counts from the saved block at 0x40, not from the frame at 0x60. The frame's lowest word is R0." }
+        ],
+        "hint": "The frame order is R0, R1, R2, R3, R12, LR, PC, xPSR. Count the words to PC, and each word is 4 bytes.",
+        "why": "R0, R1, R2, R3, R12 and LR take six words, so PC is the seventh word, at offset 6 × 4 = 24 bytes. That is 0x78, which is 0x18 above the frame at 0x60. The tempting answer, 56, comes from measuring from the saved block at 0x40 instead of from the frame."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'The hardware saves all sixteen core registers on each exception, so the switch only needs to save the stack pointer.' Explain why this fails, and say which registers the kernel has to save itself.",
+        "hint": "Which registers does the hardware stack for a handler, and what does a switch do to the task that was running?",
+        "answer": "The hardware stacks only eight registers on exception entry: R0 to R3, R12, LR, PC and xPSR. R4 to R11 are not stacked, because a handler that uses them must save them itself. A switch hands the core to a different task, so the leaving task's R4 to R11 must be saved in software, below its frame, and restored for the arriving task. Saving only the stack pointer would leave the arriving task with the values of the task that left."
+      }
     ] }
     </script>
   </div>
@@ -379,13 +430,23 @@ restore: LDR R0, [R3]            @ R0 = the next task's saved block
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 33: a function uses 40 bytes of locals. How many words is that?",
-        "answer": 10, "tolerance": 0, "unit": "words",
-        "why": "Each word on the Cortex-M3 is 4 bytes, so 40 bytes is 10 words. The tempting answer is 40, which counts bytes, not words." },
+        "prompt": "An interrupt arrives while a task runs on its PSP. Lesson 34's entry stacks eight words of 4 bytes each. How many bytes of the task's stack does that hardware frame take?",
+        "answer": 32, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 8, "feedback": "That counts words. Each word is 4 bytes on the Cortex-M3, so the frame is 32 bytes." }
+        ],
+        "hint": "Multiply the number of words by the size of one word.",
+        "why": "Eight words of 4 bytes is 32 bytes, or 0x20. That is why the frame in this lesson's figure spans 0x20000060 to 0x2000007F. A stack that is one frame too small for an interrupt is a bug that shows only when the interrupt fires at the wrong moment."
+      },
       { "type": "text",
-        "prompt": "From lesson 31: which register is the stack pointer on the Cortex-M3 (give the name R13 or SP)?",
-        "accept": ["SP", "R13", "sp", "r13"],
-        "why": "R13 is the stack pointer, and the assembler also calls it SP. The tempting answer is LR, which is R14 and holds the return address." }
+        "prompt": "Lesson 35: a handler returns with EXC_RETURN 0xFFFFFFFD, which pops the frame for thread mode from which stack?",
+        "accept": ["PSP", "psp", "process stack", "the process stack"],
+        "wrong": [
+          { "answer": "MSP", "feedback": "MSP is the main stack, which the handler itself runs on. 0xFFFFFFFD returns to thread mode on the process stack, PSP (lesson 35)." }
+        ],
+        "hint": "Lesson 35's table says which stack each mode uses.",
+        "why": "0xFFFFFFFD means return to thread mode and use the PSP. The switch depends on this: the task's frame is on its PSP, so the return must pop it from there, not from the MSP the handler runs on."
+      }
     ] }
     </script>
   </div>

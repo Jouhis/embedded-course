@@ -33,7 +33,7 @@
     Each layer hides one detail from the layer above it. The application does not know the register numbers. The driver does not know the pin numbers, which are set in one <code>mystery_init()</code> call. The SDK's <code>i2c_write_blocking()</code> does not know the register map at all. The RP2040's I2C hardware turns a queued byte into a START, a byte, and a STOP or a repeated START. A computer architecture course would describe this as the same layering you already know: an instruction becomes a memory transaction, and the memory transaction becomes a signal on a bus. A driver is the layer that does that translation for one device.
   </p>
   <p>
-    The layers also decide where bugs live. If the temperature is wrong, the bug is in the conversion layer, not in the bus. If the bus shows no acknowledge, the bug is in the address or the wiring, not in the conversion. Lesson 63's structure makes this easy to check, because the three public functions each correspond to one layer's job.
+    The layers also decide where bugs live. If the temperature is wrong, the bug is in the conversion layer, not in the bus. If the bus shows no acknowledge, the bug is in the address or the wiring, not in the conversion. This lesson's structure makes this easy to check, because the three public functions each correspond to one layer's job.
   </p>
 
   <h2>Concept 2: five questions a datasheet answers</h2>
@@ -230,54 +230,110 @@
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which write starts measurement on the MYS-1?",
+        "prompt": "A new board prints <code>MYSTERY whoami OK id=0xA7</code> every second, but every temperature read ends in <code>MYSTERY read timed out</code>. Which step is the most likely cause?",
         "options": [
-          "Write 0x01 to CTRL",
-          "Write 0x01 to STATUS",
-          "Write 0x01 to TEMP_L",
-          "Write 0x0F to CTRL"
+          "The CTRL write that sets MEAS_EN is missing or wrong",
+          "The WHO_AM_I read uses the wrong bus address",
+          "The temperature is converted with the wrong scale",
+          "The pull-ups are too weak for the bus wires"
         ],
         "answer": 0,
-        "why": "CTRL (0x20) bit 0 is MEAS_EN, so 0x01 to CTRL starts measurement. STATUS is read-only, so writing to it does nothing. The tempting wrong answer is 0x0F to CTRL: 0x0F is the WHO_AM_I address, not a value that CTRL uses." },
+        "feedback": [
+          "Right. Without MEAS_EN the sensor never makes a sample, so DRDY never sets and every read times out. WHO_AM_I still answers, because it is a fixed value.",
+          "The identity read works, so the address is right. A wrong address would fail WHO_AM_I too.",
+          "The conversion runs only after DRDY is seen. A timeout happens before any conversion, so the scale cannot be the cause.",
+          "The bus works, since WHO_AM_I gets an answer. Weak pull-ups would make that read fail as well."
+        ],
+        "hint": "Which register starts the sensor measuring, and what happens to DRDY if it never does?",
+        "why": "The driver's checks run in order: identity first, then measurement, then the data-ready wait. A sensor that answers its identity but never times out a read has not been told to measure. Check the CTRL write and its return value, since the identity check cannot see it."
+      },
       { "type": "mc",
-        "prompt": "Which bus sequence reads one register without releasing the bus?",
+        "prompt": "Your reader sends the pointer with <code>i2c_write_blocking(MYSTERY_I2C, MYSTERY_ADDR, &amp;reg, 1, false)</code>, then calls <code>i2c_read_blocking()</code>. What can go wrong?",
         "options": [
-          "START, pointer, RESTART, read, STOP",
-          "START, pointer, STOP, START, read",
-          "START, read, STOP, pointer, write"
+          "The gap makes the read run faster than the sensor",
+          "Nothing, since a STOP and a repeated start match",
+          "Another master can use the bus between the two transfers",
+          "The read needs a second address byte, which is missing"
         ],
-        "answer": 0,
-        "why": "A RESTART between the pointer and the read keeps the bus claimed. The second option releases the bus with a STOP, so another master can act in between. The third option reads before it sets the pointer, which returns whatever the sensor had left." },
+        "answer": 2,
+        "feedback": [
+          "A gap does not speed anything up. The read waits on the bus like any other transfer. The problem is who else can use the bus during the gap.",
+          "They differ on the wire. A STOP releases the bus, while a repeated start keeps it claimed, and a logic analyzer shows the difference.",
+          "Right. The false argument ends the pointer write with a STOP, so the bus is released. Passing true instead keeps the bus for a repeated start.",
+          "A read sends the address again with the read bit set. No extra byte is needed; the problem is the gap."
+        ],
+        "hint": "The last argument of the pointer write decides whether the bus is released. What does false do?",
+        "why": "The pointer write needs nostop set to true, which keeps the bus claimed so the next transfer is a repeated start. With false, the bus is released after the pointer, so another device can take it in the gap. The reference's reg_read() passes true for this reason."
+      },
       { "type": "number",
-        "prompt": "TEMP_L and TEMP_H together read 1440 (0x05A0). What is the temperature in degrees Celsius?",
-        "answer": 22.5, "tolerance": 0.001, "unit": "degC",
-        "why": "1440 ÷ 64 = 22.5 degC. The tempting wrong answer is 1440, which forgets the 1/64 scale." },
+        "prompt": "A hot-enclosure reading logs TEMP_L as 0x80 and TEMP_H as 0x0B, from one burst read. Read as a signed 16-bit value, what temperature does the sensor report, in degrees Celsius?",
+        "answer": 46, "tolerance": 0.001, "unit": "°C",
+        "wrong": [
+          { "answer": 2944, "feedback": "That is the raw count, before the 1/64 scale. Divide by 64: 2,944 ÷ 64 = 46 °C." },
+          { "answer": -511.83, "feedback": "That is what the bytes give with TEMP_L as the high byte. The high byte is TEMP_H, which is 0x0B." }
+        ],
+        "hint": "Combine the bytes as (TEMP_H << 8) | TEMP_L, then divide by 64.",
+        "why": "0x0B80 is 2,944 counts. Each count is 1/64 °C, so 2,944 counts is 46 °C. Check the byte order and the scale before you trust any new sensor's numbers."
+      },
       { "type": "number",
-        "prompt": "TEMP_H is 0xFF and TEMP_L is 0xC0. Read them as a signed 16-bit value. What is the temperature in degrees Celsius?",
-        "answer": -1, "tolerance": 0.001, "unit": "degC",
-        "why": "0xFFC0 as int16_t is −64, and −64 ÷ 64 = −1.0 degC. Read as unsigned, the same bytes give 65472 ÷ 64 = 1023, which is the signed-cast bug." },
-      { "type": "text",
-        "prompt": "Which bit number of STATUS is the data-ready flag? Type the number.",
-        "accept": ["0", "bit0"],
-        "why": "STATUS bit 0 is DRDY. The tempting answer is 1, which is the bit value (2 to the power 0), not the bit number." },
-      { "type": "number",
-        "prompt": "TEMP_L is 0xA0 and TEMP_H is 0x05, but the driver combines them the wrong way round, with TEMP_L as the high byte. Read the result as a signed 16-bit value. What temperature does the driver report, in degrees Celsius?",
-        "answer": -383.92, "tolerance": 0.0005, "unit": "degC",
-        "why": "0xA005 as int16_t is −24571, and −24571 ÷ 64 = −383.92 degC. The tempting answer is 22.5, which is the right order. The wrong order gives a value far outside the room range, which is the symptom to look for." },
-      { "type": "text",
-        "prompt": "Which register address does the driver poll to check whether a new sample is ready? Give the address in hex.",
-        "accept": ["0x27", "27"],
-        "why": "STATUS is at 0x27, and its bit 0 is DRDY. The tempting answer, 0x20, is CTRL, the register that starts measurement, not the one that reports it." },
+        "prompt": "A colleague says a cold morning reading of TEMP_L 0xC0 and TEMP_H 0xFF is 1,023 °C. The datasheet says the register is signed. Read it as a signed 16-bit value: what is the real temperature in °C?",
+        "answer": -1, "tolerance": 0.001, "unit": "°C",
+        "wrong": [
+          { "answer": 1023, "feedback": "That is the unsigned reading, 65,472 ÷ 64. The register is signed, so the top bit makes the value −64 counts, which is −1.0 °C." }
+        ],
+        "hint": "Put the two bytes in a 16-bit signed type. What does the top bit mean there?",
+        "why": "0xFFC0 as int16_t is −64 counts, and −64 ÷ 64 = −1.0 °C. A cold room cannot read 1,023 °C, so that claim fails a sanity check before anyone looks at the code. Suspect the sign, then the byte order, before you suspect the sensor."
+      },
       { "type": "mc",
-        "prompt": "Why does the driver read TEMP_L and TEMP_H in one burst?",
+        "prompt": "A reviewer flags this conversion: <pre><code>uint16_t counts = (raw[1] &lt;&lt; 8) | raw[0];\nfloat celsius = counts / 64.0f;</code></pre>On a cold morning the bytes are TEMP_L 0xC0 and TEMP_H 0xFF. What does it print?",
         "options": [
-          "bytes from two separate samples",
-          "a status flag stuck high",
-          "the wrong chip address used",
-          "an unneeded extra delay here"
+          "−1.0 °C",
+          "1023.0 °C",
+          "+1.0 °C",
+          "65472 °C"
         ],
-        "answer": 0,
-        "why": "A burst read takes both bytes after one latch, so they come from the same sample. The tempting answer, a stuck status flag, is the opposite of the fix: reading TEMP_H clears DRDY, so the flag does not stay high." }
+        "answer": 1,
+        "feedback": [
+          "That is the right answer, but this code does not produce it. counts is unsigned, so the top bit is a large value, not a sign. Cast to int16_t before dividing.",
+          "Right. 0xFFC0 is 65,472 as an unsigned number, and 65,472 ÷ 64 = 1,023. The top bit never works as a sign here, so a cold reading looks hot.",
+          "That would need the sign dropped. The code never takes an absolute value: the bits are read as a large positive number.",
+          "That is the value before the 1/64 scale. The code does divide by 64, so the scale is applied."
+        ],
+        "hint": "Is counts a signed or an unsigned type? What does the top bit mean in each?",
+        "why": "A uint16_t has no sign, so 0xFFC0 is a large positive number, and the division scales it to 1,023 °C. The fix is a cast to int16_t before the division, as the reference does. The simulated sensor stays above 22 °C, so the simulator never shows this bug. A unit test with 0xFFC0 does."
+      },
+      { "type": "number",
+        "prompt": "The sensor makes a new sample every 500 ms, and the driver polls STATUS every 10 ms. Once measurement has just started, roughly how many polls go by before the driver sees DRDY?",
+        "answer": 50, "tolerance": 0.05, "unit": "polls",
+        "wrong": [
+          { "answer": 500, "feedback": "500 is the sample period in milliseconds, not a count of polls. Divide it by the 10 ms poll interval." }
+        ],
+        "hint": "Divide the time until the next sample by the time between polls.",
+        "why": "500 ms ÷ 10 ms = 50 polls. Polling is cheap here because the sensor is slow: a sample every half second leaves about 49 quick status reads that find nothing new."
+      },
+      { "type": "mc",
+        "prompt": "A temperature log jumps by about 4 °C between two steady readings. The driver reads TEMP_H in one transaction, then TEMP_L in a second one. Which change fixes it?",
+        "options": [
+          "Read TEMP_H twice and keep the second value",
+          "Add a 10 ms delay between the two reads",
+          "Read TEMP_L and TEMP_H in one burst from 0x28",
+          "Lower the I2C clock from 100 kHz to 10 kHz"
+        ],
+        "answer": 2,
+        "feedback": [
+          "Reading the high byte twice still gives the high byte from the earlier latch. The sample is latched when TEMP_L is read.",
+          "A delay does not change the order. The high byte is still read before the new latch.",
+          "Right. One burst takes TEMP_L and TEMP_H after a single latch, so both bytes come from the same sample. One step of the high byte is 256 counts, which is 4 °C.",
+          "A slower bus does not change which sample the bytes come from. The bug is the two separate reads, not the speed."
+        ],
+        "hint": "Which of the two registers latches the sample, and which one must be read after it?",
+        "why": "The sensor latches a sample when TEMP_L is read, so TEMP_H must come from the same transaction. Splitting the reads lets the high byte belong to the previous sample. A 4 °C jump is exactly one step of the high byte, 256 counts ÷ 64."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague's driver waits for DRDY with no time limit. Explain what happens when the sensor is unplugged, and what the function should return instead.",
+        "hint": "What does the firmware's main loop do while this call never returns?",
+        "answer": "The loop never sees DRDY, so the function never returns. The firmware hangs in the wait, and nothing else runs, including any task that would report the fault. The fix is a deadline: give up after about 2 s and return an error, so the caller can log a fault, retry or show a message while the rest of the firmware keeps running."
+      }
     ] }
     </script>
   </div>
@@ -285,14 +341,34 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 46: which keyword stops the compiler from caching a value that changes outside the loop? One word.",
-        "accept": ["volatile"],
-        "why": "volatile makes every access an observable side effect, so the compiler reloads the value. The tempting answer is const, which forbids writes and does not affect reads." },
+      { "type": "mc",
+        "prompt": "A shared flag, <code>drdy</code>, is set by an interrupt when the sensor's DRDY pin rises. The main loop waits with <code>while (!drdy) { }</code>. In an optimised build the loop never exits. What is missing?",
+        "options": [
+          "volatile on drdy, so every read goes to memory",
+          "const on drdy, so it cannot change",
+          "A longer deadline than the 2 s timeout",
+          "static on the function that waits"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Without volatile the compiler may read drdy once and keep it in a register, so the loop never sees the interrupt's write. volatile makes each read a real memory access.",
+          "const forbids writes by the program. It does not stop the compiler from caching a value, so the loop would still spin.",
+          "A deadline ends a wait that never finishes, but this loop never sees the flag change. The problem is the cached read, not the timing.",
+          "static controls where a variable lives and who can see it. It does not tell the compiler that an interrupt can change the value."
+        ],
+        "hint": "Who writes drdy, and does the compiler know about that writer?",
+        "why": "The compiler assumes that nothing else changes drdy inside the loop, so it may keep the first value. volatile tells it that the value can change outside the program's view. It does not make the read-modify-write safe, so a flag shared with an interrupt still needs care, as lesson 57 covers."
+      },
       { "type": "number",
-        "prompt": "From lesson 45: what is the value of (uint8_t)300?",
-        "answer": 44, "tolerance": 0,
-        "why": "An unsigned 8-bit store wraps modulo 256, so 300 − 256 = 44. The tempting answer is 300, which a uint8_t cannot hold." }
+        "prompt": "The driver stores a combined reading in one byte by mistake: <code>uint8_t low = counts;</code>, where counts is 0x05A0 (1440). What value does low hold?",
+        "answer": 160, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 1440, "feedback": "A uint8_t cannot hold 1440. The store keeps only the low 8 bits, so the result is 1440 mod 256 = 160." },
+          { "answer": 5, "feedback": "5 is the high byte, TEMP_H. The store keeps the low 8 bits, which are 0xA0." }
+        ],
+        "hint": "An 8-bit unsigned type wraps at 256. What is 1440 minus the largest multiple of 256 that fits?",
+        "why": "The store to an 8-bit unsigned type wraps modulo 256. 1440 = 5 × 256 + 160, so only the low byte, 0xA0 = 160, survives. A careless 16-bit to 8-bit copy drops the high byte this way, which is the same wrap lesson 45 describes."
+      }
     ] }
     </script>
   </div>

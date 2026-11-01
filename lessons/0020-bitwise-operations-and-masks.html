@@ -59,7 +59,7 @@
 
   <h2>Masks: one pattern that selects the bits you care about</h2>
   <p>
-    A <strong>mask</strong> is a bit pattern with ones in the bits you want to keep, change or test. A single-bit mask for bit <em>n</em> is <code>1u &lt;&lt; n</code>, which has only bit <em>n</em> set. For bit 5 it is <code>0x20</code>, and for bit 25 it is <code>0x02000000</code>. The suffix <code>u</code> makes the constant unsigned. That matters: a plain <code>1 &lt;&lt; 31</code> shifts a signed int into its sign bit, which C does not define. Lesson 45 explains the rule.
+    A <strong>mask</strong> is a bit pattern with ones in the bits you want to keep, change or test. A single-bit mask for bit <em>n</em> is <code>1u &lt;&lt; n</code>, which has only bit <em>n</em> set. For bit 5 it is <code>0x20</code>, and for bit 25 it is <code>0x02000000</code>. The suffix <code>u</code> makes the constant unsigned. That matters: a plain <code>1 &lt;&lt; 31</code> shifts a signed int into its sign bit, which is undefined behaviour in C. Lesson 45 covers integer promotion, not shifts, so the shift rule is stated here.
   </p>
   <p>
     With a mask, every bit operation is the same shape. You combine the register with a mask using one operator, and the mask decides which bits move. The table below is the whole vocabulary for one bit.
@@ -214,54 +214,207 @@ reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
-    { "questions": [
-      { "type": "text",
-        "prompt": "reg is <code>0x0F</code>. After <code>reg |= (1u &lt;&lt; 6);</code>, what is reg? Answer in hex.",
-        "accept": ["0x4F", "0x4f", "4F", "4f"],
-        "why": "0x0F | 0x40 = 0x4F, because bit 6 is 0x40 and it was 0 before. The tempting answer, 0x8F, comes from setting bit 7 instead of bit 6." },
-      { "type": "mc",
-        "prompt": "Which expression reads bit 5 as 0 or 1?",
-        "options": ["(reg >> 5) & 1u", "reg << 5 & 1u", "reg >> 5 | 1u"],
-        "answer": 0,
-        "why": "Shift bit 5 down to bit 0 and mask with 1u. The tempting answer, reg >> 5 | 1u, always gives 1 because OR with 1u sets bit 0. The other one shifts the wrong way." },
-      { "type": "number",
-        "prompt": "What is the mask for bits 7 to 4, as a decimal number?",
-        "answer": 240, "tolerance": 0,
-        "why": "Bits 7 to 4 are 0xF0, which is 240. The tempting answer, 15, is the mask for bits 3 to 0, the other nibble." },
-      { "type": "text",
-        "prompt": "A field occupies bits 6 to 4. Write its mask as an 8-bit hex value.",
-        "accept": ["0x70", "70"],
-        "why": "Bits 6, 5 and 4 are 0x40 + 0x20 + 0x10 = 0x70. The tempting answer, 0x7F, includes bits 3 to 0 as well, so it would clear the wrong bits." },
-      { "type": "mc",
-        "prompt": "You change only bits 2 to 0 of a register. What is the first step?",
-        "options": ["Read the whole register", "Write the new value", "Clear the whole register"],
-        "answer": 0,
-        "why": "Read-modify-write starts with a read, so the other bits are kept. Writing the new value first, or clearing the whole register, wipes the bits you did not mean to change." },
-      { "type": "number",
-        "prompt": "reg is <code>0x2C</code>. After <code>reg &amp;= ~(1u &lt;&lt; 5);</code>, what is reg as a decimal number?",
-        "answer": 12, "tolerance": 0,
-        "why": "Bit 5 is 32, so clearing it gives 44 − 32 = 12, which is 0x0C. The tempting answer, 32, is what you get if you leave out the ~ and AND with the plain mask, which keeps only bit 5." },
-      { "type": "mc",
-        "prompt": "Which test is true when bit 3 of <code>reg</code> is set?",
-        "options": ["(reg & (1u << 3)) != 0", "reg & 1u << 3 == 1", "reg | (1u << 3) == 0"],
-        "answer": 0,
-        "why": "The first ANDs the mask and compares the result with zero. The tempting answer, the second, binds == before &, so it becomes reg & 0 and is never true. The third has the same precedence trap and evaluates to reg itself." }
-    ] }
+    {
+      "questions": [
+        {
+          "type": "mc",
+          "prompt": "Your driver turns on the LED on GP25 with <code>GPIO_OUT = 1u &lt;&lt; 25;</code>. Afterwards the output on GP14 is dark, although it was high before. What is the right fix?",
+          "options": [
+            "Write the mask to the GPIO_OUT_SET register",
+            "Clear GP14 with &= ~(1u << 14) too",
+            "Declare GPIO_OUT as volatile, then retry"
+          ],
+          "answer": 0,
+          "feedback": [
+            "Right. The SET register changes only the bits that are 1 in what you write, and it does not read the register first, so GP14 keeps its value.",
+            "Clearing GP14 would turn it off on purpose. The bug is the plain = on the first line, which replaces every bit in the register.",
+            "volatile stops the compiler caching the value. It does not stop = from overwriting the other bits, so the bug stays."
+          ],
+          "why": "A plain = writes all 32 bits, so every other output takes the value the constant gave it. The SIO set register (SIO_BASE + 0x14, which is 0xD0000014) writes only the bits you name, and it does not read first, so nothing can be lost between a read and a write.",
+          "hint": "Which access changes one bit without reading the register first?"
+        },
+        {
+          "type": "number",
+          "prompt": "A timer control register reads 0x56, and its 3-bit mode field sits in bits 6 to 4. Your code writes mode 3 with <code>reg = (reg &amp; ~0x70) | 3;</code>. What does reg read afterward, in decimal?",
+          "answer": 7,
+          "tolerance": 0,
+          "wrong": [
+            {
+              "answer": 54,
+              "feedback": "That is the right result, 0x36. This line does not produce it: the 3 is ORed in without a shift, so it lands in bits 1 and 0."
+            },
+            {
+              "answer": 86,
+              "feedback": "That is the register before the write, so the line had no effect. Check that both the clear and the OR run."
+            }
+          ],
+          "hint": "The OR puts 3 (binary 011) into the bits where the 3 falls. Where do bits 6 to 4 sit, and where does the 3 land?",
+          "why": "The clear works: 0x56 AND 0x8F leaves 0x06. But the OR puts 3 in bits 1 and 0, so reg becomes 0x07, which is 7. The value must be shifted to bits 6 to 4 first, as 3 &lt;&lt; 4, which is 0x30. Every field write needs that shift."
+        },
+        {
+          "type": "mc",
+          "prompt": "Your code is <code>if (reg &amp; 1u &lt;&lt; 3 == 1) led_on();</code>. Bit 3 of reg is set, and the LED never lights. Why?",
+          "options": [
+            "The LED is wired to the wrong GPIO",
+            "== binds before &, so the test is reg & 0",
+            "reg is unsigned, so it can never test set"
+          ],
+          "answer": 1,
+          "feedback": [
+            "A wiring fault would not stop this line from running. The test itself is always false, so the LED code never runs.",
+            "Right. == binds more tightly than &, so 1u << 3 == 1 is 0, and reg & 0 is always 0. Write (reg & (1u << 3)) != 0.",
+            "An unsigned register is the right type for bit tests. The problem is the order of the operators, not the type."
+          ],
+          "why": "C's bitwise operators bind more loosely than ==, so every bitwise expression needs parentheses around it. A compiler with -Wall warns about this line, and that warning is the clue to look for.",
+          "hint": "Work out which operator is applied first to 1u << 3 and the 1."
+        },
+        {
+          "type": "text",
+          "prompt": "Your driver enables the UART by setting bit 6 of a control register. Before the write, reg is <code>0x0F</code>. What is reg after <code>reg |= (1u &lt;&lt; 6);</code>? Answer in hex.",
+          "accept": [
+            "0x4F",
+            "4F"
+          ],
+          "wrong": [
+            {
+              "answer": "0x8F",
+              "feedback": "That is bit 7 (0x80). 1u << 6 is 0x40, not 0x80: bit 6 is the seventh bit from the right."
+            }
+          ],
+          "hint": "Bit 6 is one more than bit 5. What value does bit 6 carry?",
+          "why": "Bit 6 has the value 0x40, and 0x0F OR 0x40 is 0x4F. Bit 7 is 0x80, which turns 0x0F into 0x8F, the common off-by-one slip. Counting bits from 0 and writing the mask in hex catches it, because each hex digit covers four bits."
+        },
+        {
+          "type": "mc",
+          "prompt": "Main code reads <code>reg</code> as 0x20, then computes 0x20 | (1u &lt;&lt; 2), which is 0x24. Before main writes 0x24, an interrupt sets bit 0 in the same register. What does the register hold afterward?",
+          "options": [
+            "0x25: both changes survive",
+            "0x24: the interrupt's bit 0 is lost",
+            "0x21: main's bit 2 is lost"
+          ],
+          "answer": 1,
+          "feedback": [
+            "Both changes survive only if main's write came after the interrupt's and used a fresh read. Here main wrote a value it computed from the old read.",
+            "Right. Main wrote 0x24, computed from the old 0x20, so the interrupt's bit 0 was overwritten. This lost update is the read-modify-write race.",
+            "The write keeps bit 2, which main set in the value it wrote. The lost change is the interrupt's bit 0, not main's bit 2."
+          ],
+          "why": "Between the load and the store, an interrupt can change the register, and its change is erased. The fix is a critical section around the read-modify-write, or an atomic SET or CLR alias where the peripheral has one.",
+          "hint": "Which value did main write, and which read was it built from?"
+        },
+        {
+          "type": "number",
+          "prompt": "A 4-bit prescaler sits in bits 7 to 4 of TIMER_CTRL. The register reads 0xB3. What value does the prescaler field hold, in decimal?",
+          "answer": 11,
+          "tolerance": 0,
+          "wrong": [
+            {
+              "answer": 3,
+              "feedback": "That is the low nibble, bits 3 to 0. The prescaler is in bits 7 to 4, so shift right by 4 before you mask."
+            },
+            {
+              "answer": 179,
+              "feedback": "That is the whole register. A field read keeps only its own bits, so the shift and the mask are both needed."
+            }
+          ],
+          "hint": "Shift right by 4, then keep only the low four bits.",
+          "why": "(0xB3 &gt;&gt; 4) &amp; 0xF is 0xB, which is 11. Reading a field is always two steps, shift and mask. Writing one is a clear and an insert, so these steps cover every multi-bit register."
+        },
+        {
+          "type": "formula",
+          "prompt": "A field is <em>w</em> bits wide and starts at bit <em>lo</em>. Write its mask as a formula in <em>w</em> and <em>lo</em>.",
+          "vars": [
+            "w",
+            "lo"
+          ],
+          "answer": "(2^w-1)*2^lo",
+          "display": "(2<sup>w</sup> − 1) × 2<sup>lo</sup>",
+          "examples": [
+            "2^lo*(2^w-1)",
+            "2^lo*2^w-2^lo",
+            "(2^w-1)×2^lo"
+          ],
+          "wrong": [
+            {
+              "answer": "2^w-1",
+              "feedback": "That is the mask at bit 0. The field starts at bit lo, so the ones must move up lo places."
+            },
+            {
+              "answer": "2^(w+lo)",
+              "feedback": "That is a single bit, one place above the field. A mask needs w ones, starting at bit lo."
+            }
+          ],
+          "hint": "Start from w ones, which is 2^w − 1, then move them up to bit lo.",
+          "why": "For bits 6 to 4, w = 3 and lo = 4: (2³ − 1) × 2⁴ = 7 × 16 = 0x70. This is the FIELD_MASK macro from the lesson. Build the mask from its width rather than typing hex, so that changing the width changes the mask too."
+        },
+        {
+          "type": "mc",
+          "prompt": "An ISR and the main loop change different bits of the same peripheral register, and main must not use a critical section. Which write is safe for main to make?",
+          "options": [
+            "Write the bit through the +0x2000 SET alias",
+            "Use reg |= mask with interrupts enabled",
+            "Clear the whole register, then write the value"
+          ],
+          "answer": 0,
+          "feedback": [
+            "Right. The +0x2000 alias makes an atomic set on write. The hardware ORs in the bits you write without a read, so the ISR's changes cannot be lost.",
+            "That is the read-modify-write from this lesson. With interrupts on, the ISR can change the register between main's read and its write.",
+            "Clearing the whole register erases the bits the ISR owns, and main cannot restore them. The race gets worse, not safer."
+          ],
+          "why": "The alias works on RP2040 peripherals that have one, and lesson 20 notes that the SIO block is the exception. Where no alias exists, a critical section around the read-modify-write is the fix, or make sure no ISR writes that register.",
+          "hint": "Which address form does the RP2040 give you for an atomic set?"
+        },
+        {
+          "type": "reflect",
+          "prompt": "A teammate says: 'Atomic aliases make every register safe, so I never need a critical section.' Explain in your own words where that is wrong, using the read, change and write sequence.",
+          "answer": "An alias removes the read from the write. A SET or CLR write changes only the bits it names, in one bus transaction, so an interrupt cannot erase a change to those bits. But an alias is not available on every register, and it protects one write only. A change that must update several registers together, or a multi-bit field written in several steps, is still not atomic as a group. For that you still need a critical section, or one write of the whole value."
+        }
+      ]
+    }
     </script>
   </div>
 
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
-    { "questions": [
-      { "type": "number",
-        "prompt": "In lesson 5, a 5 V supply feeds a 100 Ω resistor. What current flows, in amperes?",
-        "answer": 0.05, "tolerance": 0.02, "unit": "A",
-        "why": "I = V ÷ R = 5 V ÷ 100 Ω = 0.05 A. The tempting answer, 0.5 A, divides by 10 instead of 100." },
-      { "type": "text",
-        "prompt": "In lesson 9, what is the default drive strength of an RP2040 GPIO pad, in milliamps?",
-        "accept": ["4mA", "4"],
-        "why": "The RP2040 default is 4 mA, one of 2, 4, 8 or 12 mA. The tempting answer, 12 mA, is the highest setting, not the default." }
-    ] }
+    {
+      "questions": [
+        {
+          "type": "number",
+          "prompt": "Eight LEDs sit on GP16 to GP23, each through its own resistor. You turn them all on with one write to the SET alias, using the mask 0x00FF0000. Each pin sources 4 mA at the default drive strength (lesson 9). What total current do the pins source, in mA?",
+          "answer": 32,
+          "tolerance": 0,
+          "unit": "mA",
+          "wrong": [
+            {
+              "answer": 4,
+              "feedback": "That is one pin. The mask selects eight pins, and their currents add."
+            },
+            {
+              "answer": 8,
+              "feedback": "That is the pin count. Each pin sources 4 mA, so multiply the count by 4."
+            }
+          ],
+          "hint": "Count the set bits in the mask, then multiply by the current of one pin.",
+          "why": "Eight pins at 4 mA is 32 mA. Lesson 9 warned that the 50 mA limit covers all the IOVDD pins together, so add the pins before you add LEDs. The mask makes the pin count easy to check in code too."
+        },
+        {
+          "type": "mc",
+          "prompt": "A pushbutton on GP14 connects the pin to ground when pressed. The internal pull-up is on, as lesson 16 set up. Which test is true only while the button is pressed?",
+          "options": [
+            "(reg & (1u << 14)) == 0",
+            "(reg & (1u << 14)) != 0",
+            "(reg | (1u << 14)) != 0"
+          ],
+          "answer": 0,
+          "feedback": [
+            "Right. A pressed button pulls GP14 to 0, so bit 14 reads 0 and the AND is 0. The pull-up is what makes a released button read 1.",
+            "That is true while the button is released, because the pull-up holds the pin at 1.",
+            "OR with the mask sets bit 14, so the result is never 0. The test is true in both states, so it tells you nothing about the button."
+          ],
+          "why": "The pull-up makes the released state 1 and the pressed state 0, so the test for pressed is a test for 0. Check each test against both states, because a test that is true in both never tells you anything.",
+          "hint": "With the pull-up on, what level does a pressed button force on the pin?"
+        }
+      ]
+    }
     </script>
   </div>
 

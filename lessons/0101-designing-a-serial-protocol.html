@@ -96,7 +96,7 @@
 
   <h2>The cost of COBS, bit by bit</h2>
   <p>
-    The overhead is easy to state once you see the block structure. Every block costs one code byte, and a block ends at a zero or at 254 data bytes. A body with no zeros and fewer than 254 bytes gets exactly one code byte. A body of 254 nonzero bytes gets one code byte of 0xFF and no implied zero. The paper's bound of one byte in 254 comes from the case where every block is full. The worst realistic case is a body that is mostly zeros, because each zero costs a code byte and removes one data byte, so its encoding is about as long as the input.
+    The overhead is easy to state once you see the block structure. Every block costs one code byte, and a block ends at a zero or at 254 data bytes. A body with no zeros and fewer than 254 bytes gets exactly one code byte. A body of 254 nonzero bytes gets one code byte of 0xFF and then the 254 data bytes. The body ends exactly on a block boundary, so the encoder adds an empty last block with code 0x01, and 254 bytes encode to 256 bytes, as the project's <code>test_full_block_of_254_bytes</code> checks. That final byte is the "plus one" in the overhead rule. The paper's bound of one byte in 254 comes from the case where every block is full. The worst realistic case is a body that is mostly zeros, because each zero costs a code byte and removes one data byte, so its encoding is about as long as the input.
   </p>
   <p>
     The code value 0xFF is the special case, and the paper says so directly: code 0xFF stands for 254 data bytes with no implicit zero after them (Cheshire and Baker, section III.A). Codes 0x01 to 0xFE each stand for their data bytes followed by one implicit zero. Code 0x00 is never valid. A decoder that reads 0x00 where a code belongs has found a corrupted stream.
@@ -213,60 +213,118 @@
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
-      { "type": "mc",
-        "prompt": "Which framing method guarantees that the body has no zero byte, so 0x00 can mark every frame end?",
-        "options": ["COBS removes all zero bytes", "SLIP doubles every END byte", "A fixed length prefix byte", "A checksum byte at end"],
-        "answer": 0,
-        "why": "COBS replaces every zero with a code, so the body has no zeros. SLIP escapes END bytes instead, and its overhead can double. A length prefix does not mark ends with a special byte at all." },
-      { "type": "number",
-        "prompt": "The CRC-16/CCITT-FALSE check value for ASCII 123456789 is 0x29B1. What is that in decimal?",
-        "answer": 10673, "tolerance": 0, "unit": "",
-        "why": "0x29B1 is 2 times 4096, plus 9 times 256, plus 11 times 16, plus 1, which is 10673. The tempting answer, 29185, reads the hex digits as decimal." },
-      { "type": "mc",
-        "prompt": "A COBS encoding starts with the code byte 0xFF. What does that block contain?",
-        "options": ["A full block of 254 bytes", "An empty block with no data", "A block one byte too short", "A zero that marks the end"],
-        "answer": 0,
-        "why": "0xFF means 254 data bytes, and no zero follows the block. The tempting answer, an empty block, is the code 0x01, which is the last block of some encodings." },
-      { "type": "text",
-        "prompt": "In this lesson's framing, which byte value marks the end of each COBS frame on the wire? Give it in hex.",
-        "accept": ["0x00", "00", "0"],
-        "why": "The delimiter is 0x00, which never appears inside the encoded body. The tempting answer, 0xFF, is a code byte for a full block." },
-      { "type": "mc",
-        "prompt": "Why does each frame carry a sequence number when the receiver sends ACK or NACK?",
-        "options": ["It detects lost frames", "It shortens every frame", "It replaces the CRC", "It resets baud rate"],
-        "answer": 0,
-        "why": "A sequence number lets the receiver spot a missing frame and drop a repeated one. The tempting answer, shortening frames, is the opposite: the number adds a byte. The CRC still does the damage check, so the number does not replace it." },
-      { "type": "mc",
-        "prompt": "A receiver computes the CRC over a frame that has its CRC appended, and gets a nonzero result. What does it conclude?",
-        "options": ["The frame was corrupted", "Wrong baud rate used", "The delimiter was missing", "Sequence number was wrong"],
-        "answer": 0,
-        "why": "A good frame with the CRC appended big-endian has a CRC of zero. A nonzero result means the bytes changed, so the frame was corrupted in transit. The tempting answer, a wrong baud rate, would damage many frames, but one frame's CRC cannot tell you the rate." },
-      { "type": "mc",
-        "prompt": "Your CRC gives 0xFFFF for the nine characters 123456789. Which part of the CRC is most likely still unfinished?",
-        "options": ["The per-byte update loop", "The baud rate setting", "The sequence number field", "The delimiter byte value"],
-        "answer": 0,
-        "why": "0xFFFF is the initial value, so the loop never changed the register: the per-byte update is missing or never runs. The tempting answer, the sequence number, is not part of the CRC function at all." },
-      { "type": "mc",
-        "prompt": "An encoded COBS block has a code of 0x05 followed by four data bytes. How many bytes does the block occupy on the wire?",
-        "options": ["Five bytes in total", "Four bytes in total", "Six bytes in total", "Two bytes in total"],
-        "answer": 0,
-        "why": "The code byte plus four data bytes is five bytes, and the code says the zero that follows is not in the encoding. The tempting answer, four, forgets the code byte itself." }
-    ] }
+  { "type": "mc",
+    "prompt": "A sensor sends binary readings over a UART. The data can contain any byte value, and the receiver must recover after line noise by waiting for the next frame end, with no byte counting. Which framing do you choose?",
+    "options": ["A one-byte length prefix before each body", "SLIP, escaping the end byte when it appears", "COBS, with 0x00 as the delimiter", "A fixed 32-byte frame, padded with zeros"],
+    "answer": 2,
+    "feedback": [
+      "A length prefix fails after noise. One corrupted length byte makes the receiver count the wrong number of bytes, so it reads the next frame's first byte as a length and stays out of step.",
+      "SLIP works, but every END byte in the data costs two bytes, so the overhead depends on the data. In the worst case the frame doubles, and a binary sensor stream can hit that.",
+      "Right. COBS removes every zero from the body, so 0x00 marks each frame end. After noise the receiver waits for the next zero, and the overhead is bounded whatever the data holds.",
+      "Padding wastes bandwidth on every frame, and it still needs a way to find where a frame starts after noise. It does not solve the sync problem."
+    ],
+    "hint": "Which framing lets the receiver resynchronise without counting bytes, whatever the data contains?",
+    "why": "The choice comes down to two costs: how the framing recovers from noise, and how the overhead grows with the data. COBS is the usual choice for a binary stream because it fixes both: the marker never appears in the body, and the overhead has a small, known bound." },
+  { "type": "number",
+    "prompt": "The sensor frame carries the reading 2250, sent little-endian, so the low byte goes first. What is the decimal value of the high byte on the wire?",
+    "answer": 8, "tolerance": 0, "unit": "",
+    "wrong": [
+      { "answer": 202, "feedback": "202 is 0xCA, the low byte. It goes first on the wire, but the question asks for the high byte." },
+      { "answer": 2250, "feedback": "2250 is the whole 16-bit reading. A byte holds only 0 to 255, so the reading has to be split first." }
+    ],
+    "hint": "Write 2250 in hex, then split it into two bytes.",
+    "why": "2250 is 0x08CA, so the high byte is 0x08, which is 8. Little-endian sends 0xCA first and 0x08 second. A receiver that reads the bytes in the wrong order gets 0xCA08, which is 51720, and the sensor value looks wildly wrong." },
+  { "type": "mc",
+    "prompt": "Your receiver reports every frame as corrupted, but the sender's frames look right in the log. Your frame code appends the CRC low byte first. What is the most likely cause?",
+    "options": ["The baud rate is too slow", "The CRC bytes are in the wrong order", "The sequence number is too high", "The delimiter was sent twice"],
+    "answer": 1,
+    "feedback": [
+      "A wrong baud rate corrupts bytes at random. It does not make every good frame fail in the same way, and the log shows intact bytes.",
+      "Right. This CCITT-FALSE frame needs the CRC high byte first, so that the CRC of the whole frame is zero. Sent low byte first, every good frame has a nonzero residue, and it looks damaged.",
+      "The CRC does not check the sequence number, so a high sequence number cannot fail the CRC. A bad number would show up as a wrong frame, not a corrupted one.",
+      "A delimiter sent twice would show as an extra empty frame. It would not make the CRC check fail on every good frame."
+    ],
+    "hint": "Which way round does this frame's CRC need its two bytes, for the residue to be zero?",
+    "why": "The residue test is quick and strict: the CRC of a good frame with its CRC appended is zero only if the byte order is right. The Modbus habit of low byte first (lesson 99) is the common cause of this bug, and it is a good reason to check the residue on a known frame before you blame the link." },
+  { "type": "mc",
+    "prompt": "You implemented CRC-16/CCITT-FALSE, and calling it on the nine characters 123456789 returns 0xFFFF. Where do you look first?",
+    "options": ["The per-byte update loop", "The baud rate in the UART", "The sequence number field", "The delimiter byte value"],
+    "answer": 0,
+    "feedback": [
+      "Right. 0xFFFF is the initial value, so the register never changed. The update loop either does not run or does nothing to the register, and that is the first thing to fix.",
+      "The baud rate sits in the UART setup. The CRC function never reads it, so it cannot change the CRC of a fixed string.",
+      "The sequence number is part of the frame, not the CRC function. A CRC of a fixed nine-character string does not involve it at all.",
+      "The delimiter is added after the frame is built. The CRC of the string does not include it, so this cannot be the cause."
+    ],
+    "hint": "Which value is the register set to before any byte is processed? What should the loop change it to?",
+    "why": "A check value first, before any frame code, isolates the fault. If 123456789 does not give 0x29B1, the CRC function is wrong and nothing built on it can be trusted. The check value is the quickest test you have." },
+  { "type": "mc",
+    "prompt": "You COBS-encode the body <code>11 22 00 33</code>. Which output is correct, before the 0x00 delimiter is added?",
+    "options": ["11 22 02 33", "03 11 22 02 33", "03 11 22 00 33", "02 11 22 00 33"],
+    "answer": 1,
+    "feedback": [
+      "The zero is gone, but the code byte that replaced it is missing, so the receiver cannot find where the first block ends.",
+      "Right. The first block is 11 22, two data bytes plus the code, so its code is 3. The last block is 33, with code 2.",
+      "The zero is still in the output. It would end the frame early, which is the very problem COBS removes.",
+      "The first code is 2, not 3. The first block holds two data bytes, so its code counts three, the two bytes and the code itself."
+    ],
+    "hint": "Each code is the distance to the next zero, counting the code byte itself.",
+    "why": "The encoder replaces each zero with a code, and each code is the distance to the next zero. With the delimiter, the wire carries <code>03 11 22 02 33 00</code>. The receiver reads the code, copies the block, and puts the zero back, so the data is recovered exactly." },
+  { "type": "mc",
+    "prompt": "A decoder reads 0x00 in a position where a code byte belongs. What should it conclude?",
+    "options": ["The stream is corrupted", "The frame is just empty", "The sequence number wrapped", "The CRC is still correct"],
+    "answer": 0,
+    "feedback": [
+      "Right. A code of 0x00 is never valid, so a zero in code position means the stream has been damaged or the frame is out of step.",
+      "An empty frame has a code of 0x01, not 0x00. A zero in code position is a fault, not an empty frame.",
+      "Sequence numbers are part of the frame's data, not the COBS codes. A wrapped number would not put a zero in a code position.",
+      "A bad code means the body cannot be decoded at all, so there is no decoded body for a CRC to check."
+    ],
+    "hint": "This lesson says which code value is never valid. What does that tell a decoder?",
+    "why": "The code 0x00 is the one value COBS never produces, so seeing it is proof of damage or lost sync, and the decoder should discard the frame and wait for the next zero. This is why COBS recovers well: a broken stream is detectable at the framing layer, before any CRC is involved." },
+  { "type": "number",
+    "prompt": "A 20-byte body contains two zero bytes. How many bytes does its COBS encoding take, before the 0x00 delimiter is added?",
+    "answer": 21, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 20, "feedback": "That forgets the final code byte. Every block, including the last one, starts with a code." },
+      { "answer": 22, "feedback": "The zeros are replaced by codes, not added to the output. Count the 18 nonzero bytes plus 3 codes, one per block." }
+    ],
+    "hint": "Each zero becomes a code, and the last block needs a code too. Count the nonzero bytes and the codes.",
+    "why": "The 18 nonzero bytes plus 3 codes give 21 bytes. In general, when no block is longer than 254 bytes, a body of n bytes with z zeros encodes to n + 1 bytes: here 20 + 1 = 21. That is why the overhead is small. A receiver counts the same blocks when it decodes." },
+  { "type": "reflect",
+    "prompt": "A colleague says: 'COBS already catches corrupted bytes, so the frame needs no CRC.' Explain what COBS does and does not catch. Then say which part of this lesson's frame would catch the damage COBS misses.",
+    "hint": "COBS rewrites the bytes. What happens if one data bit flips inside a block?",
+    "answer": "COBS only frames the data. It removes the zeros so a 0x00 can mark the end, and a broken code byte can show up as a structural error, such as a zero where a code belongs. But a flipped bit inside a data block decodes silently to a different value, because COBS has no check on the data. The CRC over the body catches that damage, and the sequence number catches a whole frame that never arrived. So the frame needs both: COBS to find the frame, and the CRC to trust its contents."
+  }
+] }
     </script>
   </div>
 
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "number",
-        "prompt": "From lesson 84: in HFSR, which bit number is the FORCED bit, set when a configurable fault escalates to HardFault?",
-        "answer": 30, "tolerance": 0, "unit": "",
-        "why": "HFSR bit 30 is FORCED. The tempting answer, 31, is the debug event bit, which has a different meaning." },
-      { "type": "text",
-        "prompt": "From lesson 84: what does the assertion handler do after it logs the file and line?",
-        "accept": ["reset", "resets", "system reset", "resets the system"],
-        "why": "The assertion logs and resets, so the device recovers and the log explains why. The tempting answer, halt, would leave the device stuck until someone looks at it." }
-    ] }
+  { "type": "mc",
+    "prompt": "The framed sensor receiver waits in its main loop for a frame that never completes, because a delimiter was lost on the wire. From lesson 84, which fix brings the device back without anyone resetting it?",
+    "options": ["A watchdog the main loop kicks per frame", "A HardFault handler that dumps the frame", "An assertion on the frame counter", "A timer interrupt that kicks it"],
+    "answer": 0,
+    "feedback": [
+      "Right. The watchdog resets the chip if the loop stops checking in. Kicking it from the loop that handles frames means it stays fed only while frames are being handled.",
+      "A HardFault handler reports a crash after the core takes a fault. A loop that is waiting does not fault, so this handler never runs.",
+      "An assertion stops the program only when a condition is false. A loop that never reaches its check passes no assertion.",
+      "A kick from a timer interrupt proves only that the interrupt runs. The loop can be stuck while the interrupt keeps the watchdog happy."
+    ],
+    "hint": "Which tool resets a device that has stopped doing its work, and where should the kick come from?",
+    "why": "Lesson 84 describes the same trap: a watchdog kicked from a timer interrupt never resets a stuck main loop. Kick it from the code that proves the real work is happening, so a stuck receiver is reset rather than left hanging." },
+  { "type": "number",
+    "prompt": "The first sensor frame goes out as 8 bytes on the wire, counting its 0x00 delimiter, at 115200 baud, 8N1. How long does it take to send, in microseconds?",
+    "answer": 694.4, "tolerance": 0.01, "unit": "µs",
+    "wrong": [
+      { "answer": 555.6, "feedback": "That is 8 × 8 ÷ 115200. It counts only the data bits. Each byte also has a start bit and a stop bit, so use 10 bit times per byte." },
+      { "answer": 0.6944, "feedback": "That is in milliseconds. Multiply by 1000 to get microseconds." }
+    ],
+    "hint": "How many bytes go on the wire, including the delimiter? How many bit times is each one?",
+    "why": "Each byte is 10 bit times at 8N1, so 8 bytes are 80 bit times. 80 ÷ 115200 = 0.0006944 s, which is 694.4 µs. The 0x00 delimiter is one of those 8 bytes, so it costs time on the wire like any other byte." }
+] }
     </script>
   </div>
 

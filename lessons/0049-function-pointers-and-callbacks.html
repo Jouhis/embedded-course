@@ -170,7 +170,7 @@
     printf(<span class="s">"tick\n"</span>);
 }</code></pre>
   <p>
-    The signature <code>void (Event)</code> must match the typedef exactly. A mismatched function pointer is a constraint violation that a compiler may accept with only a warning, depending on the flags and the types involved. The mismatched call then passes the wrong argument, or none, and the bug shows up far from the registration. Compile with warnings enabled, and treat a pointer-type warning as an error. The line <code>(void)ev;</code> tells the compiler that the parameter is unused on purpose.
+    The signature <code>void (Event)</code> must match the typedef exactly. A mismatched function pointer is a constraint violation. The Arm GCC 14.2 this course uses makes it an error by default, because GCC 14 turns -Wincompatible-pointer-types into an error for C, so the build stops. Older compilers may accept it with only a warning. The mismatched call then passes the wrong argument, or none, and the bug shows up far from the registration. Compile with warnings enabled, and treat a pointer-type warning as an error. The line <code>(void)ev;</code> tells the compiler that the parameter is unused on purpose.
   </p>
 
   <h2>Common mistakes and how to spot them</h2>
@@ -230,63 +230,90 @@
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "What must dispatch check before calling a handler from the table?",
-        "options": [
-          "That the handler is not NULL",
-          "That the event has a name",
-          "That the queue is full yet",
-          "That the timer has now expired"
-        ],
+        "prompt": "A dispatcher has two slots, and only EV_TICK is registered. The application calls <code>dispatch(EV_BUTTON)</code> with no NULL check. What happens?",
+        "options": ["It branches to address 0, not your code", "The tick handler runs in its place", "The call is skipped with no effect", "The compiler rejects the call at build time"],
         "answer": 0,
-        "why": "An empty slot holds NULL, and calling it jumps to address 0. The tempting answer is the second: the name is only a debugging label, and it does not affect the call. The last two are unrelated to the table lookup." },
+        "feedback": [
+          "Right. A NULL slot holds address 0, and the call branches there. On the RP2040 that is the boot ROM, so what happens next is not your code's behaviour.",
+          "The table holds one address per event, with no fallback. The button slot is NULL, and nothing redirects the call to the tick slot.",
+          "Nothing skips the call. Without a NULL check, the dispatcher jumps to whatever address the slot holds.",
+          "The compiler cannot know that a slot is empty, because the table is filled at run time. The check has to be in the code."
+        ],
+        "hint": "What address does a NULL pointer hold, and what does a call through it do?",
+        "why": "Calling a NULL function pointer is undefined behaviour in C, and in practice it jumps to address 0. Check the slot before every call, and count the events that have no handler." },
       { "type": "number",
-        "prompt": "A table has 4 handler slots, and each slot is a function pointer on the RP2040. How many bytes is the table?",
-        "answer": 16, "tolerance": 0, "unit": "B",
-        "why": "The RP2040 is a 32-bit core, so each pointer is 4 bytes, and 4 slots × 4 bytes = 16 bytes. The tempting answer is 4, which counts the slots and ignores their size." },
-      { "type": "mc",
-        "prompt": "In the Cortex-M vector table, what does entry 0 hold?",
-        "options": [
-          "The initial stack pointer value",
-          "The address of main function",
-          "The count of all interrupts",
-          "The current priority level now"
+        "prompt": "A team keeps growing a dispatcher's table until it has 12 slots on an RP2040, where each pointer is 4 bytes. How many bytes is the table?",
+        "answer": 48, "tolerance": 0, "unit": "B",
+        "wrong": [
+          { "answer": 12, "feedback": "12 counts the slots and ignores their size. Each slot is a 4-byte pointer, so 12 × 4 = 48 bytes." }
         ],
-        "answer": 0,
-        "why": "Word 0 is the initial stack pointer, and word 1 is the reset handler. main is called by the reset handler, so its address is not in the table. The tempting answer is main, which is the code you wrote, but the core never jumps there directly." },
-      { "type": "text",
-        "prompt": "What word must you check for in a callback slot before calling it? One word.",
-        "accept": ["NULL", "null"],
-        "why": "An empty slot holds NULL. The tempting answer is zero, which is the same value, but the code should name the null pointer, since a zero check and a NULL check mean the same thing only for pointers." },
+        "hint": "Multiply the slot count by the size of one pointer on this core.",
+        "why": "The RP2040 is a 32-bit core, so each function pointer is 4 bytes. The table size is the slot count times the pointer size, and the compiler computes the same thing for each index." },
       { "type": "mc",
-        "prompt": "Why must a callback's user data outlive its registration?",
-        "options": [
-          "Runs later, often from an ISR",
-          "The compiler then drops the pointer",
-          "The table lacks space for it",
-          "The handler must be declared const"
-        ],
+        "prompt": "A colleague writes <code>void on_button(void)</code> and registers it with <code>register_handler(EV_BUTTON, on_button)</code>, in a table of <code>void (*)(Event)</code>. It compiles, but the handler sometimes acts on a garbage value. Why?",
+        "options": ["It reads an argument that was never set", "The handler is never called", "The table gets one slot too many", "The button is debounced twice"],
         "answer": 0,
-        "why": "A callback runs after registration, often in an interrupt, so any pointer it uses must still be valid then. A local variable's storage ends when its function returns. The tempting answer is the second, which is not a rule of C." },
+        "feedback": [
+          "Right. The caller passes an Event, and the callee reads it. A handler with no parameter, called through a type with one, reads a value nobody set, and the bug changes from build to build.",
+          "The table does call the handler, through the slot. The problem is the argument, not the call.",
+          "The table's size comes from EV_COUNT, not from the handler's signature. A mismatch changes the argument, not the number of slots.",
+          "Debouncing is unrelated to the signature. The mismatch is in the function type, and -Wall is the tool that reports it."
+        ],
+        "hint": "Compare the handler's parameter list with the typedef. What does the caller pass?",
+        "why": "Use the typedef for every handler, so the compiler checks each registration against it. Compile with -Wall, and read any pointer-type warning as a bug report." },
       { "type": "mc",
-        "prompt": "Which storage class makes the dispatcher's handler table start as all NULL?",
-        "options": [
-          "static at file scope",
-          "a local automatic array",
-          "const array in flash",
-          "a volatile pointer table"
-        ],
+        "prompt": "A timer callback runs from an interrupt and calls <code>printf</code> to print a long status table. Under load, events are missed. What is the fix?",
+        "options": ["Set a flag in the callback, print in main", "Add a delay so printing finishes", "Call the callback more often from main", "Move printing to a higher-priority ISR"],
         "answer": 0,
-        "why": "A static object is zero-initialised before main runs, so its pointers are NULL. The tempting answer is the second: an automatic local has no defined starting value, and it lives on the stack. The third is read-only, so the table could not be filled by register_handler." },
+        "feedback": [
+          "Right. The interrupt does a short job: record the event with a flag, then return. main does the slow printing, and no other interrupt waits on it.",
+          "A delay inside an interrupt holds up every other interrupt for that time, so it makes the missed events worse.",
+          "The slow work is still in the callback. Calling it more often makes the blocking more frequent, not shorter.",
+          "A higher-priority ISR still blocks the lower one while it prints. The slow work has to leave the interrupt altogether."
+        ],
+        "hint": "Which part of the work must run inside the interrupt, and which part can wait?",
+        "why": "Keep interrupt callbacks short. Set a flag, or pass the event on, then do blocking work in thread context. Lesson 46 used the same flag pattern." },
       { "type": "mc",
-        "prompt": "A handler is declared as void on_tick(void) and stored in a table of void (*)(Event). What is the main risk?",
-        "options": [
-          "The argument goes wrong",
-          "The table grows large",
-          "The handler goes missing",
-          "The tick counts twice"
-        ],
+        "prompt": "You enable the USART1 interrupt but never define <code>USART1_IRQHandler</code>. The device freezes after the interrupt is enabled. Where does the debugger show the program counter?",
+        "options": ["Inside Default_Handler, in its loop", "At address 0, the boot ROM", "At the point where main returns", "Inside the USART1 hardware driver"],
         "answer": 0,
-        "why": "The callee reads its argument from where the caller put it, and a signature mismatch makes that argument wrong or missing. The tempting answer is the second: the table size depends on the slot count, not on the handler's signature. The third is a linker problem, which the signature mismatch does not cause." }
+        "feedback": [
+          "Right. The vector entry points at Default_Handler through a weak alias, and that handler loops forever. Define USART1_IRQHandler with that exact name to fix it.",
+          "The vector entry for USART1 points at Default_Handler, a loop in your own flash, not at address 0.",
+          "The freeze happens when the interrupt is taken. The core jumped to the USART1 vector entry, so the counter shows that entry's code.",
+          "No driver runs, because no handler is defined. The vector entry is the only code that ran."
+        ],
+        "hint": "What does the weak alias point the USART1 vector entry at, when no handler is defined?",
+        "why": "A missing vector entry is silent, so it looks like a device that stops. The first tool is the debugger: read the program counter, and see which handler it is in." },
+      { "type": "mc",
+        "prompt": "A dispatcher's table is declared as a local array inside <code>dispatch_init()</code>, not at file scope. Before anything registers, what do its slots hold?",
+        "options": ["Garbage, not NULL, until set", "NULL, since arrays start zeroed", "Address 0, the boot ROM", "Nothing: the slots are not used"],
+        "answer": 0,
+        "feedback": [
+          "Right. An automatic local is not zeroed, so its slots start with whatever was on the stack. A file-scope static is zeroed before main, so its slots start as NULL.",
+          "Arrays are not zeroed by default when they are automatic. Only static storage is zeroed before main runs.",
+          "Address 0 is the boot ROM address, and a slot is not set to it. The slot holds whatever the stack held.",
+          "The slots are read by dispatch on every event, so an unset slot is a real risk, not an unused one."
+        ],
+        "hint": "Compare automatic storage with static storage, and ask which one the C runtime zeroes.",
+        "why": "Static storage is zero-initialised, and automatic storage is indeterminate. That is why the lesson's table is at file scope, and why a NULL check still matters." },
+      { "type": "mc",
+        "prompt": "On a chip with 20 KiB of SRAM at 0x20000000, the first word of the vector table is 0x20005000. Which value is this?",
+        "options": ["The initial stack pointer, top of RAM", "The address of the reset handler", "The address of the main function", "The priority of the first interrupt"],
+        "answer": 0,
+        "feedback": [
+          "Right. Word 0 is the initial stack pointer. The top of 20 KiB of SRAM is 0x20000000 + 0x5000 = 0x20005000, so the stack starts there and grows down.",
+          "That is word 1. Word 0 comes first, and the core loads it before it runs any code.",
+          "The core jumps to the reset handler, which calls main. main's address is not in the table.",
+          "Priorities are set in registers, not stored as the first word of the table."
+        ],
+        "hint": "What is 20 KiB in hex, added to the start of SRAM?",
+        "why": "The core reads word 0 as the stack pointer and word 1 as the reset handler, both before any of your code runs. Lesson 42 builds this table." },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'I will call the handler directly from the driver by name. A callback table is overkill.' Explain what the table and the callback give you, and what the NULL check and the signature rule protect against.",
+        "hint": "Think about what the driver must know about the application, with and without the table.",
+        "answer": "A direct call makes the driver depend on the application: every new application changes the driver. A callback table reverses that dependency. The application registers a function, and the driver calls it when the event happens. The NULL check protects against a slot nobody filled, which would otherwise jump to address 0. The signature rule, the typedef on every handler, makes the compiler check each registration, so an argument mismatch is caught at build time and not on the device."
+      }
     ] }
     </script>
   </div>
@@ -294,14 +321,22 @@
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 5: write Ohm's law rearranged to find the resistance R.",
-        "accept": ["R=V/I", "R=V÷I", "V/I", "V÷I"],
-        "why": "R = V ÷ I, from V = I × R. The tempting answer is R = V × I, which has the units of power, not resistance." },
-      { "type": "text",
-        "prompt": "From lesson 2: which Ctrl+Shift+B action builds the project, or starts the simulator? Write the word for the action it takes.",
-        "accept": ["build", "compile"],
-        "why": "Ctrl+Shift+B builds the firmware. Starting the simulator is a separate command, F1 then Wokwi: Start Simulator. The tempting answer is simulate, which is the other step." }
+      { "type": "number",
+        "prompt": "A GPIO at 3.3 V is wired through a 4.7 kΩ pull-down to ground, and the pin is driven high. Using lesson 5's Ohm's law, what current flows, in microamps?",
+        "answer": 702, "tolerance": 0.02, "unit": "µA",
+        "wrong": [
+          { "answer": 0.702, "feedback": "0.702 is in milliamps. The question asks for microamps: 3.3 V ÷ 4,700 Ω = 0.000702 A, which is 702 µA." }
+        ],
+        "hint": "Convert 4.7 kΩ to ohms first. Then divide 3.3 V by it, and convert the amps to microamps.",
+        "why": "3.3 V ÷ 4,700 Ω = 0.000702 A, which is 702 µA. Pull resistors are kept large for the same reason: a few hundred microamps is a small load for the pin." },
+      { "type": "number",
+        "prompt": "Using lesson 20's masks, a status byte has its ready flag in bit 4. What is the decimal value of the mask that selects that bit?",
+        "answer": 16, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 4, "feedback": "4 is the bit number, not the mask. The mask is 1u << 4, which is 16." }
+        ],
+        "hint": "The mask for bit n is 1u shifted left by n places.",
+        "why": "1u << 4 is 0b0001 0000, which is 16. The mask keeps only bit 4, so the test is non-zero exactly when the ready flag is set." }
     ] }
     </script>
   </div>

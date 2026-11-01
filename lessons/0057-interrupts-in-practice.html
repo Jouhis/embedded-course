@@ -218,52 +218,116 @@ restore_interrupts(saved);</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which qualifier must a flag shared between an ISR and <code>main</code> have?",
-        "options": ["volatile", "const", "register", "extern"],
+        "prompt": "Your button project runs. In the debugger, <code>press_count</code> climbs with every press, but <code>main</code> never prints a <code>presses</code> line. The ISR and <code>main</code> share <code>press_pending</code>, which is a plain <code>bool</code> with no qualifier. What is the most likely fix?",
+        "options": [
+          "Declare press_pending volatile, so main reads the flag from memory on every pass",
+          "Declare press_pending const, so the ISR cannot change it by accident",
+          "Make the loop sleep for longer, so the flag has time to be set",
+          "Call printf from the ISR, to check that the flag is being set"
+        ],
         "answer": 0,
-        "why": "volatile makes every access reload the flag, so the loop sees the ISR's write. const forbids the ISR from writing it at all, and register is only a hint about where the compiler keeps a value. The tempting answer, const, reads like a safety word but blocks the write." },
+        "feedback": [
+          "Right. Without volatile, the compiler may read the flag once into a register and never look at memory again, so it misses the ISR's write. volatile makes each read go to memory.",
+          "const forbids the write the ISR has to make. The flag would be even less likely to change, so this removes the signal instead of fixing it.",
+          "The flag is set and stays set, so a longer sleep changes nothing. main never looks at memory again, and that is the actual problem.",
+          "printf is the wrong tool here. It can block in an ISR, and it still would not make main read the flag from memory."
+        ],
+        "hint": "The count is right in the debugger, so the ISR does write memory. What does main do when it reads the flag?",
+        "why": "The count rises because the ISR writes memory, but main may keep a stale copy of the flag in a register. volatile fixes that caching. It is not a lock: the gap between the read and the clear is a separate race, and only a critical section closes it."
+      },
       { "type": "mc",
-        "prompt": "Why should an ISR avoid <code>printf</code>?",
-        "options": ["It can block and reenter", "It bloats the stack size", "It slows the system clock", "It disables the interrupt bus"],
-        "answer": 0,
-        "why": "printf can wait on a full UART and is not reentrant, so the ISR can deadlock or corrupt output that main was writing. The tempting answer is stack size, which matters less than blocking here, and the clock and bus options are not caused by printf." },
+        "prompt": "The starter's ISR calls <code>printf</code> on every press. The UART is busy sending a long log line from <code>main</code> when a button press arrives. What can go wrong?",
+        "options": [
+          "The press is counted twice, because the hardware sees the edge twice",
+          "The handler may wait for UART buffer space, which holds off other interrupts at its level",
+          "The callback is removed from the NVIC, so later presses are ignored",
+          "The bank's interrupt priority is raised to level 0 for the rest of the run"
+        ],
+        "answer": 1,
+        "feedback": [
+          "printf does not change the edge count. The hardware sets one event bit per edge, and printf only writes text.",
+          "Right. printf writes to a UART that may be full, so the ISR can wait. While it waits, it holds off the interrupts at its level and below, so other inputs are delayed.",
+          "Nothing in printf touches the NVIC or the callback. Only gpio_set_irq_enabled_with_callback() registers it.",
+          "Priorities are set in the NVIC, not by printf. A call to printf cannot change them, and the level stays the same."
+        ],
+        "hint": "Think about what printf waits for, and what an ISR does while it waits.",
+        "why": "An ISR that waits holds off the interrupts at its level and below, so every other input is delayed by the time it spends in printf. The rule is that a handler sets a flag and returns, and main does the printing. That keeps the timing of every input independent of the UART."
+      },
       { "type": "number",
-        "prompt": "The RP2040 NVIC has 32 interrupt inputs, but only the lower 26 are connected. How many interrupt numbers are tied to zero?",
-        "answer": 6, "tolerance": 0, "unit": "",
-        "why": "Inputs 26 to 31 are tied to zero, which is six inputs (RP2040 datasheet, section 2.3.2). The tempting answer is 26, which counts the connected inputs instead." },
+        "prompt": "The main loop checks the flag at the start of each pass, then sleeps for 100 ms. A press arrives 5 ms after the loop has gone to sleep. The ISR sets the flag straight away. How many milliseconds after the press does main print <code>presses=1</code>?",
+        "answer": 95, "tolerance": 0.02, "unit": "ms",
+        "wrong": [
+          { "answer": 5, "feedback": "5 ms is when the ISR ran. It sets the flag at once, but main reads the flag only at the start of its next pass." },
+          { "answer": 100, "feedback": "100 ms is the sleep, but the press came 5 ms into it, so only 95 ms remain before the next pass." }
+        ],
+        "hint": "Work out when the next pass starts, then subtract the time of the press.",
+        "why": "The ISR records the press immediately, so the wait is only in the report. Main reads the flag once per pass, so the report waits for the next pass. A 100 ms loop means up to 100 ms of report delay, which is fine for a status line. A motor stop must act inside its handler, not wait for main."
+      },
+      { "type": "mc",
+        "prompt": "A motor-stop input and a status LED both use GPIO interrupts. A fault can make both fire in the same millisecond. Which change makes the motor stop run first?",
+        "options": [
+          "Give the status LED a higher IRQ number, so it runs later",
+          "Move the motor-stop code out of its handler and into main",
+          "Call printf in the motor-stop handler first, so it runs before the LED",
+          "Give the motor-stop interrupt the highest priority level, level 0"
+        ],
+        "answer": 3,
+        "feedback": [
+          "Both GPIO pins share one line, IRQ 13, so you cannot give each pin its own IRQ number. The priority level is the setting that orders them.",
+          "Moving the stop into main means it waits for the next pass of the loop, which is the slowest path. The stop should act inside its handler.",
+          "printf is slow and may block. Calling it first would delay the stop, which is the opposite of the goal.",
+          "Right. Level 0 is the highest. A pending level-0 interrupt runs before a lower-level one, so the stop starts first."
+        ],
+        "hint": "Which setting orders two interrupts that are both pending at the same time?",
+        "why": "Priority decides which pending interrupt runs first. The default levels are fine for a first project, and a fault input is the case where you change them. Keep the high-priority handler short anyway: while it runs, interrupts at its level and below wait."
+      },
+      { "type": "mc",
+        "prompt": "In <code>main</code>, the flag is copied, the count is copied and the flag is cleared, as three separate statements. An ISR can run between any two of them. Which change fixes the lost press?",
+        "options": [
+          "Declare the flag const, so the ISR cannot set it between the steps",
+          "Wrap the three steps in save_and_disable_interrupts() and restore_interrupts()",
+          "Move the printf above the copy, so the report comes first",
+          "Lengthen the sleep, so the ISR rarely runs during main"
+        ],
+        "answer": 1,
+        "feedback": [
+          "const forbids the write the ISR must make. The flag would never be set, so the press would never be reported.",
+          "Right. Inside the critical section no ISR can start, so the three steps act as one unit. Keep the block short, with no printf inside it.",
+          "Moving printf changes nothing about the three steps. They would still run in parts that an ISR can split.",
+          "A longer sleep makes the race rarer but not impossible. The lost press can still happen, so the fix is to remove the gap, not shrink it."
+        ],
+        "hint": "Which tool from this lesson makes a group of steps impossible to split?",
+        "why": "A critical section disables interrupts for a few instructions, so the read and the clear become one unit. volatile does not do that: it only controls caching. The printing stays outside the critical section, after the restore, because printf is slow."
+      },
       { "type": "text",
-        "prompt": "Which SDK call disables interrupts and returns the previous state?",
-        "accept": ["save_and_disable_interrupts", "save_and_disable_interrupts()"],
-        "why": "save_and_disable_interrupts() returns the old state, so restore_interrupts() can put it back. The tempting answer is a plain disable call, which cannot be undone safely when the code is already inside a critical section." },
+        "prompt": "Inside a critical section, a helper function also saves and disables interrupts. Before it returns, it must put the state back, so the outer section stays protected. What function name does it call to do that?",
+        "accept": ["restore_interrupts", "restore_interrupts()"],
+        "hint": "The pair of the save call from this lesson.",
+        "why": "restore_interrupts(saved) restores the state the caller had before. A helper that calls a plain enable would switch interrupts on while the outer section still needs them off, and the outer read-and-clear would be split again."
+      },
       { "type": "mc",
-        "prompt": "Why does a read-and-clear of a shared flag need a critical section?",
-        "options": ["An ISR could run between them", "Two cores would race on it", "The flag needs a volatile cast", "The compiler would drop the read"],
-        "answer": 0,
-        "why": "An ISR can run between the read and the clear, set the flag again, and lose that press. The tempting answer is the two-core race, but this lesson's program runs on one core, and the cast and the compiler are not the risk here." },
-      { "type": "mc",
-        "prompt": "The main loop needs to hand a press from the ISR to main. Which design fits the interrupt rules?",
+        "prompt": "A teammate says: \"volatile fixes the lost press, because the ISR now writes straight to memory.\" Is that right?",
         "options": [
-          "Print the press from the handler",
-          "Block until main reads the flag",
-          "Set a volatile flag and return",
-          "Call sleep_ms inside the handler now"
+          "Yes: volatile stops interrupts from running between two reads",
+          "No: volatile stops caching, but an ISR can still run between the read and the clear",
+          "Yes, if the counter is volatile too, the three steps become one step",
+          "No, because the lost press only happens on chips with two cores"
         ],
-        "answer": 2,
-        "why": "A flag and a return keep the ISR short and leave the slow work to main. The tempting answer, printing from the handler, breaks the rule about printf and blocking. Blocking and sleeping also hold up the interrupts at the same or lower priority." },
-      { "type": "number",
-        "prompt": "Which IRQ number does IO_IRQ_BANK0 use on the RP2040?",
-        "answer": 13, "tolerance": 0, "unit": "",
-        "why": "Table 80 of the datasheet lists IO_IRQ_BANK0 as IRQ 13. The tempting answer, 26, is the number of connected inputs, not the number of this one." },
-      { "type": "mc",
-        "prompt": "Two interrupts have the same priority level and are both pending. Which one runs first?",
-        "options": [
-          "The lower-numbered IRQ wins",
-          "The higher-numbered IRQ wins",
-          "Whichever one main wins",
-          "Neither runs until reset"
+        "answer": 1,
+        "feedback": [
+          "volatile does not stop interrupts. It only tells the compiler to access memory each time, so an ISR can still land between two accesses.",
+          "Right. volatile fixes the stale read. It does not make three steps one unit, so the read and the clear still need a critical section.",
+          "Making the counter volatile too does not make the steps atomic. Each access is still a separate step, and an ISR can run between them.",
+          "This lost press happens on one core, between main and an interrupt. The interleaving is the problem, not the number of cores."
         ],
-        "answer": 0,
-        "why": "Section 2.3.2 says that at equal priority, the lower IRQ number runs first. The tempting answer, the higher number, reverses the rule." }
+        "hint": "Separate two problems: a stale value that the compiler keeps in a register, and a sequence of steps that an interrupt can split.",
+        "why": "volatile solves caching and nothing else. Interleaving needs a critical section. Naming the problem first tells you which tool to reach for."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague wants to see every press while debugging, so they put <code>printf</code> inside the ISR. Explain what you would do instead, and why your version is safe with the flag and counter pattern.",
+        "hint": "What does main already do with the flag, and what could a debug log record in the ISR without printing?",
+        "answer": "printf in the ISR can block on a full UART, and it is not safe to call while main is also printing. The ISR already records every press in the counter, so main can print from the flag. For a finer log, the ISR can write a timestamp into a small buffer with a few instructions, and main can print the buffer later. Both options keep the ISR short, and all the output comes from one place."
+      }
     ] }
     </script>
   </div>
@@ -271,15 +335,33 @@ restore_interrupts(saved);</code></pre>
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a>: which Pico SDK call enables the internal pull-up on a pin?",
-        "accept": ["gpio_pull_up", "gpio_pull_up()"],
-        "why": "gpio_pull_up() turns on the internal pull-up of about 50 to 80 kΩ. The tempting answer, gpio_disable_pulls, turns the pulls off, which leaves the button pin floating." },
+      { "type": "number",
+        "prompt": "The button on GP14 uses the internal pull-up, as in <a href=\"0016-logic-levels-pull-ups-open.html\">lesson 16</a>. At its weakest, the pull-up is 50 kΩ. The button is pressed, so the pin is held at 0 V. How many microamps flow through the pull-up?",
+        "answer": 66, "tolerance": 0.02, "unit": "µA",
+        "wrong": [
+          { "answer": 0.066, "feedback": "0.066 is the current in milliamps. The question asks for microamps, so the answer is 66 µA." }
+        ],
+        "hint": "Use I = V ÷ R with V = 3.3 V and R = 50 kΩ, then convert amps to microamps.",
+        "why": "3.3 V ÷ 50 kΩ = 0.000066 A, which is 66 µA. A pressed button draws that current through the pull-up on every press, which is why the internal pull-up is fine for a button and not for a long wire. It also means the falling edge the ISR sees is a real, clean change of level at the pin."
+      },
       { "type": "mc",
-        "prompt": "From lesson 25: which 74HC595 pin latches the outputs?",
-        "options": ["DS", "STCP", "SHCP"],
-        "answer": 1,
-        "why": "STCP is the storage (latch) clock, which copies the shift register to the outputs. SHCP shifts the bits, and DS carries the data. The tempting answer, SHCP, is the shift clock." }
+        "prompt": "A handler counts every falling edge on a bounce-on button, as <a href=\"0052-gpio-input-and-debouncing.html\">lesson 52</a> describes. One click makes three falling edges within 4 ms. Which change gives one count per click?",
+        "options": [
+          "Move the printf out of the handler, so the edges are printed more slowly",
+          "Lower the pull-up to 5 kΩ, so the pin bounces less",
+          "Debounce the events with an integrator or a timestamp before counting them",
+          "Count only the rising edges, which bounce less than the falling ones"
+        ],
+        "answer": 2,
+        "feedback": [
+          "Printing more slowly does not change the number of edges. The handler still counts three edges for one click.",
+          "A pull-up value does not stop mechanical bounce. The contacts still make and break several times, so the pin still sees several edges.",
+          "Right. The window in code decides which edges count. Lesson 52's integrator, or a timestamp check, counts one press per click when the window is longer than the bounce.",
+          "Rising edges bounce too. The contacts bounce on press and on release, so changing the edge does not remove the extra counts."
+        ],
+        "hint": "The bounce comes from the contact. What in your code can ignore changes that are shorter than a window?",
+        "why": "The bounce is in the switch, so the fix is a window in the code. Choose a window longer than the bounce but shorter than the fastest press you must catch, as lesson 52 explains. Put that filter in the event path, before the count."
+      }
     ] }
     </script>
   </div>

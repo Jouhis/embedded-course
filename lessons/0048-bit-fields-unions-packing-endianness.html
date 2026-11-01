@@ -197,57 +197,74 @@ out-&gt;valid = (frame[3] &gt;&gt; 2) &amp; 0x01U;   <span class="c">/* bit 2: m
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Why are bit-fields a poor choice for a hardware register layout?",
-        "options": [
-          "Its bit order is implementation-defined",
-          "Masks are slower than bit-fields",
-          "They cannot store 32-bit values",
-          "Their storage needs extra padding"
-        ],
+        "prompt": "A driver maps a status register with <code>struct { unsigned mode : 2; unsigned valid : 1; }</code>. It worked on the old compiler, and after a toolchain upgrade the device behaves differently. What is the root cause?",
+        "options": ["Bit-field bit order is up to the compiler", "Masks got slower in the upgrade", "Bit-fields cannot hold a 2-bit value", "A register needs a packed struct"],
         "answer": 0,
-        "why": "The standard leaves the bit order and some signedness rules to the compiler, so the same struct can map to different bits on another toolchain. The tempting answer is the fourth, padding, which is not the core problem. The third is false: bit-fields can be 32 bits wide." },
+        "feedback": [
+          "Right. The standard lets the compiler choose where bit-fields sit, so a new compiler may place mode at another bit. Use a fixed-width integer with named mask and shift constants.",
+          "Masks and bit-fields compile to similar instructions. Speed is not the issue, and the upgrade does not change which bit a field sits in.",
+          "Bit-fields can hold 2 bits. The problem is where those bits go, not how many there are.",
+          "Packing changes padding, not the bit positions inside a register. A register layout does not need packing."
+        ],
+        "hint": "The source did not change, but the compiler did. What does the standard leave open about bit-fields?",
+        "why": "The same declaration can map to different bits on another compiler, and the code still compiles. The safe form is a uint8_t with named masks and shifts, which means the same bits on every toolchain." },
       { "type": "number",
-        "prompt": "A big-endian frame has bytes 0x12 (high) and 0x34 (low). What is the 16-bit value in decimal?",
-        "answer": 4660, "tolerance": 0,
-        "why": "0x1234 is 4660 in decimal. The tempting answer is 13330, which is 0x3412: the bytes read as little-endian, which is what a plain memcpy gives on the Cortex-M." },
-      { "type": "mc",
-        "prompt": "Which statement about a plain memcpy of two wire bytes is correct?",
-        "options": [
-          "It copies in host byte order",
-          "It reads them as big-endian now",
-          "It converts the bytes to ASCII",
-          "It fails on any even byte"
+        "prompt": "A sensor frame holds bytes 0x01 (high) and 0x2C (low), and the wire format is big-endian. What is the 16-bit value in decimal?",
+        "answer": 300, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 11265, "feedback": "11265 is 0x2C01, the two bytes swapped. That is what a memcpy gives on a little-endian Cortex-M. Combine the bytes as values with a shift: high byte first, so 0x012C." }
         ],
+        "hint": "The high byte goes in bits 15 to 8. Shift 0x01 left by 8 bits, then add the low byte.",
+        "why": "0x012C is 1 × 256 + 2 × 16 + 12 = 300. The shift and OR give the same value on every CPU, because they never look at the order of bytes in memory." },
+      { "type": "mc",
+        "prompt": "A reviewer finds <code>uint16_t t = *(uint16_t *)&amp;frame[1];</code> in a driver for an RP2040 (a Cortex-M0+). What is the risk?",
+        "options": ["Unaligned read, and bytes come out swapped", "Nothing: the cast is the fastest way", "It is always correct on Cortex-M0+", "It fails only at compile time"],
         "answer": 0,
-        "why": "memcpy copies the raw bytes, so the value depends on the host's byte order. On a little-endian Cortex-M the high and low bytes swap. The tempting answer is the second: memcpy does no byte swapping, so it does not read big-endian." },
-      { "type": "text",
-        "prompt": "Which GCC attribute removes struct padding? Write the attribute name only.",
-        "accept": ["packed", "__attribute__((packed))"],
-        "why": "packed removes padding, so members sit at the smallest possible alignment. The tempting answer is aligned, which does the opposite: it adds alignment." },
-      { "type": "mc",
-        "prompt": "Which statement about a packed struct is correct?",
-        "options": [
-          "It reverses the member byte order",
-          "It removes padding, not byte order",
-          "It makes unaligned access always safe",
-          "It is required for every register"
+        "feedback": [
+          "Right. &frame[1] may sit at an odd address, which is unaligned, and on a little-endian core the high wire byte lands in the low half. The shift form avoids both problems.",
+          "Speed is not the test here. The cast is fast, but on this core it gives the wrong value, so it is not correct.",
+          "The M0+ is little-endian, so a big-endian wire value read this way is swapped. It is never correct by accident.",
+          "The compiler accepts this line. The problem shows at run time, on the device, which is why the review has to catch it."
         ],
-        "answer": 1,
-        "why": "Packing changes the layout of members in memory, not the order of their bytes. It also does not make unaligned access safe on every core, and registers need no packing. The tempting answer is the third: packing can produce unaligned members, which some cores do not handle well." },
+        "hint": "Think about the address of frame[1], and about which byte of the value lands in the low half.",
+        "why": "A byte-array cast depends on alignment and byte order, and both are wrong for a wire format. Combining the bytes with a shift works on every CPU, so use that and test it on a PC with a table of frames." },
       { "type": "number",
-        "prompt": "The status byte is 0x05. What is the mode, the value of bits 1 and 0, in decimal?",
-        "answer": 1, "tolerance": 0,
-        "why": "0x05 is 0000 0101, so bits 1 and 0 are 01, which is 1. The tempting answer is 5, the whole byte, which is what you get if you forget the mask 0x03." },
-      { "type": "mc",
-        "prompt": "Which expression gives 0x1234 from frame[1] = 0x12 and frame[2] = 0x34 on any CPU?",
-        "options": [
-          "frame[1]&lt;&lt;8|frame[2]",
-          "frame[2]&lt;&lt;8|frame[1]",
-          "memcpy(&amp;raw,frame+1,2)",
-          "*(uint16_t*)(frame+1)"
+        "prompt": "The status byte is 0x0E. What is the mode, the value of bits 1 and 0, in decimal?",
+        "answer": 2, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 14, "feedback": "14 is the whole byte. You forgot the mask 0x03, which keeps only bits 1 and 0." }
         ],
+        "hint": "0x0E is 0000 1110 in binary. Keep the two lowest bits and read them as a two-bit number.",
+        "why": "0x0E is 0000 1110. Bits 1 and 0 are 1 and 0, which reads as 10 in binary, which is 2. The mask 0x03U keeps exactly those two bits." },
+      { "type": "mc",
+        "prompt": "A team wants to copy a whole sensor frame in one memcpy into a packed struct. What is the right use of packing here?",
+        "options": ["Describe the layout, and read fields with shifts", "Make every field big-endian automatically", "Remove the need for alignment checks", "Keep the struct in flash so it stays packed"],
         "answer": 0,
-        "why": "Shifting the high byte into bits 15 to 8 and ORing in the low byte combines them as values, so the result is 0x1234 everywhere. The second option swaps the bytes and gives 0x3412. The third and fourth copy the bytes in host order, which is correct only on a CPU whose order matches the wire." }
+        "feedback": [
+          "Right. Packing gives the struct the wire layout, so the copy lines up. The field values still need shifts, because packing does not reverse bytes.",
+          "Packing does not reverse bytes. A big-endian field still needs shifts to read as a number.",
+          "Packing can create unaligned members, which need care. It does not remove the need to think about alignment.",
+          "Where a struct sits, in flash or RAM, does not change how it is packed. Packing is a property of the struct type."
+        ],
+        "hint": "Packing answers the question of where each member sits. Which question does it leave open?",
+        "why": "The struct is a description of the wire layout, and the parse is the shift form. That keeps the code correct on the little-endian Cortex-M cores and on any future big-endian core." },
+      { "type": "mc",
+        "prompt": "A datasheet says the mode is bits 1:0 of status byte 3. Which expression reads it?",
+        "options": ["frame[3] & 0x03", "frame[3] & 0x01", "frame[3] >> 1", "frame[3] & 0x30"],
+        "answer": 0,
+        "feedback": [
+          "Right. 0x03 is 0000 0011, which keeps bits 1 and 0 and clears the rest.",
+          "0x01 keeps only bit 0. The mode needs two bits, so the mask must cover bits 1 and 0.",
+          "A shift moves the bits but does not select them. The result still holds the higher bits, not just the mode.",
+          "0x30 selects bits 5 and 4, which belong to other fields. The mode is bits 1 and 0."
+        ],
+        "hint": "Write the mask in binary. Which bits must it have set?",
+        "why": "Each mask should name the bits in the datasheet table, so a reviewer can check it. The lesson uses 0x03U for the mode and (x >> 2) & 0x01U for the valid flag." },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'I will cast the byte buffer to a uint16_t pointer. It is faster and the code is shorter.' Explain what could go wrong on a Cortex-M0+ and on a Cortex-M3, and how you would write the parse instead.",
+        "hint": "Compare what each core does with an unaligned access, and what it does with the byte order.",
+        "answer": "On a Cortex-M0+ an odd address is an unaligned access, and the core can fault. On a Cortex-M3 the unaligned access is allowed, but both cores are little-endian, so the high wire byte lands in the low half and the value is swapped: 0x12 0x34 reads as 0x3412, which is 13330. Write the parse with shifts and OR: take the high byte as frame[1] cast to uint16_t, shift it left by 8, and OR in frame[2]. That gives 0x1234 on any CPU. Check it on a PC with a table of frames, including a bad header."
+      }
     ] }
     </script>
   </div>
@@ -255,14 +272,22 @@ out-&gt;valid = (frame[3] &gt;&gt; 2) &amp; 0x01U;   <span class="c">/* bit 2: m
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 2: which GPIO number drives the Pico's on-board LED?",
-        "accept": ["25", "GP25", "GPIO25"],
-        "why": "The on-board LED is on GPIO 25. The tempting answer is GP0, which is the first UART pin in the template wiring, not the LED." },
       { "type": "number",
-        "prompt": "From lesson 9: the exact resistance for an LED at 4 mA with 1.3 V across it is 325 Ω. What is the nearest E12 value at or above it, in ohms?",
-        "answer": 330, "tolerance": 0.01, "unit": "Ω",
-        "why": "E12 rounds up to 330 Ω, which keeps the current at or below 4 mA. The tempting answer, 270 Ω, is below 325 Ω, so it draws more than the target." }
+        "prompt": "A 3.3 V pin drives a red LED with a forward voltage of 2.0 V through a 330 Ω resistor. Using lesson 9's method, what is the current, in milliamps?",
+        "answer": 3.94, "tolerance": 0.01, "unit": "mA",
+        "wrong": [
+          { "answer": 10, "feedback": "10 mA is 3.3 V ÷ 330 Ω. It ignores the LED's 2.0 V drop, so it overstates the current." }
+        ],
+        "hint": "Only 1.3 V is across the resistor once the LED has taken its share.",
+        "why": "(3.3 V − 2.0 V) ÷ 330 Ω = 0.00394 A, which is 3.94 mA. That is just under the 4 mA target, which is why 330 Ω is the E12 value to pick." },
+      { "type": "number",
+        "prompt": "Using lesson 20's read-modify-write, a register holds 0x0F. The code runs <code>reg |= 0x30;</code>. What is <code>reg</code> afterwards, in decimal?",
+        "answer": 63, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 48, "feedback": "48 is 0x30, the mask on its own. OR keeps the bits that were already set in the register, so the 0x0F bits stay." }
+        ],
+        "hint": "OR keeps every bit that was set and adds the mask's bits. Write both values in hex and combine them.",
+        "why": "0x0F | 0x30 = 0x3F, which is 63. OR keeps the low nibble that was already there and sets the high nibble from the mask." }
     ] }
     </script>
   </div>

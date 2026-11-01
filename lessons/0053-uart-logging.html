@@ -193,7 +193,7 @@
     <li>A UART sends 8N1 frames: a low start bit, eight data bits, and a high stop bit, which is ten bits per byte.</li>
     <li>The RP2040 has two UARTs with 32-entry FIFOs. The transmit FIFO is 8 bits wide, and the receive FIFO is 12 bits wide to hold error flags.</li>
     <li>The baud divisor is <code>UARTCLK / (16 × baud)</code>. The integer part goes to <code>UARTIBRD</code>, and the 6-bit fraction goes to <code>UARTFBRD</code>.</li>
-    <li>For 115200 baud at 125 MHz, the divisor is 67.8125, so <code>UARTIBRD</code> is 67 and <code>UARTFBRD</code> is 52.</li>
+    <li>For 115200 baud at 125 MHz, the ideal divisor is about 67.817, so <code>UARTIBRD</code> is 67 and <code>UARTFBRD</code> is 52, and the hardware divides by 67 + 52/64 = 67.8125.</li>
     <li><code>printf</code> waits for FIFO room, so a log in an interrupt can stall the code it is meant to observe.</li>
     <li>A levelled <code>LOG</code> macro checks the level first, and its arguments are not evaluated when the message is filtered out.</li>
   </ul>
@@ -202,51 +202,110 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "UARTCLK is 125 MHz and the baud rate is 9600. What is the integer part of the divisor, UARTIBRD?",
-        "answer": 813, "tolerance": 0, "unit": "",
-        "why": "125 × 10⁶ ÷ (16 × 9600) = 813.8, and the integer part is 813. The tempting answer, 52, is the fractional field from the 115200 example, which is a different baud rate." },
+        "prompt": "A 9600-baud link runs with UARTCLK at 125 MHz. What is the integer part of the divisor, the value that goes into UARTIBRD?",
+        "answer": 813, "tolerance": 0,
+        "wrong": [
+          { "answer": 814, "feedback": "814 is the rounded-up value. UARTIBRD takes the integer part, 813, and the fraction goes to UARTFBRD." },
+          { "answer": 52, "feedback": "52 is the fraction field from the 115200 example. It is not the integer part for 9600 baud." }
+        ],
+        "hint": "Divide the clock by 16 times the baud rate, then keep the whole part.",
+        "why": "125 × 10⁶ ÷ (16 × 9600) = 813.8, and the integer part is 813. Writing 813 to UARTIBRD and a 6-bit fraction to UARTFBRD gives the bit period the link needs."
+      },
+      { "type": "formula",
+        "prompt": "Write the baud-rate divisor in terms of the UARTCLK frequency f and the baud rate B, as the lesson gives it.",
+        "vars": ["f", "B"],
+        "answer": "f/(16*B)",
+        "display": "divisor = UARTCLK ÷ (16 × baud)",
+        "examples": ["f/(B*16)", "f÷(16×B)", "f*(16*B)^-1"],
+        "wrong": [
+          { "answer": "f/B", "feedback": "That leaves out the 16 ticks per bit (Baud16), so the divisor comes out 16 times too large." },
+          { "answer": "f/16*B", "feedback": "Only the 16 and the baud rate belong together on the bottom. f ÷ 16 × B multiplies by the baud rate, so a faster baud would give a bigger divisor, which is the wrong direction." }
+        ],
+        "hint": "Check the answer with f = 125 MHz and B = 115200. You should get about 67.8.",
+        "why": "The divisor is UARTCLK ÷ (16 × baud). The factor 16 is the number of Baud16 ticks in one bit, and a higher baud rate needs a smaller divisor. A unit check catches the slip of multiplying by the baud rate."
+      },
+      { "type": "mc",
+        "prompt": "Your driver writes the next byte only when the transmit FIFO has room. Which bit does it poll before each write to UARTDR?",
+        "options": [
+          "TXFF, bit 5 of UARTFR",
+          "BUSY, bit 3 of UARTFR",
+          "TXFE, bit 7 of UARTFR",
+          "FEN, bit 4 of UARTLCR_H"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. TXFF is set when the transmit FIFO is full, so you wait while it is set, then write. Polling it stops you from writing into a full FIFO.",
+          "BUSY is set while bits are still going out, even when the FIFO has room. It is the wrong test for a write.",
+          "TXFE is set when the FIFO is empty. That tells you everything has been queued and taken, not that there is room, and a full FIFO is never empty.",
+          "FEN turns the FIFOs on in the line control register. It does not report how full they are."
+        ],
+        "why": "A write into a full FIFO is what makes printf block. Polling TXFF before each write lets you choose what to do instead: wait, drop the byte, or write to a RAM buffer."
+      },
+      { "type": "mc",
+        "prompt": "A log line has just been written to UARTDR, and the program is about to reset the board. Which flag tells you the last bit has left the chip?",
+        "options": [
+          "BUSY, bit 3 of UARTFR",
+          "TXFE, bit 7 of UARTFR",
+          "TXFF, bit 5 of UARTFR",
+          "FEN, bit 4 of UARTLCR_H"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. BUSY stays set while the UART is still shifting bits out, even after the FIFO has emptied. Wait for it to clear before a reset, or the end of the line is cut off.",
+          "TXFE means the FIFO is empty. The last byte can still be in the shift stage, so TXFE can be set while the byte is still going out.",
+          "TXFF means the FIFO is full, which is the opposite of done.",
+          "FEN enables the FIFOs. It says nothing about whether data is still being sent."
+        ],
+        "why": "The FIFO and the shifter are separate: a byte can leave the FIFO and still be on the wire. Wait for BUSY to clear before a reset, or the last characters are lost."
+      },
+      { "type": "mc",
+        "prompt": "A debug line in a timer loop is <code>LOG(LOG_LEVEL_DEBUG, \"n=%d\", read_adc());</code>, and the threshold is INFO. What happens to <code>read_adc()</code>?",
+        "options": [
+          "It is never called, because the level test fails first",
+          "It is called, and only the printed text is dropped",
+          "The build fails, because the arguments are not used",
+          "It is called once when the macro is defined"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The if comes first, so the arguments sit inside a branch that is not taken. A filtered line costs one comparison and never evaluates read_adc().",
+          "The arguments are text inside the if, so they run only when the level passes. Here they never run.",
+          "There is no build error. The macro uses its arguments only inside the branch, which is valid C.",
+          "A macro runs nothing when it is defined. Its text is only pasted in at the call site."
+        ],
+        "why": "This is mistake 3 in the lesson. A side effect in a filtered log argument disappears at the lower level, so the program behaves differently with debug on and off. Keep side effects out of log arguments."
+      },
+      { "type": "mc",
+        "prompt": "A 1 kHz timer ISR calls printf on every tick, and the tick count drifts over a minute. What is the cause?",
+        "options": [
+          "printf waits for room in the transmit FIFO",
+          "printf disables the timer interrupt",
+          "printf changes the system clock",
+          "printf drops the first byte of each line"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Each character waits for FIFO room, and at 115200 baud a byte takes about 87 µs to leave. The ISR is held for that wait, so the next tick arrives late.",
+          "A print does not touch the timer's interrupt enable. The stall is the blocking wait.",
+          "The clock is set at boot, and printf does not change it. The drift comes from the time the ISR spends waiting.",
+          "printf does not drop bytes here. It waits, which is why the tick is late, not why bytes go missing."
+        ],
+        "why": "A UART write is blocking. Set a flag in the ISR and print from the main loop, or write into a RAM buffer that the loop drains. Lesson 57 covers the rules for interrupt handlers."
+      },
       { "type": "number",
-        "prompt": "How long does one byte take on the wire at 115200 baud with 8N1, in microseconds?",
-        "answer": 86.8, "tolerance": 0.02, "unit": "µs",
-        "why": "A byte is 10 bits, so 10 ÷ 115200 = 86.8 µs. The tempting answer, 8.7 µs, counts only 1 bit in 10, which is wrong by a factor of ten." },
-      { "type": "mc",
-        "prompt": "Why does the LOG macro test the level before it calls printf?",
-        "options": [
-          "Filtered lines skip the work",
-          "It makes output more exact",
-          "It turns UART on first",
-          "It sends a faster baud"
-        ],
-        "answer": 0,
-        "why": "A filtered message costs one comparison, and its arguments are not evaluated. The tempting answer, exactness, is not the reason: the printed text is the same either way. The UART is set up once at boot, and the baud rate is fixed by the divisor." },
-      { "type": "mc",
-        "prompt": "Why is printf inside a timer interrupt a problem?",
-        "options": [
-          "It waits for FIFO room",
-          "It disables the timer IRQ",
-          "It changes the system clock",
-          "It loses the first byte"
-        ],
-        "answer": 0,
-        "why": "uart_putc waits for the transmit FIFO to have room, so once the FIFO is full the interrupt stalls. The tempting answer is that it disables the timer IRQ, which a print does not do. A print does not change the clock, and the first byte is not lost." },
-      { "type": "text",
-        "prompt": "Which UART register holds the integer part of the baud divisor? Write its name.",
-        "accept": ["UARTIBRD", "IBRD"],
-        "why": "UARTIBRD holds the 16-bit integer part, and UARTFBRD holds the 6-bit fraction. The tempting answer, UARTFBRD, is the fractional part, which the datasheet keeps in its own register." },
-      { "type": "mc",
-        "prompt": "Which flag bit tells the code that the transmit FIFO has no room?",
-        "options": [
-          "TXFF bit 5 of UARTFR",
-          "BUSY bit 3 of UARTFR",
-          "TXFE bit 7 of UARTFR",
-          "FEN bit 4 of UARTLCR_H"
-        ],
-        "answer": 0,
-        "why": "TXFF is set when the transmit FIFO is full, so it is the flag to poll before a write. The tempting answer, BUSY, is set while bits are still going out, even when the FIFO has room. TXFE means the FIFO is empty, and FEN enables the FIFOs in the line control register." },
-      { "type": "number",
-        "prompt": "A 40-character line at 115200 baud, 8N1, takes how many milliseconds on the wire?",
+        "prompt": "Your log prints a 40-character line once per second at 115200 baud, 8N1. How many milliseconds of each second does the wire spend on that line?",
         "answer": 3.47, "tolerance": 0.01, "unit": "ms",
-        "why": "40 characters × 10 bits = 400 bits, and 400 ÷ 115200 = 3.47 ms. The tempting answer, 0.35 ms, counts 4 bits per character, which is not the frame format." }
+        "wrong": [
+          { "answer": 0.347, "feedback": "That counts one bit per character. A byte is ten bits on the wire: a start bit, eight data bits and a stop bit. So 40 bytes take 400 bits." }
+        ],
+        "hint": "Count the bits per byte first, then multiply by 40 and divide by the baud rate.",
+        "why": "40 bytes × 10 bits = 400 bits, and 400 ÷ 115 200 = 3.47 ms. That is about 0.35 % of each second, but in a fast loop a line like this is enough to make a deadline late."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'Floats are simpler, so I'll store the divisor as 67.8 and let the compiler handle it.' Explain why the lesson uses integer arithmetic here, and what the total64 line does.",
+        "hint": "The Cortex-M0+ has no floating-point unit. What does each float operation cost?",
+        "answer": "The Cortex-M0+ has no floating-point unit, so each float operation is a library call that costs time and code space. The total64 line computes 4 × clk ÷ baud, adds baud ÷ 2 to round to nearest, and so gives the divisor in 64ths. Dividing that by 64 gives UARTIBRD, and the remainder gives UARTFBRD. Both values come out exactly, from one integer division, with no floating point."
+      }
     ] }
     </script>
   </div>
@@ -255,13 +314,19 @@
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "From lesson 45: an unsigned 8-bit variable holds 250. It has 10 added to it. What value does it hold after the addition?",
-        "answer": 4, "tolerance": 0, "unit": "",
-        "why": "uint8_t arithmetic is modulo 256, so 250 + 10 = 260 becomes 260 − 256 = 4. The tempting answer, 260, assumes the value grows beyond the type's width, which it cannot." },
+        "prompt": "A uint8_t byte counter in the log buffer stands at 250, and the logger adds 10 more bytes. What value does the counter hold afterwards?",
+        "answer": 4, "tolerance": 0,
+        "wrong": [
+          { "answer": 260, "feedback": "260 does not fit in 8 bits. Unsigned arithmetic wraps modulo 256, so 260 becomes 4." }
+        ],
+        "hint": "A uint8_t holds 0 to 255. Subtract 256 from any sum above that.",
+        "why": "uint8_t arithmetic is modulo 256, so 250 + 10 = 260 becomes 260 − 256 = 4. A counter that wraps like this is why logs need a length check, not an assumed size."
+      },
       { "type": "text",
-        "prompt": "From lesson 47: which Cortex-M register struct field offset is the BSRR register in the STM32 GPIO block? Write it in hex.",
+        "prompt": "On an STM32, a timer ISR must set PC13 with one write and no read of the port, as lesson 47 describes. Counting from the GPIOC base, which offset in hex is that register?",
         "accept": ["0x10", "0x0010"],
-        "why": "The GPIO register block lists BSRR at offset 0x10, after ODR at 0x0C. The tempting answer, 0x0C, is ODR, which does not set or clear single bits in one write." }
+        "why": "BSRR sits at offset 0x10, after ODR at 0x0C. A write of bit 13 sets PC13 in one store, which is safe inside an ISR. The tempting answer, 0x0C, is ODR, and a read-modify-write on ODR can lose a change made by the ISR."
+      }
     ] }
     </script>
   </div>

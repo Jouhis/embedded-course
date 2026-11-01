@@ -192,32 +192,82 @@ LoopCopyDataInit:
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "Which handler is word 1 of the STM32F103 vector table, the first code the core runs after reset?",
-        "options": ["Reset_Handler", "SystemCoreClock", "SysTick_Handler", "Default_Handler"],
+        "prompt": "A global <code>int retries = 7;</code> reads <code>0x4F</code> when <code>main()</code> starts, and the map file puts it in <code>.data</code>. What is the most likely cause?",
+        "options": ["The copy loop read from the wrong source, so RAM never got the stored bytes", "The variable is const, so the compiler stored it in flash and dropped it", "SystemInit switched the clock to 72 MHz and corrupted RAM", "The debugger always shows junk for globals before main() runs"],
         "answer": 0,
-        "why": "The startup file's table is .word _estack, then .word Reset_Handler. SystemCoreClock is a variable, not a handler, and the tempting answer because it is the clock that SystemInit sets. Default_Handler is the infinite loop that fills unused slots." },
-      { "type": "text",
-        "prompt": "On the STM32F103 startup, which function does Reset_Handler call first, before copying .data?",
-        "accept": ["SystemInit", "SystemInit()"],
-        "why": "Reset_Handler calls SystemInit first, before the copy. The tempting answer, __libc_init_array, runs much later, after .data and .bss are ready." },
-      { "type": "number",
-        "prompt": "The STM32 vector table is 0x10C bytes long. How many 4-byte words does it have?",
-        "answer": 67, "tolerance": 0, "unit": "",
-        "why": "0x10C is 268 bytes, and 268 ÷ 4 = 67 words. The tempting answer, 66, is the index of BootRAM at offset 0x108, which is the last word's position, not its count." },
+        "feedback": [
+          "Right. The starting bytes of .data sit at _sidata. If the copy reads from the wrong place or never runs, RAM keeps what was there before the reset, here 0x4F.",
+          "A const would be read from flash and would read 7. This variable is writable, as its .data section says, so it is not dropped.",
+          "SystemInit does not switch the clock in this ST file. Its only write is the vector table offset, and only when USER_VECT_TAB_ADDRESS is defined.",
+          "The debugger shows the RAM the program sees. Junk before main() is a real bug, not a display effect."
+        ],
+        "hint": "Which step copies the starting values into RAM, and which symbol does it read from?",
+        "why": "If the copy loop is wrong, every initialised global starts with garbage before main() runs. The bug appears before your code runs, so check _sidata and the .data line in the map file before you look at your own code." },
       { "type": "mc",
-        "prompt": "In the Pico SDK's startup, which function runs the preinit and init arrays before main?",
-        "options": ["runtime_init", "SystemInit", "bss_fill_loop"],
-        "answer": 0,
-        "why": "With the default newlib interface, runtime_init runs the preinit and init arrays itself. The tempting answer is __libc_init_array, which the STM32 startup calls, but the SDK comments it out. bss_fill_loop only clears .bss." },
+        "prompt": "A developer writes <code>void USART1_Handler(void)</code> and enables the USART1 interrupt. It never runs, and the debugger shows the core stuck in <code>Default_Handler</code>. What is wrong?",
+        "options": ["The handler must sit at a fixed RAM address, or the table cannot reach it", "The interrupt needs a volatile flag in the handler, and this handler does not declare one", "The name must match the startup file's vector entry exactly, or the table keeps pointing at Default_Handler", "Default_Handler must be removed from the startup file, because it blocks every handler"],
+        "answer": 2,
+        "feedback": [
+          "Handlers can sit anywhere the linker puts them, and the table stores their addresses. A fixed RAM address is not needed.",
+          "A flag is not needed to attach a handler. The table entry is set at link time by name, so the name is what counts.",
+          "Right. The startup file declares each handler as a weak alias of Default_Handler. A function with the exact name overrides that alias. The STM32 name is USART1_IRQHandler, which you can check in startup_stm32f103xb.s.",
+          "Default_Handler is the loop that fills unused entries. Deleting it would break the table, and the handler name would still be wrong."
+        ],
+        "hint": "Compare the name in your code with the name in the startup file's vector list.",
+        "why": "The name is the link. The startup file holds one table entry per handler name, and each name is a weak alias that falls back to Default_Handler. A misspelt handler leaves the alias in place, so the bug looks like a hang. This is mistake 3 in this lesson." },
       { "type": "number",
-        "prompt": "The clear loop in this build covers 0x20000008 to 0x20000028. How many 4-byte words does it write?",
-        "answer": 8, "tolerance": 0, "unit": "words",
-        "why": "The range is 0x20 bytes, which is 32 bytes, and 32 ÷ 4 = 8 words. The tempting answer, 32, is the byte count, but the loop stores one word per pass." },
+        "prompt": "The map file puts <code>Reset_Handler</code> at 0x080002F0. What should word 1 of the vector table hold, in hex?",
+        "answer": 134218481, "tolerance": 0, "unit": "",
+        "wrong": [
+          { "answer": 134218480, "feedback": "That is 0x080002F0 with no Thumb bit. The Cortex-M runs only Thumb code, so bit 0 of every code address in the table is 1." }
+        ],
+        "hint": "The Cortex-M runs only Thumb code. Think about what bit 0 of a code address means.",
+        "why": "Word 1 holds the handler's address with bit 0 set. The dump in this lesson shows 0x080002F1 for a Reset_Handler at 0x080002F0. The set bit tells the core to read the address as Thumb code." },
+      { "type": "number",
+        "prompt": "Your review asks whether BootRAM, at offset 0x108, is the last entry of the STM32 vector table. How many 4-byte words does the table have?",
+        "answer": 67, "tolerance": 0, "unit": "words",
+        "wrong": [
+          { "answer": 66, "feedback": "66 is the index of BootRAM, at 0x108. The count includes that last word, so it is one more." }
+        ],
+        "hint": "The table is 0x10C bytes long, and each word is four bytes.",
+        "why": "0x10C is 268 bytes, and 268 ÷ 4 = 67 words. Counting words from zero, BootRAM is word 66, which is why its offset is 0x108. A count and an index differ by one, a slip that is easy to make in a table review." },
+      { "type": "number",
+        "prompt": "Your team adds 16 bytes to <code>.bss</code>, so the clear loop now runs from 0x20000008 to 0x20000038. How many 4-byte stores does the loop make?",
+        "answer": 12, "tolerance": 0, "unit": "words",
+        "wrong": [
+          { "answer": 48, "feedback": "48 is the byte count, 0x30. The loop writes one word per pass, so divide by four." }
+        ],
+        "hint": "Subtract the start from the end in hex, then divide the byte count by four.",
+        "why": "The range is 0x30, which is 48 bytes, and 48 ÷ 4 = 12 words. The loop stores one word per pass, so every byte added to .bss adds passes to the clear at each boot." },
       { "type": "mc",
-        "prompt": "Which linker symbol holds the flash address where the initial bytes of .data are stored?",
-        "options": ["_sidata", "_sdata", "_edata", "_sbss"],
-        "answer": 0,
-        "why": "_sidata is the load address of .data, from LOADADDR in the linker script. The tempting answer, _sdata, is the RAM start, where the copy goes, so it is the destination, not the source." }
+        "prompt": "While you step through the copy loop, <code>r2</code> holds the source address. Which linker symbol did the startup code load into <code>r2</code>?",
+        "options": ["_sdata, the RAM start address", "_edata, the RAM end address", "_sidata, the flash load address", "_sbss, the start of .bss"],
+        "answer": 2,
+        "feedback": [
+          "_sdata is the destination, held in r0. It is where the copy writes, not where it reads.",
+          "_edata is the end of the destination, held in r1. The loop stops there.",
+          "Right. r2 = _sidata, the load address in flash. The copy reads from there and writes to _sdata in RAM.",
+          "_sbss starts the clear loop for .bss, which runs after the copy, so it is not the source."
+        ],
+        "hint": "Which address is in flash: the source or the destination?",
+        "why": "The source and the destination are different addresses by design: the load address is in flash, and the run address is in RAM. Mixing them up is the classic copy bug, and the lesson's warning says so." },
+      { "type": "mc",
+        "prompt": "A developer's new global <code>int16_t gain = 3;</code> is read inside <code>SystemInit()</code>, which runs before the copy. What happens?",
+        "options": ["int16_t is too small for the copy loop, so the build fails", "SystemInit is not allowed to read any global, so the build fails", "The read gives 3, because the copy runs before SystemInit", "The read gets whatever RAM held before the reset, since the copy has not run"],
+        "answer": 3,
+        "feedback": [
+          "Nothing in the copy depends on the type size. int16_t is copied like any other .data word, and the build does not fail for this reason.",
+          "The compiler allows the read. The problem is timing: the read happens before RAM is ready, and the build does not fail.",
+          "The copy runs after SystemInit, not before it. Reset_Handler calls SystemInit first, then copies .data.",
+          "Right, and the bug is silent. Move the read after the copy, or make the value const so it is read from flash, as mistake 1 in this lesson says."
+        ],
+        "hint": "Which runs first: SystemInit or the copy?",
+        "why": "SystemInit runs before the copy, so any code in that window sees RAM as it was before the reset. Keep startup code away from .data, or read those values after main() starts." },
+      { "type": "reflect",
+        "prompt": "Explain, in your own words, how the Blue Pill goes from reset to <code>main()</code>. Say where a global's starting value comes from, and what makes .bss start at zero.",
+        "hint": "Trace the vector table first, then the handler's four steps in order.",
+        "answer": "The core reads word 0 of the vector table as the stack pointer and word 1 as the reset handler, then jumps to Reset_Handler. The handler calls SystemInit, which does not switch the clock in this ST file. It copies .data from its load address in flash (_sidata) to RAM (_sdata to _edata), so a global's starting value comes from flash. It then zeroes .bss from _sbss to _ebss, calls the C library's initialisers, and calls main."
+      }
     ] }
     </script>
   </div>
@@ -225,14 +275,19 @@ LoopCopyDataInit:
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 7: which law says the voltages around a closed loop add up to zero?",
-        "accept": ["KVL", "Kirchhoff's voltage law", "Kirchhoffs voltage law"],
-        "why": "KVL is Kirchhoff's voltage law. KCL is the current law about nodes, the tempting answer, and it is a different statement." },
       { "type": "number",
-        "prompt": "From lesson 5: a current of 2 A flows through a 5 Ω resistor. What is the voltage across it, in volts?",
-        "answer": 10, "tolerance": 0.02, "unit": "V",
-        "why": "V = I × R = 2 A × 5 Ω = 10 V. The tempting answer, 2.5 V, divides the current by the resistance, which is the wrong way round." }
+        "prompt": "A device interrupt is exception 22, the EXTI0 interrupt on the F103. At what byte offset from the start of the vector table is its handler address?",
+        "answer": 88, "tolerance": 0, "unit": "bytes",
+        "wrong": [
+          { "answer": 22, "feedback": "22 is the exception number, not the offset. Each table entry is four bytes, so multiply the number by four." }
+        ],
+        "hint": "Each table entry is one 4-byte word, and the entries are numbered by exception number.",
+        "why": "Lesson 34: the entry address is the table base plus four times the exception number. So 4 × 22 = 88, which is 0x58. Word 22 of the table holds EXTI0's handler, which is the same rule the table's SVC and PendSV entries follow." },
+      { "type": "number",
+        "prompt": "The reset handler sits at 0x080002F0 in flash. How many bytes past the start of flash, at 0x08000000, is it, in decimal?",
+        "answer": 752, "tolerance": 0, "unit": "bytes",
+        "hint": "Only the low three hex digits change the offset. Give each digit its place value.",
+        "why": "0x2F0 is 2 × 256 + 15 × 16 = 752 bytes. Place values in hex turn an address offset into a byte count, which is how you find where a function sits in the flash image." }
     ] }
     </script>
   </div>

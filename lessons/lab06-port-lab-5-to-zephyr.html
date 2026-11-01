@@ -289,32 +289,101 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     <script type="application/json">
     { "questions": [
       { "type": "mc",
-        "prompt": "What does hal_log do when the log queue is full?",
-        "options": ["Drops the line", "Blocks the caller", "Grows the queue", "Prints it anyway"],
-        "answer": 0,
-        "why": "hal_log uses K_NO_WAIT, so a full queue drops the line and counts it. The tempting answer, blocking the caller, would stall the UI thread behind the UART." },
+        "prompt": "A teammate changes <code>hal_log</code> to use <code>K_FOREVER</code> instead of <code>K_NO_WAIT</code> on the log queue. The UART is slow, and several lines arrive together. What symptom do you see?",
+        "options": [
+          "The log stops printing entirely",
+          "The sensor reads return -1 at every redraw",
+          "Buttons respond late while the log is busy",
+          "The build fails with a missing symbol"
+        ],
+        "answer": 2,
+        "feedback": [
+          "The log thread still drains the queue, so lines keep printing. The change blocks the caller, not the log.",
+          "The I2C lock is not involved in logging. A log change does not touch the sensor's transfers.",
+          "Right. While the queue is full, the UI thread waits inside hal_log, so button presses wait too. It happens only while the log is busy.",
+          "The code compiles. K_FOREVER is a valid timeout, so this is a behaviour bug, not a build error."
+        ],
+        "hint": "Which thread calls hal_log, and which thread would wait?",
+        "why": "hal_log is called from the UI thread, so a blocking put makes the UI wait for the UART. The fix is K_NO_WAIT with a dropped-line counter, which keeps the UI responsive and makes the loss visible. Blocking on output is a common reason a responsive UI turns sluggish while logging." },
       { "type": "mc",
-        "prompt": "Why does the I2C lock timeout need to be longer than a display flush?",
-        "options": ["Longer than flush", "Shorter than flush", "Equal to flush"],
-        "answer": 0,
-        "why": "A sensor read that queues behind a flush must wait the whole flush before it can take the lock. The tempting answer, shorter, would make the sensor report errors during every redraw." },
+        "prompt": "A teammate sets <code>I2C_LOCK_TIMEOUT_MS</code> to 10. The OLED flush takes about 25 ms and runs every 500 ms. What do you see on the screen?",
+        "options": [
+          "The sensor is dead and never recovers",
+          "The build fails with a timeout error",
+          "LAB6 init failed on every boot",
+          "SENSOR ERR flickers at each 500 ms redraw"
+        ],
+        "answer": 3,
+        "feedback": [
+          "A dead sensor would show SENSOR ERR all the time, not in step with the redraw. Here the flicker lines up with the frames.",
+          "A timeout is a run-time value. The build does not check it, so the code compiles and the failure shows on the bench.",
+          "Start-up runs before any flush, so init works. The failure shows at the redraw, not at boot.",
+          "Right. A sensor read that queues behind a flush waits up to about 25 ms, so the 10 ms timeout fails at every redraw, and the screen flickers in step with the 500 ms frame."
+        ],
+        "hint": "How long can a sensor read wait behind a display flush?",
+        "why": "The worked example puts the flush at about 25 ms, and a read can wait that long for the lock. A 10 ms timeout fails at every redraw. The fix is a timeout reasoned from the flush, about four times its length, and a flicker in step with the redraw points at this cause." },
       { "type": "number",
-        "prompt": "How many application threads run after main() returns in this port?",
-        "answer": 3, "tolerance": 0, "unit": "threads",
-        "why": "The button, sensor and UI threads run in the application. The log thread lives in hal_zephyr.c, so it is a fourth thread that the monitor also uses, and the answer counts only the three that main() starts through the gate." },
-      { "type": "text",
-        "prompt": "What is the name of the semaphore that holds the threads until main() has initialised the devices?",
-        "accept": ["app_ready"],
-        "why": "app_ready is the start gate. The tempting answer, a mutex, would protect a resource rather than order the start-up." },
+        "prompt": "One display flush sends 1080 bytes. Each byte takes 9 clock pulses, counting the ACK, and the bus runs at 400 kHz. How long does the flush take, in ms, not counting the start and stop conditions?",
+        "answer": 24.3, "tolerance": 0.02, "unit": "ms",
+        "wrong": [ { "answer": 21.6, "feedback": "21.6 ms counts 8 bits per byte and leaves out the ACK bit. On I2C each byte takes 9 clock pulses." } ],
+        "hint": "Multiply the bytes by the clock pulses per byte, then divide by the clock rate.",
+        "why": "1080 × 9 = 9720 clock pulses, and 9720 ÷ 400 000 = 0.0243 s, or 24.3 ms. Each transfer also adds a start, an address and a stop, so the real time is a little longer, which is why the lab's figure is about 25 ms. The lock timeout has to outlast this with room to spare." },
       { "type": "mc",
-        "prompt": "The overlay moves the OLED to 0x3D. What happens at build time?",
-        "options": ["Build fails with assertion", "Build passes, screen fails", "Build passes, with warning", "Screen stays blank silently"],
+        "prompt": "A teammate types <code>reg = &lt;0x3d&gt;</code> for the OLED in the overlay and builds. What happens?",
+        "options": [
+          "The build passes, and the screen stays blank",
+          "The build passes, and the sensor reads fail",
+          "The build stops with the BUILD_ASSERT message",
+          "The build passes with a warning in the log"
+        ],
+        "answer": 2,
+        "feedback": [
+          "The screen would be blank on the bench, but the build never gets there. The compile-time check fails first.",
+          "The sensor is at 0x48 and is not affected. The OLED address is the one that fails, and it fails at compile time.",
+          "Right. BUILD_ASSERT compares DT_REG_ADDR with 0x3C while the program is compiled, so a wrong address stops the build with its message. You fix it before anything is flashed.",
+          "There is no warning path. BUILD_ASSERT stops the build; it does not pass with a note."
+        ],
+        "hint": "Which check in hal_zephyr.c runs at compile time?",
+        "why": "A wrong devicetree address should be caught before any hardware is involved. BUILD_ASSERT makes the build fail with its message, so the mistake shows up in seconds. A run-time check would show only as SENSOR ERR on a screen that someone has to read." },
+      { "type": "mc",
+        "prompt": "The log shows <code>LAB6 OK</code> once, and then nothing: no status lines and no screen updates. Every thread is waiting at the start gate. Which call is missing from <code>main()</code>?",
+        "options": [
+          "k_msleep(BUTTON_SCAN_MS)",
+          "k_sem_take(&amp;app_ready)",
+          "k_sem_give(&amp;app_ready)",
+          "k_msgq_get(&amp;log_q, ...)"
+        ],
+        "answer": 2,
+        "feedback": [
+          "The scan delay lives in the button thread. It is not the gate, and a missing delay would make that thread busy, not silent.",
+          "A take in main() would block main itself, and it would not open the gate for the threads. A give is what opens it.",
+          "Right. The gate opens only when main() gives app_ready. Without that give, every thread waits in wait_for_start(), and nothing else runs.",
+          "The log thread drains log_q. It is not the gate, and it does not start the sensor or the UI."
+        ],
+        "hint": "Which call lets the waiting threads through?",
+        "why": "Each thread takes the gate and gives it back, so one give at the end of main() releases all of them. Without it, LAB6 OK prints, the threads stay asleep, and the monitor looks silent. This is the most common cause of a silent port." },
+      { "type": "mc",
+        "prompt": "The button thread posts to <code>button_q</code> only when the mask changes, not on every 5 ms scan. Why?",
+        "options": [
+          "Posting on change keeps repeats out of the queue",
+          "Posting every scan would stop the buttons",
+          "Only the change needs a read of the pins",
+          "The UI reads the message, not the pins"
+        ],
         "answer": 0,
-        "why": "BUILD_ASSERT compares the devicetree address with 0x3C while the program is compiled, so the build stops. The tempting answer, that the build passes and the screen fails, is what a wrong address does when no compile-time check exists." },
-      { "type": "number",
-        "prompt": "hal_i2c_write cannot take i2c_lock within its timeout. What value does it return?",
-        "answer": -1, "tolerance": 0, "unit": "",
-        "why": "The port returns -1 when k_mutex_lock fails (hal_zephyr.c:105-106). The tempting answer, 0, reads as success and would hide a stuck bus." }
+        "feedback": [
+          "Right. The message is a doorbell, so one post per change is enough. Repeats add nothing, since the UI reads the pins itself.",
+          "Posting does not stop the buttons. It only fills queue slots, and the pins are read on every scan either way.",
+          "The thread reads both pins on every scan, because it has to compare them. Only the posting is limited to changes.",
+          "The UI reads the pins itself, so the message is only a wake-up. The message does not replace the read."
+        ],
+        "hint": "What does the UI do when the doorbell rings?",
+        "why": "The message is a wake-up, so a repeat adds nothing, and posting only on change keeps the queue short. The UI still reads the true state of the pins. Sending the state through the queue would give the UI a second copy to keep correct." },
+      { "type": "reflect",
+        "prompt": "Why does the lab choose 100 ms for the lock timeout, and what would you check before accepting a different value?",
+        "hint": "Compare the timeout with the longest time the bus can be busy, not with the redraw period.",
+        "answer": "100 ms is about four times the 25 ms flush, so a sensor read that queues behind the flush has room to get the lock and run its own transfer. A 10 ms timeout fails at every redraw. Before you accept a different value, measure the longest the bus can be held, with the flush and the sensor's transfers included, and keep the timeout above that measured time with margin."
+      }
     ] }
     </script>
   </div>
@@ -322,14 +391,40 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
   <div class="widget quiz" data-title="Spaced review (earlier lessons)">
     <script type="application/json">
     { "questions": [
-      { "type": "text",
-        "prompt": "From lesson 73: what kind of comparison makes a millisecond deadline safe across the counter's wrap?",
-        "accept": ["signed difference", "subtraction", "unsigned subtraction", "signed subtraction"],
-        "why": "Subtracting and comparing the signed result stays correct across the wrap. The tempting answer, a plain less-than comparison, fails at the wrap." },
-      { "type": "text",
-        "prompt": "From lesson 61: the SSD1306 is at which 7-bit address, in hex?",
-        "accept": ["0x3c", "3c"],
-        "why": "The OLED's 7-bit address is 0x3C. The tempting answer, 0x78, is the 8-bit write form, and the HAL takes the 7-bit form." }
+      { "type": "mc",
+        "prompt": "The port's deadline checks use the 32-bit millisecond counter, which wraps about every 49.7 days. Which comparison stays correct across the wrap?",
+        "options": [
+          "Reset the counter every hour",
+          "now &gt;= deadline, unsigned",
+          "now == deadline, tested once",
+          "(int32_t)(now - deadline) &gt;= 0"
+        ],
+        "answer": 3,
+        "feedback": [
+          "Resetting the counter throws away the time base the whole port shares. The fix belongs in the comparison, not in the clock.",
+          "A plain comparison is wrong at the wrap. Just after 49.7 days, now is small, and the test is false for a deadline that has already passed.",
+          "An equality test can miss a deadline entirely, because the loop may pass the exact value between two checks.",
+          "Right. The subtraction is done in unsigned arithmetic, so the difference survives the wrap, and the signed cast reads it as early or late."
+        ],
+        "hint": "Lesson 73 covered this. What survives the wrap?",
+        "why": "Lesson 73's rule is to subtract and then read the sign, so a deadline in the past stays in the past across the wrap. A check that looks right on a bench, which never runs for 49 days, is exactly the kind a code review has to catch." },
+      { "type": "mc",
+        "prompt": "A new board's overlay sets the OLED to <code>reg = &lt;0x78&gt;</code>, copied from a datasheet's 8-bit write address. What happens when the solution builds?",
+        "options": [
+          "The build passes, and the OLED answers at 0x78",
+          "The build passes, with the sensor on the OLED bus",
+          "The build fails, because the address is not 0x3C",
+          "The build passes, and the HAL shifts the address"
+        ],
+        "answer": 2,
+        "feedback": [
+          "A 7-bit address of 0x78 is not the OLED's address. This port's build check expects 0x3C, so the build does not pass unchanged.",
+          "The sensor is at 0x48 on the same bus, and the OLED's address is what changed. The build check looks at the OLED node only.",
+          "Right. 0x78 is the 8-bit write byte, not the 7-bit address. BUILD_ASSERT compares the overlay value with 0x3C while the program is compiled, so the build stops.",
+          "The overlay holds the 7-bit address, and the build check compares that raw value with 0x3C. No HAL shift is involved here."
+        ],
+        "hint": "Lesson 61 gives the OLED's 7-bit address. Which form does the overlay take?",
+        "why": "The overlay takes the 7-bit address, so the 8-bit write byte 0x78 is the wrong form. BUILD_ASSERT turns the mistake into a build error. Copying an 8-bit value from a datasheet is one of the most common I2C mistakes, and a compile-time check catches it before the bench." }
     ] }
     </script>
   </div>
