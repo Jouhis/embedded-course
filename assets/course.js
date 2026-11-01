@@ -32,6 +32,11 @@
  *    The index adds an overall bar plus Export / Import / Reset (a JSON file), and refreshes
  *    when shown again from the back/forward cache. Serve over http (tools/serve.py) so every
  *    page shares one storage origin; some browsers isolate each file:// page.
+ *
+ * 3. Code. Tag every block with its language: <pre><code class="language-c">. Languages: c,
+ *    armasm, bash, powershell, cmake, dts, ini, rust, markdown, yaml, ld (linker script), kconfig,
+ *    and plaintext for logs, tool output and worked arithmetic (not coloured). Write the code as
+ *    plain escaped text; highlight.js adds the colours when the page loads.
  */
 (function () {
   "use strict";
@@ -693,6 +698,61 @@
     });
   }
 
+  // ---------- Syntax highlighting ----------
+  /* <pre><code class="language-c">...</code></pre>. highlight.js (assets/vendor/highlight, built by
+     tools/vendor_highlight.py) is loaded only on pages that have code. "language-plaintext" is
+     left as written, so logs and worked arithmetic keep their own markup. Colours: course.css. */
+  const ASSETS = document.currentScript ? new URL(".", document.currentScript.src).href : "../assets/";
+
+  function registerCourseGrammars(hljs) {
+    if (hljs.getLanguage("ld")) return;
+    const number = { scope: "number", match: /\b(0x[0-9a-fA-F]+|\d+[KM]?)\b/ };
+    hljs.registerLanguage("ld", h => ({
+      name: "GNU linker script",
+      keywords: {
+        $pattern: /[A-Za-z_]\w*/,
+        keyword: "MEMORY SECTIONS ENTRY ORIGIN LENGTH KEEP ALIGN LOADADDR ADDR SIZEOF PROVIDE " +
+                 "PROVIDE_HIDDEN INCLUDE OUTPUT_FORMAT OUTPUT_ARCH AT NOLOAD ASSERT",
+      },
+      contains: [
+        h.C_BLOCK_COMMENT_MODE,
+        number,
+        { scope: "section", match: /(?<![\w.])\.[A-Za-z_][\w.]*/ },   // output and input sections
+        { scope: "variable", match: /\b_[A-Za-z_]\w*/ },              // _sdata, _estack ...
+      ],
+    }));
+    hljs.registerLanguage("kconfig", h => ({
+      name: "Kconfig",
+      keywords: {
+        keyword: "config menuconfig choice endchoice menu endmenu if endif source comment mainmenu " +
+                 "depends on select imply default help prompt range visible",
+        type: "bool tristate string hex int",
+        literal: "y n m",
+      },
+      contains: [h.HASH_COMMENT_MODE, h.QUOTE_STRING_MODE, number,
+        { scope: "variable", match: /\b[A-Z][A-Z0-9_]{2,}\b/ }],
+    }));
+    // GNU assembler sources (startup files, compiler output) use C block comments as well.
+    const asm = hljs.getLanguage("armasm");
+    if (asm) asm.contains.unshift(hljs.C_BLOCK_COMMENT_MODE);
+  }
+
+  function highlightCode() {
+    const blocks = [...document.querySelectorAll('pre > code[class*="language-"]:not(.language-plaintext)')];
+    if (!blocks.length) return;
+    const run = () => {
+      const hljs = window.hljs;
+      if (!hljs) return;
+      registerCourseGrammars(hljs);
+      blocks.forEach(b => { if (!b.dataset.highlighted) hljs.highlightElement(b); });
+    };
+    if (window.hljs) return run();
+    const script = document.createElement("script");
+    script.src = ASSETS + "vendor/highlight/highlight.min.js";
+    script.onload = run;
+    document.head.appendChild(script);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     renderCircuitLinks();
     renderCourseIndex();
@@ -701,6 +761,7 @@
     document.querySelectorAll(".quiz").forEach(renderQuiz);
     renderCompleteBar();
     renderIndexProgress();
+    highlightCode();   // after the quizzes, so code in their prompts is in the page
   });
 
   // Exposed for other components (calculators, drills).

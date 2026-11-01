@@ -25,6 +25,7 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 - **Knowledge first, then skill.** A short explainer, then a hands-on task with a feedback loop (a Wokwi exercise and/or a quiz).
 - **One tangible win**, stated in the `.win` box.
 - Beautiful and printable: Tufte style, short paragraphs (3–5 sentences), clear `<h2>`/`<h3>` headings every few paragraphs, inline SVG diagrams. Long is fine; walls of text are not: break it up with headings, lists, tables, diagrams and worked examples.
+- Code blocks name their language: `<pre><code class="language-c">`. Allowed: `c`, `armasm`, `bash`, `powershell`, `cmake`, `dts`, `ini` (also prj.conf and TOML), `rust`, `markdown`, `yaml`, `ld` (linker script), `kconfig`, and `plaintext` for logs, tool output and worked arithmetic. Write the code as plain escaped text with no `<span>` markup; `course.js` highlights it. Inside quiz JSON, escape the quotes: `<pre><code class=\"language-c\">`. The checker enforces this.
 
 ## 4. Required structure (enforced by `tools/check_course.py`)
 File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/manifest.js`, and `<body data-lesson="<id>">` uses the exact id (`0007`, `lab03`, `cp02`).

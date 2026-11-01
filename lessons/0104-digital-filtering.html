@@ -55,11 +55,11 @@
   <p>
     To know which sample is leaving, the filter stores the last N inputs in a <a href="../reference/glossary.html#ring-buffer">ring buffer</a>. A ring buffer is an array with a write index that wraps back to zero at the end, so the slot the index points at always holds the oldest sample. Each update then costs the same whatever N is. Computer scientists write that cost as O(1), which means constant time, and it is the reason the running sum is worth the extra state.
   </p>
-  <pre><code><span class="k">int32_t</span> ma_update(moving_avg_t *m, <span class="k">int32_t</span> x) {
-    m-&gt;sum += x - m-&gt;buf[m-&gt;idx];          <span class="c">/* add the new sample, remove the oldest */</span>
-    m-&gt;buf[m-&gt;idx] = x;                    <span class="c">/* the oldest slot now holds the newest sample */</span>
-    m-&gt;idx = (<span class="k">uint8_t</span>)((m-&gt;idx + 1u) % m-&gt;window);   <span class="c">/* advance and wrap: this is the ring */</span>
-    <span class="k">return</span> m-&gt;sum / (<span class="k">int32_t</span>)m-&gt;window;      <span class="c">/* the mean of the window */</span>
+  <pre><code class="language-c">int32_t ma_update(moving_avg_t *m, int32_t x) {
+    m-&gt;sum += x - m-&gt;buf[m-&gt;idx];          /* add the new sample, remove the oldest */
+    m-&gt;buf[m-&gt;idx] = x;                    /* the oldest slot now holds the newest sample */
+    m-&gt;idx = (uint8_t)((m-&gt;idx + 1u) % m-&gt;window);   /* advance and wrap: this is the ring */
+    return m-&gt;sum / (int32_t)m-&gt;window;      /* the mean of the window */
 }</code></pre>
   <p>
     Read the code line by line. Line 1 reads <code>buf[idx]</code>, which is the oldest sample, and adds the new value and subtracts that old one in one statement. The order inside the statement is safe, but the order of the next two lines is not: line 2 overwrites the slot, so it must come after line 1 (the first common mistake below shows what goes wrong). Line 3 stores the newest sample in the slot the oldest one just vacated. Line 4 moves the index on, and the <code>%</code> wraps it from N − 1 back to 0. The cast keeps the index in the one byte the struct declares. Line 5 divides the sum by the window size. C integer division truncates toward zero, which is fine for ADC counts because they are never negative.
@@ -172,11 +172,11 @@
   <p>
     Here is the fixed-point EMA with numbers. Prime the state at 0, as the host test does, and feed a steady input of 5. The target is 5 × 256 = 1280. The first update adds (1280 − 0) ÷ 8 = 160 to the state, and the output is (160 + 128) ÷ 256 = 1 after rounding. The second update adds (1280 − 160) ÷ 8 = 140, so the state is 300 and the output is still 1. The state keeps climbing, and the output first reaches 5 at sample 18, when the state passes 1152, which is 4.5 codes. The integer version, from the same start, never moves at all.
   </p>
-  <pre><code><span class="c">/* state holds y * 256 (EMA_FRAC_BITS = 8) */</span>
-<span class="k">int32_t</span> target = x * (1 &lt;&lt; 8);                      <span class="c">/* scale the input into the state's units */</span>
-<span class="k">if</span> (!e-&gt;primed) { e-&gt;state = target; e-&gt;primed = <span class="k">true</span>; }
-<span class="k">else</span>  e-&gt;state += (target - e-&gt;state) &gt;&gt; e-&gt;k;   <span class="c">/* the IIR update, alpha = 1 / 2^k */</span>
-<span class="k">return</span> (e-&gt;state + 128) &gt;&gt; 8;              <span class="c">/* round to nearest on the way out */</span></code></pre>
+  <pre><code class="language-c">/* state holds y * 256 (EMA_FRAC_BITS = 8) */
+int32_t target = x * (1 &lt;&lt; 8);                      /* scale the input into the state's units */
+if (!e-&gt;primed) { e-&gt;state = target; e-&gt;primed = true; }
+else  e-&gt;state += (target - e-&gt;state) &gt;&gt; e-&gt;k;   /* the IIR update, alpha = 1 / 2^k */
+return (e-&gt;state + 128) &gt;&gt; 8;              /* round to nearest on the way out */</code></pre>
   <p>
     Line by line: the first line scales the input by 256, so it lives in the same units as the state. The <code>if</code> primes the state on the first call, so it starts at the first reading and not at zero (common mistake 3 explains why). The <code>else</code> applies the IIR equation with the shift. The last line adds half of 256 and shifts by 8, which divides by 256 with rounding. Notice that the state is never divided by 256 inside the loop. Only the output is, so the fraction bits survive from one sample to the next.
   </p>
@@ -189,13 +189,13 @@
   <p>
     For a window of three samples, the median is the middle value once the three are sorted. The median of (10, 1000, 10) is 10, so the spike is gone. The cost is a delay of one sample on a real step, because the median needs the new value and the one before it. A worked sequence shows both effects. The inputs 10, 10, 10, 1000, 10 give the outputs 10, 10, 10, 10, 10. The inputs 10, 10, 10, 20, 20 give 10, 10, 10, 10, 20: the real edge arrives one sample late. Use the median first and the averaging second, so the spike never reaches the average.
   </p>
-  <pre><code><span class="k">int32_t</span> median3_update(median3_t *m, <span class="k">int32_t</span> x) {
-    m-&gt;hist[0] = m-&gt;hist[1];               <span class="c">/* shift the three-sample history */</span>
+  <pre><code class="language-c">int32_t median3_update(median3_t *m, int32_t x) {
+    m-&gt;hist[0] = m-&gt;hist[1];               /* shift the three-sample history */
     m-&gt;hist[1] = m-&gt;hist[2];
     m-&gt;hist[2] = x;
-    <span class="k">if</span> (m-&gt;count &lt; 2u) { m-&gt;count++; <span class="k">return</span> x; }   <span class="c">/* no full window yet */</span>
-    <span class="k">int32_t</span> a = m-&gt;hist[0], b = m-&gt;hist[1], c = m-&gt;hist[2];
-    <span class="k">return</span> max32(min32(a, b), min32(max32(a, b), c));  <span class="c">/* median, without sorting */</span>
+    if (m-&gt;count &lt; 2u) { m-&gt;count++; return x; }   /* no full window yet */
+    int32_t a = m-&gt;hist[0], b = m-&gt;hist[1], c = m-&gt;hist[2];
+    return max32(min32(a, b), min32(max32(a, b), c));  /* median, without sorting */
 }</code></pre>
   <p>
     Line by line: the first three assignments keep the last three inputs in a small history, oldest first. The <code>if</code> passes the input straight through for the first two calls, because there are not yet three samples to compare. The return line computes the median without sorting. <code>min32(a, b)</code> is the smaller of the two oldest values. <code>max32(a, b)</code> is the larger, and <code>min32(max32(a, b), c)</code> is the smaller of that larger value and the newest one. The outer <code>max32</code> then picks the larger of the two results, which is the middle value of the three. Check it on (10, 1000, 10): the result is 10. On (2, 9, 5) it gives 5, the middle of the three.
@@ -322,7 +322,7 @@
         "why": "Each sample closes one-eighth of the remaining gap, so the filter needs about 7.5 samples to reach 63 %. At 100 Hz that is 75 ms. A controller that reacts to a change should know this delay, because it sets how fast the loop can respond."
       },
       { "type": "mc",
-        "prompt": "What does <code>y</code> hold after this loop, if the input is a steady 5?<pre><code>int32_t y = 0;\nfor (int i = 0; i &lt; 1000; i++)\n    y += (5 - y) &gt;&gt; 3;</code></pre>",
+        "prompt": "What does <code>y</code> hold after this loop, if the input is a steady 5?<pre><code class=\"language-c\">int32_t y = 0;\nfor (int i = 0; i &lt; 1000; i++)\n    y += (5 - y) &gt;&gt; 3;</code></pre>",
         "options": ["0", "4", "5"],
         "answer": 0,
         "feedback": [

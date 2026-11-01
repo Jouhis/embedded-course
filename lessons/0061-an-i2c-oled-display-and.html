@@ -178,63 +178,63 @@
   <p>
     The driver is three small files: <code>ssd1306.c</code> for the display, <code>menu.c</code> for the menu, and <code>main.c</code> for the buttons and the loop. The excerpts below are from the reference solution. Start with the one-command helper, which is the smallest unit of the protocol.
   </p>
-  <pre><code><span class="k">static void</span> send_cmd(<span class="k">uint8_t</span> cmd) {
-    <span class="k">uint8_t</span> buf[2] = {CTRL_CMD, cmd};          <span class="c">/* 0x80: Co = 1, D/C# = 0 */</span>
-    i2c_write_blocking(s_bus, SSD1306_ADDR, buf, 2, <span class="k">false</span>);
+  <pre><code class="language-c">static void send_cmd(uint8_t cmd) {
+    uint8_t buf[2] = {CTRL_CMD, cmd};          /* 0x80: Co = 1, D/C# = 0 */
+    i2c_write_blocking(s_bus, SSD1306_ADDR, buf, 2, false);
 }</code></pre>
   <p>
     <code>CTRL_CMD</code> is <code>0x80</code>, the control byte for one command. The buffer holds the control byte and the command, and <code>i2c_write_blocking()</code> sends them as one write. The last argument, <code>false</code>, means "send a STOP at the end". Each command is therefore its own complete transfer, which is simple and easy to see on a logic analyzer. The helper is <code>static</code> because nothing outside this file should send raw commands.
   </p>
-  <pre><code><span class="k">static const uint8_t</span> init[] = {
-    0xAE,              <span class="c">/* display off while configuring */</span>
-    0xD5, 0x80,        <span class="c">/* clock divide ratio 1, default oscillator */</span>
-    0xA8, 0x3F,        <span class="c">/* multiplex ratio 64 (rows - 1) */</span>
-    0x20, 0x02,        <span class="c">/* memory addressing mode: page */</span>
-    0xA1,              <span class="c">/* segment remap: column 127 on SEG0 */</span>
-    0xC8,              <span class="c">/* COM scan from COM[N-1] down to COM0 */</span>
-    0xDA, 0x12,        <span class="c">/* COM pin layout for 128x64 */</span>
-    0xAF,              <span class="c">/* display on */</span>
+  <pre><code class="language-c">static const uint8_t init[] = {
+    0xAE,              /* display off while configuring */
+    0xD5, 0x80,        /* clock divide ratio 1, default oscillator */
+    0xA8, 0x3F,        /* multiplex ratio 64 (rows - 1) */
+    0x20, 0x02,        /* memory addressing mode: page */
+    0xA1,              /* segment remap: column 127 on SEG0 */
+    0xC8,              /* COM scan from COM[N-1] down to COM0 */
+    0xDA, 0x12,        /* COM pin layout for 128x64 */
+    0xAF,              /* display on */
 };</code></pre>
   <p>
     The init table is a list of command bytes, and each pair in it is a command with its argument. <code>0xAE</code> turns the panel off while it is configured, and <code>0xAF</code> turns it on at the end. <code>0xD5 0x80</code> sets the clock divide ratio to one. <code>0xA8 0x3F</code> sets the multiplex ratio: the controller scans 64 rows, and the datasheet stores that as 63, which is 0x3F. <code>0x20 0x02</code> chooses page addressing, as described above. <code>0xA1</code> maps column 127 to segment 0, so that the picture is not mirrored on the panel. <code>0xC8</code> sets the scan direction, and <code>0xDA 0x12</code> selects the COM pin layout for this 128 by 64 panel (datasheet section 10.1.18). The table omits a few values that set contrast and timing, which the full file in the project includes. Each value is the one the reference driver uses, and the project's comments name the matching sections.
   </p>
-  <pre><code><span class="k">void</span> ssd1306_draw_char(<span class="k">uint8_t</span> page, <span class="k">uint8_t</span> x, <span class="k">char</span> c) {
-    <span class="k">if</span> (page &gt;= SSD1306_PAGES || x + CHAR_ADVANCE &gt; SSD1306_WIDTH) {
-        <span class="k">return</span>;                       <span class="c">/* off the panel: drop it */</span>
+  <pre><code class="language-c">void ssd1306_draw_char(uint8_t page, uint8_t x, char c) {
+    if (page &gt;= SSD1306_PAGES || x + CHAR_ADVANCE &gt; SSD1306_WIDTH) {
+        return;                       /* off the panel: drop it */
     }
-    <span class="k">const uint8_t</span> *cols = font_glyph(c);
-    <span class="k">for</span> (<span class="k">uint8_t</span> i = 0; i &lt; GLYPH_WIDTH; i++) {
-        s_fb[page][x + i] = cols[i];        <span class="c">/* one column byte per RAM byte */</span>
+    const uint8_t *cols = font_glyph(c);
+    for (uint8_t i = 0; i &lt; GLYPH_WIDTH; i++) {
+        s_fb[page][x + i] = cols[i];        /* one column byte per RAM byte */
     }
-    s_fb[page][x + GLYPH_WIDTH] = 0x00;     <span class="c">/* the blank column after the glyph */</span>
+    s_fb[page][x + GLYPH_WIDTH] = 0x00;     /* the blank column after the glyph */
 }</code></pre>
   <p>
     The first <code>if</code> is the bounds check. <code>s_fb</code> is a fixed array of 8 pages by 128 columns, so a page or column outside it would write into some other variable's memory. The check uses <code>CHAR_ADVANCE</code>, which is six, so a character that would end past the right edge is dropped as a whole. The line <code>font_glyph(c)</code> returns a pointer to the five column bytes of the character. The loop copies them into the framebuffer, one byte per column. Each column byte goes to one RAM byte, which is why a glyph's bit 0 becomes the top pixel of the page. The last line writes the blank column that separates this character from the next one.
   </p>
-  <pre><code><span class="k">void</span> ssd1306_flush(<span class="k">void</span>) {
-    <span class="k">static uint8_t</span> frame[1 + SSD1306_WIDTH];   <span class="c">/* the control byte, then one page */</span>
-    <span class="k">for</span> (<span class="k">uint8_t</span> page = 0; page &lt; SSD1306_PAGES; page++) {
-        send_cmd(CMD_PAGE_START | page);     <span class="c">/* 0xB0 | page */</span>
-        send_cmd(CMD_COL_LOW);               <span class="c">/* column 0, low nibble */</span>
-        send_cmd(CMD_COL_HIGH);              <span class="c">/* column 0, high nibble */</span>
-        frame[0] = CTRL_DATA;                <span class="c">/* 0x40: Co = 0, D/C# = 1 */</span>
+  <pre><code class="language-c">void ssd1306_flush(void) {
+    static uint8_t frame[1 + SSD1306_WIDTH];   /* the control byte, then one page */
+    for (uint8_t page = 0; page &lt; SSD1306_PAGES; page++) {
+        send_cmd(CMD_PAGE_START | page);     /* 0xB0 | page */
+        send_cmd(CMD_COL_LOW);               /* column 0, low nibble */
+        send_cmd(CMD_COL_HIGH);              /* column 0, high nibble */
+        frame[0] = CTRL_DATA;                /* 0x40: Co = 0, D/C# = 1 */
         memcpy(&amp;frame[1], s_fb[page], SSD1306_WIDTH);
-        i2c_write_blocking(s_bus, SSD1306_ADDR, frame, <span class="k">sizeof</span> frame, <span class="k">false</span>);
+        i2c_write_blocking(s_bus, SSD1306_ADDR, frame, sizeof frame, false);
     }
 }</code></pre>
   <p>
     Flush is the only function that moves pixels to the panel. For each of the eight pages it sends the three positioning commands, then one write holding the control byte and the 128 bytes of that page. The <code>frame</code> array is <code>static</code> so that the 129-byte buffer is not rebuilt on the stack each call. The <code>memcpy()</code> copies one page of the framebuffer into the frame, after the control byte. Because the control byte is <code>0x40</code>, the panel reads every byte after it as pixels. Without that byte, the first pixel value would be read as a command.
   </p>
-  <pre><code><span class="k">void</span> menu_next(menu_t *m) {
-    m-&gt;cursor = (<span class="k">uint8_t</span>)((m-&gt;cursor + 1) % m-&gt;count);
+  <pre><code class="language-c">void menu_next(menu_t *m) {
+    m-&gt;cursor = (uint8_t)((m-&gt;cursor + 1) % m-&gt;count);
 }</code></pre>
   <p>
     This is the whole cursor logic. The modulo by <code>count</code> keeps the result between 0 and <code>count - 1</code>. The cast back to <code>uint8_t</code> keeps the type the struct uses. The menu does not check which item is selected. The action table is the only thing that decides what a selection does.
   </p>
-  <pre><code><span class="k">bool</span> down_now = pressed(BTN_DOWN);
-<span class="k">if</span> (down_now &amp;&amp; !down_prev) {        <span class="c">/* falling edge: a new press only */</span>
+  <pre><code class="language-c">bool down_now = pressed(BTN_DOWN);
+if (down_now &amp;&amp; !down_prev) {        /* falling edge: a new press only */
     menu_next(&amp;s_menu);
-    dirty = <span class="k">true</span>;                  <span class="c">/* redraw after this iteration */</span>
+    dirty = true;                  /* redraw after this iteration */
 }
 down_prev = down_now;</code></pre>
   <p>

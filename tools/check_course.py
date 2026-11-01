@@ -21,6 +21,10 @@ LESSONS = ROOT / "lessons"
 CHAR_SPREAD = 0.50          # longest option may be at most 50 % longer than the shortest
 PLACEHOLDERS = ["LESSON TITLE", "ONE CONCRETE", "DESCRIBE THE CHANGE", "OBSERVABLE RESULT",
                 "TITLE OF THE SINGLE", "SUGGESTED FOLLOW-UP", 'data-lesson="0000"', "TODO", "Lorem"]
+# Languages bundled in assets/vendor/highlight (tools/vendor_highlight.py) plus the two course.js
+# grammars (ld, kconfig). "plaintext" is for logs, tool output and worked arithmetic: never coloured.
+CODE_LANGUAGES = {"c", "armasm", "bash", "powershell", "cmake", "dts", "ini", "rust", "markdown",
+                  "yaml", "ld", "kconfig", "plaintext"}
 
 
 def load_manifest():
@@ -345,6 +349,20 @@ def check_file(path, manifest):
 
     if "manifest.js" not in text or "course.js" not in text:
         errors.append("must load ../assets/manifest.js and ../assets/course.js")
+
+    # Code blocks: every <pre><code> names its language, so course.js can highlight it.
+    # Quiz prompts hold code too, with the quotes escaped inside the JSON.
+    for m in re.finditer(r'<pre><code(?: class=\\?"([^"\\]*)\\?")?>', text):
+        lang = (m.group(1) or "").removeprefix("language-")
+        if lang not in CODE_LANGUAGES:
+            line = text.count("\n", 0, m.start()) + 1
+            errors.append(f"line {line}: <pre><code> needs class=\"language-X\", X one of {', '.join(sorted(CODE_LANGUAGES))}"
+                          + (f" (got {m.group(1)!r})" if m.group(1) else ""))
+
+    # Callout boxes are block elements; inside a <p> as a <span> they break mid-line.
+    for m in re.finditer(r'<span class="(goal|win|note|warning|source|ask|interview)"', text):
+        line = text.count("\n", 0, m.start()) + 1
+        errors.append(f"line {line}: .{m.group(1)} is a box: use <div class=\"{m.group(1)}\"> outside the paragraph, not a <span>")
 
     for link in s.links:
         if re.match(r"^(https?:|mailto:|#|data:)", link):

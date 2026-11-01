@@ -65,15 +65,15 @@
   <p>
     A driver interface follows three habits. First, the header names what the driver does, not how. Second, the object the caller works on is an <strong>opaque handle</strong>: a pointer to a struct whose fields are hidden in the implementation file, so the caller cannot reach into it. Third, every call that can fail returns a status, so the caller can check it. The next code block is the LED interface you will build in the hands-on task.
   </p>
-  <pre><code><span class="c">/* led.h: the whole interface. No pins, no SDK calls, no printf. */</span>
-<span class="k">#ifndef</span> LED_H
-<span class="k">#define</span> LED_H
-<span class="k">#include</span> <span class="s">&lt;stdbool.h&gt;</span>
+  <pre><code class="language-c">/* led.h: the whole interface. No pins, no SDK calls, no printf. */
+#ifndef LED_H
+#define LED_H
+#include &lt;stdbool.h&gt;
 
-<span class="k">void</span> led_init(<span class="k">void</span>);        <span class="c">/* call once, first; leaves the LED off */</span>
-<span class="k">void</span> led_set(<span class="k">bool</span> on);      <span class="c">/* true lights the LED */</span>
-<span class="k">bool</span> led_get(<span class="k">void</span>);         <span class="c">/* the level the driver last applied */</span>
-<span class="k">#endif</span></code></pre>
+void led_init(void);        /* call once, first; leaves the LED off */
+void led_set(bool on);      /* true lights the LED */
+bool led_get(void);         /* the level the driver last applied */
+#endif</code></pre>
   <p>
     The LED interface has no handle, because there is only one LED in the program. A sensor with two instances needs one. The handle form is the same idea with a struct pointer as the first argument, and it is the pattern used by the HAL in the critique below.
     <span class="sidenote">C has no classes, so "opaque" is a convention: the header forward-declares the struct, and the .c file defines it. Lab 4 meets the same idea in the STM32 HAL's <code>UART_HandleTypeDef</code> (see the <a href="../reference/glossary.html#hal-handle">HAL handle</a> entry).</span>
@@ -88,13 +88,13 @@
   <p>
     CMake makes the choice from a cache variable, and it compiles one source file into the program:
   </p>
-  <pre><code><span class="k">set</span>(LED_BACKEND <span class="s">"gpio"</span> CACHE STRING <span class="s">"LED backend: gpio or fake"</span>)
-<span class="k">if</span>(LED_BACKEND STREQUAL <span class="s">"gpio"</span>)
-    <span class="k">set</span>(LED_SOURCE led_gpio.c)
-<span class="k">elseif</span>(LED_BACKEND STREQUAL <span class="s">"fake"</span>)
-    <span class="k">set</span>(LED_SOURCE led_fake.c)
-<span class="k">endif</span>()
-<span class="k">add_executable</span>(blink main.c <span class="s">${LED_SOURCE}</span>)</code></pre>
+  <pre><code class="language-cmake">set(LED_BACKEND "gpio" CACHE STRING "LED backend: gpio or fake")
+if(LED_BACKEND STREQUAL "gpio")
+    set(LED_SOURCE led_gpio.c)
+elseif(LED_BACKEND STREQUAL "fake")
+    set(LED_SOURCE led_fake.c)
+endif()
+add_executable(blink main.c ${LED_SOURCE})</code></pre>
   <p>
     If you add both files, the linker stops with <em>multiple definition</em> errors, because two functions share one name. That error is useful: it proves that the program has one backend, and it tells you which name to look for.
     <span class="sidenote">The duplicate-symbol error is the linker enforcing the rule that each global name has one definition. Lesson 41 shows the link step that does this.</span>
@@ -105,18 +105,18 @@
   <p>
     The other way is an <strong>ops table</strong>: a struct of function pointers, plus a context pointer that the functions receive. The caller picks the table at run time, and each call goes through one pointer. Function pointers are lesson 49's callbacks; here they form the whole interface.
   </p>
-  <pre><code><span class="k">typedef struct</span> {
-    <span class="k">void</span> (*init)(<span class="k">void</span> *ctx);
-    <span class="k">void</span> (*set)(<span class="k">void</span> *ctx, <span class="k">bool</span> on);
+  <pre><code class="language-c">typedef struct {
+    void (*init)(void *ctx);
+    void (*set)(void *ctx, bool on);
 } led_ops_t;
 
-<span class="k">typedef struct</span> {
-    <span class="k">const</span> led_ops_t *ops;   <span class="c">/* which backend: gpio or fake */</span>
-    <span class="k">void</span> *ctx;               <span class="c">/* the backend's own data, such as a pin number */</span>
+typedef struct {
+    const led_ops_t *ops;   /* which backend: gpio or fake */
+    void *ctx;               /* the backend's own data, such as a pin number */
 } led_t;
 
-<span class="k">static inline void</span> led_set(led_t *l, <span class="k">bool</span> on) {
-    l-&gt;ops-&gt;set(l-&gt;ctx, on);            <span class="c">/* one indirect call: a load and a branch */</span>
+static inline void led_set(led_t *l, bool on) {
+    l-&gt;ops-&gt;set(l-&gt;ctx, on);            /* one indirect call: a load and a branch */
 }</code></pre>
   <p>
     The ops table can change the backend while the program runs, it can hold two LEDs with two different backends, and a test can pass in a fake without relinking. Its costs are one indirect call on every use, a context pointer for every object, and the table itself in flash. Most firmware uses link-time choice for a single board, and an ops table when one program must drive several devices of the same kind.
@@ -141,24 +141,24 @@
   <p>
     The fix for all five items is an opaque handle with a status enum. The board file defines <code>struct hal</code>, and the application never sees its fields. The header needs <code>stdint.h</code>, <code>stdbool.h</code> and <code>stddef.h</code>, and a <code>hal_pin_t</code> enum like Lab 4's, which the excerpt leaves out. Lab 4's files are not changed by this lesson.
   </p>
-  <pre><code><span class="k">typedef enum</span> {
+  <pre><code class="language-c">typedef enum {
     HAL_OK = 0,
-    HAL_ERR_ARG,        <span class="c">/* a null pointer or a zero-length transfer */</span>
-    HAL_ERR_PIN,        <span class="c">/* a pin the board does not have */</span>
-    HAL_ERR_BUS,        <span class="c">/* a NACK or an arbitration loss */</span>
+    HAL_ERR_ARG,        /* a null pointer or a zero-length transfer */
+    HAL_ERR_PIN,        /* a pin the board does not have */
+    HAL_ERR_BUS,        /* a NACK or an arbitration loss */
     HAL_ERR_TIMEOUT
 } hal_status_t;
 
-<span class="k">typedef struct</span> hal hal_t;          <span class="c">/* opaque: the board file defines it */</span>
+typedef struct hal hal_t;          /* opaque: the board file defines it */
 
-<span class="k">typedef struct</span> {
+typedef struct {
     uint8_t  i2c_port;
-    uint32_t i2c_timeout_us;     <span class="c">/* units in the name, so no one guesses */</span>
+    uint32_t i2c_timeout_us;     /* units in the name, so no one guesses */
 } hal_config_t;
 
-hal_status_t hal_init(hal_t **out, <span class="k">const</span> hal_config_t *cfg);
-hal_status_t hal_gpio_read(hal_t *h, hal_pin_t pin, <span class="k">bool</span> *pressed);
-hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, <span class="k">const</span> uint8_t *data, <span class="k">size_t</span> len);</code></pre>
+hal_status_t hal_init(hal_t **out, const hal_config_t *cfg);
+hal_status_t hal_gpio_read(hal_t *h, hal_pin_t pin, bool *pressed);
+hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, const uint8_t *data, size_t len);</code></pre>
   <p>
     Three things changed. The handle is the first argument, which gives each board or test its own instance, and <code>hal_init()</code> hands the handle back. The status is returned, and the value goes out through a pointer, so the caller can check both. The config struct has named fields, with the units in the names, so a call site does not need a comment to be read. The board file can keep its handle in static storage, so nothing is allocated on the heap (lesson 78 covers why that matters).
     <span class="sidenote">Item 4 asks for two enums, one for output pins and one for input pins. The header above keeps one enum to stay short; splitting it is the exercise in the critique list.</span>
