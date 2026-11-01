@@ -6,29 +6,50 @@ and STM32 Blue Pill, simulated in [Wokwi](https://wokwi.com) inside VS Code. No 
 
 Version: see [`VERSION`](VERSION). Known issues: [`CHANGELOG.md`](CHANGELOG.md).
 
-## First time: step by step
+## Getting started
+
+### Just reading: open the website
+
+Read the course at **<https://jouhis.github.io/embedded-course/>**, on a computer or a phone. Nothing
+to install. Your progress ("Mark lesson complete") and quiz answers are saved in your own browser, so
+nobody else sees or overwrites them. They stay on that device, though: use **Export progress** on the
+index page to back them up or move them to another browser.
+
+### Doing the exercises: set up your computer
+
+The hands-on parts build firmware and run it in the Wokwi simulator, so they need a computer
+(Windows, macOS or Linux). Everything is free.
 
 1. **Install the prerequisites:** [Git](https://git-scm.com/downloads), [Python 3](https://www.python.org/downloads/)
    (on Windows tick "Add python.exe to PATH") and [VS Code](https://code.visualstudio.com/).
    On Windows, also enable `code` on the PATH when the VS Code installer asks; it does this by default.
-2. **Clone the repo.** It is private, so sign in to GitHub first: `gh auth login` with the
-   [GitHub CLI](https://cli.github.com/), or let Git's credential manager open a browser on the first clone.
+2. **Get your own copy of the repository.** The simplest is to clone it:
    ```sh
    git clone https://github.com/Jouhis/embedded-course
    cd embedded-course
    ```
+   If you want to keep your exercise solutions on GitHub, click **Fork** on the repository page
+   first and clone your fork instead.
 3. **Run the setup.** It downloads several hundred MB, so give it a while:
    ```sh
    setup.cmd          # Windows: double-click it, or type .\setup.cmd in PowerShell
    ./setup.sh         # macOS, Linux
    ```
    It must end with `== Done`. If it lists problems instead, fix them and run it again.
-4. **Get a free Wokwi licence:** in VS Code press Ctrl+Shift+P (Cmd+Shift+P on macOS), run
-   **Wokwi: Request a New License** and sign in to Wokwi in the browser that opens.
-5. **Open the course:** double-click `Open course.cmd` (Windows) or run `python3 tools/serve.py`
-   (macOS, Linux), then start with lesson 1.
+4. **Get your own free Wokwi licence:** in VS Code press Ctrl+Shift+P (Cmd+Shift+P on macOS), run
+   **Wokwi: Request a New License** and sign in to Wokwi in the browser that opens. The licence is
+   personal: everyone signs in with their own Wokwi account.
+5. **Set up an AI assistant (recommended).** The lessons say "Ask your teacher": that is an AI coding
+   assistant opened in the course folder, such as [Claude Code](https://claude.com/claude-code). It can
+   read the lessons and your code, explain what's unclear and quiz you on older lessons. `NOTES.md`
+   tells it how the course works. You need your own account for it.
+6. **Open the course:** double-click `Open course.cmd` (Windows) or run `python3 tools/serve.py`
+   (macOS, Linux), then start with lesson 1. This local copy keeps its own progress, separate from
+   the website's; use Export and Import on the index page to move it across.
 
-The sections below explain each step in more detail.
+To get new lessons and fixes later, run `git pull` in the course folder.
+
+The sections below explain the setup in more detail.
 
 ## Get it
 
@@ -44,7 +65,7 @@ of which fails to clone. The course doesn't need them.
 
 ## Read the course (nothing to install)
 
-The course is plain HTML. Either:
+The course is plain HTML. Read it on the [website](https://jouhis.github.io/embedded-course/), or from your copy:
 
 - **Double-click `Open course.cmd`** (Windows; needs Python). It serves the course on
   `http://localhost:8000` and opens your browser. On macOS and Linux, run `python3 tools/serve.py`.
