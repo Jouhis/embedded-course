@@ -7,7 +7,7 @@
 - Computer architecture helped them a lot at university, so lean on it: explain peripherals and C behaviour in terms of what the CPU and bus actually do.
 - Career focus: plain C with vendor SDKs, professional practice (testing, CI, code review), interview drills.
 - Can already program; new to electronics. Don't over-explain programming basics, but never skip electronics fundamentals.
-- Owns a QIDI Q2 3D printer (Klipper). Printer hardware is a good source of real-world examples: stepper drivers, thermistors, heater MOSFETs, the MCU-to-host link.
+- Real-world examples come from common products. Klipper (open 3D-printer firmware) is a well-documented one: stepper drivers, thermistors, heater MOSFETs, the MCU-to-host link.
 
 ## Course mechanics (for the teacher)
 - Course outline: `COURSE-PLAN.md`. The lesson list is generated into `assets/manifest.js` by `python tools/build_manifest.py`.

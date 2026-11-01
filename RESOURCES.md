@@ -194,7 +194,7 @@
 - [SparkFun: LED Current Limiting Resistors](https://www.sparkfun.com/tutorials/219)
   A short tutorial on R = (supply − forward voltage) ÷ current. Use for: lesson 9.
 - [Klipper Config Reference](https://www.klipper3d.org/Config_Reference.html)
-  The 3D printer firmware's configuration reference (thermistor pull-up of 4.7 kΩ by default, heater pins). Use for: real-world divider and heater examples on the learner's QIDI Q2.
+  The 3D printer firmware's configuration reference (thermistor pull-up of 4.7 kΩ by default, heater pins). Use for: real-world divider and heater examples from a shipping 3D-printer firmware.
 - [Divide and conquer (Arm architectures and processors blog)](https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/divide-and-conquer)
   Which Cortex-M cores have hardware SDIV and UDIV, with a table of M0, M0+, M1, M3 and M4. Use for: lesson 21, the reason a software divide is slow on the M0+.
 
