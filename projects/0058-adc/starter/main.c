@@ -10,7 +10,7 @@
 #define NTC_INPUT       0       // adc_select_input() takes the AINSEL number, not the GPIO number
 #define POT_INPUT       1
 #define ADC_FULL_SCALE  1023    // TODO(learner): this is the 10-bit value from Wokwi's docs. The Pico ADC is 12-bit.
-#define ADC_VREF        3.3f    // volts: ADC_AVDD is a nominal 3.3 V (RP2040 datasheet, Table 591)
+#define ADC_VREF        3.3f    // volts: ADC_AVDD, the ADC's reference, is 3.3 V on the Pico (RP2040 datasheet, section 4.9)
 #define ADC_CODES       4096.0f // 2^12
 #define OVERSAMPLE      1       // TODO(learner): set this to 16 once read_averaged() averages
 #define NTC_BETA        3950.0f

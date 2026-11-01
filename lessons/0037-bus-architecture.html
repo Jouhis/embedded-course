@@ -17,11 +17,29 @@
     By the end of this lesson you can trace one register write from the core to a peripheral on an RP2040 or an STM32F103, name the bus it crosses, and say which accesses can run in parallel.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>bus</strong> is a set of wires and a protocol that carries an address, data and a control signal from one device to another. The device that starts a transfer is the <em>master</em>: the core, or a DMA controller. The device that answers is the <em>slave</em>: memory, or a peripheral register block. Your architecture course will know the shared-bus problem: one bus means one transfer at a time.
-    <span class="sidenote">A <strong>bus matrix</strong> (also called a crossbar) removes most of that limit. Each master has a path to each slave, so transfers to different slaves can run at the same time. Two masters that want the same slave still have to take turns.</span>
+    Lesson 36 named the memory tiers, and it said that the core reaches memory "on the same bus". This lesson opens that bus. Lesson 34 showed the core pushing an eight-word frame at interrupt entry, and that push is a run of bus writes. Lesson 38 comes next and shows how a bus address becomes a register. Here we learn what a bus is, which bus a given address uses, and what each access costs in cycles.
   </p>
+  <p>
+    Consider a 3D printer's controller again. The main loop updates a motor's step counter. An interrupt, from a timer or from the endstop switch, also writes to a register that controls the motor's enable pin. A DMA controller copies sensor readings into RAM at the same time. Each of these is a bus master, and each one reaches a slave: RAM, a timer block or a GPIO block. Whether they can proceed together, and how long each one waits, depends on the bus design. If the design is wrong, the printer loses steps at the worst moment. The bus is therefore part of the firmware's timing, not only part of the hardware.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+
+  <h3>A bus is wires and a protocol</h3>
+  <p>
+    A <strong>bus</strong> is a set of wires and a set of rules that carry three things from one device to another: an address, data, and a control signal that says whether the transfer is a read or a write and how big it is. The device that starts a transfer is the <strong>bus master</strong>. On a Cortex-M the core is a master, and so is a DMA controller, which can move data without the core. The device that answers is the <strong>bus slave</strong>. Memory is a slave, and so is a peripheral's register block. A master picks an address, the bus routes the transfer to one slave, and the slave answers.
+  </p>
+  <p>
+    Your architecture course will know the shared-bus problem. If every master and every slave share one set of wires, only one transfer can happen at a time, and the others wait. That is simple and cheap, and it is slow when several masters want the bus at once.
+  </p>
+
+  <h3>A crossbar gives each master its own path</h3>
+  <p>
+    A <a href="../reference/glossary.html#bus-matrix-crossbar">bus matrix</a>, also called a crossbar, removes most of that limit. Each master has a path to each slave, so transfers to different slaves can run at the same time. Two masters that want the same slave still take turns. The turn-taking is called <strong>arbitration</strong>, and it is the only part that makes one master wait.
+  </p>
+  <span class="sidenote">A crossbar with four masters and ten slave ports is a grid of up to forty possible paths, and it is much more wiring than a shared bus. The area and power cost is why chips use it for memory, which needs bandwidth, and not for every peripheral.</span>
 
   <figure>
     <svg viewBox="0 0 560 210" role="img" aria-label="Four masters on the left connect through a crossbar to memory and peripheral ports on the right">
@@ -59,31 +77,71 @@
     <figcaption>Figure 1. A simplified RP2040 bus fabric. The crossbar gives each master its own path to each slave port, so four accesses to four different ports can run in the same cycle.</figcaption>
   </figure>
 
-  <h2>RP2040: a crossbar with ten ports</h2>
+  <h3>AHB-Lite, APB and the bridge between them</h3>
   <p>
-    The RP2040 bus fabric connects four bus masters (core 0, core 1, and the read and write ports of the DMA) to ten downstream ports: ROM, XIP flash, SRAM 0 to 5, a shared port for the fast AHB-Lite peripherals, and a bridge to all the APB peripherals. The four masters can reach four different ports in the same cycle, and the fabric adds no wait states to an AHB-Lite access. At a 125 MHz system clock the datasheet gives a sustained bandwidth of 2.0 GBps. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1 (Bus Fabric) and 2.1.1 (AHB-Lite Crossbar)</a>.
+    The RP2040 datasheet names two kinds of bus in its fabric. The fast side is the <strong>AHB-Lite</strong> crossbar, which connects the masters to memory and to the fast peripherals. The datasheet says that "the bus fabric does not add wait states to any AHB-Lite slave access" (section 2.1). The slow side is the <strong>APB</strong> peripheral bus, which is reached through an <strong>APB bridge</strong>. The bridge is a component, and the APB is the bus behind it. The datasheet describes the bridge as the interface between "the high-speed main AHB-Lite interconnect" and "the lower-bandwidth peripherals" (section 2.1.3).
   </p>
   <p>
-    The SRAM is split so that parallel accesses rarely collide. The first 256 kB is word-striped across four 64 kB banks, and two 4 kB banks sit above it. That is six banks in all, not four. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.6.2 (SRAM) and Table 153</a>.
-  </p>
-  <p>
-    The fabric also gives every peripheral register block three more addresses, for atomic updates. The address offset <code>+0x1000</code> XORs the bits you write, <code>+0x2000</code> sets them, and <code>+0x3000</code> clears them. A set or clear is then a single bus write that the hardware applies, so an interrupt cannot land between a read and a write-back. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2 (Atomic Register Access)</a>.
+    The reason for the split is cost. Memory needs wide, fast paths, and it gets them. Peripheral registers need little bandwidth: a timer register is written a few times per second, not thousands of times per cycle. So a simpler, slower bus with a bridge is the right design for them. The price of the bridge is cycles, which the next section puts in numbers.
   </p>
 
-  <h2>The APB bridge costs cycles</h2>
+  <h3>Atomic register access</h3>
   <p>
-    The fast AHB-Lite side has zero wait states. The slow peripherals sit behind the <strong>APB bridge</strong>, which registers the request and the response. The datasheet gives the cost: an APB access takes at least two cycles, a read adds one more, and a write adds two more. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.3 (APB Bridge)</a>.
-    <span class="sidenote">This is the cost of a shared, lower-speed peripheral bus: the bridge is simpler and smaller than a full crossbar port, and the peripherals need far less bandwidth than memory.</span>
+    A read-modify-write is a common way to change one bit of a register. The program reads the register, changes the bit in a copy, and writes the copy back. If an interrupt arrives between the read and the write and changes another bit, the write-back overwrites that change. The RP2040 datasheet names the problem directly: "without this capability, it is difficult to safely access IO registers when an interrupt service routine is concurrent with code running in the foreground" (section 2.1.2).
+  </p>
+  <p>
+    The chip's answer is that each peripheral register block has four addresses. The datasheet lists them: <code>Addr + 0x0000</code> for a normal read and write, <code>Addr + 0x1000</code> for an atomic XOR on write, <code>Addr + 0x2000</code> for an atomic bitmask set on write, and <code>Addr + 0x3000</code> for an atomic bitmask clear on write. A write to the set or clear address changes only the bits in the mask, in one bus write, with no read first. The <a href="../reference/glossary.html#atomic-alias-set-clr-xor">atomic alias</a> is the glossary's name for these addresses. The datasheet notes that "most peripherals on RP2040 provide this functionality natively, and atomic writes have the same timing as normal read/write access" (section 2.1.2).
+  </p>
+  <p>
+    The STM32F1 solves the same problem in a different way. Its GPIO block has a <code>BSRR</code> register, where writing a 1 to a bit sets the matching output and writing a 1 to the bit in the upper half resets it. The HAL's own comment says why the register is used: "This function uses GPIOx_BSRR register to allow atomic read/modify accesses. In this way, there is no risk of an IRQ occurring between the read and the modify access" (<code>stm32f1xx_hal_gpio.c</code>). The two chips reach the same goal, one write with no read, by different register layouts.
   </p>
 
-  <h2>STM32F103: AHB, APB1, and APB2</h2>
+  <h2>Counting the cycles: the RP2040 fabric</h2>
   <p>
-    The STM32F1 uses the same idea with different names. The ST device header defines three peripheral bus regions from the peripheral base <code>0x40000000</code>: APB1 at <code>0x40000000</code>, APB2 at <code>0x40010000</code>, and AHB at <code>0x40020000</code>. The header then places the blocks you will use: <code>GPIOC_BASE</code> is <code>APB2PERIPH_BASE + 0x1000</code>, which is <code>0x40011000</code>, and <code>RCC_BASE</code> is <code>AHBPERIPH_BASE + 0x1000</code>, which is <code>0x40021000</code>. So GPIOC is on APB2 and the clock controller RCC is on AHB. <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+    The RP2040 bus fabric connects four bus masters, which are core 0, core 1, and the read and write ports of the DMA, to ten downstream ports. Those ports lead to ROM, XIP flash, six SRAM banks, a shared port for the fast AHB-Lite peripherals, and the APB bridge. The datasheet says that "up to four bus transfers can take place each cycle" (section 2.1). A transfer to a port that is free starts at once, and the fabric adds no wait states.
   </p>
   <p>
-    Before a peripheral can be used, its clock must be enabled in RCC. The template does this as its first step: <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;</code> sets bit 4, which enables GPIOC. The RCC block is on the AHB side, so the clock enable is a write to one bus and the GPIO register write is a write to another.
+    The SRAM is split so that parallel accesses rarely collide. The first 256 kB is word-striped across four 64 kB banks, and two 4 kB banks sit above it. That is six banks in all, not four. The datasheet's Table 153 shows that consecutive words go to different banks. Each bank has its own port on the crossbar, which is why four masters can use four banks at once.
   </p>
-  <div class="note">The bus matrix and bridge details for the STM32F1 are in the bus architecture chapter of RM0008, with the bus figure. This course has not yet checked the exact figure against the vendor text, so use the header addresses above, and read RM0008 for the matrix itself.</div>
+
+  <h2>A worked example with real numbers</h2>
+  <p>
+    Two calculations show what the bus does in practice. The first is the striping. The second is the cost of the APB bridge.
+  </p>
+
+  <h3>Striping and bandwidth</h3>
+  <p>
+    Take four consecutive word addresses in SRAM. Table 153 gives the bank for each one:
+  </p>
+  <table>
+    <thead><tr><th>Address</th><th>Word in the bank</th><th>Bank</th></tr></thead>
+    <tbody>
+      <tr><td><code>0x20000000</code></td><td>word 0</td><td>Bank 0</td></tr>
+      <tr><td><code>0x20000004</code></td><td>word 0</td><td>Bank 1</td></tr>
+      <tr><td><code>0x20000008</code></td><td>word 0</td><td>Bank 2</td></tr>
+      <tr><td><code>0x2000000C</code></td><td>word 0</td><td>Bank 3</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Four masters that each read one of these four words in the same cycle use four different banks, so none of them waits. The datasheet gives the total: "at a system clock of 125MHz the maximum sustained bus bandwidth is 2.0GBps". You can check that number. Four masters each move one 32-bit word, which is 4 bytes, per cycle. That is 4 × 4 bytes × 125 MHz = 2,000 MB per second, which is 2.0 GB/s. If the four masters all hit the same bank, the bank serves one of them at a time, and the others wait.
+  </p>
+
+  <h3>The cost of an APB access</h3>
+  <p>
+    The datasheet gives the APB cost in three lines. An APB access "take[s] two cycles minimum (setup phase and access phase)". The bridge "adds an additional cycle to read accesses", and it "adds two additional cycles to write accesses" (section 2.1.3). Counting the way the datasheet does, an APB read takes at least 2 + 1 = 3 cycles, and an APB write takes at least 2 + 2 = 4 cycles.
+  </p>
+  <p>
+    Consider a loop that writes a register in the UART0 block, which sits on the APB side, at <code>0x40034000</code> in the SDK's address map (<code>addressmap.h</code>). If the loop writes 1,000 times, the APB writes cost at least 4,000 cycles, and at a 125 MHz system clock that is 32 microseconds. A write to the SIO block, the single-cycle IO block, is not behind the bridge. The datasheet says the SIO is "attached directly to the cores' IO ports" (section 2.1.2). Fast GPIO code uses SIO for that reason.
+  </p>
+
+  <h2>The STM32F103 bus map, from its header</h2>
+  <p>
+    The STM32F1 uses the same idea with different names. The ST device header defines three peripheral bus regions from the peripheral base <code>0x40000000</code>: APB1 at <code>0x40000000</code>, APB2 at <code>0x40010000</code>, and AHB at <code>0x40020000</code>. The header then places the blocks you will use: <code>GPIOC_BASE</code> is <code>APB2PERIPH_BASE + 0x1000</code>, which is <code>0x40011000</code>, and <code>RCC_BASE</code> is <code>AHBPERIPH_BASE + 0x1000</code>, which is <code>0x40021000</code>. So GPIOC is on APB2 and the clock controller RCC is on AHB. Source: <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
+  </p>
+  <p>
+    The demo enables the peripheral clocks in RCC before it uses GPIOC and USART1, which is the course's convention for these projects. The bit positions come from the header. The rule that a peripheral needs its clock enabled comes from the project's own comment, and the RM0008 clock chapter is where to confirm it, since this course has not yet checked that section. <code>RCC_APB2ENR_IOPAEN</code> is bit 2, <code>RCC_APB2ENR_IOPCEN</code> is bit 4, and <code>RCC_APB2ENR_USART1EN</code> is bit 14. The RCC block is on the AHB side, so the clock enable is a write to one bus and the GPIO register write is a write to another.
+  </p>
+  <div class="note">The bus matrix and bridge details for the STM32F1 are in the bus architecture chapter of RM0008, with the bus figure. This course has not yet checked that chapter against the vendor text, so this lesson relies only on the header addresses. Read RM0008 for the matrix itself, and check the cycle counts there before you quote them.</div>
 
   <div class="win">You can name the bus behind any address in the RP2040 or STM32 memory map, and you can explain why a write through the APB bridge is slower than a write to SRAM.</div>
 
@@ -93,13 +151,89 @@
   </p>
   <ol class="steps">
     <li>Open <code>projects/0037-bus-architecture</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Before you read the output, work out which bus <code>GPIOC base</code> and <code>RCC base</code> belong to, using the header addresses above.</li>
-    <li>Check the <code>APB2ENR</code> line. Bit 4 should be set. The value is <code>0x00000010</code> if nothing else on APB2 is enabled.</li>
+    <li>Before you read the output, work out which bus <code>GPIOC base</code> and <code>RCC base</code> belong to, using the header addresses above. The output should print <code>GPIOC base: 0x40011000</code> (APB2) and <code>RCC base: 0x40021000</code> (AHB).</li>
+    <li>Check the <code>APB2ENR</code> line. It reads the register after three bits were set in this order: IOPAEN, USART1EN, then IOPCEN. On a real board the value is <code>0x00004014</code>. The simulator prints <code>0x00000000</code> for this line, as the last recorded run shows. That is a simulator limit, not a code error. Treat the header bits as the expected value.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The bus region is the address with the offset removed. GPIOC base is <code>0x40011000</code>, which is in the APB2 region that starts at <code>0x40010000</code>. Bit 4 is value <code>0x10</code>.</p>
+    <p>The bus region is the address with the offset removed. GPIOC base is <code>0x40011000</code>, which is in the APB2 region that starts at <code>0x40010000</code>. Bit 4 is the value <code>0x10</code>. The three bits are 0x4, 0x10 and 0x4000, which add to 0x4014.</p>
   </details>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The demo's <code>main</code> is short, and every line either prints a base address or touches the clock enable.
+  </p>
+  <pre><code>int main(<span class="k">void</span>) {
+    SystemCoreClockUpdate();
+    uart_init();
+    print_line(<span class="s">"APB1 base:  "</span>, APB1PERIPH_BASE);
+    print_line(<span class="s">"APB2 base:  "</span>, APB2PERIPH_BASE);
+    print_line(<span class="s">"AHB base:   "</span>, AHBPERIPH_BASE);
+    print_line(<span class="s">"GPIOC base: "</span>, GPIOC_BASE);   <span class="c">/* on APB2 */</span>
+    print_line(<span class="s">"RCC base:   "</span>, RCC_BASE);     <span class="c">/* on AHB */</span>
+
+    RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;       <span class="c">/* enable the GPIOC bus clock */</span>
+    print_line(<span class="s">"APB2ENR:    "</span>, RCC-&gt;APB2ENR);
+    <span class="k">while</span> (1) { }
+}</code></pre>
+  <p>
+    <code>SystemCoreClockUpdate()</code> reads the clock configuration so that the UART divisor is right, and <code>uart_init</code> sets up the serial output the learner reads. The next five lines print the base addresses. Each one comes from the header macro, not from a number typed in by hand. This matters, because a macro is the one place to fix if the header is updated.
+  </p>
+  <p>
+    The line <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;</code> is a read-modify-write. The compiler reads the register, sets bit 4 in a copy, and writes the copy back. That is safe here, because no interrupt in this demo writes to RCC. In a program where an interrupt does change the same register, the read-modify-write would be the race described above, and the fix would be to make the change in the main loop only, or to use a method the chip provides for atomic changes.
+  </p>
+  <p>
+    The last print reads <code>RCC-&gt;APB2ENR</code> back. The value should contain the three bits set in <code>uart_init</code> and the bit set on this line. The simulator does not keep this register's value, so it prints zero. The code is correct, and the readback is the thing to check against the header.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+
+  <h3>1. Using the wrong bus base</h3>
+  <p>
+    GPIOC is on APB2, but a beginner who counts from the first bus region may write <code>APB1PERIPH_BASE + 0x1000</code>. That address is <code>0x40001000</code>, which is not GPIOC. The write does not fault in this demo, and the program prints the same lines as before, so the mistake is easy to miss. The symptom is a pin that does not change, while the serial output says that it did. The fix is to use the header macro <code>GPIOC_BASE</code>, and to check the printed address against the table in the header.
+  </p>
+
+  <h3>2. Reading a simulator readback as the hardware value</h3>
+  <p>
+    The <code>APB2ENR</code> line prints zero in the simulator, even after the code sets three bits. A learner who trusts that line may decide the clock enable does not work, and change correct code. The symptom is a debugging session that goes nowhere. The fix is to compute the expected value from the header bits, which is <code>0x00004014</code>, and to record the simulator's limit in your notes so you do not repeat the search.
+  </p>
+
+  <h3>3. A read-modify-write that an interrupt can break</h3>
+  <p>
+    Suppose the main loop sets an output bit with <code>reg |= bit</code>, and an interrupt also changes a bit in the same register. If the interrupt lands between the read and the write, its change is lost when the main loop writes back. The symptom is an output that is wrong only now and then, and that is hard to reproduce. The fix is the atomic path: the set or clear alias on RP2040, or the BSRR register on STM32, which changes one bit per store.
+  </p>
+
+  <h3>4. Writing a set alias to a register that does not support one</h3>
+  <p>
+    The RP2040 datasheet says the SIO "does not support atomic accesses at the bus level, although some individual registers (e.g. GPIO) have set/clear/xor aliases" (section 2.1.2). A learner who writes to <code>0xD0000000 + 0x2000</code>, the generic set address, is writing to an address the SIO does not treat as an alias. The datasheet also says that "unmapped address ranges raise a bus error when accessed" (section 2.2). The fix is to use the register's own set or clear offset, such as <code>GPIO_OUT_SET</code> at <code>0x014</code>, which lesson 38 lists.
+  </p>
+
+  <h3>5. Many small writes where one would do</h3>
+  <p>
+    Each write to an APB register costs at least 4 cycles. Setting four bits with four separate writes therefore costs at least 16 cycles, while one combined write costs 4. The fix is to combine the bits into one write. BSRR does this on STM32, because its one store can set one pin and reset another. The HAL's toggle code does exactly that, writing the set bits and the reset bits in one store.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Firmware engineers look at the bus when timing matters. They check which masters can touch a shared buffer, and whether a DMA transfer and the CPU can collide on the same RAM bank. Some designs place the buffers that DMA and the CPU use at addresses in different banks, so the two rarely compete for the same port. They also check the clock enables, because turning a peripheral's clock off is how firmware saves power when the peripheral is not needed.
+  </p>
+  <p>
+    A code reviewer asks three questions about any change that touches shared registers. Is the register changed by an interrupt as well as the main code? If so, is the change a single atomic write? Does every address come from a header macro and not from a typed number? Those three checks catch most of the bus-related bugs that reach a bench.
+  </p>
+  <p>
+    Interviewers ask about buses to see whether you can reason about contention. The question at the end of this lesson, about why peripherals sit on a slower bus, is a common one. A good answer names the cost trade-off, the bridge's cycles, and the atomic alias or BSRR as the fix for the race.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A bus carries an address, data and a control signal from a master to a slave. A crossbar gives each master its own path to each slave, so different slaves can be used in parallel.</li>
+    <li>The RP2040 fabric has four masters and ten downstream ports, and it adds no wait states to an AHB-Lite access. It reaches up to four transfers per cycle, which gives 2.0 GB/s at 125 MHz.</li>
+    <li>The SRAM is striped across four 64 kB banks for the first 256 kB, so consecutive words use different banks.</li>
+    <li>An APB access takes at least two cycles, one more for a read and two more for a write, through the bridge.</li>
+    <li>RP2040 atomic aliases at +0x1000, +0x2000 and +0x3000 change bits in one write. STM32 BSRR does the same job for GPIO.</li>
+    <li>On the STM32F1, GPIOC is on APB2 and RCC is on AHB, with the bases set by the header macros.</li>
+    <li>The simulator's RCC readback prints zero, so compute the expected value from the header bits.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -121,7 +255,20 @@
       { "type": "text",
         "prompt": "What is the RP2040 XOR alias offset, added to a peripheral register address? Write it in hex.",
         "accept": ["0x1000", "1000", "+0x1000"],
-        "why": "Section 2.1.2 lists +0x1000 for atomic XOR on write. The tempting answer, +0x3000, is the clear alias." }
+        "why": "Section 2.1.2 lists +0x1000 for atomic XOR on write. The tempting answer, +0x3000, is the clear alias." },
+      { "type": "number",
+        "prompt": "An RP2040 runs at 125 MHz. Four masters each move one 32-bit word per cycle. What is the maximum sustained bandwidth, in GB/s?",
+        "answer": 2.0, "tolerance": 0.02, "unit": "GB/s",
+        "why": "4 masters × 4 bytes × 125 MHz = 2,000 MB/s, which is 2.0 GB/s, as section 2.1 states. The tempting answer, 0.5, assumes that only one master moves one word per cycle." },
+      { "type": "mc",
+        "prompt": "Four consecutive words start at 0x20000000. Where does the RP2040 put them?",
+        "options": ["One word in each bank", "All four in bank 0", "Each word in SRAM 4"],
+        "answer": 0,
+        "why": "The first 256 kB is word-striped across four 64 kB banks (Table 153). The tempting answer is bank 0 only, which is how a plain array would behave in one linear memory. SRAM4 is a non-striped 4 kB bank above the striped region." },
+      { "type": "text",
+        "prompt": "What is the RP2040 offset that makes a peripheral register clear the bits in a mask on write? Write it in hex.",
+        "accept": ["0x3000", "3000", "+0x3000"],
+        "why": "Section 2.1.2 gives +0x3000 for the atomic bitmask clear. The tempting answer, +0x2000, is the set alias." }
     ] }
     </script>
   </div>
@@ -143,16 +290,16 @@
 
   <div class="interview">
     <p><strong>"Why do peripherals usually sit on a slower bus than SRAM, and what does the bridge cost you?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Memory needs bandwidth, so it gets wide, zero-wait paths on a crossbar with its own ports. Peripherals need little bandwidth and their register blocks are simple, so a shared, lower-speed bus with a bridge is much cheaper in silicon and power. The bridge costs cycles: on the RP2040 an APB write takes at least two cycles more than an AHB write, and a register poll or a write-heavy loop feels that cost.</p></details>
+    <details><summary>Model answer</summary><p>Memory needs bandwidth, so it gets wide, zero-wait paths on a crossbar with its own ports. Peripherals need little bandwidth and their register blocks are simple, so a shared, lower-speed bus behind a bridge is much cheaper in silicon and power. The bridge costs cycles: on the RP2040 an APB read takes one more cycle than the APB minimum, and an APB write takes two more. A register poll or a write-heavy loop feels that cost. Where two parts of the program change one register, the answer is an atomic write, such as the set or clear alias, not a read-modify-write.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.1 (Bus Fabric) with Figure 4 and Figure 5, then 2.1.2 (Atomic Register Access) and 2.1.3 (APB Bridge). They are short, and they explain every bus cost in this lesson.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.1 (Bus Fabric) with Figure 4 and Figure 5, then 2.1.2 (Atomic Register Access) and 2.1.3 (APB Bridge). They are short, and they explain every bus cost in this lesson. Table 153 in section 2.6.2 gives the SRAM striping.
   </div>
 
   <div class="ask">
-    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace a write to GPIOC->BSRR on the STM32, step by step, from the core to the pin."
-    Related: <a href="0036-memory-hierarchy.html">Lesson 36: Memory hierarchy</a>, <a href="0038-the-memory-map-and-memory.html">Lesson 38: The memory map</a>, and <a href="../reference/glossary.html#peripheral">Glossary: Peripheral</a>.
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Trace a write to GPIOC->BSRR on the STM32, step by step, from the core to the pin, and tell me which part of the path I cannot check without RM0008."
+    Related: <a href="0036-memory-hierarchy.html">Lesson 36: Memory hierarchy</a>, <a href="0038-the-memory-map-and-memory.html">Lesson 38: The memory map</a>, <a href="0043-navigating-a-reference-manual.html">Lesson 43: Navigating a reference manual</a>, and <a href="../reference/glossary.html#peripheral">Glossary: Peripheral</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

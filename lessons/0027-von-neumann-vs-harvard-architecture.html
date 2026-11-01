@@ -17,17 +17,31 @@
     By the end of this lesson you can say whether a Cortex-M core can fetch an instruction and load data in the same cycle, name the bus that proves it, and count the bus transfers in a short program.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>von Neumann</strong> design keeps the program and the data in one memory and reaches it over one path. The CPU cannot fetch the next instruction while it is loading a value, because both go over the same wires. A <strong>Harvard</strong> design gives instructions and data separate memories and separate paths, so the core can fetch and load at the same time.
-    <span class="sidenote">The names describe the paths, not the address map. A Cortex-M core has one address space, which both designs use. The Harvard split is about how many buses reach it.</span>
+    Lessons <a href="0023-combinational-logic.html">23</a> to <a href="0026-the-alu-and-status-flags.html">26</a> built the parts inside the CPU: gates, flip-flops, registers and the ALU. None of them does anything useful without a program and data to work on. Those live in memory, and the CPU reaches memory over wires called a bus. This lesson is about those wires, because the way a core connects to memory decides how fast its instructions can run.
   </p>
   <p>
-    The Cortex-M3 is a Harvard design. Arm's TRM describes it as a "Harvard processor architecture enabling simultaneous instruction fetch with data load/store" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §1.1</a>). It has three bus interfaces: the I-Code bus for instruction fetches from code memory (§12.3), the D-Code bus for literal and constant data in the code region (§12.4), and the System bus for SRAM and peripherals (§12.5). All three are AHB-Lite.
+    Every real problem you will solve in this course shows up here. A timer interrupt that runs too long, a loop that misses its deadline, or a function that runs faster after you move it into RAM all come down to how many bus transfers the core must make and whether they can overlap. Lesson <a href="0036-memory-hierarchy.html">36</a> adds caches and wait states to the picture, and lesson <a href="0037-bus-architecture.html">37</a> shows the bus fabric. The first thing to understand is the number of paths.
   </p>
   <p>
-    The Cortex-M0+ in the RP2040 is different. Arm's datasheet describes one <strong>32-bit AMBA-3 AHB-Lite system interface</strong> that serves the whole system, and says that <strong>instructions are only fetched using the AHB-Lite interface</strong> (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ processor datasheet</a>). Arm's datasheet summarises that bus as a von Neumann bus architecture.
-    <span class="sidenote">The RP2040 datasheet adds that each of its two M0+ cores has a dedicated AHB-Lite port for code fetch, loads and stores. The SIO block also has a single-cycle IOPORT bus for GPIO (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, §2.3 and Figure 6</a>). So the chip has more than one path, but the core itself has one memory port.</span>
+    The problem this lesson solves is a counting problem. Given a short program, you should be able to say how many times the core must use the bus, and which of those uses could happen at the same time.
+  </p>
+
+  <h2>Concept 1: a bus is a set of shared wires</h2>
+  <p>
+    A <strong>bus</strong> is a group of wires that carry an address, data and control signals between the CPU and a memory or peripheral. A <strong>transfer</strong> is one use of the bus: the CPU puts an address on the wires, the target responds, and a word of data moves. Every instruction needs at least one transfer, the <strong>fetch</strong>, which reads the instruction's bits from memory. Many instructions need a second transfer, a load or a store, to read or write a value in memory.
+  </p>
+  <p>
+    If there is only one bus, only one transfer can happen at a time. The fetch of the next instruction must wait until the data transfer of the current one has finished, or the other way round. A design with one memory that holds both program and data, reached over one path, is called <strong>von Neumann</strong> architecture, after the computer pioneer whose name it carries. Its cost is that instructions and data take turns on the same wires.
+  </p>
+
+  <h2>Concept 2: Harvard gives instructions their own path</h2>
+  <p>
+    A <strong>Harvard</strong> design separates the two. Instructions come from one memory over one path, and data comes from another memory over another path. The core can then fetch the next instruction and load data for the current one in the same cycle, because the two transfers do not share wires. The names come from early computer designs. What matters for you is the bus count, not the history.
+  </p>
+  <p>
+    There is one point that trips up almost everyone. The names describe the paths, not the address map. A Cortex-M core has one address space: a given address refers to one location, whether you read it as an instruction or as data. Both designs share that map. The Harvard split is about how many buses reach the memory, not about whether addresses are separate. The glossary entry for Harvard architecture says the same thing: both designs share one address map.
   </p>
 
   <figure>
@@ -57,9 +71,54 @@
     <figcaption>Figure 1. Left: one bus carries both the instruction fetch and the data access, so they take turns. Right: separate buses let the core fetch and load in the same cycle. Both drawings omit the shared address map.</figcaption>
   </figure>
 
-  <h2>Why a loop feels the difference</h2>
+  <h2>Concept 3: the Cortex-M3 has four bus interfaces</h2>
   <p>
-    Take a loop that loads a value, adds it to a total and repeats. Each instruction needs one fetch, and each load needs one more transfer for the data. On a single bus those transfers queue up. On a Harvard core, the fetch of the next instruction can overlap the load of the current data, so the loop can go faster. Real speed depends on wait states, the bus matrix and caches, which later lessons cover (lesson 36 and lesson 37). The bus count is the first thing to understand.
+    The Cortex-M3 is a Harvard design. Its Technical Reference Manual lists the feature as "Harvard processor architecture enabling simultaneous instruction fetch with data load/store" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, section 1.2.1</a>). The same section adds a three-stage pipeline and a prefetch unit, which we return to in lesson 28.
+  </p>
+  <p>
+    The TRM's bus interface chapter, section 12.1, lists four interfaces, and each one has a job:
+  </p>
+  <ul>
+    <li><strong>ICode</strong> (section 12.3) is a 32-bit AHB-Lite bus for instruction fetches and vector fetches from the code memory space, 0x00000000 to 0x1FFFFFFF. This is where flash sits on most Cortex-M3 chips.</li>
+    <li><strong>DCode</strong> (section 12.4) is also a 32-bit AHB-Lite bus. It carries data and debug accesses to the same code space, 0x00000000 to 0x1FFFFFFF. Compilers put constants called literal pools in the code space, so loading a constant uses this bus.</li>
+    <li><strong>System</strong> (section 12.5) is a 32-bit AHB-Lite bus for the system space, 0x20000000 to 0xDFFFFFFF and 0xE0100000 to 0xFFFFFFFF. SRAM and most peripherals sit here. Instruction fetches, and data and debug accesses, can all use it.</li>
+    <li><strong>External Private Peripheral Bus</strong> is an APB bus for the debug components, at 0xE0040000 to 0xE00FFFFF. It is not used by normal code.</li>
+  </ul>
+  <p>
+    The Harvard property is the first two buses. Because the ICode and DCode interfaces are separate, the core can fetch the next instruction on ICode while it loads a constant on DCode. The TRM recommends that the external arbitration give DCode priority over ICode when the two share a memory. That detail is a hint about how the memory system is built, and it matters for the timing of real code.
+  </p>
+  <p>
+    Here is a consequence that surprises beginners. The TRM says that instruction fetches over the System bus are registered, so they take an extra cycle, and that back-to-back instruction fetches from the System bus are not possible. Fetches over the ICode bus are not registered. The TRM's advice is that performance-critical code should run from the ICode interface. So the same function can run at different speeds, depending on whether the linker put it in flash or in SRAM. Lesson <a href="0038-the-memory-map-and-memory.html">38</a> covers the address ranges that decide which bus a fetch uses.
+  </p>
+
+  <h2>Concept 4: the Cortex-M0+ has one memory port</h2>
+  <p>
+    The Cortex-M0+ in the RP2040 is different. The Arm datasheet describes a single 32-bit AMBA-3 AHB-Lite system interface that gives the core access to the whole system. It lists the bus architecture as "AHB-Lite (Von Neumann bus architecture)", and it states that instructions are only fetched using the AHB-Lite interface (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ processor datasheet</a>, the features table and the interfaces section). The core has one port for code and data.
+  </p>
+  <p>
+    The RP2040 chip, however, has many paths. The datasheet's section 2.3 shows each of its two Cortex-M0+ cores with its own 32-bit AHB-Lite port, used for code fetch, loads and stores. Section 2.1 describes the bus fabric, a crossbar that connects four bus masters, the two cores and two DMA ports, to ten downstream ports, and it says up to four transfers can take place in one cycle. Each core still has one memory port. The chip is more parallel than the core.
+  </p>
+  <p>
+    The RP2040's GPIO block is a special case. The single-cycle IO block, SIO, sits on each core's IOPORT, a separate bus at addresses 0xD0000000 to 0xDFFFFFFF. The datasheet says the SIO is not connected to the main system bus because of its timing requirements (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.3 and section 2.3.1</a>). When you set a GPIO output from C, you are using that separate path.
+  </p>
+
+  <h2>Worked example: counting transfers in a store and reload</h2>
+  <p>
+    Take the simulator program in this lesson. It has five instructions. The first two load constants into registers, the third stores a value to RAM, the fourth loads it back, and the fifth halts. Count the transfers on one shared bus, as the simulator's model does, for the first four instructions.
+  </p>
+  <ol>
+    <li><strong>Fetch the MOV R2, #0x20000010.</strong> One transfer to read the instruction from memory. Running total: 1.</li>
+    <li><strong>Fetch the MOV R0, #7.</strong> One transfer. Running total: 2. The MOV needs no data transfer, because its value is in the instruction.</li>
+    <li><strong>Fetch the STR R0, [R2].</strong> One transfer for the instruction. Running total: 3.</li>
+    <li><strong>Write the STR's data.</strong> The store writes the value 7 to the address in R2, which is 0x20000010. One transfer. Running total: 4.</li>
+    <li><strong>Fetch the LDR R1, [R2].</strong> One transfer. Running total: 5.</li>
+    <li><strong>Read the LDR's data.</strong> The load reads the word at 0x20000010 back into R1. One transfer. Running total: 6.</li>
+  </ol>
+  <p>
+    The total is six. The beginner's error is to count only the four fetches and get four. The data transfers are real, and on a shared bus each one blocks a fetch. On a Harvard core the store's data write and the next fetch use different buses, so the two can overlap. The count of transfers stays the same, but the time they take on the wires can shrink, which is the whole point of the design.
+  </p>
+  <p>
+    Now the loop case. Suppose a loop body has four instructions and one of them is a load. On one shared bus that is four fetches and one data read, five transfers per iteration. On an idealised Harvard core, the data read for this iteration can overlap a fetch, so the bus is busy for fewer cycles per loop. Real numbers depend on wait states and caches, which lessons 36 and 37 cover. The bus count is the first thing to understand, and it is the reason a loop with a load costs more than a loop without one.
   </p>
 
   <h2>Try it in the CPU simulator</h2>
@@ -68,13 +127,13 @@
   </p>
   <ol class="steps">
     <li>
-      Before you press anything, count the transfers on <strong>one shared bus</strong> for the first four instructions. Count one fetch per instruction, and one extra transfer for each <code>STR</code> and each <code>LDR</code>.
+      Before you press anything, count the transfers on <strong>one shared bus</strong> for the first four instructions. Count one fetch per instruction, and one extra transfer for each <code>STR</code> and each <code>LDR</code>. You should get six. Write the number down.
     </li>
     <li>
-      Press <em>Instruction</em> four times and watch the memory row and the register row change. Check that the <code>STR</code> writes to <code>0x20000010</code> and the <code>LDR</code> reads it back into R1.
+      Press <em>Instruction</em> once. The register row shows R2 = 0x20000010. Press it again: R0 = 7. Press it a third time: the memory row shows the word at 0x20000010 holding 7, because the <code>STR</code> wrote it. Press it a fourth time: R1 = 7, because the <code>LDR</code> read the value back.
     </li>
     <li>
-      The fifth instruction is <code>B .</code>, which halts the program. Do not step past it: the simulator shows it as a branch to itself.
+      The fifth instruction is <code>B .</code>, which halts the program. Do not press <em>Instruction</em> again: the simulator shows it as a branch to itself, and the program is parked there. Do not treat that as an error.
     </li>
   </ol>
   <div class="widget cpusim" data-title="Store and reload (one shared bus)" data-show="regs,mem,phases">
@@ -88,11 +147,47 @@
   </div>
   <details>
     <summary>Hint</summary>
-    <p>Each of the four instructions needs one fetch. The <code>STR</code> and the <code>LDR</code> each need one data transfer, and the two <code>MOV</code>s need none. Add the fetches and the data transfers together.</p>
+    <p>Each of the four instructions needs one fetch. The <code>STR</code> and the <code>LDR</code> each need one data transfer, and the two <code>MOV</code>s need none. Add the fetches and the data transfers together: four plus two is six.</p>
   </details>
   <p>
-    The simulator has one memory map, one bus and no cache. Real Cortex-M cores have several buses (Harvard on the M3, one AHB-Lite port on the M0+), and the bus fabric in the RP2040 has its own crossbar (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, §2.1</a>). The simulator's "one bus" count is a teaching shortcut. The real chips do not count transfers the same way.
+    The simulator has one memory map, one bus and no cache. Real Cortex-M cores have several buses (Harvard on the M3, one AHB-Lite port on the M0+), and the bus fabric in the RP2040 has its own crossbar. The simulator's "one bus" count is a teaching shortcut. The real chips do not count transfers the same way, so use the count to reason about the design, not as a cycle prediction.
   </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: believing Harvard means separate address maps.</strong> Symptom: you assume that the address of a constant in flash cannot be the same as an address in RAM, and you are confused when a debugger shows two different things at one address. Fix: remember that both designs share one address map. The Harvard split is about the buses that reach the same addresses. Lesson <a href="0038-the-memory-map-and-memory.html">38</a> covers the memory map, which says which address ranges are flash and which are RAM.
+  </p>
+  <p>
+    <strong>Mistake 2: expecting a function to run at the same speed from RAM.</strong> Symptom: after you move a loop into SRAM, to fix a timing problem, the loop takes longer, not shorter. The cause is the System bus: its instruction fetches are registered and cannot be back to back, as section 12.5.6 of the TRM says. Fix: keep the time-critical code in flash on the ICode bus, or measure the change before you accept it.
+  </p>
+  <p>
+    <strong>Mistake 3: counting only the fetches.</strong> Symptom: your estimate of a loop's bus use is too low by the number of loads and stores. In the simulator, the store and reload program gives six transfers, not four. Fix: count a transfer for every load and store, in addition to every fetch.
+  </p>
+  <p>
+    <strong>Mistake 4: applying one core's bus to every Cortex-M.</strong> Symptom: you say an M0+ can overlap a fetch with a load, and a reviewer shows that the M0+ fetches only over its AHB-Lite port. Fix: check the core in your chip. The M3 is Harvard. The Cortex-M0+ in the RP2040 has one memory port for the core, and the chip's crossbar and IOPORT are separate things. Write the bus count for the core you are targeting.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Linker scripts decide where code and data go. Code goes into flash, which is on the ICode bus, and variables go into SRAM, which is on the System bus. The startup code that runs before <code>main()</code> is covered in lesson <a href="0042-startup-code-and-the-vector.html">42</a>. A reviewer who sees a function placed in RAM asks why: usually the reason is speed, and the answer must be measured, because the System bus can be slower for fetches, as shown above.
+  </p>
+  <p>
+    Performance work starts with the bus count. A senior engineer reads a hot loop, counts the loads and stores, and asks whether they can overlap with fetches on this core. They then check the wait states and the memory they run from in the reference manual, not in a general description of the architecture.
+  </p>
+  <p>
+    In an interview, the question "what is the difference between von Neumann and Harvard architecture, and which one does a Cortex-M3 use?" is common. A strong answer says that Harvard has separate instruction and data paths, that the M3 has separate ICode and DCode buses plus a System bus, and that both designs share one address map.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A bus is a set of shared wires. A transfer is one use of it, and every instruction needs at least one fetch.</li>
+    <li>Von Neumann means one memory and one path, so fetches and data accesses take turns. Harvard means separate paths for instructions and data.</li>
+    <li>Both designs share one address map. The split is about buses, not addresses.</li>
+    <li>The Cortex-M3 is Harvard. Its ICode, DCode and System interfaces are described in TRM section 12.1.</li>
+    <li>Instruction fetches over the System bus are registered and cannot be back to back, so code runs faster from flash on the ICode bus.</li>
+    <li>The Cortex-M0+ core has one AHB-Lite system port for code and data, and the RP2040 adds a crossbar and a separate IOPORT for the chip.</li>
+    <li>Count every fetch, load and store as a transfer when you estimate a loop.</li>
+  </ul>
 
   <div class="win">You counted the bus transfers for a short program, and you can say why a Harvard core can overlap a fetch with a load while a von Neumann core cannot.</div>
 
@@ -103,7 +198,7 @@
         "prompt": "Which core can fetch an instruction and load data in the same cycle?",
         "options": ["Cortex-M3 core", "Cortex-M0+ core", "Neither core."],
         "answer": 0,
-        "why": "The M3 is a Harvard design with separate I-Code, D-Code and System buses (DDI0337G §1.1 and §12). The M0+ fetches instructions only over its single AHB-Lite port, so a fetch and a load have to share it. Choosing the M0+ is the tempting mistake: it is a common design, but it has one port." },
+        "why": "The M3 is a Harvard design with separate ICode, DCode and System interfaces (DDI0337G section 1.2.1 and section 12.1). The M0+ fetches instructions only over its single AHB-Lite port, so a fetch and a load have to share it. Choosing the M0+ is the tempting mistake: it is a common design, but it has one port." },
       { "type": "number",
         "prompt": "On a single shared bus, how many transfers does the first four instructions of the simulator program need? Fetches plus data.",
         "answer": 6, "tolerance": 0,
@@ -112,11 +207,20 @@
         "prompt": "Which statement about the Cortex-M3 System bus is correct?",
         "options": ["It carries SRAM and peripheral accesses", "It carries only the instruction fetches", "It carries only literal constant data"],
         "answer": 0,
-        "why": "The System bus reaches SRAM and peripherals (DDI0337G §12.5). The I-Code bus carries instruction fetches (§12.3), and the D-Code bus carries literal data from the code region (§12.4). The tempting answer is the instruction-fetch one, because the I-Code bus is the one most people think of first." },
+        "why": "The System bus reaches SRAM and peripherals at 0x20000000 and above (DDI0337G section 12.5). The ICode bus carries instruction fetches from code space (section 12.3), and the DCode bus carries data accesses to code space (section 12.4). The tempting answer is the instruction-fetch one, because the ICode bus is the one most people think of first." },
       { "type": "text",
         "prompt": "Which Cortex-M3 bus carries SRAM and peripheral accesses? Give the short name.",
         "accept": ["System bus", "System", "system bus"],
-        "why": "The System bus (DDI0337G §12.5) connects to SRAM and peripherals. The D-Code bus is the tempting wrong answer, because it also carries data, but only literal data from the code region." }
+        "why": "The System bus (DDI0337G section 12.5) connects to SRAM and peripherals. The DCode bus is the tempting wrong answer, because it also carries data, but only data accesses to the code space." },
+      { "type": "mc",
+        "prompt": "Which bus carries instruction fetches from flash at 0x00000000 on the Cortex-M3?",
+        "options": ["the ICode bus", "the DCode bus", "the System bus"],
+        "answer": 0,
+        "why": "Instruction fetches from code space, 0x00000000 to 0x1FFFFFFF, use the ICode bus (section 12.3). The DCode bus carries data to the same space, and the System bus carries accesses to SRAM and peripherals." },
+      { "type": "number",
+        "prompt": "On the simulator's one-shared-bus model, a loop body has four instructions and one LDR. How many transfers does one iteration need?",
+        "answer": 5, "tolerance": 0,
+        "why": "Four fetches plus one data read for the LDR make 5. The tempting answer, 4, counts only the fetches and forgets the load." }
     ] }
     </script>
   </div>
@@ -138,11 +242,11 @@
 
   <div class="interview">
     <p><strong>"What is the difference between von Neumann and Harvard architecture, and which one does a Cortex-M3 use?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Von Neumann has one memory and one path shared by instructions and data, so fetches and loads take turns. Harvard has separate instruction and data paths, so the core can fetch and load at once. The Cortex-M3 is Harvard, with I-Code, D-Code and System buses. Both designs share one address map, so the split is about buses, not addresses.</p></details>
+    <details><summary>Model answer</summary><p>Von Neumann has one memory and one path shared by instructions and data, so fetches and loads take turns. Harvard has separate instruction and data paths, so the core can fetch and load at once. The Cortex-M3 is Harvard, with ICode, DCode and System interfaces. Both designs share one address map, so the split is about buses, not addresses.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 Technical Reference Manual, DDI0337G</a>: read §1.1 (the Harvard statement) and §12 (the bus interfaces). The Arm <a href="https://developer.arm.com/documentation/dui0552/latest/">Cortex-M3 Devices Generic User Guide (DUI0552)</a> is the companion overview, which we have not checked line by line for this lesson.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 Technical Reference Manual, DDI0337G</a>: read section 1.2.1 (the Harvard statement and the memory interface) and section 12 (the four bus interfaces, with 12.3, 12.4 and 12.5 for each one, and 12.5.6 for registered fetches). The Arm <a href="https://developer.arm.com/documentation/dui0552/latest/">Cortex-M3 Devices Generic User Guide (DUI0552)</a> is the companion overview, which we have not checked line by line for this lesson.
   </div>
 
   <div class="ask">

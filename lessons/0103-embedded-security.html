@@ -21,9 +21,23 @@
     <strong>Why this lesson has no simulator task.</strong> Security depends on the hardware and on keys that a simulator does not have, and Wokwi has no secure boot. The lesson is a concept lesson with an interactive threat-model exercise. Lesson 102's bootloader is the place where the signature check would go.
   </div>
 
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lesson <a href="0102-bootloaders-and-firmware-updates.html">102</a> built a bootloader that checks an image header before it jumps to an application, and lesson <a href="0101-designing-a-serial-protocol.html">101</a> used a CRC to detect damaged frames. Both checks answer the question "did the bytes get corrupted?". Security asks a harder question: "did a hostile party change them on purpose?" Lesson <a href="0099-rs-485-and-modbus-rtu.html">99</a> showed a Modbus slave on a shared bus, where anyone with a cable can send a request. Lesson <a href="0084-robustness.html">84</a> showed how a watchdog and a fault handler keep a device running. None of those ideas stop a determined attacker from writing their own firmware.
+  </p>
+  <p>
+    The problem shows up in every connected product. A smart meter, a medical pump, a car's engine controller and a factory robot can each be reached over a network or a service port, and each one runs firmware that someone else could replace. Regulators now treat that as a product requirement, and job descriptions ask for it. The rest of this lesson gives you the vocabulary and the reasoning that a firmware engineer uses before writing any security code.
+  </p>
+
   <h2>Start with a threat model</h2>
   <p>
-    A threat model lists what you protect, who might attack it, and how. STRIDE is a common way to sort threats into six kinds: Spoofing (pretending to be someone else), Tampering (changing data), Repudiation (denying an action with no way to prove it), Information disclosure (leaking secrets), Denial of service (stopping the device), and Elevation of privilege (gaining rights you should not have). STRIDE comes from Microsoft's threat-modelling work, and this lesson did not open a primary source for it, so use the six names as a checklist rather than a standard.
+    A threat model lists what you protect, who might attack it, and how. It starts from three questions. What are the assets: the firmware, the keys, the calibration data, the user's settings? Where are the entry points: the debug port, the update path, each serial or radio message, each command parser? And where are the trust boundaries, the places where data crosses from something you trust into something you do not? The model is useful even before any code is written, because it tells you which parts of the design must be defended first.
+  </p>
+  <p>
+    STRIDE is a common way to sort threats into six kinds: Spoofing (pretending to be someone else), Tampering (changing data), Repudiation (denying an action with no way to prove it), Information disclosure (leaking secrets), Denial of service (stopping the device), and Elevation of privilege (gaining rights you should not have). STRIDE comes from Microsoft's threat-modelling work, and this lesson did not open a primary source for it, so use the six names as a checklist rather than a standard.
+  </p>
+  <p>
+    The categories matter because each one has a different defence. Tampering is answered by integrity checks such as signatures. Information disclosure is answered by keeping secrets out of reach, such as readout protection. Spoofing is answered by authentication. Repudiation is answered by an audit log that the attacker cannot quietly edit. Denial of service is answered by input checks and a watchdog. Elevation of privilege is answered by checking authorisation on every privileged command. A threat that you cannot place in a category is usually one you have not yet understood.
   </p>
   <p>
     The exercise below gives six threats for a connected controller. Pick the STRIDE category for each one.
@@ -79,12 +93,34 @@
   })();
   </script>
 
+  <h2>Worked example: a threat model for one device</h2>
+  <p>
+    Take a Modbus slave on an RS-485 bus, the device from lesson 99, and walk through the model. The assets are the holding registers (the setpoints the master writes), the firmware image in flash, and the calibration constants. The entry points are the RS-485 transceiver, the debug port, and the bootloader's update path from lesson 102. The trust boundary sits at the transceiver: anything that arrives on the bus is untrusted, because any node with a cable can talk to the bus.
+  </p>
+  <p>
+    Now pick a concrete threat and classify it. Suppose a node on the bus writes setpoint 1 with a value of 250 degrees to the heater, which is above a safe limit of 220 degrees. The device accepts the write, because Modbus has no concept of who is allowed to write. This is elevation of privilege if the node should not be allowed to set that value, and it is tampering with the setpoint data. The defence is an authorisation check on the write, which is a software rule in the slave, plus a range check on the value itself. Authentication of the sender, which would fix spoofing, needs a key and a MAC on every frame, and Modbus RTU does not carry one. The model makes that gap visible, which is its job.
+  </p>
+  <p>
+    Then consider a second threat with a different answer. A technician plugs a debugger into the device and reads the firmware back. The category is information disclosure, because the firmware, which may contain a proprietary algorithm, has left the device. The defence is readout protection and a closed debug port, and the rest of this lesson explains why those are necessary and why they are not sufficient.
+  </p>
+
+  <h2>Integrity, authenticity and secrecy: three different promises</h2>
+  <p>
+    Three words get confused in security work, and each one is a separate promise. Integrity means the bytes have not changed. A CRC gives a weak form of integrity against random errors. Authenticity means the bytes came from someone who holds a secret. A MAC or a signature gives authenticity. Secrecy means nobody without a key can read the bytes. Encryption gives secrecy. A design must state which of these it needs. A firmware update usually needs authenticity and integrity, and it does not always need secrecy, because the firmware is often public.
+  </p>
+  <p>
+    The difference between a checksum and a signature comes down to the secret. A CRC is computed by a public formula over the data, so anyone can run the same formula after changing the data and produce a matching check. A MAC is a keyed hash, which needs a secret key to compute, so a forger without the key cannot produce one. A signature goes a step further: it uses a private key to sign and a public key to verify, so the verifier holds no secret that a forger could copy from the device. The rest of this lesson uses signatures, because a device in the field holds only the public half.
+  </p>
+
   <h2>A chain of trust: each stage checks the next</h2>
   <p>
     Secure boot starts from something the attacker cannot change, and each stage checks the next before it runs. On the RP2350, the bootrom is that root of trust, and it is fixed at design time. The bootrom checks a signature on the image before it runs the image, and it refuses an image whose signature does not verify (<a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet, section 10.1.1, Secure boot, p. 734</a>).
   </p>
   <p>
     The check works in four steps: hash the image with SHA-256, verify the signature over the image's public key, compare the signed hash with the one you computed, and compare the public key with a fingerprint stored in one-time-programmable memory. A signature only proves something if the key is genuine, which is why the fingerprint sits in OTP and cannot be changed afterwards. The datasheet also describes an anti-rollback version number, held in an OTP counter, which stops an attacker from installing an older image with a known flaw.
+  </p>
+  <p>
+    Why hash first? A signature algorithm is slow and works on a fixed-size number, so the image is compressed to a fixed-size digest with a cryptographic hash, and the signature covers the digest. A change to any byte of the image changes the digest, and the signature then fails. The hash must be collision-resistant, so that an attacker cannot craft a second image with the same digest, which is why a weak hash such as a CRC is not used here.
   </p>
   <div class="note">
     The RP2350 datasheet uses secp256k1 ECDSA over a SHA-256 hash for these signatures. Other designs use Ed25519 or ECDSA on a different curve. Check which algorithm your bootloader supports before you design a key scheme. Do not write your own cryptography: use a library that is reviewed.
@@ -95,31 +131,80 @@
 
   <h2>Debug lockdown and readout protection</h2>
   <p>
-    Debug access is a path around the software. The RP2350 datasheet says that a debugger can skip the bootrom entirely, and that disabling debug is part of the secure boot enable procedure (<a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet, section 10.1.1, and section 10.5 for the enable procedure</a>). Readout protection is the same idea for the flash contents: the chip refuses to let a debugger read the code back.
+    Debug access is a path around the software. A debug port, such as SWD on an ARM chip (lesson 54 used GDB through a probe), lets a host halt the core, read memory and write memory. Anything the bootloader checks is irrelevant if the debugger can write the flash directly. That is why a secure design closes the debug port in production, and why the RP2350 datasheet says that a debugger can skip the bootrom entirely, and that disabling debug is part of the secure boot enable procedure (<a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet, section 10.1.1, and section 10.5 for the enable procedure</a>).
   </p>
   <p>
-    The STM32F103 has an option-byte status bit for this. In <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, <code>FLASH_OBR_RDPRT</code> is bit 1 of <code>FLASH_OBR</code>, named "Read protection". The protection levels, and what each one allows, are in the flash chapter of RM0008. This lesson did not open that chapter, so check the levels there, and remember that a level you set may be permanent. Readout protection stops casual copying; it does not stop an attacker with the time and equipment to attack the chip itself.
+    Readout protection is the same idea for the flash contents. The chip refuses to let a debugger read the code back, so a copy of the firmware cannot be extracted through the debug port. The STM32F103 has an option-byte status bit for this. In <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, <code>FLASH_OBR_RDPRT</code> is bit 1 of <code>FLASH_OBR</code>, named "Read protection". The protection levels, and what each one allows, are in the flash chapter of RM0008. This lesson did not open that chapter, so check the levels there, and remember that a level you set may be permanent.
   </p>
+  <div class="warning">
+    Readout protection stops casual copying. It does not encrypt the flash, and it does not stop an attacker with time and equipment to attack the chip itself. Treat it as one layer, not as the defence.
+  </div>
 
   <h2>The RP2040 and the RP2350 compared</h2>
   <p>
     The RP2350 datasheet describes secure boot as a feature of the RP2350 bootrom, with the glitch detectors, the redundancy coprocessor and the OTP keys around it. The RP2040 is the earlier chip in this course. This lesson did not open the RP2040 datasheet, so before you say in an interview that the RP2040 has no secure boot, check its bootrom section. Once you have, the RP2350 is the chip to use for a product that needs a signed image.
   </p>
+  <p>
+    The comparison matters for a real project. A product's bill of materials, its update process and its certification plan all depend on which chip gives you a root of trust in hardware. A chip with a secure bootrom lets the team move the trust into silicon. A chip without one means the team must build the whole chain in software and accept what that cannot defend.
+  </p>
 
   <h2>Side channels and fault injection</h2>
   <p>
-    A signature check in software can be attacked by a glitch, a short fault in the power or clock that makes a comparison succeed when it should fail. The RP2350 datasheet says exactly this: a pure-software secure boot is susceptible to fault injection, and the glitch detector and the redundancy coprocessor exist to stop it (section 10.1.1). Side-channel attacks read secrets from timing or power use. Both are physical attacks, and they matter when the attacker holds the device. The defence is in hardware and in the algorithm, and it is not something a firmware author can add with a single line.
+    A signature check in software can be attacked by a glitch, a short fault in the power or clock that makes a comparison succeed when it should fail. The RP2350 datasheet says exactly this: a pure-software secure boot is susceptible to fault injection, and the glitch detector and the redundancy coprocessor exist to stop it (section 10.1.1). A glitch might skip one instruction, such as the branch that rejects a bad signature. The defence is to make the decision hard to skip: a redundant comparison, a value checked twice, or a hardware detector that resets the chip when the supply dips.
+  </p>
+  <p>
+    Side-channel attacks read secrets from timing or power use. A key comparison that exits at the first mismatched byte takes a little longer when more bytes match, and an attacker who measures many runs can recover the key one byte at a time. The defence in software is a comparison that always takes the same time, and the defence in hardware is shielding and filtering. Both are physical attacks, and they matter when the attacker holds the device. The defence is in hardware and in the algorithm, and it is not something a firmware author can add with a single line.
+  </p>
+
+  <h2>Worked example: how a glitch defeats a check</h2>
+  <p>
+    Consider a bootloader that does this: compute the digest, call <code>verify_signature()</code>, and then branch to the application if the result is 1. A glitch that lands during the call and makes the function return 1 for a bad signature lets the attacker run any code. Now make it harder. The bootloader stores 0xA5 in a variable, calls the verifier, and checks for a value of 0xA5 again only after a second independent verification. Two glitches in the right two places are then needed, and the second check's value is hard to guess. A redundant check is not a proof, but it raises the cost of the attack, and that is the realistic goal.
   </p>
 
   <h2>The attack surface: where the device listens</h2>
   <p>
     Every interface is an attack surface: the debug port, the bootloader's update path, every serial or CAN message, and every command parser. Reduce the surface before you defend it. Turn off what you do not use, check every length field before you copy, and authenticate the commands that change state. Lesson 84 showed the watchdog and the fault handler, which turn a crash into a recovery and keep a device usable under attack.
   </p>
-
-  <h2>The career point: the Cyber Resilience Act</h2>
   <p>
-    The EU Cyber Resilience Act, Regulation (EU) 2024/2847, sets cybersecurity requirements for products with digital elements sold in the EU. It asks manufacturers for secure-by-default design, security updates over the product's life, and a vulnerability reporting duty. Firmware engineers now face these requirements in job descriptions, which is why secure boot, signed updates and a threat model show up on a CV. The official text is on <a href="https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng">EUR-Lex</a>. Secondary sites give the application dates, and they disagree on some of them. This lesson did not confirm the dates in the official text, so check Article 71 before you quote one.
+    A length field is a common entry point. A frame that says it carries 200 bytes, while the buffer holds 64, overwrites the stack if the parser copies without a check. Lesson 101's COBS decoder rejected a block that ran past the end of its input, and that check is exactly this kind of defence. Each such check is small, and the cost of forgetting one is large.
   </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: using a CRC as a security check.</strong> A team adds a CRC to the update image and believes it is protected. Symptom: a test that changes one byte and recomputes the CRC gets accepted by the bootloader. Fix: replace the CRC with a signature check, and keep the CRC only for damage detection in the transport.
+  </p>
+  <p>
+    <strong>Mistake 2: leaving the debug port open in production.</strong> The bootloader is correct, but the debug port still writes flash. Symptom: a probe connected to the board reads or rewrites the firmware, and the secure boot check never runs. Fix: close the debug port and set readout protection as part of the production procedure, and test that a probe can no longer connect.
+  </p>
+  <p>
+    <strong>Mistake 3: storing the key where the attacker can read it.</strong> A team puts a symmetric key in the firmware, so that the device can verify the update. Symptom: anyone who dumps the firmware, from a debug port or a leaked build, holds the key and can sign their own images. Fix: keep the private key on the build server and put only the public key on the device, and keep the device's trust anchor in OTP or the bootrom where the design allows.
+  </p>
+  <p>
+    <strong>Mistake 4: trusting a secret that is really a constant.</strong> A hard-coded password for the service menu, or a serial number used as a key, looks secret but is the same on every unit and can be read from the flash. Symptom: the password works on every device the team has ever shipped, once someone has found it in a dump. Fix: derive secrets per device from a value that is unique and protected, and never ship the same password on every unit.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional teams treat security as a process as much as a design. They keep a threat model under version control, review it when the interfaces change, and tie each threat to a test. A firmware update path is tested with a tampered image, a truncated image and a replay of an old, valid image, because the replay is the one the anti-rollback counter exists to stop. Keys live in an HSM or a signing server, and the device holds only the public key. Security patches are part of the release plan, not an afterthought.
+  </p>
+  <p>
+    The regulation is now part of the job. The EU Cyber Resilience Act, Regulation (EU) 2024/2847, sets cybersecurity requirements for products with digital elements sold in the EU. It asks manufacturers for secure-by-default design, security updates over the product's life, and a vulnerability reporting duty. Firmware engineers now face these requirements in job descriptions, which is why secure boot, signed updates and a threat model show up on a CV. The official text is on <a href="https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng">EUR-Lex</a>. Secondary sites give the application dates, and they disagree on some of them. This build could not open the official text to confirm them, so check the dates in the regulation itself before you quote one.
+  </p>
+  <p>
+    In an interview, expect the question to be about what you would not rely on. A strong answer names the things that look like security and are not: a CRC, a secret that is really a constant, a debug port left open, and a firmware image that is secret only because nobody has looked at it yet.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A threat model names the assets, the entry points and the trust boundaries, then sorts each threat by STRIDE.</li>
+    <li>Integrity, authenticity and secrecy are three separate promises, and each needs its own mechanism.</li>
+    <li>A CRC detects damage but has no secret, so it cannot stop a forger. A signature needs a private key that the device never holds.</li>
+    <li>Secure boot is a chain: a root of trust that is fixed in silicon checks the first image, and each stage checks the next.</li>
+    <li>On the RP2350, the bootrom is the root of trust, and the datasheet describes the OTP fingerprint and the anti-rollback counter (section 10.1.1).</li>
+    <li>Debug lockdown and readout protection stop the easy extraction paths. Neither stops a determined physical attacker.</li>
+    <li>Fault injection can skip one check, so critical decisions need redundancy or a hardware detector.</li>
+    <li>Check every length field and every command that changes state. Each unchecked entry point is part of the attack surface.</li>
+  </ul>
 
   <div class="win">You classified threats with STRIDE, explained a signed chain of trust, and know what debug lockdown and readout protection do and do not stop.</div>
 
@@ -153,7 +238,22 @@
       { "type": "text",
         "prompt": "On the RP2350, which part of the chain is the root of trust that is fixed at design time? One word.",
         "accept": ["bootrom", "ROM", "boot rom"],
-        "why": "The bootrom is fixed at design time, and it verifies the first image. The tempting answer, the application, cannot be the root, because it is what the root checks." }
+        "why": "The bootrom is fixed at design time, and it verifies the first image. The tempting answer, the application, cannot be the root, because it is what the root checks." },
+      { "type": "mc",
+        "prompt": "A bootloader's CRC matches after an attacker edits the image and recomputes the CRC. Which property was missing?",
+        "options": ["A secret the forger lacks", "A longer polynomial in use", "A faster comparison of bits", "A larger header for images"],
+        "answer": 0,
+        "why": "A CRC is computed by a public formula, so the forger can recompute it. A secret key, held only by the signer, is what a signature needs. The tempting answer, a longer polynomial, changes how well random errors are caught, not who can forge a CRC." },
+      { "type": "mc",
+        "prompt": "A glitch skips the one branch that rejects a bad signature. Which defence makes that skip harder?",
+        "options": ["A redundant second check", "A faster boot clock", "A larger flash image", "A shorter debug cable"],
+        "answer": 0,
+        "why": "A second, independent check means one skipped instruction is not enough. The tempting answer, a faster clock, does not change whether a single instruction is skipped, and cable length does not matter here." },
+      { "type": "mc",
+        "prompt": "A device holds a symmetric key that can verify updates. Why is this a weak design?",
+        "options": ["Any dump reveals the key", "The key slows the update", "The key uses few bits", "The key needs more header"],
+        "answer": 0,
+        "why": "A key stored in firmware can be read out by anyone who gets the image, and then the reader can sign images. The tempting answer, a slow key, is a performance concern, not the weakness here." }
     ] }
     </script>
   </div>
@@ -168,7 +268,7 @@
       { "type": "text",
         "prompt": "From lesson 84: once started, what can stop the independent watchdog (IWDG)?",
         "accept": ["reset", "a reset", "resets"],
-        "why": "Once started, the IWDG cannot be stopped except by a reset. The tempting answer, a software write, is what a window watchdog does not allow either, and the IWDG has no such write." }
+        "why": "Once the IWDG is started, only a reset stops it, so a stuck program cannot disable it. The tempting answer, a software write that clears the enable bit, is not allowed for the IWDG." }
     ] }
     </script>
   </div>
@@ -179,7 +279,7 @@
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet (Raspberry Pi)</a>: read section 10.1.1, Secure boot (p. 734), for the signature steps, the anti-rollback counter, the fault-injection defences and the debug note. Section 10.5 is the enable procedure, and it is the source for the lockdown steps.
+    <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet (Raspberry Pi)</a>: read section 10.1.1, Secure boot (p. 734), for the signature steps, the anti-rollback counter, the fault-injection defences and the debug note. Section 10.5 is the enable procedure, and it is the source for the lockdown steps. This build could not re-open the datasheet, so these section numbers are carried over from the earlier build's notes.
   </div>
 
   <div class="ask">

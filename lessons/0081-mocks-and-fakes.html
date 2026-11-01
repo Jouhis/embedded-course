@@ -18,13 +18,29 @@
   </div>
 
   <!-- ===== 1. Knowledge ===== -->
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A unit test runs one piece of code, so the code's neighbours must be replaced. For firmware, the neighbours are the hardware: the I2C bus, a GPIO, a timer. A replacement is a <em>test double</em>. Gerard Meszaros named five kinds, and Martin Fowler explains them in
-    <a href="https://martinfowler.com/articles/mocksArentStubs.html">Mocks Aren't Stubs</a> (section "The Difference Between Mocks and Stubs").
-    <span class="sidenote">Fowler's article is the best short source for the vocabulary. Use his words when an interviewer asks what a mock is.</span>
+    Lesson <a href="0080-unit-testing-on-the-host.html">80</a> showed how to test a module on the PC with Unity, and how to write the test first. That lesson kept the logic away from the hardware on purpose. This lesson deals with the code that cannot be kept away. A sensor driver has to call the bus, and the bus exists only on the board. <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76</a> gave the answer to the layout question: the driver calls a small interface, and the target decides what sits behind it. This lesson uses that seam for testing.
+  </p>
+  <p>
+    The problem is real in a job. A driver for a temperature sensor on an I2C bus is written once and then changed for years. A bug that sends the wrong pointer byte, or that reads before the sensor has a sample, may only show up on a customer's board, after a release. A host test that replaces the bus runs in a fraction of a second on every change, and it can send the bus into error paths that are hard to reach on real hardware, such as a sensor that never acknowledges an address. The test also sees the exact bytes the driver put on the wire, which a scope on the board shows only if someone thinks to look.
+  </p>
+  <p>
+    The sensor in this lesson is the MYS-1 from <a href="0063-writing-a-driver-from-a.html">lesson 63</a>. Its driver is in <code>projects/0081-mocks-and-fakes</code>, and it talks to the bus only through two functions declared in <code>src/i2c_bus.h</code>. On the board, those two functions wrap the vendor SDK. On the PC, the tests replace them. The driver does not know which one it has.
   </p>
 
+  <h2>The unit under test and its dependencies</h2>
+  <p>
+    The module you are testing is called the <strong>unit under test</strong>. Everything it calls that you do not want to test in this run is a <strong>dependency</strong>. In the MYS-1 driver, the unit under test is <code>mys1.c</code>, and its dependencies are <code>i2c_write</code> and <code>i2c_read</code>. A unit test replaces each dependency with a stand-in, so that a failure points at the unit and not at the bus.
+  </p>
+  <p>
+    The stand-in is a <strong>test double</strong>, a name taken from the stunt double in a film. The glossary entry has the definition (<a href="../reference/glossary.html#test-double">test double</a>). Gerard Meszaros named the kinds of double in his book on xUnit test patterns, and Martin Fowler explains the kinds in <a href="https://martinfowler.com/articles/mocksArentStubs.html">Mocks Aren't Stubs</a>. The words matter less than the question each one answers: what does this test need from the dependency?
+  </p>
+
+  <h2>Test doubles: the vocabulary</h2>
+  <p>
+    Fowler's article gives five kinds of double. A <strong>dummy</strong> fills a parameter and is never used, such as a logger the code does not touch in this test. A <strong>stub</strong> returns prepared answers, so a test can say "the read returns 0xA7". A <strong>spy</strong> is a stub that also records how it was called, so the test can check the calls afterwards. A <strong>fake</strong> is a working but simplified implementation, such as a bus that keeps an array of registers. A <strong>mock</strong> is loaded with the calls it expects, and it fails the test when a call is missing, extra or wrong.
+  </p>
   <table>
     <thead><tr><th>Double</th><th>What it does (Fowler's wording, paraphrased)</th><th>Driver test example</th></tr></thead>
     <tbody>
@@ -35,65 +51,194 @@
       <tr><td>Mock</td><td>Preloaded with the calls it expects, and checks them</td><td>"fail if the pointer write sends a STOP"</td></tr>
     </tbody>
   </table>
-
   <p>
-    The words matter less than the habit: decide what your test checks. A test of return values needs a stub. A test of the bytes on the wire needs a spy. In C, a fake function that records its arguments often plays both the stub and the spy role, so the labels blur in practice.
+    The table is a vocabulary, and the habit matters more than the label. Ask what the test checks. A test that only checks return values needs a stub. A test that checks the bytes on the wire needs a spy, because it must see every call and its arguments. In C, a single fake function that records its arguments and returns a chosen value usually plays both the stub role and the spy role. That is why this lesson calls the test doubles "fakes" in the everyday sense, and why the labels blur in practice. When an interviewer asks what a mock is, use Fowler's words: a mock checks the calls it expects, and a stub does not.
   </p>
+  <div class="note">
+    The glossary warns against one common slip. Calling every double a mock is wrong, because a stub only answers and a fake works. Say "fake" for a fake function that records calls, unless the test really checks expectations.
+  </div>
 
   <h2>FFF: fake functions in C</h2>
   <p>
-    FFF (Fake Function Framework, in <code>third_party/fff</code>) is one header with macros. <code>FAKE_VALUE_FUNC(int, i2c_read, uint8_t, uint8_t *, size_t)</code> writes a function named <code>i2c_read</code> that returns <code>int</code> and records its arguments. Each call updates a struct named <code>i2c_read_fake</code>:
+    FFF (Fake Function Framework) is a single C header of macros, kept in <code>third_party/fff</code>. It needs no code generator and no scripting language, which makes it a good fit for a workspace with only a C compiler. You declare a fake with a macro. The line <code>FAKE_VALUE_FUNC(int, i2c_read, uint8_t, uint8_t *, size_t)</code> writes a function named <code>i2c_read</code> that returns an <code>int</code>, takes three arguments, and records every call. The first macro argument is the return type, the second is the name, and the rest are the argument types in order.
+  </p>
+  <p>
+    The generated function keeps its state in a struct with the name of the function and the suffix <code>_fake</code>. So the state of <code>i2c_read</code> lives in <code>i2c_read_fake</code>. The fields that matter in a test are these:
   </p>
   <table>
     <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
     <tbody>
       <tr><td><code>call_count</code></td><td>How many times the function was called</td></tr>
-      <tr><td><code>arg0_val</code>, <code>arg1_val</code>…</td><td>The last value of each argument</td></tr>
-      <tr><td><code>arg0_history[i]</code></td><td>Every value of argument 0, in call order</td></tr>
-      <tr><td><code>return_val</code></td><td>What the fake returns (a stub answer)</td></tr>
-      <tr><td><code>return_val_seq</code></td><td>An array of answers, one per call (set with <code>SET_RETURN_SEQ</code>)</td></tr>
-      <tr><td><code>custom_fake</code></td><td>A function pointer: when set, the fake calls it instead of returning <code>return_val</code></td></tr>
+      <tr><td><code>arg0_val</code>, <code>arg1_val</code>, ...</td><td>The value of each argument at the most recent call</td></tr>
+      <tr><td><code>arg0_history[i]</code>, ...</td><td>Every value of each argument, in call order (up to 50 calls by default)</td></tr>
+      <tr><td><code>return_val</code></td><td>What the fake returns when no sequence or custom fake is set</td></tr>
+      <tr><td><code>return_val_seq</code></td><td>An array of answers, one per call, set with <code>SET_RETURN_SEQ</code></td></tr>
+      <tr><td><code>custom_fake</code></td><td>A function pointer: when set, the fake calls it and returns its result</td></tr>
     </tbody>
   </table>
-  <div class="note">
-    <code>RESET_FAKE(i2c_read)</code> clears all of these. Call it in <code>setUp()</code> so one test cannot leak state into the next. The FFF README and examples are in <code>third_party/fff</code>.
-  </div>
+  <p>
+    Two macros manage the state. <code>DEFINE_FFF_GLOBALS</code> appears once in the test program, and it defines the shared history that FFF keeps for all fakes. <code>RESET_FAKE(i2c_read)</code> clears one fake's counters, history and settings. The header defines both, and the FFF README in <code>third_party/fff</code> lists the rest. When the test file defines <code>custom_fake</code> and <code>return_val_seq</code>, FFF checks <code>custom_fake</code> first. The header's value-function template calls the custom fake and returns its result, so a set <code>custom_fake</code> hides the sequence. This is checked in the generated code of <code>fff.h</code>, not only in the comments.
+  </p>
   <div class="warning">
-    If <code>custom_fake</code> is set, <code>return_val</code> and <code>return_val_seq</code> are ignored. The test in <code>test_mys1.c</code> clears <code>custom_fake</code> before it sets a return sequence, for this reason.
+    If <code>custom_fake</code> is set, <code>return_val</code> and <code>return_val_seq</code> are ignored. The test in <code>test_mys1.c</code> sets <code>custom_fake</code> to <code>NULL</code> before it sets a return sequence, for exactly this reason. Forgetting that line is a common cause of a test that appears to ignore its own setup.
   </div>
 
-  <h2>CMock: generating the fake from the header</h2>
+  <h2>The bus as the driver sees it</h2>
   <p>
-    CMock is a generator. You give it a header, and it writes a mock source file. For the header line <code>int DoesSomething(int a, int b);</code>, the CMock summary lists generated functions such as <code>DoesSomething_ExpectAndReturn(int a, int b, int toReturn)</code> and <code>DoesSomething_IgnoreAndReturn(int toReturn)</code>, and a <code>_Verify</code> function to call after each test (<a href="https://github.com/ThrowTheSwitch/CMock/blob/master/docs/CMock_Summary.md">CMock Summary</a>).
-    In CMock's style, the test declares the calls it expects, in order, with their arguments. The mock fails the test when a call is missing, extra, or has the wrong arguments. That is a mock in Fowler's sense.
+    Before writing a fake of the bus, you need to know what the driver sends on it. I2C is a two-wire bus with one master and several slaves, and each transaction starts with a START condition. The master then sends a 7-bit address, with one more bit that says read or write. The slave answers with an acknowledge (ACK) or a not-acknowledge (NACK), and the transaction ends with a STOP condition. Lesson <a href="0060-the-i2c-protocol.html">60</a> covers the wire in detail. For this lesson, three facts are enough.
+  </p>
+  <p>
+    The MYS-1 has a register pointer. The first byte the master writes in a transaction sets the pointer, and each later byte is data for the register at the pointer, which then increments. The datasheet gives the transactions for one register write, one register read and a two-byte temperature read (<a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">MYS-1 datasheet</a>, section 3.2). A read therefore takes two transactions in the simplest form: one write that sets the pointer, and one read that returns the data.
+  </p>
+  <p>
+    The datasheet asks for the two steps to be joined without a STOP between them. A repeated start, also called a RESTART, replaces the STOP with another START. The datasheet says the sensor accepts both forms, but a STOP lets another master use the bus in between, and it costs time. The driver follows the datasheet: <code>reg_read</code> writes the pointer with <code>stop = false</code>, so the read that follows is a repeated start. The test that checks this rule is the one that reads <code>arg3_val</code>.
+  </p>
+
+  <h2>CMock: the same idea, generated from the header</h2>
+  <p>
+    CMock is a generator. You give it a header, and it writes a mock source file. For a header line such as <code>int DoesSomething(int a, int b);</code>, the CMock summary lists generated functions, including <code>DoesSomething_ExpectAndReturn(int a, int b, int toReturn)</code> and <code>DoesSomething_IgnoreAndReturn(int toReturn)</code>, and a <code>_Verify</code> function to call after each test (<a href="https://github.com/ThrowTheSwitch/CMock/blob/master/docs/CMock_Summary.md">CMock Summary</a>). In CMock's style, the test declares the calls it expects, in order, with their arguments, and the generated code fails the test when a call is missing, extra or has the wrong arguments. That is a mock in Fowler's sense.
   </p>
   <p>
     <span class="sidenote">CMock is written in Ruby. This workspace has no Ruby, so you cannot run it here. The course uses FFF for the hands-on work, which needs only a C compiler.</span>
-    Choose between the two styles by what you want to check. FFF records calls and lets you inspect them, which suits a driver that must send exact bytes. CMock enforces the expected sequence, which suits interaction-heavy code.
+    Choose between the two styles by what you want to check. FFF records calls and lets you inspect them after the code runs, which suits a driver that must send exact bytes. CMock enforces an expected sequence, which suits code whose job is to make the right calls in the right order. Both are used in industry. The idea is the same in both: the dependency is replaced by something the test controls, and the test says what it expects.
   </p>
 
   <h2>The driver under test</h2>
   <p>
-    The driver is the MYS-1 sensor from lesson 63 (<a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">datasheet</a>). Its functions call only <code>i2c_write(addr, data, len, stop)</code> and <code>i2c_read(addr, data, len)</code>, declared in <code>src/i2c_bus.h</code>. On the target these wrap the SDK. In the tests, FFF replaces them. This is the hardware seam from <a href="0076-driver-design-and-hardware-abstraction.html">lesson 76</a>: the driver depends on an interface, and the test chooses what sits behind it. The Unity and test-first habits come from <a href="0080-unit-testing-on-the-host.html">lesson 80</a>.
+    The driver has four public functions in <code>src/mys1.h</code>. <code>mys1_start</code> writes bit 0 of the CTRL register to start periodic measurement. <code>mys1_whoami</code> reads the identity register, which should hold 0xA7 on this part. <code>mys1_read_celsius</code> waits for the data-ready bit in the STATUS register and then reads two bytes of temperature. The two private helpers in <code>mys1.c</code> do the work: <code>reg_write</code> sends a register address and a value in one transaction with a STOP, and <code>reg_read</code> sets the pointer and reads.
   </p>
   <p>
-    The test file also has a small fake sensor: an array of registers and a register pointer, which the fake bus updates on every call. It follows the datasheet's pointer rule (section 3.2). The fake ignores the STOP flag, so only the test that checks <code>arg3_val</code> would catch a driver that sends a STOP before its read.
+    The test file adds a small fake sensor. It is an array of 64 registers, a pointer, and a counter of status reads. The fake bus updates the pointer on each write, and it returns register contents on each read. It also reports data-ready on a chosen poll, so the test can check the waiting loop. The fake follows the datasheet's pointer rule. It does not follow the STOP rule, so a driver that sends a STOP before its read would still pass most tests. Only the test that checks <code>arg3_val</code> would catch it. A fake is only as good as the rules you put into it, and this one is simpler than the real chip on purpose.
   </p>
+
+  <h2>A worked example: one WHO_AM_I read, traced</h2>
+  <p>
+    Take the test <code>test_whoami_returns_identity</code>. It asks for the identity register and expects 0xA7. Here is every step, with the real values from the project. The constants are <code>MYS1_ADDR</code> = 0x48, <code>MYS1_REG_WHO_AM_I</code> = 0x0F and <code>MYS1_WHO_AM_I_VALUE</code> = 0xA7.
+  </p>
+  <ol>
+    <li>The test calls <code>mys1_whoami(&amp;id)</code>. That calls <code>reg_read(0x0F, id, 1)</code>, because <code>MYS1_REG_WHO_AM_I</code> is 0x0F.</li>
+    <li><code>reg_read</code> calls <code>i2c_write(0x48, &amp;reg, 1, false)</code>. The fake records the call. <code>call_count</code> becomes 1, <code>arg0_val</code> is 0x48, <code>arg1_val</code> is the address of <code>reg</code>, <code>arg2_val</code> is 1, and <code>arg3_val</code> is <code>false</code>.</li>
+    <li>Because <code>custom_fake</code> is set to <code>fake_bus_write</code>, the fake runs its body instead of returning <code>return_val</code>. It sets <code>dev_ptr</code> to <code>data[0]</code>, which is 0x0F. The loop from index 1 to <code>len</code> has nothing to do, because the length is 1. It returns 1.</li>
+    <li><code>reg_read</code> compares the return value with 1, and it is equal, so it continues. This is the check that stops a read after a NACK: a return of -1 would have returned <code>false</code> here.</li>
+    <li><code>reg_read</code> calls <code>i2c_read(0x48, buf, 1)</code>. The fake records a second call, and <code>fake_bus_read</code> runs. The pointer is 0x0F, which is not the STATUS register (0x27), so it copies <code>dev_regs[0x0F]</code> into the buffer. That value is 0xA7, because <code>setUp()</code> stored it there. The pointer then increments to 0x10.</li>
+    <li>The fake returns 1, which equals <code>len</code>, so <code>reg_read</code> returns <code>true</code>. The identity byte is now 0xA7.</li>
+    <li>The test asserts that the return value is true, and that the byte is 0xA7. Both assertions pass.</li>
+  </ol>
+  <p>
+    The same walk explains the CTRL write in <code>test_start_sets_measurement_enable</code>. The frame is two bytes, 0x20 and 0x01, sent with a STOP. The fake sets the pointer to 0x20 from <code>data[0]</code>, then copies 0x01 into <code>dev_regs[0x20]</code> from <code>data[1]</code>. The test then checks that <code>dev_regs[MYS1_REG_CTRL]</code> equals <code>MYS1_CTRL_MEAS_EN</code>. That check reads the fake's memory, which is the sensor's view of the write. The driver never reads it back, so only the fake can show that the byte arrived.
+  </p>
+  <p>
+    The timeout test shows how counting works. <code>status_ready_after</code> is set to 1000, so the fake never reports data-ready. The loop in <code>mys1_read_celsius</code> runs while <code>polls</code> is below <code>MYS1_MAX_POLLS</code>, which is 5. Each poll is one <code>reg_read</code>, so each poll makes one pointer write and one read. After five polls the loop ends, the driver returns <code>false</code>, and the test checks three things: <code>status_reads</code> is 5, <code>i2c_write_fake.call_count</code> is 5, and the temperature register was never addressed. The last check matters: a driver that read temperature anyway would produce more writes than polls.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The fake declarations sit near the top of <code>test/test_mys1.c</code>. Each line does a specific job:
+  </p>
+  <pre><code>DEFINE_FFF_GLOBALS;                                                  /* one copy of FFF's shared history per test program */
+FAKE_VALUE_FUNC(int, i2c_write, uint8_t, const uint8_t *, size_t, bool); /* int return; addr, data pointer, length, stop */
+FAKE_VALUE_FUNC(int, i2c_read, uint8_t, uint8_t *, size_t);          /* int return; addr, buffer pointer, length */</code></pre>
+  <p>
+    The first line must appear once, or the linker reports the shared globals twice. The next two generate the fakes. Their argument types must match <code>src/i2c_bus.h</code>. The test file includes that header, so a mismatch normally shows up as a conflicting-declaration error when you build. Keep the two in step, and let the compiler catch the difference.
+  </p>
+  <pre><code>static int fake_bus_write(uint8_t addr, const uint8_t *data, size_t len, bool stop) {
+    (void)addr;                     /* the fake has one sensor, so the address is not needed */
+    (void)stop;                     /* the fake ignores STOP: see the warning in the explainer */
+    dev_ptr = data[0];              /* the first byte of a write sets the pointer */
+    for (size_t i = 1; i &lt; len; i++) {
+        dev_regs[dev_ptr++] = data[i];   /* later bytes are data; the pointer moves on */
+    }
+    return (int)len;                /* report every byte as accepted: an ACK on each */
+}</code></pre>
+  <p>
+    The <code>(void)</code> casts tell the compiler and the reader that the arguments are unused on purpose. The function sets the pointer from the first byte, then writes each remaining byte to the register at the pointer and moves the pointer on. Returning <code>len</code> means every byte was acknowledged. A test of a NACK would replace this body with one that returns -1, which is what the test with <code>return_val_seq</code> does.
+  </p>
+  <pre><code>static int fake_bus_read(uint8_t addr, uint8_t *data, size_t len) {
+    (void)addr;
+    for (size_t i = 0; i &lt; len; i++) {
+        if (dev_ptr == MYS1_REG_STATUS) {            /* reading STATUS counts as one poll */
+            status_reads++;
+            data[i] = (status_reads &gt;= status_ready_after) ? MYS1_STATUS_DRDY : 0u;
+        } else {
+            data[i] = dev_regs[dev_ptr];             /* any other register returns its stored value */
+        }
+        dev_ptr++;                                   /* the pointer increments after each byte */
+    }
+    return (int)len;
+}</code></pre>
+  <p>
+    The read fake has the same shape. The STATUS branch is the interesting part. It counts the poll, and it reports data-ready only from the poll that the test chose. That is how the fake models a sensor that needs time, without a clock. The pointer advances after each byte, which is what makes a two-byte burst read return TEMP_L and then TEMP_H. The test for a positive temperature sets those two bytes to 0xA0 and 0x05, and the driver's conversion turns them into 22.5 degrees.
+  </p>
+  <pre><code>static bool reg_read(uint8_t reg, uint8_t *buf, size_t len) {
+    if (i2c_write(MYS1_ADDR, &amp;reg, 1, false) != 1) {   /* pointer write, no STOP */
+        return false;                                  /* NACK: do not start a read */
+    }
+    return i2c_read(MYS1_ADDR, buf, len) == (int)len;  /* read as a repeated start */
+}</code></pre>
+  <p>
+    This is the one-line rule the tests check. The pointer write returns the number of bytes written, which is 1, and any other value means a bus error. A NACK stops the function before the read, which is why the test <code>test_whoami_does_not_read_after_nack</code> can assert that <code>i2c_read_fake.call_count</code> is 0.
+  </p>
+  <div class="warning">
+    A pointer argument is recorded as a pointer. FFF's history stores the address that the caller passed, not a copy of the bytes. Here <code>reg_read</code> passes the address of its own parameter <code>reg</code>. That storage ends when <code>reg_read</code> returns. A test that reads <code>i2c_write_fake.arg1_val[0]</code> after <code>mys1_whoami</code> has returned reads storage that no longer belongs to the variable. C calls that undefined behaviour. The byte is usually still there, so such a test passes, but it passes by luck. The fix is to copy the bytes inside <code>custom_fake</code>, while the caller's buffer still exists, into a variable the test owns. The project's fake bus does exactly that: <code>fake_bus_write</code> saves <code>data[0]</code> in <code>last_write_first</code>, and the test checks <code>last_write_first</code> instead of <code>i2c_write_fake.arg1_val[0]</code>.
+  </div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    Each of these mistakes is common when people first use fakes. Each has a symptom you can see in the test output.
+  </p>
+  <p>
+    <strong>Mistake 1: no reset in setUp.</strong> The fake keeps its counts from one test to the next. The symptom is a test that passes when you run it alone and fails in the full suite, with a message such as <em>Expected 1 Was 2</em> on a call count. The fix is <code>RESET_FAKE</code> for every fake the test uses, in <code>setUp()</code>. The project does this for both fakes, so use the same pattern in new tests.
+  </p>
+  <p>
+    <strong>Mistake 2: a stale custom fake.</strong> The test sets a return sequence to simulate a bus error, but <code>custom_fake</code> is still set from <code>setUp()</code>. The fake runs its body, and the driver sees success. The symptom is a test that expects <code>false</code> and gets <code>true</code>, and the fix is to set <code>i2c_write_fake.custom_fake = NULL</code> before <code>SET_RETURN_SEQ</code>, as <code>test_start_reports_bus_error</code> does.
+  </p>
+  <p>
+    <strong>Mistake 3: a fake that is too kind.</strong> The fake accepts every byte and ignores STOP, so a driver that sends the wrong flag passes almost every test. The symptom appears on real hardware, not in the host run, when the bus is shared: a STOP lets another master take the bus between the pointer write and the read, which the datasheet warns about. The fix is to make the important rule explicit, which means one test that asserts the flag, and a note in the fake that says what it does not model.
+  </p>
+  <p>
+    <strong>Mistake 4: reading a pointer after the call.</strong> The test checks <code>arg1_val[0]</code> after the caller has returned, and the pointed-to storage no longer exists. The symptom is a test that passes in one build and fails after a small change to the driver, because the stack has been reused. The fix is to copy the bytes inside <code>custom_fake</code>, while the caller's buffer is still alive.
+  </p>
+  <p>
+    <strong>Mistake 5: a passing test that was never red.</strong> Two tests in the starter pass before the driver is written, because the starter returns <code>false</code> everywhere, and the failure paths expect <code>false</code>. A test that passes for the wrong reason tells you nothing. The fix is the discipline from lesson 80: run the test, see it fail for the reason you expect, then write the code.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    In a professional firmware team, you will see both styles. Many teams generate mocks from headers with CMock or a similar generator, because the generated code keeps up with the header when the interface changes. Other teams write small fakes by hand, as this lesson does, because a hand-written fake can model the device, which a generated mock cannot do. The common thread is the seam: the driver depends on an interface, and the tests choose what sits behind it. A reviewer looks for that seam first. If the driver calls a register address directly, the tests cannot replace it, and the review comment is about the design, not the test.
+  </p>
+  <p>
+    Reviewers also look at what the test checks. A test named <em>test_read_ok</em> that asserts only a return value is weak. A test that checks the bytes on the wire, the order of the calls, the stop flag and the error paths is strong. The interview question in this lesson asks you to describe that set. A hardware test still matters for the real bus, because a fake knows only the datasheet it was written from. Teams therefore keep a small set of tests on the board, and run the bulk of driver tests on the PC.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A unit test replaces each dependency of the unit under test with a test double. For a driver, the dependencies are the bus functions.</li>
+    <li>Fowler's kinds: a stub returns answers, a spy also records calls, a mock checks expected calls, and a fake is a simplified working implementation.</li>
+    <li>FFF generates a fake with one macro. Its state lives in <code>name_fake</code>: <code>call_count</code>, the argument values and history, <code>return_val</code>, <code>return_val_seq</code> and <code>custom_fake</code>.</li>
+    <li>A set <code>custom_fake</code> hides the return value and the sequence. Clear it with <code>NULL</code> before you use a sequence.</li>
+    <li>Call <code>RESET_FAKE</code> for every fake in <code>setUp()</code>, so counts do not leak between tests.</li>
+    <li>The datasheet's rules belong in the fake and in a test. The pointer write must use a repeated start, so the test checks <code>stop</code>.</li>
+    <li>FFF records a pointer, not the bytes. Copy the bytes inside the fake while the caller's buffer still exists.</li>
+    <li>A host fake checks the driver's bytes and error paths. A hardware test still checks the real bus.</li>
+  </ul>
 
   <!-- ===== 2. Skill: hands-on ===== -->
   <h2>Try it on the PC</h2>
+  <p>
+    The project is <code>projects/0081-mocks-and-fakes</code>. It is a host-test project: no Wokwi and no board, only the PC's gcc, Unity and CTest. The starter has the driver header, three functions marked <code>TODO(learner)</code> in <code>src/mys1.c</code>, and nine tests. Seven of the tests fail on the starter, by design.
+  </p>
   <ol class="steps">
-    <li>Open <code>projects/0081-mocks-and-fakes/starter</code> in VS Code, then press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The default task builds the host tests and runs them with ctest. No simulator is needed.</li>
-    <li>Read <code>test/test_mys1.c</code>. Find the test that asserts <code>i2c_write_fake.arg3_val</code> is false, and say which driver line it protects.</li>
-    <li>Your task: write the three functions marked <code>TODO(learner)</code> in <code>src/mys1.c</code>: <code>mys1_start</code>, <code>mys1_whoami</code> and <code>mys1_read_celsius</code>. The helpers <code>reg_write</code> and <code>reg_read</code> are already written.</li>
-    <li>You will know it works when the summary line reads <em>9 Tests 0 Failures</em>. Before you start, it reads <em>9 Tests 7 Failures</em>.</li>
+    <li>Open <code>projects/0081-mocks-and-fakes/starter</code> in VS Code, then press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The default task builds the host tests and runs them with ctest. No simulator is needed. You can also run <code>python -I tools/build.py projects/0081-mocks-and-fakes/starter --test</code> from the workspace root.</li>
+    <li>Read <code>test/test_mys1.c</code>. Find the test that asserts <code>i2c_write_fake.arg3_val</code> is false, and say which driver line it protects. The answer is the pointer write in <code>reg_read</code>, the one that passes <code>false</code> for stop.</li>
+    <li>Your task: write the three functions marked <code>TODO(learner)</code> in <code>src/mys1.c</code>: <code>mys1_start</code>, <code>mys1_whoami</code> and <code>mys1_read_celsius</code>. The helpers <code>reg_write</code> and <code>reg_read</code> are already written, so use them rather than calling the bus directly.</li>
+    <li>Run the tests again. You will know it works when the summary line reads <em>9 Tests 0 Failures 0 Ignored</em> followed by <em>OK</em>. Before you start, the same line reads <em>9 Tests 7 Failures 0 Ignored</em>.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Start with <code>mys1_start</code>, one line. Then <code>mys1_whoami</code>, one line. For <code>mys1_read_celsius</code>, loop over <code>reg_read(MYS1_REG_STATUS, ...)</code> with <code>MYS1_MAX_POLLS</code>, then read two bytes and cast to <code>int16_t</code> before dividing by 64. The test with a timeout counts the polls.</p>
+    <p>Start with <code>mys1_start</code>, one line that calls <code>reg_write</code> with <code>MYS1_REG_CTRL</code> and <code>MYS1_CTRL_MEAS_EN</code>. Then <code>mys1_whoami</code>, one line that calls <code>reg_read</code>. For <code>mys1_read_celsius</code>, loop over <code>reg_read(MYS1_REG_STATUS, ...)</code> while <code>polls</code> is below <code>MYS1_MAX_POLLS</code>, and stop when the DRDY bit is set. Then read two bytes starting at <code>MYS1_REG_TEMP_L</code>, and cast the combined value to <code>int16_t</code> before dividing by 64. The timeout test counts the status polls.</p>
   </details>
   <p>
-    What the starter prints, from a real run of <code>python -I tools/build.py projects/0081-mocks-and-fakes/starter --test</code>:
+    The starter prints the following lines in a real run of <code>python -I tools/build.py projects/0081-mocks-and-fakes/starter --test</code>. The first two are shown, and the last two are the summary:
   </p>
   <pre><code>test_mys1.c:66:test_start_sets_measurement_enable:FAIL: Expected TRUE Was FALSE
 test_mys1.c:85:test_whoami_returns_identity:FAIL: Expected TRUE Was FALSE
@@ -101,8 +246,7 @@ test_mys1.c:85:test_whoami_returns_identity:FAIL: Expected TRUE Was FALSE
 9 Tests 7 Failures 0 Ignored
 FAIL</code></pre>
   <p>
-    The two tests that pass in the starter check failure paths (a NACK, and no read after a failed pointer write). They pass because the starter returns <code>false</code> everywhere. A test that passes for the wrong reason is a warning sign, and the lesson's interview drill returns to this.
-    The reference solution is in <code>projects/0081-mocks-and-fakes/solution</code>. It prints <em>9 Tests 0 Failures 0 Ignored OK</em>.
+    The two tests that pass in the starter check failure paths: a NACK on the pointer write, and no read after a failed pointer write. They pass because the starter returns <code>false</code> everywhere. The reference solution is in <code>projects/0081-mocks-and-fakes/solution</code>. It prints <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>. Try the exercise first, then compare.
   </p>
 
   <div class="win">You faked a bus with FFF, and wrote a driver that passes nine tests with no sensor attached. You can also check what the driver put on the wire, which a hardware test cannot show.</div>
@@ -138,7 +282,15 @@ FAIL</code></pre>
       { "type": "text",
         "prompt": "Which FFF macro clears a fake's call history and settings between tests?",
         "accept": ["RESET_FAKE", "RESET_FAKE()"],
-        "why": "RESET_FAKE(fn) resets the fake struct. DEFINE_FFF_GLOBALS only declares the shared globals once, so it is not the reset." }
+        "why": "RESET_FAKE(fn) resets the fake struct. DEFINE_FFF_GLOBALS only declares the shared globals once, so it is not the reset." },
+      { "type": "number",
+        "prompt": "The fake sensor reports DRDY only on the fourth STATUS read, and <code>MYS1_MAX_POLLS</code> is 5. How many <code>i2c_write</code> calls does the driver make for the status polls alone?",
+        "answer": 4, "tolerance": 0, "unit": "writes",
+        "why": "Each poll is one reg_read, and each reg_read makes one pointer write. Four polls give four writes. The tempting answer is 5, the poll limit, but the loop stops at the poll that finds DRDY." },
+      { "type": "text",
+        "prompt": "Which field of <code>i2c_write_fake</code> holds the value of argument 1 at the most recent call?",
+        "accept": ["arg1_val"],
+        "why": "arg1_val holds the most recent value of argument 1, which here is a pointer, so reading its contents later is a separate risk. The tempting answer, arg1_history, holds every call's value, not only the latest." }
     ] }
     </script>
   </div>
@@ -169,7 +321,7 @@ FAIL</code></pre>
 
   <!-- ===== 6. Source ===== -->
   <div class="source">
-    <a href="https://martinfowler.com/articles/mocksArentStubs.html">Martin Fowler, "Mocks Aren't Stubs"</a>: read "The Difference Between Mocks and Stubs" for the five definitions. The FFF macros are documented in <code>third_party/fff/README.md</code>.
+    <a href="https://martinfowler.com/articles/mocksArentStubs.html">Martin Fowler, "Mocks Aren't Stubs"</a>: read "The Difference Between Mocks and Stubs" for the five definitions. The FFF macros are documented in <code>third_party/fff/README.md</code>, and the generated code in <code>third_party/fff/fff.h</code> was checked for this lesson.
   </div>
 
   <div class="ask">

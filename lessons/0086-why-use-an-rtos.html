@@ -17,56 +17,111 @@
     By the end of this lesson you can work out the worst-case response time of a job in a super-loop, show that it misses a deadline, and say what a scheduler changes and what it costs.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are, and why it matters</h2>
   <p>
-    Lesson 55 gave you a super-loop: one <code>for (;;)</code> that checks a set of deadlines on every pass. It is simple, cheap and easy to test. Its weakness is that every job waits for the others. A job that is due waits until the loop comes round to it, and a long job in the loop delays everything after it.
+    Lesson <a href="0055-timing-and-non-blocking-super.html">55</a> gave you the super-loop: one <code>for (;;)</code> that checks a set of deadlines on every pass. Lesson <a href="0056-state-machines.html">56</a> then wrapped the logic of each job in a state machine, so that a job can pause and resume without blocking the others. Together they are a good design. They are simple, cheap in RAM and easy to test on a PC.
   </p>
   <p>
-    The measure that matters is the <strong>response time</strong>: the time from when a job becomes due to when it finishes. It is the waiting time plus the job's own execution time. A <strong>deadline</strong> is the largest response time the job may have. Real-time means meeting deadlines reliably, not running fast on average (the RTOS literature makes this distinction; the FreeRTOS kernel book covers it in its introduction, see the source below).
+    The problem appears when a job takes a long time. Lab <a href="lab04-port-lab-3-to-the.html">4</a> ports the three-screen monitor to the STM32, and its main loop redraws an SSD1306 OLED display. Lab <a href="lab05-move-lab-4-onto-freertos.html">5</a> then moves the same application onto FreeRTOS. This lesson explains why that move is worth making, and what it costs, before you change any code. The same question comes up in a 3D printer's control board, which samples its temperature sensors on a schedule while it also drives a screen. If the screen update holds up the sampling, the reading arrives late.
   </p>
 
-  <h2>A super-loop that misses a deadline</h2>
+  <h2>Concept 1: a job, a deadline, and a response time</h2>
   <p>
-    Take the Lab 4 monitor. The sensor must be sampled every 200 ms, and the sensor's data-ready flag is only valid for 50 ms after it is set. The OLED is redrawn every 500 ms, and a full redraw sends 1025 bytes over I2C, which takes about 90 ms at 100 kHz (the Lab 4 hints give the same figure). The loop looks like this:
+    A <strong>job</strong> is one piece of work that must happen repeatedly, such as reading a sensor. It becomes <strong>due</strong> at a known time. For a sensor sampled every 200 ms, a job is due at 200 ms, 400 ms, 600 ms, and so on. A <strong>deadline</strong> is the latest moment by which the job must be finished, or the largest amount of time it may take after it becomes due.
+  </p>
+  <p>
+    The measure that matters is the <a href="../reference/glossary.html#response-time">response time</a>: the time from when a job becomes due to when it finishes, which is its waiting time plus its own execution time. A sensor job that waits 89 ms and then runs for 2 ms has a response time of 91 ms. Whether that is acceptable depends on the deadline, not on the average of many runs.
+  </p>
+  <p>
+    That is the meaning of <strong>real-time</strong> in this course. A real-time system meets its deadlines every time, including the worst time. It is not a system that is fast on average. A fast processor that misses one sample in a thousand is not real-time for that sample. In the example that follows, the 50 ms window is an assumption made for the arithmetic, not a figure taken from Lab 4. The point of the example is the method.
+  </p>
+
+  <h2>Concept 2: blocking work</h2>
+  <p>
+    A <a href="../reference/glossary.html#blocking-code">blocking</a> call is one that does not return until its work is finished. On a microcontroller the simplest form is a loop that waits for each byte of an I2C transfer. The core executes that waiting loop, one instruction after another, so nothing else on the core runs until the transfer ends. The core is a single resource: the processor fetches and runs one instruction stream at a time, and a loop that spins on a status flag occupies all of it.
+  </p>
+  <p>
+    The cost of a blocking call is set by the bus speed and the number of bits. An I2C byte is eight data bits plus one acknowledge bit from the receiver, so nine bit times per byte. Lab 4's hint works out a full-screen update this way. The update is eight pages. Each page sends three 2-byte commands and one 129-byte data frame (a control byte and 128 columns), which is 135 bytes. Eight pages make 1080 data bytes, and the 32 transactions add one address byte each, so the update sends 1112 bytes.
+  </p>
+  <p>
+    At 100 kHz, one bit time lasts 10 µs. The update therefore takes 1112 × 9 bit times, which is 10 008 bit times, and 10 008 × 10 µs is 100.08 ms. Lab 4 rounds this to about 100 ms, and this lesson uses 100 ms in its examples.
+  </p>
+  <p>
+    Notice what this means for the design. The display code is correct. It draws a whole screen and it works. But while it runs, the core cannot do anything else, and no code in the loop can run until the redraw returns. Nothing is wrong with any single line. The problem is the total time of one path through the code.
+  </p>
+
+  <h2>Concept 3: the super-loop's worst case</h2>
+  <p>
+    A <a href="../reference/glossary.html#super-loop">super-loop</a> runs its jobs in the order they appear in the loop body, and each pass runs only those that are due. A job that becomes due in the middle of a long job waits until the long job returns and the loop comes round to it. So the worst-case response time of a job is its own execution time plus the longest chain of other work that can run before it. The average does not matter for this calculation: the worst case is what a deadline must survive.
+  </p>
+  <p>
+    Here is a super-loop in the form the Lab 4 monitor has. It is illustrative and not compiled. The helper <code>due()</code> compares the current time with a scheduled time, as in lesson 55.
   </p>
 <pre><code><span class="c">/* Illustrative super-loop: not compiled. The Lab 4 app has this shape. */</span>
 <span class="k">for</span> (;;) {
     <span class="k">if</span> (due(now, next_sample)) { sample_sensor(); next_sample += 200; }  <span class="c">/* needs ~2 ms, deadline 50 ms after the flag */</span>
-    <span class="k">if</span> (due(now, next_draw))   { draw_oled();     next_draw   += 500; }  <span class="c">/* blocks for ~90 ms on I2C */</span>
+    <span class="k">if</span> (due(now, next_draw))   { draw_oled();     next_draw   += 500; }  <span class="c">/* blocks for ~100 ms on I2C */</span>
     <span class="k">if</span> (due(now, next_log))    { log_line();      next_log    += 1000; }
 }</code></pre>
   <p>
-    Suppose the sample is due at time 200 ms, and the loop has just started the redraw at 199 ms. The redraw blocks the CPU for 90 ms, so the sample starts at 289 ms. Its response time is <code>289 − 200 = 89 ms</code>, plus its own 2 ms, about 91 ms. That is well past the 50 ms window, so the reading is lost. The loop is not buggy in any line. The response time is the sum of the blocking work that happens to run first.
+    Read the three <code>next_</code> lines closely. Each one adds the period to the previous scheduled time, not to the current time. That keeps the schedule steady: the sample is always scheduled at 200, 400 and 600 ms, even if a pass runs late. Adding the period to <code>now</code> would make every late pass push the schedule later, and the drift would accumulate. Lesson 87 makes the same point for <code>vTaskDelayUntil()</code>.
   </p>
-  <div class="warning">The worst case is the sum, not the average. A super-loop's worst-case response time for a job is its own time plus the longest path of other work that can run before it. Testing with a fast display would hide the problem.</div>
+  <p>
+    The loop also shows the mechanism that makes the worst case long. At 199 ms the sample was not yet due, so the loop went on to the redraw check and started the redraw. One millisecond later the sample became due, while the redraw was still running. The loop cannot interrupt its own draw call, because the draw call is an ordinary function call that returns only when it is done. The loop has no point at which it can look at the clock again until the redraw is finished.
+  </p>
+
+  <h2>A worked example with real numbers</h2>
+  <p>
+    Take the events in order. The sample is due at 200 ms. The loop checked the redraw a millisecond earlier, at 199 ms, found it due and started it. The redraw takes 100 ms, so it ends at 299 ms. The sample check runs only after the redraw returns, so the sample starts at 299 ms. It needs 2 ms, so it ends at 301 ms.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Time (ms)</th><th>What the core is doing</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>199</td><td>The loop finds the redraw due and starts it</td></tr>
+      <tr><td>200</td><td>The sample becomes due; the core is still in the redraw</td></tr>
+      <tr><td>299</td><td>The redraw returns; the loop reaches the sample check and starts it</td></tr>
+      <tr><td>301</td><td>The sample finishes</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The response time is 301 − 200 = 101 ms. The sample's window is 50 ms, so the reading is late and is lost. The arithmetic is the whole argument: 99 ms of waiting, which is the redraw's remaining time, plus the sample's own 2 ms.
+  </p>
+  <p>
+    Now change one number. If the redraw took 40 ms instead of 100 ms, it would end at 239 ms, the sample would start then, and it would finish at 241 ms. The response time would be 41 ms, which meets the 50 ms window. The loop code is the same. Only the blocking time changed. That is why a super-loop can pass every test on a bench with a fast display and then fail in the field with a slow bus: the test did not reach the worst case.
+  </p>
 
   <figure>
-    <svg viewBox="0 0 520 150" role="img" aria-label="Timeline: a sample becomes due at 200 ms but waits behind a 90 ms redraw, and starts at 289 ms; the window ends at 250 ms." style="max-width:676px">
+    <svg viewBox="0 0 520 150" role="img" aria-label="Timeline: a sample becomes due at 200 ms but waits behind a 100 ms redraw, and starts at 299 ms; the window ends at 250 ms." style="max-width:676px">
       <defs><marker id="ah58" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
       <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
         <path d="M40 120 H500"/>
-        <rect x="112.833" y="78" width="344.997" height="26" rx="0"/>
+        <rect x="112.833" y="78" width="383.333" height="26" rx="0"/>
         <path d="M116.7 36 V120" stroke-dasharray="4 4"/>
         <path d="M308.3 36 V120" stroke-dasharray="4 4"/>
-        <path d="M457.8 36 V120" stroke-dasharray="4 4"/>
+        <path d="M496.2 36 V120" stroke-dasharray="4 4"/>
       </g>
       <g fill="currentColor" font-family="JetBrains Mono, monospace">
         <text x="40" y="142" text-anchor="start" font-size="12">time (ms)</text>
-        <text x="120.833" y="96" text-anchor="start" font-size="12">OLED redraw, 90 ms</text>
+        <text x="120.833" y="96" text-anchor="start" font-size="12">OLED redraw, 100 ms</text>
         <text x="110.666" y="50" text-anchor="end" font-size="12">due 200 ms</text>
         <text x="312.331" y="50" text-anchor="start" font-size="12">window ends 250 ms</text>
-        <text x="461.83" y="30" text-anchor="end" font-size="12">sample starts 289 ms</text>
+        <text x="492" y="30" text-anchor="end" font-size="12">sample starts 299 ms</text>
       </g>
     </svg>
-    <figcaption>Figure 1. The sample is due at 200 ms, but the CPU is busy in the redraw. The label "289?" marks the start the super-loop would reach; the dashed line at 250 ms is where the 50 ms window ends, so the sample is late.</figcaption>
+    <figcaption>Figure 1. The sample is due at 200 ms, but the CPU is busy in the redraw. The sample starts at 299 ms, after the redraw returns. The dashed line at 250 ms is where the 50 ms window ends, so the sample is late.</figcaption>
   </figure>
 
-  <h2>The same jobs under a scheduler</h2>
+  <h2>Concept 4: what a scheduler changes</h2>
   <p>
-    An RTOS runs each job as a <strong>task</strong> with its own stack and a priority. A <strong>scheduler</strong> decides which ready task runs. If the sample task has a higher priority, the scheduler stops the redraw task as soon as the sample task becomes ready, and switches to it. Lesson 87 shows how: <code>xTaskCreate()</code> with a priority, and the tick interrupt that wakes tasks. The response time of the sample becomes the time to the next tick plus the context switch, which is a few microseconds on a Cortex-M3, not the length of the redraw.
+    An RTOS runs each job as a <a href="../reference/glossary.html#task">task</a>. A task is a function that loops forever, with its own stack (the memory where its local variables and return addresses live, lesson 33) and a priority. The <a href="../reference/glossary.html#scheduler">scheduler</a>, which is the part of the RTOS that decides which task runs, picks the highest-priority task that is ready to run. A task is ready when it has work to do and is not waiting for a delay or a signal.
   </p>
   <p>
-    This is the core idea, which the FreeRTOS kernel book states as preemption by priority (see the source below). The scheduler does not make the redraw faster. It moves the waiting to the job that can afford to wait.
+    Here is the same sample under a scheduler. The sample is a task with priority 3, and the redraw is a task with priority 2. The sample task is blocked on a delay that ends at 200 ms. The kernel counts time with a periodic interrupt called the <a href="../reference/glossary.html#tick">tick</a>. In this course the tick is 1 kHz, so one tick is 1 ms. When the tick finds that the delay has ended, the kernel makes the sample task ready. Because its priority is higher than the redraw's, the kernel switches to it. The redraw is paused in the middle of its work and resumes later. The sample's response time is at most the time to the next tick, which is 1 ms, plus the cost of the switch.
+  </p>
+  <p>
+    Notice what the scheduler does not do. It does not make the redraw faster. It does not shorten the 100 ms of bus time. It moves the waiting to the job that can afford to wait. The redraw still takes 100 ms; it simply no longer decides when the sample runs. Lesson 87 shows the API for creating tasks and their priorities, and lesson 88 shows what the switch does at the register level.
   </p>
 
   <table>
@@ -81,28 +136,78 @@
     </tbody>
   </table>
 
-  <h2>What a scheduler costs</h2>
-  <ul>
-    <li><strong>RAM.</strong> Every task has a stack. The Lab 5 tasks use 160 to 256 words each, which is 640 to 1024 bytes. A Blue Pill has 20 KiB of RAM (Wokwi's model of the STM32F103C8 gives the same figure), so the stacks are a real budget.</li>
-    <li><strong>Time.</strong> Each switch saves and restores registers. Lesson 88 shows the work.</li>
-    <li><strong>Non-determinism, if misused.</strong> A scheduler makes timing easier to reason about only if each job's blocking is bounded. A task that waits on a queue with no timeout, or holds a lock while it does I2C, can block a high-priority task for an unbounded or long time.</li>
-  </ul>
-  <div class="note">In industry the question is usually not "use an RTOS or not", but "which jobs need a deadline, and can I bound the blocking of each?" A super-loop with two well-bounded jobs is often the better design.</div>
+  <h2>Concept 5: what a scheduler costs</h2>
+  <p>
+    The first cost is RAM. Every task has a stack, and the stacks come from the kernel's heap. The course's linker script for the Blue Pill, <code>templates/common/stm32f103c8.ld</code>, gives the STM32F103C8 a RAM region of 20 KiB, which is 20 480 bytes. The FreeRTOS projects in this course give each task between 128 and 160 words. A word on the Cortex-M3 is 4 bytes, so 160 words is 640 bytes per task. Four tasks use about 2.5 KiB of the 20 KiB before the kernel's own objects, so the stacks are a real budget, not a rounding error.
+  </p>
+  <p>
+    The second cost is time. Each switch saves the registers of the task that is leaving and restores those of the task that is arriving. Lesson 88 counts that work instruction by instruction.
+  </p>
+  <p>
+    The third cost is a new kind of bug. A scheduler makes timing easier to reason about only if the blocking of each task is bounded. A task that waits on a queue with no timeout, or holds a lock while it does a slow bus transfer, can block a high-priority task for a long time. Shared data between tasks needs a protocol, and a poorly chosen one can make a high-priority task wait for a low-priority one. Lesson 90 shows that failure.
+  </p>
 
-  <div class="win">You can take a set of jobs with deadlines, compute the worst-case response time of a super-loop, show that it misses, and explain what a priority scheduler changes and what it costs.</div>
+  <h2>Concept 6: the question engineers actually ask</h2>
+  <p>
+    In industry the question is rarely "use an RTOS or not". It is "which jobs have deadlines, and can I bound the blocking of each one?" If two or three jobs have deadlines and each of them can be guarded by a short, bounded wait, a scheduler is the clean way to build it. If there is one job with a deadline and the rest is slow and not urgent, a super-loop with a non-blocking display is often the better design, and it costs less RAM and less testing.
+  </p>
+  <p>
+    Engineers also use analysis to answer the question before they write code. For periodic tasks with a fixed priority order, the classic result is <a href="../reference/glossary.html#rate-monotonic-scheduling">rate-monotonic scheduling</a>, in which the shorter the period, the higher the priority. Lesson 91 uses a version of this analysis, and shows how to check the stack and timing budgets on the Blue Pill.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: testing only the fast path.</strong> A developer runs the Lab 4 monitor with the display connected and sees every sample arrive on time. The symptom appears later: a log shows readings that are missing or stale at the same moments the screen is redrawn. The fix is to measure the worst case, not the typical one. Record the tick at which each sample becomes due and the tick at which it starts, and keep the maximum of the difference. Then compare that maximum with the window.
+  </p>
+  <p>
+    <strong>Mistake 2: adding an RTOS to hide a long blocking call.</strong> A team sees missed samples and adds tasks, but leaves the 100 ms redraw as one blocking call. The symptom is the same missed deadline, now with random corruption on the I2C bus, because two tasks are using the bus with no lock. The fix is to shorten the blocking call, for example by redrawing only the changed part of the screen, as lesson 55 recommends, or to move the redraw into a low-priority task.
+  </p>
+  <p>
+    <strong>Mistake 3: planning from the average.</strong> The average response time of the sample is 5 ms, so the team concludes that the design is safe. The symptom is a spike of 101 ms once every redraw, which the average hides. The fix is to plan with the worst case from the code path, as in the worked example, and to count how many samples miss their window over a long run.
+  </p>
+  <p>
+    <strong>Mistake 4: adding tasks without budgeting stacks.</strong> A new feature adds a task with a 128-word stack, and the device works until a particular menu path runs. The symptom is a reset or a hang with no output. The fix is to measure each stack's <a href="../reference/glossary.html#stack-high-water-mark">high-water mark</a>, the fewest free words the stack has ever had (Lab 5 prints it), and to make each stack larger than its measured need.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that ship RTOS-based products usually write a timing budget before the code. The budget lists each task, its period or trigger, its priority, its deadline, and the longest time it can block. A code reviewer then asks two questions of every new function: how long can this block, and which lock does it hold while it blocks? A function that calls a slow bus transfer while holding a shared lock is rejected, because it can block every task that needs that lock.
+  </p>
+  <p>
+    The choice between a super-loop and a scheduler appears in interviews, usually as a concrete timing question. The answer that interviewers look for is not the name of a kernel. It is the arithmetic: the worst-case response time, the sum of blocking work, and the reason a higher priority removes the waiting from the sample. The interview drill below uses that structure.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A job has a due time and a deadline. Its response time is the waiting time plus its own execution time.</li>
+    <li>Real-time means meeting every deadline, including the worst case. An average does not show that.</li>
+    <li>In a super-loop, the worst-case wait is the sum of the blocking work that can run first. A blocking call holds the core until it returns.</li>
+    <li>A full update of the Lab 4 OLED sends 1112 bytes. At 100 kHz with 9 bit times per byte, it takes about 100 ms.</li>
+    <li>A scheduler runs the highest-priority ready task, and a higher-priority task preempts a lower one at the next tick or at once from an interrupt. Its response time is bounded by the tick, not by the redraw.</li>
+    <li>A scheduler costs RAM for stacks, time for each switch, and new bugs in shared data.</li>
+    <li>Ask which jobs have deadlines and whether each one's blocking is bounded. Then choose the design.</li>
+  </ul>
 
   <h2>Try it: the response-time arithmetic</h2>
   <p>
-    This lesson has no Wokwi project, because the timing argument is arithmetic that you can check on paper before you measure. You will check it on the Blue Pill in lesson 87, and in Lab 5 you will move the Lab 4 monitor onto FreeRTOS and measure it. Work the questions below, then open the explanation in each <em>why</em> box.
+    This lesson has no Wokwi project. The timing argument is arithmetic you can check on paper before you measure anything. Lesson 87 builds the scheduler on the Blue Pill, and Lab 5 measures the result. Work the steps below, then check each answer against the quiz.
   </p>
+  <ol class="steps">
+    <li>Compute the bit count of one full OLED update: 1112 bytes, with 9 bit times each. The answer is 10 008 bit times.</li>
+    <li>At 100 kHz, one bit time is 10 µs. Multiply the bit count by 10 µs. The answer is 100.08 ms, which Lab 4 rounds to about 100 ms.</li>
+    <li>Repeat the super-loop timeline with a 40 ms redraw that starts at 199 ms. The sample starts at 239 ms and finishes at 241 ms. Its response time is 41 ms, which is inside the 50 ms window.</li>
+    <li>Multiply the stack size of four tasks at 160 words each by 4 bytes per word. The answer is 2560 bytes, which is 2.5 KiB of the 20 KiB of RAM.</li>
+  </ol>
+
+  <div class="win">You can take a set of jobs with deadlines, compute the worst-case response time of a super-loop, show that it misses, and explain what a priority scheduler changes and what it costs.</div>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
       { "type": "number",
-        "prompt": "In the super-loop above, the sample is due at 200 ms. The redraw starts at 199 ms and blocks for 90 ms. At what time, in ms, does the sample start?",
-        "answer": 289, "tolerance": 0, "unit": "ms",
-        "why": "The redraw runs from 199 ms to 289 ms, and the sample cannot start until the loop reaches it, so it starts at 289 ms. The tempting answer is 290 ms, which counts the redraw from 200 ms instead of 199 ms, when the redraw had already begun." },
+        "prompt": "In the super-loop above, the sample is due at 200 ms. The redraw starts at 199 ms and blocks for 100 ms. At what time, in ms, does the sample start?",
+        "answer": 299, "tolerance": 0, "unit": "ms",
+        "why": "The redraw runs from 199 ms to 299 ms, and the sample cannot start until the loop reaches it, so it starts at 299 ms. The tempting answer is 300 ms, which counts the redraw from 200 ms instead of 199 ms, when the redraw had already begun." },
       { "type": "mc",
         "prompt": "Which change lets the 200 ms sample meet its 50 ms window with the same display code?",
         "options": ["Give sampling a higher priority", "Clock the bus much faster", "Draw the whole display twice"],
@@ -114,13 +219,21 @@
         "answer": 0,
         "why": "Each task needs its own stack, so the scheduler costs RAM. It does not make the processor faster, and it does not shrink the code: the kernel adds code. The tempting answer, smaller code, is the opposite of what happens." },
       { "type": "number",
-        "prompt": "Each Lab 5 task stack is 256 words of 4 bytes. How many bytes is one stack?",
-        "answer": 1024, "tolerance": 0, "unit": "bytes",
-        "why": "A Cortex-M3 word is 4 bytes, so 256 words is 1024 bytes. The tempting answer is 256, which counts words, not bytes, and FreeRTOS takes the stack depth in words." },
+        "prompt": "Each task stack in this course's FreeRTOS projects is 160 words of 4 bytes. How many bytes is one stack?",
+        "answer": 640, "tolerance": 0, "unit": "bytes",
+        "why": "A Cortex-M3 word is 4 bytes, so 160 words is 640 bytes. The tempting answer is 160, which counts words, not bytes, and FreeRTOS takes the stack depth in words." },
       { "type": "text",
         "prompt": "A job's worst-case response time is its own execution time plus what?",
         "accept": ["blocking", "the blocking time", "waiting", "the waiting time", "blocking time"],
-        "why": "The response time is the waiting (blocking) time plus the execution time. The tempting answer is the period, which is how often the job runs, not how long it takes to finish after it is due." }
+        "why": "The response time is the waiting (blocking) time plus the execution time. The tempting answer is the period, which is how often the job runs, not how long it takes to finish after it is due." },
+      { "type": "number",
+        "prompt": "An OLED update sends 1112 bytes at 100 kHz, with 9 bit times per byte. How long does it take, in ms?",
+        "answer": 100.08, "tolerance": 0.05, "unit": "ms",
+        "why": "1112 bytes times 9 bit times is 10 008 bit times, and each bit at 100 kHz lasts 10 µs, so the answer is 100.08 ms. The tempting answer is 97.2 ms, which counts only the 1080 payload bytes and forgets the 32 address bytes, one per transaction." },
+      { "type": "number",
+        "prompt": "The redraw takes 40 ms and starts at 199 ms, so the sample starts at 239 ms and takes 2 ms. What is the sample's response time, in ms?",
+        "answer": 41, "tolerance": 0, "unit": "ms",
+        "why": "The sample is due at 200 ms and finishes at 241 ms, so the response time is 41 ms, which is the waiting of 39 ms plus its own 2 ms. The tempting answer is 40 ms, which leaves out the sample's own execution time." }
     ] }
     </script>
   </div>
@@ -146,11 +259,11 @@
   </div>
 
   <div class="source">
-    <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel (the kernel book, on GitHub)</a>: the introduction to preemptive, priority-based scheduling. The arithmetic in this lesson is the super-loop case of the response-time analysis that lesson 91 uses; the book is the reference for the scheduler's behaviour.
+    <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel (the kernel book, on GitHub)</a> is the reference for the kernel's model of tasks and priorities, and the place to read more about preemptive scheduling after this lesson. The numbers in the examples come from Lab 4 (the OLED update arithmetic in its timing hint), from the Blue Pill linker script <code>templates/common/stm32f103c8.ld</code> (the 20 KiB of RAM), and from the 4-byte Cortex-M3 word. The stack-analysis method this lesson points to is in lesson 91.
   </div>
 
   <div class="ask">
-    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Work the Lab 4 monitor's worst-case response time for the sample task, assuming the OLED redraw is 90 ms and the sample deadline is 50 ms. Show which jobs can block it."
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Work the Lab 4 monitor's worst-case response time for the sample task, assuming the OLED redraw is 100 ms and the sample deadline is 50 ms. Show which jobs can block it."
     Related: <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, <a href="0056-state-machines.html">Lesson 56: State machines</a>, <a href="lab04-port-lab-3-to-the.html">Lab 4: Port Lab 3 to the STM32</a>, and <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup, tasks and scheduling</a>.
   </div>
 </main>

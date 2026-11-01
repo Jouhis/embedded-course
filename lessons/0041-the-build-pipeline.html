@@ -17,13 +17,26 @@
     By the end of this lesson you can name the four build stages, read the sections of an ELF file with <code>arm-none-eabi-size</code>, and explain how the linker script places <code>.data</code> in RAM while storing its initial values in flash.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Your <code>main.c</code> goes through four stages. The <strong>preprocessor</strong> expands <code>#include</code> and macros such as <code>GPIO_BSRR_BR13</code> into plain C. The <strong>compiler</strong> turns that C into assembly text for the target. The <strong>assembler</strong> turns the assembly into an object file (<code>.o</code>) of machine code, with symbols that still have no final address. The <strong>linker</strong> joins all the object files and the libraries, places every section at an address, and writes the final <a href="../reference/glossary.html#elf-file">ELF file</a>.
-    <span class="sidenote">Lab 2 uses the first stage: you will run the preprocessor by hand and see <code>GPIO_BSRR_BR13</code> become <code>(0x1UL &lt;&lt; 29)</code>.</span>
+    So far every lesson has built a project with the <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> task and never looked inside the result. Lesson 38 used the vendor header to get a register address, and lesson 40 used the clock values from that header. The build is where those names become numbers. The preprocessor puts the header's macros into your code, the compiler and assembler produce machine code, and the linker assigns every function and variable an address in flash or RAM.
   </p>
   <p>
-    The CMake build for the STM32 template passes the same flags to every stage: <code>-mcpu=cortex-m3 -mthumb</code>, plus <code>-ffunction-sections -fdata-sections</code>, which give each function and variable its own section so the linker can drop what is unused (<code>templates/common/stm32f1.cmake</code>). The Cortex-M3 target flags are set once, so every object agrees on the instruction set.
+    The problem this lesson solves is the one that appears when a build works but the chip misbehaves. A global variable has the wrong value at start-up, the program is too large for the flash, or a new variable silently pushes the stack into data. Each of these is a question about where the linker put things. In industry the firmware team reads the map file and the section sizes after every change, and a reviewer may ask why the RAM use went up by 200 bytes. This lesson gives you the tools to answer that.
+  </p>
+
+  <h2>The four stages</h2>
+  <p>
+    Your <code>main.c</code> goes through four stages. Each one is a separate tool, and the output of one is the input of the next.
+  </p>
+  <ol class="steps">
+    <li><strong>The preprocessor</strong> expands <code>#include</code> lines and macros into plain C text. It does not know about types or registers. It only substitutes text. The output is still C.</li>
+    <li><strong>The compiler</strong> turns that C into assembly text for the target processor. Here the target is the Cortex-M3, selected by the <code>-mcpu=cortex-m3 -mthumb</code> flags.</li>
+    <li><strong>The assembler</strong> turns the assembly into an object file, <code>.o</code>. The object file holds machine code and data, but the addresses are not final, and symbols that point to other files are still unresolved.</li>
+    <li><strong>The linker</strong> joins all the object files and the libraries, places every section at an address, resolves every symbol, and writes the final <a href="../reference/glossary.html#elf-file">ELF file</a>. It is the only stage that reads the <a href="../reference/glossary.html#linker-script">linker script</a>.</li>
+  </ol>
+  <p>
+    Lab 2 runs the first stage by hand. It shows <code>GPIO_BSRR_BR13</code> becoming <code>(0x1UL &lt;&lt; (29U))</code>, so you can watch the macro expand. The CMake build for the STM32 template passes the same flags to every stage. The template adds <code>-ffunction-sections -fdata-sections</code>, which give each function and each variable its own section, so the linker can drop what is not used. The <code>--gc-sections</code> link flag does the dropping (<code>templates/common/stm32f1.cmake</code>).
   </p>
 
   <figure>
@@ -56,28 +69,57 @@
     <figcaption>Figure 1. The four stages. Only the last one needs the linker script, and only the last one decides addresses.</figcaption>
   </figure>
 
+  <h2>Sections: the units the linker places</h2>
+  <p>
+    The compiler does not emit one block of code and data. It emits named <strong>sections</strong>, each a group of bytes with a name and a purpose. The linker places each section as a unit. The names you will see are <code>.text</code> for code, <code>.rodata</code> for read-only data, <code>.data</code> for initialised variables that can change, and <code>.bss</code> for variables that start at zero. The vector table has its own section, <code>.isr_vector</code>, so the linker can put it at the start of flash, where the core looks for it (lesson 42).
+  </p>
+  <p>
+    Each section has two addresses. The <strong>load address</strong> is where its bytes are stored in the image that gets programmed into flash. The <strong>run address</strong>, which the linker calls the virtual address, is where the core reads and writes the section while the program runs. For most sections the two are the same. The exception is <code>.data</code>, and that exception is the central idea of this lesson.
+  </p>
+
   <h2>Reading a real ELF file</h2>
   <p>
-    The demo project for this lesson is built with the same flags. Its sections, from <code>arm-none-eabi-size -A build/blink</code>, look like this:
+    The demo project <code>projects/0041-build-pipeline</code> is built with the same flags as every other project. Its sections, from <code>arm-none-eabi-size -A build/blink.elf</code>, look like this. The table is the output of that command for this build:
   </p>
   <table>
     <thead><tr><th>Section</th><th>Size (bytes)</th><th>Address</th><th>What it holds</th></tr></thead>
     <tbody>
-      <tr><td><code>.isr_vector</code></td><td>268</td><td>0x08000000</td><td>The vector table, from the startup file (lesson 42)</td></tr>
-      <tr><td><code>.text</code></td><td>752</td><td>0x08000000 + 268</td><td>Code, in flash</td></tr>
-      <tr><td><code>.rodata</code></td><td>180</td><td>in flash</td><td>Read-only data, such as <code>const</code> tables</td></tr>
-      <tr><td><code>.data</code></td><td>8</td><td>0x20000000 (RAM)</td><td>Initialised globals. Their starting values are stored in flash.</td></tr>
-      <tr><td><code>.bss</code></td><td>32</td><td>in RAM, after .data</td><td>Zero-initialised globals, cleared at startup</td></tr>
-      <tr><td><code>._user_heap_stack</code></td><td>1536</td><td>in RAM</td><td>Reserved space for heap and stack, not code. <code>size</code> counts it as .bss in its totals.</td></tr>
+      <tr><td><code>.isr_vector</code></td><td>268</td><td>0x08000000 (flash)</td><td>The vector table, from the startup file (lesson 42)</td></tr>
+      <tr><td><code>.text</code></td><td>752</td><td>0x0800010C (flash)</td><td>Code</td></tr>
+      <tr><td><code>.rodata</code></td><td>180</td><td>0x080003FC (flash)</td><td>Read-only data, such as <code>const</code> tables</td></tr>
+      <tr><td><code>.init_array</code></td><td>4</td><td>0x080004B0 (flash)</td><td>Pointers to constructors that run before <code>main()</code></td></tr>
+      <tr><td><code>.fini_array</code></td><td>4</td><td>0x080004B4 (flash)</td><td>Pointers to functions that run at exit</td></tr>
+      <tr><td><code>.data</code></td><td>8</td><td>0x20000000 (RAM), stored at 0x080004B8</td><td>Initialised globals that can change</td></tr>
+      <tr><td><code>.bss</code></td><td>32</td><td>0x20000008 (RAM)</td><td>Zero-initialised globals, cleared at startup</td></tr>
+      <tr><td><code>._user_heap_stack</code></td><td>1536</td><td>0x20000028 (RAM)</td><td>Reserved heap and stack minimum, not code</td></tr>
     </tbody>
   </table>
   <p>
-    The <code>.text</code>, <code>.rodata</code> and <code>.data</code> rows are the sections most textbooks name. <code>.bss</code> and <code>._user_heap_stack</code> are the RAM-only sections. The <code>.data</code> section in the table is 8 bytes because the demo has one initialised global of 4 bytes and <code>SystemCoreClock</code>, another 4 bytes, which the ST system file initialises to <code>8000000</code>.
+    The size tool also prints a summary in its default format, with <code>text</code>, <code>data</code> and <code>bss</code> totals. Those totals group the sections in a fixed way, and the table lets you check them. In this build, the default output reads text 1200, data 16 and bss 1568. The text total is <code>.isr_vector</code>, <code>.text</code> and <code>.rodata</code> together (268 + 752 + 180 = 1200). The data total is <code>.data</code> plus the two arrays (8 + 4 + 4 = 16). The bss total is <code>.bss</code> plus the reserved block (32 + 1536 = 1568), so the reserved heap and stack count as bss in the summary, even though they are not zero-initialised data.
+  </p>
+  <p>
+    The <code>.data</code> section has 8 bytes because the demo has two initialised globals of 4 bytes each: <code>g_initialised</code> and <code>SystemCoreClock</code>. The ST system file gives <code>SystemCoreClock</code> the starting value 8000000, so it is initialised too.
+  </p>
+
+  <h2>A worked example: where the bytes go</h2>
+  <p>
+    Take the addresses from the map file and trace the bytes of this build. The flash is written first, from address 0x08000000 upwards.
+  </p>
+  <ol class="steps">
+    <li>The vector table is 268 bytes, or 0x10C, at 0x08000000. It ends at 0x0800010C, where <code>.text</code> begins.</li>
+    <li><code>.text</code> is 752 bytes, or 0x2F0. It ends at 0x080003FC, where <code>.rodata</code> begins. <code>main</code> is at 0x08000270, inside <code>.text</code>.</li>
+    <li><code>.rodata</code> is 180 bytes, or 0xB4. It ends at 0x080004B0. The <code>kLookup</code> table in the demo sits at 0x08000480, inside it.</li>
+    <li>The two arrays take 4 bytes each, at 0x080004B0 and 0x080004B4. The initial values of <code>.data</code> start at 0x080004B8. That address is <code>_sidata</code>, the symbol the startup code reads.</li>
+    <li>The <code>.data</code> bytes, 8 of them, are stored at 0x080004B8 to 0x080004BF. The run address of the same bytes is 0x20000000, in RAM.</li>
+    <li>The <code>.bss</code> section starts at 0x20000008, and it is 32 bytes. It has no bytes in flash. Its load address in the map file is 0x080004C0, but that is only a placeholder: the ELF section flags say ALLOC, with no CONTENTS.</li>
+  </ol>
+  <p>
+    The RAM budget follows from the same numbers. The reserved block runs from 0x20000028 to 0x20000628. The stack starts at the top of RAM, 0x20005000, and grows downward. The room between the end of the reserved block and the stack top is 0x20005000 minus 0x20000628, which is 0x49D8, or 18,904 bytes. That space is shared by the stack and anything else you add, so a new array of 1000 bytes in <code>.bss</code> reduces it by 1000 bytes.
   </p>
 
   <h2>The linker script, from the template</h2>
   <p>
-    The linker script is <code>templates/common/stm32f103c8.ld</code>. Its first job is the memory map. It names two regions and their sizes:
+    The linker script for the Blue Pill is <code>templates/common/stm32f103c8.ld</code>. Its first job is the memory map. It names two regions and their sizes:
   </p>
   <pre><code>MEMORY
 {
@@ -85,50 +127,62 @@
   RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 20K
 }</code></pre>
   <p>
-    Its second job is the sections. The part that matters most is <code>.data</code>, which uses two addresses at once:
+    The line before it sets the top of the stack: <code>_estack = ORIGIN(RAM) + LENGTH(RAM);</code>. That is 0x20000000 plus 20 × 1024, which is 0x20005000. The stack pointer starts there, and the first push moves it downward. The first word of the vector table holds the same value, and the core reads that word as the initial stack pointer at reset (lesson 42 covers the table).
+  </p>
+  <p>
+    The second job of the script is the sections. The part that matters most is <code>.data</code>, which uses two addresses at once:
   </p>
   <pre><code>_sidata = LOADADDR(.data);       <span class="c">/* where the initial values live: flash */</span>
 .data :
 {
+  . = ALIGN(4);
   _sdata = .;
   *(.data) *(.data*)
+  . = ALIGN(4);
   _edata = .;
 } <span class="k">&gt; RAM AT&gt; FLASH</span>             <span class="c">/* runs in RAM, is stored in FLASH */</span></code></pre>
   <p>
-    <code>&gt; RAM</code> is the <em>virtual</em> address, where the variable lives while the program runs. <code>AT&gt; FLASH</code> is the <em>load</em> address, where the initial bytes sit in the image. The startup code copies from the load address to the virtual address before <code>main()</code>. Lesson 42 walks through that copy.
+    The first line asks the linker for the load address of <code>.data</code> and stores it in <code>_sidata</code>. The block that follows collects every <code>.data</code> input section and records its start and end as <code>_sdata</code> and <code>_edata</code>. The final line has two parts. <code>&gt; RAM</code> is the run address, where the variable lives while the program runs. <code>AT&gt; FLASH</code> is the load address, where the initial bytes sit in the image. The startup code copies from the load address to the run address before <code>main()</code>. Lesson 42 walks through that copy.
   </p>
   <p>
-    The <code>.bss</code> section has only a virtual address, <code>&gt; RAM</code>, because there is nothing to store: the startup code writes zeros. The last section, <code>._user_heap_stack</code>, reserves space for the stack from the top of RAM downward, which is why <code>_estack</code> is set to <code>ORIGIN(RAM) + LENGTH(RAM)</code>.
+    The <code>.bss</code> block has only <code>&gt; RAM</code>. There is no <code>AT</code> clause because there is nothing to store. The startup code writes zeros over that RAM. The last block, <code>._user_heap_stack</code>, is different from what its name suggests. It does not reserve the stack. It adds <code>_Min_Heap_Size</code> (0x200) and <code>_Min_Stack_Size</code> (0x400) to the location counter, so that the linker fails if the minimum heap and stack do not fit in RAM. The stack itself starts at <code>_estack</code> and grows down.
   </p>
-  <div class="warning">Keep the linker's own rules straight: a section that is written to at run time must have a RAM address. A <code>const</code> object in flash is fine because nothing writes to it. Putting a writable variable in a flash-only section would link cleanly and then fail at run time.</div>
+  <div class="warning">Keep the linker's rules straight: a section that is written at run time must have a RAM run address. A <code>const</code> object in flash is fine because nothing writes to it. If you place a writable variable in a section that only has a flash address, the link can succeed, and the program fails at run time when it first writes that variable.</div>
 
   <h2>The map file</h2>
   <p>
-    The linker also writes a map file, <code>blink.map</code>, because the template passes <code>-Wl,-Map=blink.map</code> (<code>stm32f1.cmake</code>). It shows where each symbol landed. In the lab 2 build it contains lines like these:
+    The linker also writes a map file, <code>blink.map</code>, because the template passes <code>-Wl,-Map=blink.map</code> (<code>stm32f1.cmake</code>). It lists every section and symbol with its address. These lines are from the build in this lesson:
   </p>
-  <pre><code>.isr_vector     0x08000000      0x10c
-                0x08000000                        g_pfnVectors
-                0x08000244                        main
-.data           0x20000000        0x4 load address 0x08000414
-                0x08000414                        _sidata = LOADADDR (.data)</code></pre>
+  <pre><code>.isr_vector    0x08000000      0x10c
+               0x08000000                g_pfnVectors
+.text          0x0800010c      0x2f0
+               0x08000270                main
+               0x080004b8                _sidata = LOADADDR (.data)
+.data          0x20000000        0x8 load address 0x080004b8
+               0x20000000                g_initialised
+               0x20000004                SystemCoreClock</code></pre>
   <p>
-    The <code>load address</code> on the <code>.data</code> line is the flash address where the initial values are stored. Lesson 43 shows how to find a symbol in the map and read its address.
+    The <code>load address</code> on the <code>.data</code> line is the flash address where the initial values are stored, and it matches the <code>_sidata</code> line above it. Every symbol that the code uses has its own line, so you can check that a variable really landed where you expect. Lab 2 has you read the map file for specific symbols.
   </p>
 
   <h2>File formats: ELF, HEX, and UF2</h2>
   <p>
-    The ELF file is the full result, with symbols and debug information, so Wokwi and GDB can use it. The STM32 template also converts it to Intel HEX with <code>objcopy -O ihex</code> (<code>stm32f1.cmake</code>), a text format that many programmers and tools accept. The RP2040's bootrom accepts UF2 files over USB: the chip appears as a mass-storage drive, and you copy a UF2 file onto it. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8.4 (USB Mass Storage Interface)</a>. The Pico SDK's linker script is different from the STM32 one. It is built from fragments: the default memory map is <code>src/rp2040/pico_platform/memmap_default.ld</code> in pico-sdk 2.3.1, which includes the RAM and flash definitions from the other fragments.
+    The ELF file is the full result, with symbols and debug information, so Wokwi and GDB can use it. The STM32 template also converts it to Intel HEX with <code>objcopy -O ihex</code> (<code>stm32f1.cmake</code>). Intel HEX is a text format that records each byte with its address, so tools can program a chip from it without understanding the ELF layout.
+  </p>
+  <p>
+    The RP2040's bootrom accepts UF2 files over USB. The chip appears as a mass-storage drive, and you copy a UF2 file onto it. Each UF2 block carries its own target address and a family ID, and the bootrom writes the blocks to flash or RAM and reboots (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.8.4 (USB Mass Storage Interface)</a>). The Pico SDK's linker script is built from fragments. The default memory map is <code>src/rp2040/pico_platform/memmap_default.ld</code> in pico-sdk 2.3.1, and it includes the memory and section fragments from the other folders.
   </p>
 
   <h2>Try it in Wokwi and the terminal</h2>
   <p>
-    Open <code>projects/0041-build-pipeline</code> in VS Code. Build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open the terminal in that folder and run the size tool. The demo has one initialised global and one zero-initialised global, and a <code>const</code> table.
+    Open <code>projects/0041-build-pipeline</code> in VS Code. Build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open a terminal in that folder, and run the size tool. The demo has one initialised global, one zero-initialised global and a <code>const</code> table. The toolchain must be on your path, which the VS Code build task arranges.
   </p>
   <ol class="steps">
-    <li>Run <code>arm-none-eabi-size -A build/blink</code>. Note the <code>.data</code> and <code>.bss</code> sizes.</li>
+    <li>Run <code>arm-none-eabi-size -A build/blink.elf</code>. Find the <code>.data</code> line, which should read 8 bytes, and the <code>.bss</code> line, which should read 32 bytes.</li>
     <li>Open <code>main.c</code> and change <code>uint32_t g_initialised = 0x1234ABCDU;</code> to <code>uint32_t g_initialised;</code>. This removes the initial value.</li>
-    <li>Before you rebuild, predict the new <code>.data</code> and <code>.bss</code> sizes. Then rebuild and run the size tool again.</li>
-    <li>Find <code>g_initialised</code> in <code>build/blink.map</code>. It should be in <code>.bss</code> now, not <code>.data</code>.</li>
+    <li>Before you rebuild, predict the new <code>.data</code> and <code>.bss</code> sizes. Then rebuild and run the size tool again. You should see <code>.data</code> at 4 bytes and <code>.bss</code> at 36 bytes.</li>
+    <li>Find <code>g_initialised</code> in <code>build/blink.map</code>. It should be in <code>.bss</code> now, not <code>.data</code>, and it should have no load address of its own.</li>
+    <li>Run the simulator. The serial line <code>g_initialised value: 0x00000000</code> should now print, because a zero-initialised global starts at zero.</li>
   </ol>
   <details>
     <summary>Hint</summary>
@@ -137,6 +191,42 @@
   <p>
     Put the file back when you finish. The lab and the next lesson assume the demo still prints <code>g_initialised</code> with the value <code>0x1234ABCD</code>.
   </p>
+
+  <h2>Common mistakes</h2>
+  <h3>Mistake 1: reading the map file's load address for .bss as data in flash</h3>
+  <p>
+    <strong>Symptom:</strong> the map file shows a load address for <code>.bss</code>, and you think a table of zeros is stored in flash, so you search the flash for it. <strong>Fix:</strong> check the ELF flags with <code>arm-none-eabi-objdump -h</code>. The <code>.bss</code> section is ALLOC only, with no CONTENTS, so nothing is stored. The startup code writes the zeros.
+  </p>
+  <h3>Mistake 2: a writable variable in a const-like declaration</h3>
+  <p>
+    <strong>Symptom:</strong> you declare a lookup table as <code>const</code>, then try to change one entry at run time. A direct assignment is a compile error. If you cast the <code>const</code> away, the write targets flash, which the program cannot change, so the table does not change. <strong>Fix:</strong> remove <code>const</code> if the table must change, which moves it to <code>.data</code> (initialised) or <code>.bss</code> (zero). Then the section has a RAM run address, and the write goes to RAM.
+  </p>
+  <h3>Mistake 3: forgetting that globals cost RAM at every boot</h3>
+  <p>
+    <strong>Symptom:</strong> a new 2 KB buffer works in the simulator, and then the stack collides with it under load, and the program corrupts variables without any error. <strong>Fix:</strong> check the <code>.bss</code> and <code>.data</code> totals after every change. Subtract them from the 20 KB RAM, and keep the stack room in mind. In this build, 18,904 bytes sit between the reserved block and the stack top, and every global reduces that margin.
+  </p>
+  <h3>Mistake 4: editing the linker script to hide a size error</h3>
+  <p>
+    <strong>Symptom:</strong> the link fails with a region overflow, and someone raises the length of <code>RAM</code> in the script to make the error go away. The chip does not have that RAM, so the program runs until the extra range is touched. <strong>Fix:</strong> change the memory map only when the chip really has the memory. Reduce the globals, or check the datasheet for the true size.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams check the size tool output on every merge. Many keep a small script that prints the flash and RAM totals and fails the build if either crosses a limit. Code review asks whether a new global belongs in <code>.bss</code>, whether a large table should be <code>const</code> so it stays in flash, and whether a new dependency pulled in a large library. The linker script for a new board is part of the board support code, and it is reviewed with the same care as the register setup.
+  </p>
+  <p>
+    In interviews, the question "where does a global variable live?" is common, and it has a precise answer. A global with no initial value lives in <code>.bss</code>, and one with an initial value lives in <code>.data</code>: its run address is in RAM, and its starting bytes are stored in flash at the load address. A <code>const</code> global stays in flash in <code>.rodata</code>. Naming all three cases, and the copy that startup code makes, is a strong answer.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The four stages are preprocessing, compiling, assembling and linking. Only the linker reads the linker script.</li>
+    <li>The compiler emits named sections, and the linker places each one. The vector table is <code>.isr_vector</code>.</li>
+    <li>A <code>.data</code> section has a RAM run address, a flash load address, and the startup code copies it between them.</li>
+    <li><code>.bss</code> has a run address only, and nothing is stored for it. <code>const</code> data stays in flash.</li>
+    <li>The map file lists each section and symbol with its address, and the size tool gives section totals.</li>
+    <li>The STM32 template makes an ELF file, and <code>objcopy</code> turns it into Intel HEX. The RP2040 bootrom accepts UF2.</li>
+  </ul>
 
   <div class="win">You can read the section sizes of a real ELF file, explain why <code>.data</code> has a RAM address and a flash load address, and predict how a change to a global moves bytes between sections.</div>
 
@@ -161,7 +251,16 @@
         "prompt": "What format does the STM32 template's objcopy step produce, after the ELF file is built?",
         "options": ["Intel HEX text file", "raw binary image file", "UF2 mass storage file", "ELF with debug symbols"],
         "answer": 0,
-        "why": "stm32f1.cmake runs objcopy -O ihex, which writes Intel HEX. A raw binary has no addresses, and UF2 is the RP2040 bootrom's USB format. ELF is the input to objcopy, not its output." }
+        "why": "stm32f1.cmake runs objcopy -O ihex, which writes Intel HEX. A raw binary has no addresses, and UF2 is the RP2040 bootrom's USB format. ELF is the input to objcopy, not its output." },
+      { "type": "mc",
+        "prompt": "The map file shows a load address for .bss. What is stored in flash at that address?",
+        "options": ["no bytes are stored", "zero values are stored", "the initial data values", "the code of main()"],
+        "answer": 0,
+        "why": "The .bss section has ALLOC flags only, with no CONTENTS, so nothing is stored. The tempting answer, zero values, is what the section means at run time, but the startup code writes those zeros into RAM." },
+      { "type": "number",
+        "prompt": "The reserved heap and stack block runs from 0x20000028 to 0x20000628. How many bytes lie between the end of that block and the stack top at 0x20005000?",
+        "answer": 18904, "tolerance": 0, "unit": "bytes",
+        "why": "0x20005000 minus 0x20000628 is 0x49D8, which is 18,904 bytes. The tempting answer, 1536, is the size of the reserved block itself, not the room left after it." }
     ] }
     </script>
   </div>
@@ -183,11 +282,11 @@
 
   <div class="interview">
     <p><strong>"Walk me through what happens between pressing Build and the firmware running on the board. Where does a global variable live?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>The preprocessor, compiler and assembler turn each source file into an object file. The linker joins them with the libraries and the linker script, which assigns each section an address and writes an ELF file. A global with no initial value is in .bss, and one with an initial value is in .data: its variable lives in RAM, and its starting value is stored in flash at the load address. Startup code copies .data from flash to RAM and clears .bss before main() runs. A const global stays in flash in .rodata.</p></details>
+    <details><summary>Model answer</summary><p>The preprocessor, compiler and assembler turn each source file into an object file. The linker joins them with the libraries and the linker script, which assigns each section an address and writes an ELF file. A global with no initial value is in .bss, which is cleared at startup and has no bytes stored in flash. A global with an initial value is in .data: its variable lives in RAM, and its starting value is stored in flash at the load address. Startup code copies .data from flash to RAM and clears .bss before main() runs. A const global stays in flash in .rodata.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: section 2.8 (Bootrom) and 2.8.4 (USB Mass Storage Interface, UF2). It explains how a UF2 file reaches flash. Read the linker script in templates/common/stm32f103c8.ld alongside it.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: section 2.8 (Bootrom) and 2.8.4 (USB Mass Storage Interface, UF2). It explains how a UF2 file reaches flash. Read the linker script in templates/common/stm32f103c8.ld alongside it, and compare its sections with the table above.
   </div>
 
   <div class="ask">

@@ -17,17 +17,43 @@
     By the end of this lesson you can name the memory region that holds each kind of C object on an RP2040 or an STM32F103, and explain why a flash read can cost extra cycles while an SRAM read usually does not.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A Cortex-M core works on <a href="../reference/glossary.html#register-cpu">registers</a>. Everything else it reads or writes comes from memory on the same bus. Memory is a hierarchy: a few registers inside the core, then fast SRAM (volatile, read and write), then flash (non-volatile, read mostly, slower to read). Some chips add a cache, a small fast copy of recently used flash, between the two.
+    Lesson 31 introduced the core's registers, and lesson 34 showed that an interrupt writes a frame to memory. Lesson 35 put the stacks in RAM. Every one of those lessons assumed that the core could read and write memory, without saying what that memory was made of or how long a read takes. This lesson fills that gap. The next lesson, 37, shows the wires that carry each access, and lesson 41 shows how the linker decides where each object goes.
+  </p>
+  <p>
+    The problem is a timing one. A 3D printer's motion code computes step times many thousands of times a second. If the code that does the arithmetic is stored in flash and runs through a slow path, each step can take longer than planned. The printer then skips steps or moves unevenly. Engineers on such a product need to answer two questions quickly. Where does this code and this data live? And what does one access cost? This lesson gives you the vocabulary and the facts to answer both, for the two chips in this course.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+
+  <h3>Volatile and non-volatile memory</h3>
+  <p>
+    Memory is either <strong>volatile</strong> or <strong>non-volatile</strong>. Volatile memory loses its contents when power is removed. Non-volatile memory keeps them. In a microcontroller, the fast read-and-write memory is SRAM, and it is volatile. The program's code and its constant data sit in flash, which is non-volatile. The two kinds also differ in how they are written. SRAM can be written one word at a time, at the speed of an ordinary bus write. Flash is written in larger blocks, after erasing, which is slow. This is why the program is stored in flash and its variables are kept in SRAM.
+  </p>
+
+  <h3>The hierarchy: fast and small, slow and large</h3>
+  <p>
+    A Cortex-M core works on its <a href="../reference/glossary.html#register-cpu">registers</a>. Everything else it reads or writes comes from memory on the same bus. Memory is a hierarchy. At the top are a few registers inside the core. Below them is SRAM, fast and read-write. Below that is flash, non-volatile, read mostly, and slower to read. Some chips add a cache, a small fast copy of recently used flash, between the core and the flash. Each level trades size for speed, and the hierarchy works because most reads hit the top levels.
     <span class="sidenote">Architecture students will recognise this as the classic memory hierarchy, with the trade-off between capacity, latency and cost. Microcontrollers keep it but drop the large off-chip DRAM level.</span>
   </p>
+
+  <h3>Wait states</h3>
   <p>
-    The RP2040 has two kinds of memory on chip. The ROM is 16 kB and holds the boot code. The SRAM is 264 kB, split into six banks; the datasheet says software may treat it as one 264 kB region. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.6.1 (ROM) and 2.6.2 (SRAM)</a>. Program flash is <em>not</em> on the chip: it is an external serial flash chip on the QSPI interface.
+    When a memory cannot return data as fast as the core asks for it, the core waits. The extra clock cycles are called <a href="../reference/glossary.html#wait-state">wait states</a>. A wait state is not a bug. It is the bus telling the core that the answer is not ready yet. A memory with no wait states answers in the cycle the core asks. Each wait state adds one cycle to that access. Lesson 37 shows where the bus adds its own cycles.
+  </p>
+
+  <h3>Cache, and how a hit differs from a miss</h3>
+  <p>
+    A cache stores a copy of recently read data. When the core asks for an address, the cache either has the data (a <strong>hit</strong>) or does not (a <strong>miss</strong>). A hit is fast. A miss goes out to the slow memory, fetches the data, and keeps a copy for next time. The average cost of an access depends on how often the cache hits, not on the hit cost alone.
   </p>
   <p>
-    That external flash is reached through <strong>execute in place (XIP)</strong>. Reads to a 16 MB window starting at <code>0x10000000</code> are turned into serial flash transfers, and the result goes back to the core. The core runs code from that window without copying it to SRAM first. An internal <strong>XIP cache</strong> keeps recently read flash, and it is 16 kB, two-way set-associative, with a one-cycle hit. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.6.3 (Flash) and 2.6.3.1 (XIP Cache)</a>.
-    <span class="sidenote">A cache miss is the slow case. The datasheet describes it as an external serial access. It does not give a cycle count, so treat "much slower" as the honest claim.</span>
+    A cache can be <strong>set-associative</strong>. Each address maps to one set of entries, and within that set the address can sit in any of a few ways. A two-way set-associative cache has two entries per set, so the cache checks two entries on each lookup. The RP2040's XIP cache is two-way, which means that two flash addresses that map to the same set can both stay cached. The datasheet gives its size and its hit cost, and it describes the miss path only as an external serial access.
+  </p>
+
+  <h3>Execute in place</h3>
+  <p>
+    The RP2040 keeps its program in external flash. The chip reaches that flash through <strong>execute in place (XIP)</strong>. The datasheet explains that "bus reads to a 16MB memory window starting at 0x10000000 are translated into a serial flash transfer, and the result is returned to the master that initiated the read", so the core can run code from that window without first copying it to RAM. The XIP cache sits in front of the flash, so recently read code is served from the cache.
   </p>
 
   <figure>
@@ -54,9 +80,31 @@
     <figcaption>Figure 1. The tiers on an RP2040 that runs from external flash. The cache sits between the core and the flash, so the slow path is taken only on a miss.</figcaption>
   </figure>
 
+  <h3>The RP2040 memory, with the datasheet's numbers</h3>
+  <p>
+    The RP2040 has two kinds of memory on the chip. The ROM is 16 kB and holds the boot code. The datasheet says the ROM "offers single-cycle read-only bus access", and that attempting to write to it "has no effect (no bus fault is generated)" (section 2.6.1). The SRAM is 264 kB. The datasheet says it is "physically partitioned into six banks", but "software may treat it as a single 264kB memory region" (section 2.6.2). Four of the banks are 64 kB each, and two are 4 kB each. Program flash is not on the chip. It is an external serial flash chip on the QSPI interface, which the XIP hardware reaches.
+  </p>
+  <p>
+    The XIP cache is 16 kB, "two way set-associative, 1 cycle hit" (section 2.6.3.1). The datasheet also says that the cache "only affects accesses to XIP flash, so software does not have to consider cache coherence, unless performing flash programming operations". That single exception matters later in this lesson. The cache has no effect on RAM, which is why RAM is always fast.
+  </p>
+
+  <h3>The STM32F103 memory, from its header</h3>
+  <p>
+    The STM32F103 has its code flash at <code>0x08000000</code> and its SRAM at <code>0x20000000</code>, as the ST device header defines them (<code>FLASH_BASE</code> and <code>SRAM_BASE</code> in <code>stm32f103xb.h</code>). It has no XIP window and no cache for flash. The Blue Pill's linker script gives 64 KB of flash and 20 KB of SRAM (<code>templates/common/stm32f103c8.ld</code>). The core fetches code from flash directly, so the number of wait states matters, and the flash controller sets that number.
+  </p>
+  <p>
+    Flash is slower than the core at high clock speeds, so the flash controller inserts wait states. The number of wait states is set by the <code>LATENCY</code> field of <code>FLASH_ACR</code>, which the header defines as three bits, <code>FLASH_ACR_LATENCY</code> with mask <code>0x7</code>. The ST HAL raises the latency <em>before</em> it raises the clock. The comment in <code>stm32f1xx_hal_rcc.c</code> reads "Increasing the number of wait states because of higher CPU frequency", and the code sets the latency first and then checks it. The HAL lowers the latency only after it has lowered the clock. The rule is one-way: more clock needs more wait states, and you must set them first.
+  </p>
+  <p>
+    The HAL's header also gives the top speed. It says that for an STM32F10xxx the maximum frequency of SYSCLK and HCLK is 72 MHz (<code>stm32f1xx_hal_rcc.c</code>, the clock configuration notes). The header names the latency values <code>FLASH_LATENCY_0</code>, <code>FLASH_LATENCY_1</code> and <code>FLASH_LATENCY_2</code>, but the clock frequency at which each one is needed is in the reference manual, RM0008. This course has not yet checked that table against the vendor's text, so do not quote thresholds from memory. You will find the table yourself in lab 2 and lesson 43.
+  </p>
+  <p>
+    The STM32F1 also has a prefetch buffer, enabled by the <code>PRFTBE</code> bit of <code>FLASH_ACR</code>. The device header names it "Prefetch Buffer Enable". It fetches instructions ahead of the core, which hides some of the flash delay on straight-line code. It is not a full cache of data.
+  </p>
+
   <h2>Where your objects live</h2>
   <p>
-    The compiler and linker decide where each object goes (lesson 41 shows how). The rule is simple, and it is the same on both chips:
+    The compiler and the linker decide where each object goes (lesson 41 shows how). They group the object's bytes into <em>sections</em>, and the linker script says which region each section goes to. The rule is simple, and it is the same on both chips:
   </p>
   <table>
     <thead><tr><th>C object</th><th>Where it lives at run time</th><th>Section</th></tr></thead>
@@ -70,19 +118,42 @@
   </table>
   <div class="warning">An initialised global is the tempting mistake. Its starting value sits in flash, but the variable itself lives in SRAM, and it is writable.</div>
 
-  <h2>STM32F103: flash, SRAM, and wait states</h2>
+  <h2>A worked example with real numbers</h2>
   <p>
-    The STM32F103 has its code flash at <code>0x08000000</code> and its SRAM at <code>0x20000000</code>, as the ST device header defines them (<code>FLASH_BASE</code> and <code>SRAM_BASE</code> in <code>stm32f103xb.h</code>). The Blue Pill's linker script gives 64 KB of flash and 20 KB of SRAM: <code>templates/common/stm32f103c8.ld</code>.
-  </p>
-  <p>
-    Flash is slower than the core at high clock speeds, so the flash controller inserts <strong>wait states</strong>: extra cycles the core waits before the data arrives. The number of wait states is set by the <code>LATENCY</code> field of <code>FLASH_ACR</code>. The ST HAL raises the latency <em>before</em> it raises the clock, with the comment "Increasing the number of wait states because of higher CPU frequency" in <code>stm32f1xx_hal_rcc.c</code>. The rule is one-way: more clock needs more wait states, and you must set them first.
-  </p>
-  <div class="note">The exact clock thresholds for each wait-state setting are in the Flash chapter of the STM32F1 reference manual, RM0008. This course has not yet checked them against the vendor's own text, so do not quote numbers from memory. You will find the table yourself in Lab 2 and lesson 43.</div>
-  <p>
-    The STM32F1 also has a prefetch buffer, enabled by the <code>PRFTBE</code> bit of <code>FLASH_ACR</code>. The device header names it "Prefetch Buffer Enable". It fetches instructions ahead of the core, which hides some of the flash delay on straight-line code. It is not a full cache of data.
+    Two calculations show how this works in practice. The first is the cost of an access through the XIP cache. The second is the memory map of a real build, which you can check on your own machine.
   </p>
 
-  <div class="win">You can say, for any C object in a Pico or Blue Pill program, which memory it lives in and why, and you know the one case where an apparently simple read costs several cycles.</div>
+  <h3>The average cost of a flash read</h3>
+  <p>
+    The datasheet gives the hit cost, one cycle, but not the miss cost. So the numbers below are an <em>illustration</em>, chosen to show the arithmetic. They are not a measurement and they are not a datasheet value. Suppose a hit takes 1 cycle and a miss takes 20 cycles. If a fraction <code>h</code> of the reads hit, the average cost per read is:
+  </p>
+  <p>
+    average = h × 1 + (1 − h) × 20
+  </p>
+  <p>
+    At a hit rate of 95 per cent, the average is 0.95 × 1 + 0.05 × 20 = 0.95 + 1.00 = 1.95 cycles. At a hit rate of 50 per cent, the average is 0.5 × 1 + 0.5 × 20 = 10.5 cycles. The same code, with the same cache, costs more than five times as much when the cache misses half the time. This is why the hit rate depends on the code. A tight loop that fits in the cache is fast. A long sequence of different functions can miss again and again.
+  </p>
+
+  <h3>The memory map of a real build</h3>
+  <p>
+    The project <code>projects/0036-memory-hierarchy</code> prints the address of one object from each region. Its build also has a linker map, <code>build/blink.map</code>, which lists every section and its address. These are the numbers from that map, for the STM32F103:
+  </p>
+  <table>
+    <thead><tr><th>Object</th><th>Section</th><th>Address</th><th>Size</th><th>What it means</th></tr></thead>
+    <tbody>
+      <tr><td><code>flash_table</code></td><td><code>.rodata</code></td><td><code>0x080004B8</code></td><td>16 bytes</td><td>Four words of constants, read from flash</td></tr>
+      <tr><td><code>ram_counter</code></td><td><code>.data</code></td><td><code>0x20000000</code></td><td>4 bytes</td><td>The variable lives in SRAM</td></tr>
+      <tr><td>copy of <code>ram_counter</code>'s starting value</td><td><code>.data</code> load address</td><td><code>0x080004E0</code></td><td>part of 8 bytes</td><td>The starting value sits in flash until startup copies it</td></tr>
+      <tr><td><code>ram_zeroed</code></td><td><code>.bss</code></td><td><code>0x20000024</code></td><td>4 bytes</td><td>In SRAM, cleared to 0 at startup</td></tr>
+      <tr><td><code>stack_local</code></td><td>stack</td><td><code>0x20004FEC</code></td><td>4 bytes</td><td>Near the top of SRAM, since the stack grows down</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The map gives the RAM region as <code>0x20000000</code> with a length of <code>0x5000</code>, which is 20 KB, so the RAM ends at <code>0x20005000</code>. The stack local at <code>0x20004FEC</code> is within the last 20 bytes of that region, which is what you expect from a stack that starts at the top of RAM and grows down. The <code>.data</code> section is 8 bytes long, holding <code>ram_counter</code> and the <code>SystemCoreClock</code> variable from the startup code. Its load address, <code>0x080004E0</code>, is where the starting values are stored in flash, after the read-only data.
+  </p>
+  <p>
+    The simulator run for this lesson printed the same numbers. The const table is at <code>0x080004B8</code> and the counter is at <code>0x20000000</code>. The function <code>show_regions</code> printed as <code>0x08000271</code>, and the map places its code at <code>0x08000270</code>. The extra 1 is the Thumb bit. A function's address in C has bit 0 set to mark Thumb code, and the code itself starts at the even address.
+  </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
@@ -92,7 +163,7 @@
     <li>Open <code>projects/0036-memory-hierarchy</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
     <li>Before you build, predict the region of each of the five lines: the table, the counter, the zeroed global, the stack local, and the function <code>show_regions</code>.</li>
     <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Compare the serial output with your predictions. The const table should print an address starting <code>0x08</code>, and the counter should print an address starting <code>0x20</code>.</li>
+    <li>Compare the serial output with your predictions. The const table should print an address starting <code>0x08</code>, and the counter should print an address starting <code>0x20</code>. The stack local should print an address close to <code>0x20005000</code>. The <code>main() code</code> line should print an address starting <code>0x08</code>, ending in <code>1</code> because of the Thumb bit.</li>
   </ol>
   <details>
     <summary>Hint</summary>
@@ -101,6 +172,83 @@
   <p>
     In the build for this lesson, the const table is at <code>0x080004B8</code> and the initialised counter at <code>0x20000000</code>. Your build should match these numbers, because the toolchain is the same.
   </p>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The demo's <code>show_regions</code> function is short, and each line makes one point about where things live.
+  </p>
+  <pre><code><span class="k">static const</span> uint32_t flash_table[4] = { 1U, 2U, 3U, 4U };  <span class="c">/* .rodata: stays in flash */</span>
+<span class="k">static</span> uint32_t ram_counter = 7U;                            <span class="c">/* .data: copied to SRAM at startup */</span>
+<span class="k">static</span> uint32_t ram_zeroed;                                  <span class="c">/* .bss: cleared to 0 in SRAM */</span>
+
+<span class="k">static void</span> show_regions(<span class="k">void</span>) {
+    uint32_t stack_local = 9U;   <span class="c">/* lives on the stack, in SRAM */</span>
+    print_line(<span class="s">"const table (flash):  "</span>, (uint32_t)(uintptr_t)flash_table);
+    print_line(<span class="s">"global counter (RAM): "</span>, (uint32_t)(uintptr_t)&amp;ram_counter);
+    print_line(<span class="s">"zeroed global  (RAM): "</span>, (uint32_t)(uintptr_t)&amp;ram_zeroed);
+    print_line(<span class="s">"stack local    (RAM): "</span>, (uint32_t)(uintptr_t)&amp;stack_local);
+    print_line(<span class="s">"main() code   (flash):"</span>, (uint32_t)(uintptr_t)show_regions);
+}</code></pre>
+  <p>
+    The first line declares the table <code>const</code>. The compiler places a read-only object in the <code>.rodata</code> section, and the linker puts that section in flash, after the code. The <code>static</code> keyword keeps the name local to this file, which is the course's rule for helpers.
+  </p>
+  <p>
+    The second line is an initialised global. It has a starting value of 7, so the compiler puts it in <code>.data</code>. The linker gives it a run-time address in SRAM and a load address in flash. The third line has no initialiser. It goes in <code>.bss</code>, which takes space in SRAM and has no value stored in flash, because startup zeroes it.
+  </p>
+  <p>
+    The function's first line, <code>uint32_t stack_local = 9U;</code>, creates a local. A local has no fixed address that the linker chooses. It lives on the stack, which is in SRAM, and it disappears when the function returns. The <code>print_line</code> calls take the addresses of these objects. Each address is cast in two steps. <code>uintptr_t</code> is an integer type that is large enough to hold a pointer, so the first cast turns the pointer into an integer, and the second cast gives the <code>uint32_t</code> that <code>print_line</code> expects. The <code>&amp;</code> operator takes an address, and the name of a function, such as <code>show_regions</code>, gives the function's address without the operator.
+  </p>
+  <p>
+    The linker script puts the rules into effect. The line <code>.data : { ... } &gt; RAM AT&gt; FLASH</code> says two things. The section's run-time address is in RAM, which is the <code>&gt; RAM</code> part. Its stored bytes are in flash, which is the <code>AT&gt; FLASH</code> part. The symbol <code>_sidata</code> is the flash address of those stored bytes, and <code>_sdata</code> is the start of the section in RAM. The startup code copies one into the other before <code>main</code> runs. Its <code>LoopCopyDataInit</code> label is in <code>startup_stm32f103xb.s</code>, and the same file zeroes <code>.bss</code> between <code>_sbss</code> and <code>_ebss</code>, then calls <code>SystemInit</code> and then <code>main</code>.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+
+  <h3>1. Thinking an initialised global is in flash</h3>
+  <p>
+    The warning above describes this mistake, and it has a cost. A beginner who sees <code>uint32_t counter = 7;</code> and believes it is a constant may make a large table writable without thinking about RAM. Every initialised global takes SRAM as well as a copy in flash. The symptom is a build where RAM fills up faster than expected, and the linker reports that the RAM region is full. The map file shows which sections use the space. The fix is to make the object <code>const</code> when it is read-only, and to check the <code>.data</code> and <code>.bss</code> sizes in the map after each change.
+  </p>
+
+  <h3>2. Expecting a local variable to start at zero</h3>
+  <p>
+    A global with no initialiser is cleared at startup. A local is not. It lives on the stack, and it starts with whatever value the stack held before. The symptom is a counter that starts at a different value on each run, or after a change in another function. The fix is to initialise every local when you declare it, as <code>stack_local = 9U</code> does above, so that the value is never left to chance.
+  </p>
+
+  <h3>3. Returning a pointer to a local</h3>
+  <p>
+    The address of <code>stack_local</code> is an address on the stack, near the top of SRAM. When <code>show_regions</code> returns, that space can be reused by the next function call. A function that returns <code>&amp;stack_local</code> gives its caller an address that may later hold different data. The symptom is a value that is correct when read at once and wrong after the next call. The fix is to return a value, or to pass in a buffer that the caller owns.
+  </p>
+
+  <h3>4. Raising the clock without raising the wait states</h3>
+  <p>
+    The clock and the flash latency have to move together, and the HAL sets the latency first for that reason. A program that raises the clock with the latency still at its old value asks the flash for data faster than the flash can supply it. The symptom is a program that works at the low clock and fails only at the higher one, often in a way that depends on which instruction is fetched. The fix is to write the <code>LATENCY</code> field of <code>FLASH_ACR</code> before the clock change, as the HAL does, and to read it back to check.
+  </p>
+
+  <h3>5. Writing flash while running from it</h3>
+  <p>
+    On the RP2040, code runs from the flash through the XIP cache. The datasheet says software does not normally need to think about cache coherence, but flash programming is the exception. If a program erases or writes the flash it is running from, the core can fetch half-written or erased instructions. The symptom is a crash that happens right after the write. The fix is to keep the flash-writing function in RAM. The Pico SDK provides a macro for this, <code>__not_in_flash_func</code>, which places a function in RAM (its definition is in <code>pico/platform/sections.h</code>, SDK 2.3.1). Lesson 41 covers how a function is placed in a section.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional firmware engineers read the linker map after every significant change. They check how much RAM and flash each section uses, which functions landed in RAM, and whether a large table has accidentally become writable. Time-critical code, such as a motor control loop or a timing-sensitive protocol routine, is often placed in RAM, because a RAM access has a fixed and short cost. Interrupt handlers that run often are sometimes placed there for the same reason. A code reviewer asks for two things: that read-only data is declared <code>const</code>, and that any change to the linker script or the startup code is explained in the commit message.
+  </p>
+  <p>
+    Interviewers ask about this area because it shows whether you understand the cost of an access. The question at the end of this lesson, about XIP, is a common one. A good answer names the cache, says that a hit is fast and a miss is slow, and explains that the average depends on the hit rate. It also mentions that RAM does not go through the cache, and so its cost is steady.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Volatile memory loses its contents when power is removed. SRAM is volatile and fast. Flash is non-volatile and read mostly.</li>
+    <li>A cache keeps copies of recently read flash. A hit costs one cycle on the RP2040 XIP cache, and a miss goes out to the external flash.</li>
+    <li>The RP2040 has 264 kB of SRAM in six banks, 16 kB of ROM, and a 16 MB XIP window at <code>0x10000000</code>.</li>
+    <li>The STM32F103 has code flash at <code>0x08000000</code> and SRAM at <code>0x20000000</code>. The Blue Pill has 64 KB of flash and 20 KB of SRAM.</li>
+    <li>Initialised globals occupy SRAM and have a starting value stored in flash, which startup copies. Uninitialised globals are zeroed. Locals live on the stack and are not zeroed.</li>
+    <li>The FLASH_ACR LATENCY field sets the flash wait states. Raise it before the clock, and lower it after the clock falls.</li>
+    <li>Do not write flash while you are running from it. Keep flash-writing code in RAM.</li>
+  </ul>
+
+  <div class="win">You can say, for any C object in a Pico or Blue Pill program, which memory it lives in and why, and you know the one case where an apparently simple read costs several cycles.</div>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -122,7 +270,20 @@
       { "type": "text",
         "prompt": "What is the name of the STM32F1 FLASH_ACR field that sets the number of flash wait states?",
         "accept": ["LATENCY", "FLASH_ACR_LATENCY", "FLASH_ACR.LATENCY"],
-        "why": "FLASH_ACR_LATENCY is defined in the ST device header (stm32f103xb.h). The tempting answer, PRFTBE, is the prefetch buffer enable bit, which hides some delay but does not set the wait-state count." }
+        "why": "FLASH_ACR_LATENCY is defined in the ST device header (stm32f103xb.h). The tempting answer, PRFTBE, is the prefetch buffer enable bit, which hides some delay but does not set the wait-state count." },
+      { "type": "mc",
+        "prompt": "The map shows ram_counter at 0x20000000, with its load address at 0x080004E0. Where does its starting value 7 come from at reset?",
+        "options": ["Copied from flash at startup", "Read from flash each access", "Stored in SRAM by linker"],
+        "answer": 0,
+        "why": "The linker script puts .data in RAM with its stored bytes in flash (AT> FLASH), and the startup code copies them across before main runs. The tempting answer is that it is read from flash on each access, which is how a const object behaves, not a writable global." },
+      { "type": "number",
+        "prompt": "Illustration only: a cache hit costs 1 cycle and a miss costs 20 cycles. If 95 per cent of reads hit, what is the average cost, in cycles?",
+        "answer": 1.95, "tolerance": 0.01, "unit": "cycles",
+        "why": "The average is 0.95 × 1 + 0.05 × 20 = 1.95 cycles. The tempting answer is 1, which forgets the misses that still cost 20 cycles each." },
+      { "type": "number",
+        "prompt": "The Blue Pill's SRAM is 20 KB and starts at 0x20000000. What is the first address above the RAM, in hex? Type it in hex, for example 0x1234.",
+        "answer": 536891392, "tolerance": 0,
+        "why": "20 KB is 0x5000 bytes, so the first address above the RAM is 0x20005000, which is 536891392 in decimal. The tempting answer, 0x20004FFF, is the last byte inside the RAM, not the first one above it." }
     ] }
     </script>
   </div>
@@ -144,16 +305,16 @@
 
   <div class="interview">
     <p><strong>"What is execute in place, and why can a flash read make a program slower than the same code in SRAM?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Execute in place means the core fetches instructions straight from a memory-mapped flash window, with no copy to RAM. The flash is external and serial on the RP2040, so a read that misses the cache must go out over the serial bus, and that takes far longer than an SRAM access. A cache hit is fast, so the average speed depends on how often the code hits the cache. Code that is critical for timing is often copied to SRAM for that reason.</p></details>
+    <details><summary>Model answer</summary><p>Execute in place means the core fetches instructions straight from a memory-mapped flash window, with no copy to RAM. The flash is external and serial on the RP2040, so a read that misses the XIP cache must go out over the serial interface, and that takes far longer than an SRAM access. A cache hit costs one cycle, so the average speed depends on how often the code hits the cache. RAM does not go through the cache, so its cost is steady. Code that is critical for timing is often copied to or placed in RAM for that reason.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.6 (Memory), especially 2.6.2 (SRAM, with the striped banks in Table 153), 2.6.3 (Flash) and 2.6.3.1 (XIP Cache). It explains the cache mirrors at 0x10000000 to 0x15000000 in one short table.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.6 (Memory), especially 2.6.1 (ROM), 2.6.2 (SRAM, with the striped banks in Table 153), 2.6.3 (Flash) and 2.6.3.1 (XIP Cache). Section 2.6.3.1 lists the XIP aliases from 0x10 to 0x15, and section 2.6.2.1 says the cache becomes 16 kB of RAM at 0x15000000 when it is disabled.
   </div>
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does the RP2040 cache flash but not SRAM, and what changes if I disable the XIP cache?"
-    Related: <a href="0031-core-registers.html">Lesson 31: Core registers</a>, <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, and <a href="../reference/glossary.html#memory-map">Glossary: Memory map</a>.
+    Related: <a href="0031-core-registers.html">Lesson 31: Core registers</a>, <a href="0037-bus-architecture.html">Lesson 37: Bus architecture</a>, <a href="0041-the-build-pipeline.html">Lesson 41: The build pipeline</a>, and <a href="../reference/glossary.html#memory-map">Glossary: Memory map</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

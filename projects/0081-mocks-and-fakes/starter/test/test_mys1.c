@@ -21,10 +21,14 @@ static uint8_t dev_regs[0x40];
 static uint8_t dev_ptr;
 static int status_reads;        /* how many times the driver read STATUS */
 static int status_ready_after;  /* STATUS reports DRDY from this poll on */
+static uint8_t last_write_first; /* first byte of the latest write, copied during the call:
+                                  * FFF's arg1_val keeps only the pointer, and the caller's
+                                  * buffer is gone once the driver function returns */
 
 static int fake_bus_write(uint8_t addr, const uint8_t *data, size_t len, bool stop) {
     (void)addr;
     (void)stop;
+    last_write_first = data[0];
     dev_ptr = data[0];
     for (size_t i = 1; i < len; i++) {
         dev_regs[dev_ptr++] = data[i];
@@ -52,6 +56,7 @@ void setUp(void) {
     memset(dev_regs, 0, sizeof dev_regs);
     dev_regs[MYS1_REG_WHO_AM_I] = MYS1_WHO_AM_I_VALUE;
     dev_ptr = 0;
+    last_write_first = 0;
     status_reads = 0;
     status_ready_after = 1;     /* data ready on the first poll unless a test changes it */
     i2c_write_fake.custom_fake = fake_bus_write;
@@ -90,7 +95,7 @@ static void test_whoami_pointer_write_has_no_stop(void) {
     uint8_t id = 0;
     mys1_whoami(&id);
     TEST_ASSERT_EQUAL_UINT(1, i2c_write_fake.call_count);
-    TEST_ASSERT_EQUAL_HEX8(MYS1_REG_WHO_AM_I, i2c_write_fake.arg1_val[0]);
+    TEST_ASSERT_EQUAL_HEX8(MYS1_REG_WHO_AM_I, last_write_first);  /* not arg1_val[0]: dangling */
     TEST_ASSERT_FALSE(i2c_write_fake.arg3_val);   /* stop = false: repeated start */
     TEST_ASSERT_EQUAL_UINT(1, i2c_read_fake.call_count);
 }

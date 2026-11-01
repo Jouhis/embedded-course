@@ -17,40 +17,189 @@
     By the end of this lab you can run one application on two boards through a small hardware abstraction layer (<code>hal.h</code>), write the Blue Pill board file <code>hal_bluepill.c</code> with GPIO, I2C, UART and a millisecond clock, and show that the application folder is identical for both builds.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A hardware abstraction layer (HAL) is a header that the application includes, and one implementation file per board behind it. The application calls <code>hal_gpio_read()</code>, <code>hal_i2c_write()</code> and <code>hal_millis()</code>, and it never names a register, an SDK call or a pin. A Pico build and a Blue Pill build then compile the same source files, and only the board file differs.
-    <span class="sidenote">A HAL is a seam you design for testing as well as for porting. Part 6 uses the same header to put the application on a PC for unit tests, with a fake board file (lesson 80).</span>
+    Lab 3 (<a href="lab03-environment-monitor.html">Lab 3: Environment monitor</a>) built a complete small device. It reads a temperature sensor over I2C, shows the value on an OLED, sets an alarm when the value passes a threshold, and logs each reading over a serial port. It runs on a Raspberry Pi Pico, and every line of its code that touches the hardware calls the Pico SDK. Earlier lessons supply the parts. Lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> gave you a millisecond clock and wrap-safe timeouts, lesson <a href="0070-usart-and-exti-interrupts-with.html">70</a> the UART, and lesson <a href="0074-dma.html">74</a> the idea of moving bulk data without the CPU. This lab asks a question that comes up in every product team: what happens when the hardware changes?
   </p>
   <p>
-    The application is the Lab 3 monitor: the MYS-1 sensor (the mystery custom chip from lesson 63), the SSD1306 OLED, two buttons, the three-screen menu, non-blocking deadlines and a UART log. Both boards use the same sensor and display, so the only wiring change is the pin numbers in each board file.
+    In a real company the answer is often "the board changes next year". A new revision uses a cheaper microcontroller, a different supplier, or a different pin layout. If the application is written against the registers and the SDK of one chip, every line that touches the hardware must be found and rewritten, and each rewrite can break something that used to work. A hardware abstraction layer (HAL) is the design that prevents this. It is a set of functions the application calls, with one implementation for each board. Porting then means writing one file, and every other file is untouched. The discipline is simple to state and hard to keep, and the diff in this lab is how you prove you kept it.
   </p>
 
-  <figure>
-    <svg viewBox="0 0 600 150" role="img" aria-label="The application folder app/ calls hal.h. Two board files, hal_bluepill.c and hal_pico.c, implement hal.h, one for each board." style="max-width:780px">
-      <defs><marker id="ah76" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
-      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
-        <rect x="10" y="60" width="190" height="50" rx="3"/>
-        <rect x="240" y="20" width="140" height="36" rx="3"/>
-        <rect x="240" y="100" width="140" height="36" rx="3"/>
-        <rect x="420" y="20" width="160" height="36" rx="3"/>
-        <rect x="420" y="100" width="160" height="36" rx="3"/>
-        <path d="M200 85 L240 38" marker-end="url(#ah76)"/>
-        <path d="M200 85 L240 118" marker-end="url(#ah76)"/>
-        <path d="M380 38 H420"/>
-        <path d="M380 118 H420"/>
-      </g>
-      <g fill="currentColor" font-family="JetBrains Mono, monospace">
-        <text x="105" y="81.85" text-anchor="middle" font-size="11">app/ (same on both)</text>
-        <text x="105" y="95.85" text-anchor="middle" font-size="11">calls hal.h only</text>
-        <text x="310" y="41.85" text-anchor="middle" font-size="11">hal_bluepill.c</text>
-        <text x="310" y="121.85" text-anchor="middle" font-size="11">hal_pico.c</text>
-        <text x="500" y="41.85" text-anchor="middle" font-size="11">STM32 HAL, Blue Pill</text>
-        <text x="500" y="121.85" text-anchor="middle" font-size="11">Pico SDK, Pico board</text>
-      </g>
-    </svg>
-    <figcaption>Figure 1. One application, one interface, two board files. Compiling the same app/ sources in both projects is what makes the claim checkable.</figcaption>
-  </figure>
+  <h2>The concepts, one at a time</h2>
+
+  <h3>An interface and an implementation</h3>
+  <p>
+    A C header file declares functions, and a source file defines them. The header is the interface, a list of what the application may ask for. The source file is the implementation, the code that does the work for one particular board. If the header declares <code>hal_gpio_write(hal_pin_t pin, uint8_t on)</code>, every board must provide that function with that signature. The application includes only the header, so the compiler checks that the application and the board agree on the interface, without knowing which board is used.
+  </p>
+  <p>
+    In this lab the interface is <code>app/hal.h</code>. It declares six functions and one enum. <code>hal_init()</code> starts the clocks and the peripherals. <code>hal_gpio_write()</code> and <code>hal_gpio_read()</code> drive and sample the logical pins. <code>hal_i2c_write()</code> and <code>hal_i2c_read()</code> talk to devices on the I2C bus. <code>hal_millis()</code> returns the time, and <code>hal_log()</code> writes a line to the serial port. The enum <code>hal_pin_t</code> names three logical pins: the alarm LED, button A and button B. The application never names a physical pin such as PC13 or GP25.
+  </p>
+  <p>
+    The two board files each define those six functions. <code>hal_bluepill.c</code> uses the ST HAL, and <code>hal_pico.c</code> uses the Pico SDK. Both are compiled into a project that also compiles the same <code>app/</code> folder. The build system chooses one board file per project. The application cannot tell the difference, because it calls the same six functions.
+  </p>
+
+  <h3>Logical levels and active-low pins</h3>
+  <p>
+    A pin is a wire with two states, high and low. The application thinks in terms of "on" and "pressed", while the hardware thinks in terms of high and low voltage. The two can be opposite. The alarm LED on a Blue Pill is wired so that the pin must be driven low to light it, which is called <em>active low</em>. The LED on a Pico is wired the other way, so the pin must be driven high, which is <em>active high</em>. Button A on both boards pulls its pin to ground when pressed, so a pressed button reads 0 on the wire.
+  </p>
+  <p>
+    The header hides these differences. The comment on <code>hal.h</code> states the rule: <code>hal_gpio_write(HAL_PIN_LED, 1)</code> lights the LED on either board, and <code>hal_gpio_read(HAL_PIN_BTN_A)</code> returns 1 while the button is held. The board file performs the inversion. This is the reason for the abstraction on the GPIO side: the application states the meaning, and the board file states the wiring.
+  </p>
+
+  <h3>A pull-up resistor and open-drain outputs</h3>
+  <p>
+    A button that is not pressed must read a definite level, not a floating one. A pull-up resistor (<a href="../reference/glossary.html#pull-up-resistor">pull-up resistor</a>) connects the pin to the supply through a resistor, so the pin reads high when nothing pulls it low. The Blue Pill button uses the chip's internal pull-up, and the Pico button uses its internal pull-up as well, so no external resistor is needed for the buttons.
+  </p>
+  <p>
+    I2C is different. Its two lines, SCL (clock) and SDA (data), are open-drain (<a href="../reference/glossary.html#open-drain-output">open-drain output</a>). A device can only pull a line low, and nothing drives it high. Each line needs an external pull-up resistor to the supply, typically 4.7 kΩ, which the project wires on the diagram. The solution's comment in <code>hal_bluepill.c</code> says the same: the open-drain bus cannot drive a line high. A missing pull-up does not cause a short circuit, but it makes the bus stay low, so no device can talk.
+  </p>
+
+  <h3>I2C: addresses, read and write</h3>
+  <p>
+    I2C (<a href="../reference/glossary.html#i2c">I2C</a>) lets several devices share two wires. Each device has an address, and each transaction starts with a START condition, then an address byte, then data bytes, then a STOP condition. The address byte carries seven bits of address and one bit that says whether the master writes to the device or reads from it. The eighth bit is the least significant bit, which is bit 0. A device that recognises its address sends an acknowledge (ACK) bit after the address byte, and it sends an ACK after each data byte.
+  </p>
+  <p>
+    The address is therefore a 7-bit number, and the byte on the wire is that number shifted left by one, with the read-or-write bit in position 0. This is the source of the most common I2C bug in this lab, so work through it carefully. The SSD1306 OLED has the 7-bit address 0x3C, which is 0011 1100 in binary. On the wire, a write uses the byte 0111 1000, which is 0x78, and a read uses 0111 1001, which is 0x79. The two conventions differ on purpose. The course's <code>hal.h</code> takes the plain 7-bit address, as the Pico SDK does. ST's HAL takes the address already shifted left by one, and it sets the read-or-write bit itself. The macro <code>I2C_7BIT_ADD_READ</code> in <code>stm32f1xx_hal_i2c.h</code> sets bit 0, and the header comment says the address "must be shifted to the left before calling the interface". So the board file must do the shift.
+  </p>
+
+  <h3>Polling, debouncing and deadlines</h3>
+  <p>
+    The Lab 3 monitor handled the buttons with interrupts (lesson 70). The Lab 4 HAL has no interrupt call, so the application reads the buttons in the loop, a technique called polling. A press has two problems. A mechanical switch bounces: the contacts make and break several times in a few milliseconds before they settle. And the loop must not block while it waits for a press. The application handles the first problem with a time window. A rising edge (a change from released to pressed) is accepted as a press only if the last accepted press on that button was at least 30 ms earlier. This is the rule <code>DEBOUNCE_MS</code> in <code>ui.c</code>, and it appears in the acceptance criteria.
+  </p>
+  <p>
+    The application's periodic work uses deadlines, as in lesson 55. The loop keeps a next-time value for the sensor sample (every 200 ms), the display update (every 500 ms) and the log line (every second). On each pass it compares the current time with each deadline. The comparison in <code>app.c</code> is <code>(int32_t)(now - deadline) &gt;= 0</code>, which is a signed form of the unsigned subtraction from lesson 73. Both work across the 32-bit wrap, as long as the difference is less than half the range.
+  </p>
+
+  <h2>A worked example: porting the LED and the address</h2>
+  <p>
+    Take two functions from the Blue Pill file and trace them from the call in the application to the wire. The first is the LED. The application calls <code>hal_gpio_write(HAL_PIN_LED, 1)</code> when the alarm is active. The board file's implementation, as written in the solution, is:
+  </p>
+  <pre><code>if (pin == HAL_PIN_LED) {
+    /* Active low: drive the pin low to light the LED. */
+    HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_RESET : GPIO_PIN_SET);
+}</code></pre>
+  <p>
+    Trace the values. <code>on</code> is 1, so the conditional chooses <code>GPIO_PIN_RESET</code>, which drives PC13 low. A low pin on an active-low LED lights it. Now take <code>on = 0</code>. The conditional chooses <code>GPIO_PIN_SET</code>, which drives PC13 high, and the LED goes dark. The application never sees the inversion. A reviewer who checks the file asks one question: is every place where the logical value becomes a pin level written in one line, with the wiring explained in a comment? Here it is.
+  </p>
+  <p>
+    The second function is the address. The application calls <code>hal_i2c_write(0x3C, data, len)</code> for the display. The board file must send the address in the form ST's HAL expects, so the value is shifted left by one before the call. Work it in binary:
+  </p>
+  <pre><code>addr7          = 0x3C = 0011 1100
+addr7 &lt;&lt; 1     = 0111 1000 = 0x78   (bit 0 is now free for R/W)
+HAL write      : sends 0x78, the HAL keeps bit 0 at 0 (write)
+HAL read       : sends 0x78 | 1 = 0x79, the HAL sets bit 0 (read)</code></pre>
+  <p>
+    Each step is visible. The shift moves every address bit one place up, and the bit that was in position 7 is lost. That is harmless, because a 7-bit address never uses it. The result has bit 0 clear, which is the position of the read-or-write bit. The ST HAL then sets or clears that bit itself. If the board file forgot the shift, it would send 0x3C, and the bus would see the address 0x1E with a read-or-write bit of 0. The OLED would not answer, and the application would print <code>LAB4 init failed</code>. This one line is the difference between a working display and a silent bus.
+  </p>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The Blue Pill file has one function that does the most work, <code>hal_init()</code>. It enables clocks, configures pins and starts the peripherals. Its structure is a checklist, and the Pico file has the same checklist in different calls. Read the start of the function:
+  </p>
+  <pre><code>void hal_init(void) {
+    HAL_Init();
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
+    __HAL_RCC_GPIOC_CLK_ENABLE();
+    __HAL_RCC_USART1_CLK_ENABLE();
+    __HAL_RCC_I2C1_CLK_ENABLE();
+    ...</code></pre>
+  <p>
+    <code>HAL_Init()</code> sets up the HAL's own state and starts SysTick at 1 kHz, which is the time base that <code>hal_millis()</code> returns. Lesson 73 explained why that interrupt must have the lowest priority. The next five lines enable the clocks of the GPIO ports A, B and C, the USART1 peripheral and the I2C1 peripheral. Each peripheral does nothing until its clock is on, and this is the same clock gating discussed in lesson 75. A missing line here produces a dead peripheral with no error message.
+  </p>
+  <pre><code>GPIO_InitTypeDef g = {0};
+g.Pin = LED_PIN;
+g.Mode = GPIO_MODE_OUTPUT_PP;
+g.Speed = GPIO_SPEED_FREQ_LOW;
+HAL_GPIO_Init(LED_PORT, &amp;g);
+HAL_GPIO_WritePin(LED_PORT, LED_PIN, GPIO_PIN_SET);</code></pre>
+  <p>
+    The HAL configures a pin with a structure. <code>GPIO_InitTypeDef g = {0}</code> clears every field, so no value is left over from another pin. <code>g.Pin</code> names the pin, and <code>g.Mode</code> chooses push-pull output, which drives both high and low. The speed is set low, because an LED needs no fast edges. <code>HAL_GPIO_Init()</code> writes the configuration into the port's registers. The final line drives the pin high, which is the off state for an active-low LED. The comment in the file says exactly this, and it is what a reviewer looks for: the start state is set on purpose, not left to the reset value.
+  </p>
+  <pre><code>g.Pin = BTN_A_PIN | BTN_B_PIN;
+g.Mode = GPIO_MODE_INPUT;
+g.Pull = GPIO_PULLUP;
+HAL_GPIO_Init(BTN_A_PORT, &amp;g);</code></pre>
+  <p>
+    The buttons are inputs with the internal pull-up enabled. The bitwise <code>|</code> combines two pin masks into one, so a single call configures both buttons. A pressed button connects the pin to ground, so it reads 0, which the board file turns into 1 for the application. Without the pull-up the pin would float, and it would read a random level when the button is released.
+  </p>
+  <pre><code>g.Pin = GPIO_PIN_9;
+g.Mode = GPIO_MODE_AF_PP;
+g.Pull = GPIO_NOPULL;
+g.Speed = GPIO_SPEED_FREQ_HIGH;
+HAL_GPIO_Init(GPIOA, &amp;g);</code></pre>
+  <p>
+    PA9 is the USART1 transmit pin. Its mode is alternate-function push-pull (<code>GPIO_MODE_AF_PP</code>), which hands the pin to the USART instead of to the GPIO register. The project sets the high output speed, which is a choice the solution makes, not a requirement of the protocol. The pin needs no pull, because a transmit pin is always driven by the USART.
+  </p>
+  <pre><code>huart1.Instance = USART1;
+huart1.Init.BaudRate = 115200;
+huart1.Init.WordLength = UART_WORDLENGTH_8B;
+huart1.Init.StopBits = UART_STOPBITS_1;
+huart1.Init.Parity = UART_PARITY_NONE;
+huart1.Init.Mode = UART_MODE_TX;
+HAL_UART_Init(&amp;huart1);</code></pre>
+  <p>
+    The serial format is 115200 baud, eight data bits, one stop bit and no parity, which is written as 8N1. The mode is transmit only, because the Lab 4 log does not read anything from the serial port. Each field is named, so a reviewer can compare the file with the Pico's <code>stdio</code> setup and see that both produce the same format.
+  </p>
+  <pre><code>int hal_i2c_write(uint8_t addr7, const uint8_t *data, size_t len) {
+    return (HAL_I2C_Master_Transmit(&amp;hi2c1, (uint16_t)(addr7 &lt;&lt; 1), (uint8_t *)data,
+                                    (uint16_t)len, I2C_TIMEOUT_MS) == HAL_OK) ? 0 : -1;
+}</code></pre>
+  <p>
+    This is the function from the worked example. The argument <code>addr7 &lt;&lt; 1</code> is the shift, and the cast to <code>uint16_t</code> keeps the value in the range the HAL expects. The HAL call returns <code>HAL_OK</code> on success, and the conditional converts that to the course's convention of 0 for success and -1 for an error. The timeout, <code>I2C_TIMEOUT_MS</code>, is set to 100 ms. The call is bounded, as the <code>hal.h</code> comment requires. A device that does not answer makes the call return an error, and the loop keeps running.
+  </p>
+  <pre><code>uint32_t hal_millis(void) {
+    return HAL_GetTick();
+}</code></pre>
+  <p>
+    <code>HAL_GetTick()</code> returns <code>uwTick</code>, the millisecond counter that SysTick increments. It is the same counter that <code>HAL_Delay()</code> waits on, so a HAL delay and the application's deadlines share one clock. The application never names SysTick, which is the point of the abstraction: a different board could take its time from a hardware timer instead.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    Porting a driver fails in a small number of ways, and each one leaves a clear sign. The mistakes below come up in every board port, and they are the ones a reviewer checks first.
+  </p>
+  <h3>Mistake 1: the I2C address is not shifted</h3>
+  <p>
+    The board file passes <code>0x3C</code> straight to ST's HAL. <strong>Symptom:</strong> the serial monitor prints <code>LAB4 init failed</code> at once, and the OLED stays dark. A logic analyser shows the start condition, then the address byte 0x3C, and no ACK. <strong>Fix:</strong> shift the address left by one before the HAL call, as the solution does, and check the mystery sensor at 0x48 in the same way, which becomes 0x90.
+  </p>
+  <h3>Mistake 2: the LED is driven the wrong way</h3>
+  <p>
+    The board file sets the pin high to light the LED, which is the active-high rule. On the Blue Pill that is backwards. <strong>Symptom:</strong> the LED is on when the alarm is off, and off when it should be on. The log shows <code>ALARM=0</code> while the LED lights. <strong>Fix:</strong> make <code>hal_gpio_write()</code> invert the level for PC13, as the solution's comment says, and test with <code>hal_gpio_write(HAL_PIN_LED, 1)</code> alone before you test the alarm.
+  </p>
+  <h3>Mistake 3: a clock is left off</h3>
+  <p>
+    The GPIO clock for the buttons is not enabled, or the I2C clock is missing. <strong>Symptom:</strong> the buttons never move the menu, or the I2C transfers all return errors, and the sensor appears to be broken. The code looks correct, because the configuration calls run without error. <strong>Fix:</strong> check the clock list at the start of <code>hal_init()</code> against the peripherals you use. A peripheral with no clock ignores its register writes.
+  </p>
+  <h3>Mistake 4: the application is changed to fit the board</h3>
+  <p>
+    A developer finds that the Blue Pill needs a different button pin, and edits <code>app/ui.c</code> to read PB12 directly. <strong>Symptom:</strong> the build succeeds on the Blue Pill, but the Pico build fails, or the diff of <code>app/</code> against the solution is no longer empty. <strong>Fix:</strong> put the pin in the board file, and change nothing in <code>app/</code>. The acceptance test in this lab is that diff, so the mistake is caught by the same check you run to finish.
+  </p>
+  <h3>Mistake 5: a blocking call on the main loop</h3>
+  <p>
+    A developer uses <code>HAL_Delay(100)</code> inside the redraw to wait for the OLED. <strong>Symptom:</strong> the buttons miss presses, because the loop is busy, and the log lines arrive late and in bursts. <strong>Fix:</strong> keep the bus calls bounded, as <code>hal.h</code> requires, and use the deadlines. A HAL delay in the main loop is a blocking call, and it is the same problem lesson 55 described.</p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production teams use this pattern for every product that may outlive its first microcontroller. The layer boundary is usually called a board support package (BSP) or a platform layer, and the names differ between companies. The rules are the same. The application calls only the layer. The layer's functions have fixed signatures. Each board port is reviewed as a unit, and each port is tested with the same application tests. Part 6 of this course (lesson 80) uses the same header to run the application on a PC with fake board files, which is the real payoff: the application can be tested without any hardware.
+  </p>
+  <p>
+    Reviewers look for three things in a port. They check that the abstraction does not leak, which means no SDK types or register names appear in the application. They check that each conversion between logical and physical levels is written in one place, with a comment that gives the wiring. And they check the timing: every call that waits must have a bound, so one missing device cannot stop the product. An interview question about this lab usually asks how you would port a driver to a new chip, and the strong answer is the one in this lab: the interface is the contract, the board file is the only file that changes, and the diff proves it.
+  </p>
+  <p>
+    Note also that the two ports are not identical in speed. The Pico bus runs at 400 kHz, and the Blue Pill bus at 100 kHz, so a full screen update takes about a quarter of the time on the Pico. The application's deadlines are the same on both boards, and they still work, because the redraw is short compared with the 500 ms period. A port that is correct only at one speed is a port with a hidden assumption, and reviewers ask for the assumption to be written down.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A HAL is a header the application includes, plus one implementation file per board. Porting means writing one file, and the application folder stays the same.</li>
+    <li>Logical levels hide the wiring. The Blue Pill LED is active low, and the board file inverts the level once, in one place.</li>
+    <li>I2C addresses are 7-bit numbers. On the wire, the byte is the address shifted left by one, with the read-or-write bit in bit 0. ST's HAL expects the shifted form, and the course's <code>hal.h</code> does not.</li>
+    <li>I2C lines are open-drain, so each needs a pull-up resistor. Buttons use the chip's internal pull-up, and a pressed button reads 0.</li>
+    <li>Buttons are polled, and each press is debounced by a 30 ms window. A press shorter than one pass of the loop can be missed.</li>
+    <li>Periodic work uses deadlines compared with a wrap-safe difference, not with raw times.</li>
+    <li>The proof of a port is an empty diff of the application folder, plus a build for each board.</li>
+  </ul>
 
   <h2>The project layout</h2>
   <p>
@@ -72,7 +221,7 @@
     <li>Read button A (PB12) and button B (PB13), active low, so that <code>hal_gpio_read()</code> returns 1 while a button is held.</li>
     <li>Talk to the MYS-1 sensor (mystery chip, address <code>0x48</code>) and the SSD1306 OLED (address <code>0x3C</code>) on I2C1: PB6 is SCL and PB7 is SDA. Both devices use <code>hal_i2c_write()</code> and <code>hal_i2c_read()</code>.</li>
     <li>Print each log line over USART1 (PA9, 115200 baud) from <code>hal_log()</code>, with the line ending added by the board file.</li>
-    <li>Keep <code>app/</code> and <code>main.c</code> identical to the solution. A diff between your <code>app/</code> and the solution's must be empty, and the Pico build must still build from the same folder.</li>
+    <li>Keep <code>app/</code> identical to the solution's <code>app/</code>. The <code>main.c</code> file of each board differs only in its header comment, so you may keep your own. A diff of <code>app/</code> between your project and the solution must be empty, and the Pico build must still build from the same folder.</li>
     <li>Print <code>LAB4 OK</code> once, after the sensor and the display have both initialised.</li>
     <li>Optional stretch: make the Blue Pill and the Pico print the same log format for the same sensor readings. Note which lines differ, and why.</li>
   </ol>
@@ -99,7 +248,7 @@
 
   <h2>Differences from Lab 3, and why</h2>
   <ul>
-    <li><strong>Buttons are polled.</strong> Lab 3 used interrupts. The HAL has no interrupt call, so <code>ui_poll()</code> reads the pins on every pass of the loop and debounces each button by time. A press shorter than one pass of the loop can be missed. The OLED update takes about 90 ms, so a short tap during a redraw can be lost. Lesson 57 explains the interrupt version that Lab 3 uses.</li>
+    <li><strong>Buttons are polled.</strong> Lab 3 used interrupts. The HAL has no interrupt call, so <code>ui_poll()</code> reads the pins on every pass of the loop and debounces each button by time. A press shorter than one pass of the loop can be missed. A full-screen OLED update takes about 100 ms on the Blue Pill bus, so a short tap during a redraw can be lost. Lesson 57 explains the interrupt version that Lab 3 uses.</li>
     <li><strong>Temperatures are integers.</strong> The sensor count is converted to hundredths of a degree with integer maths, so no board needs float <code>printf</code>.</li>
     <li><strong>The alarm drives the LED.</strong> This uses <code>hal_gpio_write()</code>, and is the only output the HAL needs for the alarm.</li>
   </ul>
@@ -123,7 +272,7 @@
   </details>
   <details>
     <summary>Hint for the timing</summary>
-    <p>A full-screen update sends 1025 bytes. At 100 kHz with 9 bit times per byte that is about 92 ms. The application redraws only when something changes, and at every 500 ms deadline. A faster bus, or a DMA transfer from lesson 74, would shorten the redraw.</p>
+    <p>A full-screen update is 8 pages. Each page sends three 2-byte commands and one 129-byte data frame (a control byte and 128 columns), so 1080 data bytes, plus one address byte for each of the 32 transactions. At 100 kHz with 9 bit times per byte (8 bits and an ACK) that is 1112 × 9 ÷ 100 000 s, about 100 ms. The application redraws only when something changes, and at every 500 ms deadline. The Pico's 400 kHz bus takes about a quarter of that. A DMA transfer from lesson 74 could shorten the redraw further, but the HAL in this lab does not use one.</p>
   </details>
 
   <div class="widget quiz" data-title="Check your understanding">
@@ -134,15 +283,15 @@
         "accept": ["0x78", "78"],
         "why": "ST's HAL takes the 7-bit address shifted left by one, so 0x3C becomes 0x78. The tempting answer, 0x3C, is what the course hal.h and the Pico SDK take, not ST's HAL." },
       { "type": "mc",
-        "prompt": "Which file changes when you port this monitor to a new board?",
+        "prompt": "Which file do you write for a new board?",
         "options": [
-          "hal_port.c, the board file",
           "app/ui.c, the screen code",
-          "app/app.c, the state logic",
+          "app/app.c, the main loop",
+          "hal_yourboard.c, the board file",
           "app/format.c, the text code"
         ],
-        "answer": 0,
-        "why": "The board file is the only place that knows the pins and the SDK. The tempting answer, app/ui.c, is application code, which a port must leave unchanged." },
+        "answer": 2,
+        "why": "The board file is the only place that knows the pins and the SDK, and each new board gets one. The tempting answer, app/ui.c, is application code, which a port must leave unchanged." },
       { "type": "mc",
         "prompt": "Why does the application call hal_millis() instead of reading SysTick directly?",
         "options": [
@@ -157,10 +306,30 @@
         "prompt": "The mystery sensor answers at 7-bit address 0x48. What address value do you pass to ST's HAL_I2C_Master_Receive for a read, in hex?",
         "accept": ["0x90", "90"],
         "why": "The same shifted address as for a write: 0x48 shifted left by one is 0x90. On the wire a read does go out as 0x91, but the HAL sets bit 0 itself (I2C_7BIT_ADD_READ). The tempting answer, 0x91, is the byte on the wire, not the value you pass." },
+      { "type": "mc",
+        "prompt": "Button A was accepted at 1000 ms. A new rising edge arrives at 1025 ms. What does the app do?",
+        "options": [
+          "Ignores it as a bounce",
+          "Counts it as a press",
+          "Moves the menu on twice",
+          "Waits for two more reads"
+        ],
+        "answer": 0,
+        "why": "The debounce window is 30 ms, and 1025 − 1000 = 25 ms is inside it, so the edge is a bounce. The tempting answer, a second press, is right only after 30 ms have passed." },
+      { "type": "mc",
+        "prompt": "The OLED is at 7-bit address 0x3C. Which address byte goes on the wire for a read?",
+        "options": [
+          "0x78, the write byte",
+          "0x79, the read byte",
+          "0x3C, the plain address",
+          "0x7C, the read byte"
+        ],
+        "answer": 1,
+        "why": "0x3C shifted left by one is 0x78, and the read bit in bit 0 makes it 0x79. The tempting answer, 0x78, is the write byte, which has bit 0 clear." },
       { "type": "number",
-        "prompt": "The debouncer needs 3 identical samples at 10 ms each. What is the minimum time, in milliseconds, before a press is reported?",
-        "answer": 30, "tolerance": 0, "unit": "ms",
-        "why": "Three samples 10 ms apart take 30 ms from the first sample. The tempting answer, 20 ms, counts the gaps between samples and misses the first one." }
+        "prompt": "One full-screen OLED update sends 8 pages. Each page is three 2-byte commands and one 129-byte data frame. How many bytes of payload does a full update send, not counting the address bytes?",
+        "answer": 1080, "tolerance": 0, "unit": "bytes",
+        "why": "8 × (3 × 2 + 129) = 8 × 135 = 1080. The tempting answer, 1025, is 1024 data bytes plus one control byte, which forgets the commands and the other control bytes." }
     ] }
     </script>
   </div>

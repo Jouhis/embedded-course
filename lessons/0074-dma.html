@@ -19,26 +19,64 @@
 
   <div class="note"><strong>Concept-only lesson.</strong> The Wokwi simulator does not model DMA on the Blue Pill. The course's <code>NOTES.md</code> records this, and the Wokwi Blue Pill documentation lists DMA as not implemented. So this lesson has no Wokwi project. The exercises below are calculations and configuration reasoning. To try the transfers yourself, use a real Blue Pill or an STM32 Nucleo board with the CMake build used in these projects, and the HAL from lesson 69.</div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Without DMA, a UART receive interrupt runs for every byte. The CPU fetches the status, reads the data register, stores the byte and returns. With DMA the peripheral raises a request, and a DMA controller performs the transfer as a bus master, reading the peripheral's data register and writing into RAM. The CPU is involved only at the end, or at a half-way point you choose.
-    <span class="sidenote">The DMA controller shares the bus with the CPU through the bus matrix (lesson 37). When both want the same memory, an arbitration rule decides who waits. The CPU usually waits a few cycles, not a whole transfer.</span>
+    Lesson <a href="0070-usart-and-exti-interrupts-with.html">70</a> showed how a UART receives bytes with an interrupt. Each byte raises an interrupt, the handler reads the data register, and it stores the byte in a ring buffer. That works well at 115200 baud, but it has a cost. Every byte is a separate interrupt, with its own entry and exit sequence, and the CPU stops its main work for each one. Lesson <a href="0071-timers.html">71</a> used timers that count clock ticks, and lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> used SysTick for a time base. Those lessons show that the CPU is the only place where work happens in the firmware you have written so far.
   </p>
   <p>
-    A transfer is defined by a few registers: the peripheral address, the memory address, the number of items, and a control word. In the STM32F1 CMSIS header each channel has these fields in a <code>DMA_Channel_TypeDef</code> structure, with the control bits <code>DMA_CCR_CIRC</code> (circular mode), <code>DMA_CCR_HTIE</code> (half-transfer interrupt), <code>DMA_CCR_TCIE</code> (transfer-complete interrupt), <code>DMA_CCR_MINC</code> (memory increment) and <code>DMA_CCR_PSIZE</code> (peripheral size). <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, chapter "DMA"</a>
-  </p>
-
-  <h2>Channels and requests</h2>
-  <p>
-    The STM32F1 DMA controllers have several channels. Each channel serves a fixed set of peripheral requests, so the programmer picks a channel that matches the peripheral. The mapping table is in the DMA chapter of RM0008 and is not repeated here: read it for the part you use, rather than trusting a number from memory. The CMSIS header defines an interrupt for each channel, for example <code>DMA1_Channel1_IRQn</code> through <code>DMA1_Channel7_IRQn</code> (<code>stm32f103xb.h</code>).
+    The problem this lesson solves is simple to state. A sensor sends a stream of bytes, and the firmware must store every byte without losing any, while it also runs control code, drives a display and answers buttons. A product such as a 3D printer controller receives serial data from a host computer, and a battery monitor samples an ADC many times a second. In both cases the copy work is repetitive, and the CPU is the wrong tool for it. A direct memory access (DMA) controller is a small piece of hardware whose only job is to copy data from a peripheral to memory, or back. Once you have set it up, it does the copying with no CPU involvement at all.
   </p>
 
-  <h2>Circular mode and the ring buffer</h2>
+  <h2>The concepts, one at a time</h2>
+
+  <h3>The bus and the bus master</h3>
   <p>
-    In normal mode a transfer stops when the count reaches zero. In circular mode the counter reloads and the transfer starts again from the beginning of the buffer. The receive buffer then never runs out: the DMA writes into it forever, and the CPU reads behind the write position.
+    To understand DMA you need one idea from computer architecture (lesson 37). The CPU reads and writes memory and peripherals over a bus. A bus carries an address, a direction and data. Something on the bus that starts transfers is called a bus master. Normally the CPU is the only master. A DMA controller is a second bus master: it can issue reads and writes on the same bus, on its own, while the CPU is busy with something else.
+    <span class="sidenote">On the STM32F1 the bus matrix (<a href="../reference/glossary.html#bus-matrix-crossbar">bus matrix</a>) connects the CPU and the DMA to flash and SRAM. When both want the same memory in the same cycle, the matrix picks one and the other waits a few cycles.</span>
   </p>
   <p>
-    Two interrupts tell the CPU how far the DMA has got. The half-transfer interrupt says the first half of the buffer is full, and the transfer-complete interrupt says the second half is full. The handler processes the half that is ready, while the DMA fills the other half. This is the same ring-buffer idea as lesson 70, but the producer is the DMA rather than an ISR.
+    A transfer through DMA works like this. The DMA reads a value from a peripheral's data register, which is a memory-mapped address, and then writes it to an address in SRAM. Each read and write is an ordinary bus access. The DMA does not know what the bytes mean. It only knows three things: where to read, where to write, and how many items to move. Those three values are the core of every DMA setup.
+  </p>
+
+  <h3>The DMA registers of one channel</h3>
+  <p>
+    The STM32F1 has two DMA controllers, DMA1 and DMA2, and each has several channels. A channel is one independent copy engine with its own four registers. The CMSIS header describes them as a structure, <code>DMA_Channel_TypeDef</code>, with four members in this order: <code>CCR</code> (the control register), <code>CNDTR</code> (the number of data to transfer), <code>CPAR</code> (the peripheral address) and <code>CMAR</code> (the memory address). You can check the layout in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>. The names are the ones you will see in every STM32F1 DMA example.
+  </p>
+  <ul>
+    <li><code>CPAR</code> holds the address the DMA reads from or writes to on the peripheral side. For a UART receive this is the address of the receive data register.</li>
+    <li><code>CMAR</code> holds the address in memory. For a receive buffer this is the first element of the array.</li>
+    <li><code>CNDTR</code> holds how many items are still to move. It starts at the buffer length and counts down, one item per transfer.</li>
+    <li><code>CCR</code> holds the control bits. It selects the direction, the sizes, the increments, the interrupt enables and the enable bit <code>EN</code> that starts the channel.</li>
+  </ul>
+  <p>
+    The reference manual defines the bits of <code>CCR</code>. The ones this lesson uses are <code>DMA_CCR_EN</code> (channel enable), <code>DMA_CCR_DIR</code> (the direction), <code>DMA_CCR_CIRC</code> (circular mode), <code>DMA_CCR_PINC</code> and <code>DMA_CCR_MINC</code> (peripheral and memory increment), <code>DMA_CCR_PSIZE</code> and <code>DMA_CCR_MSIZE</code> (the data width on each side), <code>DMA_CCR_HTIE</code>, <code>DMA_CCR_TCIE</code> and <code>DMA_CCR_TEIE</code> (the half-transfer, transfer-complete and transfer-error interrupt enables). <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, chapter "DMA"</a>
+  </p>
+
+  <h3>Channels and requests</h3>
+  <p>
+    A peripheral does not talk to a DMA channel directly. When the UART has a byte ready, it raises a <em>DMA request</em>, a signal that says "I need a transfer now". The request reaches the DMA controller, and the controller serves it on the channel that is wired to that peripheral. Each peripheral request is fixed to a channel, so the programmer chooses the channel that matches the peripheral. The mapping table is in the DMA chapter of RM0008, and it is not repeated here. Read it for the part you use, rather than trusting a number from memory.
+  </p>
+  <p>
+    Each channel also has its own interrupt line in the vector table. The CMSIS header defines <code>DMA1_Channel1_IRQn</code> through <code>DMA1_Channel7_IRQn</code> (<code>stm32f103xb.h</code>), and the flags for each channel sit in the <code>DMA_ISR</code> register. A flag such as <code>DMA_ISR_HTIF5</code> says that channel 5 has reached the half-way point. To clear a flag you write a one to the matching bit in <code>DMA_IFCR</code>, for example <code>DMA_IFCR_CHTIF5</code>. The interrupt does not clear itself, so a handler that forgets to clear the flag runs again and again.
+  </p>
+
+  <h3>Peripheral and memory sizes, and increments</h3>
+  <p>
+    Each side of a transfer has a size and an increment setting. The size tells the DMA how wide each item is: 8, 16 or 32 bits. The increment setting tells it whether the address moves after each item. A UART data register is one fixed address, so the peripheral side has no increment. The buffer is an array, so the memory side does increment. This is the difference between <code>PINC</code> and <code>MINC</code>, and it is the source of one of the most common DMA bugs, which we discuss below.
+  </p>
+  <p>
+    The sizes must match what the peripheral produces. A UART delivers one 8-bit byte per request, so the peripheral size is 8 bits. An ADC with 12-bit results delivers 16-bit words, so its peripheral size is 16 bits. If the sizes do not match the data, the DMA reads the wrong number of bytes per item, and the buffer contents are shifted or garbled.
+  </p>
+
+  <h2>Normal mode and circular mode</h2>
+  <p>
+    In normal mode a transfer stops when <code>CNDTR</code> reaches zero. The channel then stops, and the buffer is full. Normal mode is right for a single block, such as sending one frame over the UART, where the firmware knows the length in advance.
+  </p>
+  <p>
+    In circular mode, <code>DMA_CCR_CIRC</code> is set, and the controller reloads the count and the address at the end of the buffer. The transfer starts again from the beginning, and the DMA writes into the buffer forever. The receive buffer therefore never runs out. The CPU reads behind the write position, in the same way a producer and consumer share a ring buffer in lesson 70. The difference is who the producer is. In lesson 70 the producer was an interrupt handler. Here it is the DMA.
+  </p>
+  <p>
+    Two interrupts tell the CPU how far the DMA has got. The half-transfer interrupt (<code>DMA_CCR_HTIE</code>) fires when the DMA has written the first half of the buffer. The transfer-complete interrupt (<code>DMA_CCR_TCIE</code>) fires when it has written the second half, which is also the point where it wraps back to the start. The handler processes the half that is ready, while the DMA fills the other half. Figure 1 shows the arrangement.
   </p>
 
   <figure>
@@ -58,22 +96,130 @@
     </svg>
     <figcaption>Figure 1. Circular mode with half-transfer (HT) and transfer-complete (TC) interrupts. The CPU processes whichever half is ready.</figcaption>
   </figure>
-  <div class="warning">If the CPU is slower than the DMA, the DMA overwrites data that has not been read yet. The handler must finish one half before the DMA fills the other. Size the buffer so that the worst-case handling time is shorter than the time to fill half of it.</div>
 
-  <h2>UART receive and ADC scan</h2>
+  <h2>A worked example: the timing budget of a UART receive</h2>
   <p>
-    For a UART, the peripheral request fires once per received byte. With a 256-byte circular buffer and a receive at 115200 baud, a frame of 10 bits per byte (one start bit, eight data bits, one stop bit) gives the time to fill half the buffer. The ADC uses the same idea in scan mode: the DMA stores one sample per channel into an array, and the buffer holds whole scans, so the array index is the channel number.
+    Before you write any code, check that the handler can keep up. This is the calculation that decides the buffer size, and it is the one most engineers skip. Take a UART receiving at 115200 baud into a 256-byte circular buffer. Each byte is sent as 10 bits: one start bit, eight data bits and one stop bit. The baud rate is the number of bits per second on the line, so the time for one byte is:
+  </p>
+  <pre><code>one byte  = 10 bits ÷ 115200 bits/s  = 86.8 µs
+half buffer = 128 bytes × 86.8 µs        = 11.11 ms</code></pre>
+  <p>
+    So the DMA fills the first half of the buffer in 11.11 ms, and then the second half in another 11.11 ms. The handler for the half-transfer interrupt has that long, measured from the moment the interrupt fires, to finish reading the first half before the DMA starts to overwrite it. The deadline is the time for the DMA to write the second half, because that is when the DMA reaches the first half again. The handler must therefore be faster than the time to fill one half, with some margin to spare for the interrupt entry.
+  </p>
+  <p>
+    Compare this with the per-byte design from lesson 70. At 115200 baud a byte arrives every 86.8 µs, so the per-byte handler gets 86.8 µs for each interrupt. Each interrupt costs a few microseconds of entry and exit, and that cost is paid 11 520 times a second. With DMA the CPU is interrupted only twice per 256 bytes, so it is interrupted 90 times a second instead. The arithmetic is simple, but it explains why DMA is the usual answer for a stream of bytes at high speed.
+  </p>
+
+  <h2>The control word, bit by bit</h2>
+  <p>
+    Now the register value itself. Suppose the channel must be circular, with memory increment, the half-transfer and transfer-complete interrupts enabled, and the defaults for direction and sizes. Build the value from the bits, one at a time. Each bit has a value that is a power of two, so you add the values of the bits you set.
+  </p>
+  <pre><code>DMA_CCR_CIRC  bit 5  = 0x20
+DMA_CCR_MINC  bit 7  = 0x80
+DMA_CCR_HTIE  bit 2  = 0x04
+DMA_CCR_TCIE  bit 1  = 0x02
+sum                  = 0xA6
+then DMA_CCR_EN bit 0 = 0x01, written last: 0xA7</code></pre>
+  <p>
+    The bit positions come from the header. <code>DMA_CCR_TCIE_Pos</code> is 1, <code>DMA_CCR_HTIE_Pos</code> is 2, <code>DMA_CCR_CIRC_Pos</code> is 5 and <code>DMA_CCR_MINC_Pos</code> is 7. The direction bit is clear, which for a peripheral-to-memory copy is the normal setting. Two details matter here. The enable bit is the last thing you set, so that the channel never starts with a half-configured address or count. And the sizes are zero, which means 8 bits on both sides, which is what the UART delivers.
+  </p>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The following sketch sets up a receive ring buffer for USART1 on DMA1 channel 5. It uses only the register names from the CMSIS header. Read it line by line, and check each name against the header yourself.
+  </p>
+  <pre><code><span class="k">static</span> uint8_t rx_buf[<span class="k">256U</span>];        <span class="c">/* the ring buffer, in SRAM */</span>
+
+<span class="k">void</span> uart_rx_dma_start(<span class="k">void</span>) {
+    RCC-&gt;AHBENR |= RCC_AHBENR_DMA1EN;              <span class="c">/* 1: clock the DMA1 block */</span>
+    DMA1_Channel5-&gt;CCR &amp;= ~DMA_CCR_EN;             <span class="c">/* 2: make sure the channel is off */</span>
+    DMA1_Channel5-&gt;CPAR = (uint32_t)&amp;USART1-&gt;DR; <span class="c">/* 3: where the bytes come from */</span>
+    DMA1_Channel5-&gt;CMAR = (uint32_t)rx_buf;         <span class="c">/* 4: where they go */</span>
+    DMA1_Channel5-&gt;CNDTR = <span class="k">256U</span>;                   <span class="c">/* 5: how many items */</span>
+    DMA1_Channel5-&gt;CCR = DMA_CCR_CIRC | DMA_CCR_MINC
+                         | DMA_CCR_HTIE | DMA_CCR_TCIE; <span class="c">/* 6: mode and interrupts */</span>
+    USART1-&gt;CR3 |= USART_CR3_DMAR;                 <span class="c">/* 7: UART requests DMA */</span>
+    DMA1_Channel5-&gt;CCR |= DMA_CCR_EN;              <span class="c">/* 8: start the channel */</span>
+}</code></pre>
+  <p>
+    Line 1 turns on the clock to the DMA block. A peripheral with no clock does nothing, and the DMA registers read as their reset values, so a missing clock looks like a DMA that never fires. Line 2 clears the enable bit before the other registers are written. The reference manual says that the channel must be disabled while its address and count registers are being written. Line 3 sets the peripheral address to the address of <code>USART1-&gt;DR</code>, the receive data register. The <code>&amp;</code> takes the address of that register, which is a fixed address, not a value.
+  </p>
+  <p>
+    Line 4 gives the memory address, the first element of the buffer. Line 5 writes the count, 256. The DMA counts this down with each transfer. Line 6 writes the control word from the worked example. It overwrites the whole register, which is safe here because the channel is off. Line 7 tells the UART to make a DMA request for each byte it receives. Without this bit the UART never asks, and the DMA waits forever. Line 8 sets the enable bit, and the transfers begin.
+  </p>
+  <p>
+    The handler is short, because all the byte work is in the interrupt-free copy. It runs when either half is ready:
+  </p>
+  <pre><code><span class="k">void</span> DMA1_Channel5_IRQHandler(<span class="k">void</span>) {
+    <span class="k">if</span> (DMA1-&gt;ISR &amp; DMA_ISR_HTIF5) {
+        DMA1-&gt;IFCR = DMA_IFCR_CHTIF5;               <span class="c">/* clear the flag first */</span>
+        process_bytes(&amp;rx_buf[<span class="k">0U</span>], <span class="k">128U</span>);       <span class="c">/* the first half is full */</span>
+    }
+    <span class="k">if</span> (DMA1-&gt;ISR &amp; DMA_ISR_TCIF5) {
+        DMA1-&gt;IFCR = DMA_IFCR_CTCIF5;               <span class="c">/* clear the flag first */</span>
+        process_bytes(&amp;rx_buf[<span class="k">128U</span>], <span class="k">128U</span>);     <span class="c">/* the second half is full */</span>
+    }
+}</code></pre>
+  <p>
+    The handler reads the status register, <code>DMA1-&gt;ISR</code>, to see which event happened. It clears the flag by writing to <code>DMA1-&gt;IFCR</code>, the interrupt flag clear register. The clear comes before the work, so that a new event during the work is not lost. The two <code>if</code> blocks handle the two halves. The handler does not need to know where the DMA is inside the buffer, because the two interrupts tell it which half is safe to read. <code>process_bytes()</code> is the consumer, and it must finish before the DMA writes that half again.
   </p>
 
   <h2>Cache coherence: an M7 issue, not an F1 issue</h2>
   <p>
-    A DMA writes to RAM directly. If the CPU has a data cache, the cache can hold an old copy of that RAM, and the CPU reads the stale value. The fix is a cache invalidate before the read, or a non-cacheable memory region for the buffer. The Cortex-M3 on the STM32F1 has no data cache, so this issue does not arise on the course's Blue Pill. It does arise on Cortex-M7 parts, which have a data cache, so the habit is worth learning now.</p>
+    A DMA writes to RAM directly, without going through the CPU. If the CPU has a data cache, the cache can hold an old copy of part of that RAM, and the CPU reads the stale value. The data was changed behind the cache's back. This is called a coherence problem, and it is not specific to DMA; any device that writes memory directly can cause it.
+  </p>
+  <p>
+    The fix is to invalidate the cache lines of the buffer before the CPU reads it, or to place the buffer in a memory region the cache does not cover. The Cortex-M3 on the STM32F1 has no data cache, so this issue does not arise on the course's Blue Pill. It does arise on Cortex-M7 parts, which have a data cache, so the habit is worth learning now. The course's Cortex-M3 reference is in lesson 72.</p>
 
   <div class="win">You can lay out a DMA receive transfer on paper: the direction, the count, circular mode, the half and full interrupts, and the buffer size that keeps the handler in time.</div>
 
-  <h2>Exercises</h2>
-  <p>Work these with pencil first, then check the answer in the quiz. The numbers are examples for practice, not device limits.</p>
-  <div class="widget quiz" data-title="Configure this transfer">
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    Beginners make the same few mistakes with DMA. Each one has a symptom that you can see without a debugger, if you know what to look for.
+  </p>
+  <h3>Mistake 1: memory increment left off</h3>
+  <p>
+    The most common error is leaving <code>DMA_CCR_MINC</code> out of the control word. The DMA then writes every byte to the same address, <code>CMAR</code>, because the address never moves. <strong>Symptom:</strong> the buffer holds one repeated value, and it is the last byte received. <strong>Fix:</strong> set <code>MINC</code>, which moves the memory pointer by one item after each transfer. Check it by reading the buffer after a known string, such as <code>ABCDEFGH</code>, and confirm that all eight letters are there.
+  </p>
+  <h3>Mistake 2: the sizes do not match the peripheral</h3>
+  <p>
+    If the code sets the memory size to 8 bits but the peripheral delivers 16-bit ADC results, each item is read as the wrong width. <strong>Symptom:</strong> the values look like two interleaved sensors, or they are about half of what you expect, and the pattern repeats every few samples. <strong>Fix:</strong> set <code>PSIZE</code> and <code>MSIZE</code> to the width the peripheral produces and the width of the array element. Make them equal when you copy into an array of the same type.
+  </p>
+  <h3>Mistake 3: the handler does not clear the flag</h3>
+  <p>
+    If a handler does not write to <code>DMA1-&gt;IFCR</code>, the flag stays set, and the interrupt fires again as soon as the handler returns. <strong>Symptom:</strong> the handler runs continuously, the main loop barely gets time, and a debugger shows the same interrupt line pending again and again. <strong>Fix:</strong> clear the flag at the start of the handler, before the work.
+  </p>
+  <h3>Mistake 4: the handler is too slow for the buffer</h3>
+  <p>
+    The buffer is circular, so if the handler takes longer than the time to fill one half, the DMA overwrites bytes the handler has not read. <strong>Symptom:</strong> the data is correct for the first part of each buffer, then drops or repeats bytes, and the errors appear only under load. <strong>Fix:</strong> make the handler short, copy the half into a larger software queue, or enlarge the buffer. Recalculate the deadline from the baud-rate arithmetic in the worked example.
+  </p>
+  <h3>Mistake 5: the clock is off</h3>
+  <p>
+    If the DMA clock is not enabled, nothing happens, because the peripheral's registers are not clocked. <strong>Symptom:</strong> the buffer stays at its initial value, no interrupt fires, and the UART itself works fine. <strong>Fix:</strong> set <code>RCC_AHBENR_DMA1EN</code> before the DMA registers are written. The same rule applies to every peripheral, and lesson 69 showed the clock-enable pattern in the HAL.</p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production firmware uses DMA almost everywhere data moves in bulk. A serial link to a host, a sensor that streams audio or telemetry, an ADC that scans several channels for a battery monitor, and a display that receives a frame buffer all use DMA. The usual pattern is the one in this lesson: a circular buffer for a stream that never stops, and a normal-mode transfer for a block of known size. Reviewers look for three things. They check the buffer size against the worst-case handler time. They check the sizes and increments against the peripheral's data width. And they check that the buffer is not shared with another DMA channel or with the CPU without a rule about who owns it at each moment.
+  </p>
+  <p>
+    On the Cortex-M7 parts used in many larger products, reviewers also ask about cache. A buffer that a DMA writes and the CPU reads needs either an invalidate before the read, or an address range marked non-cacheable in the memory protection setup. This is a common question in interviews for embedded roles, because it combines the bus, the cache and the memory map in one answer.
+  </p>
+  <p>
+    Vendor HALs hide most of the register work behind calls such as <code>HAL_UART_Receive_DMA()</code>, and the course's Lab 4 uses the HAL for that reason. Learn the registers first anyway. A HAL call that fails silently has the same causes as the mistakes above, and you can only debug it if you know which register it wrote.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>DMA is a second bus master. It copies data between a peripheral and memory without the CPU, using the same bus accesses the CPU would make.</li>
+    <li>Each channel has four registers: <code>CPAR</code> (peripheral address), <code>CMAR</code> (memory address), <code>CNDTR</code> (count, counting down) and <code>CCR</code> (control bits).</li>
+    <li>Circular mode reloads the count and the address at the end of the buffer, so a receive buffer never runs out.</li>
+    <li>The half-transfer and transfer-complete interrupts tell the CPU which half of the buffer is safe to read.</li>
+    <li>Size the buffer from the baud rate: at 115200 baud with 10 bits per byte, a 256-byte buffer's half fills in 11.11 ms, and the handler must be faster than that.</li>
+    <li>Write <code>EN</code> last, clear the interrupt flags in the handler, and set <code>MINC</code> whenever the memory address must advance.</li>
+    <li>Cache coherence matters on Cortex-M parts with a data cache. The Cortex-M3 on the Blue Pill has none.</li>
+  </ul>
+
+  <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
       { "type": "number",
@@ -113,7 +259,21 @@
           "A core with a debug unit"
         ],
         "answer": 0,
-        "why": "The problem is a stale copy in the data cache, so the core needs a data cache. The Cortex-M3 on the STM32F1 has no data cache, so the course's Blue Pill does not need the invalidate. The tempting answer, a core with an MPU, is about memory protection, not caching." }
+        "why": "The problem is a stale copy in the data cache, so the core needs a data cache. The Cortex-M3 on the STM32F1 has no data cache, so the course's Blue Pill does not need the invalidate. The tempting answer, a core with an MPU, is about memory protection, not caching." },
+      { "type": "number",
+        "prompt": "A receive channel was started with CNDTR = 256. The register now reads 200. How many items has the DMA written since it started?",
+        "answer": 56, "tolerance": 0, "unit": "items",
+        "why": "CNDTR counts down, so 256 − 200 = 56 items have been written. The tempting answer, 200, reads the remaining count as the number written." },
+      { "type": "mc",
+        "prompt": "A receive buffer ends with only the last byte repeated across all its elements. Which control bit is missing?",
+        "options": [
+          "Memory increment, DMA_CCR_MINC",
+          "Circular mode, DMA_CCR_CIRC",
+          "Half transfer, DMA_CCR_HTIE",
+          "Channel enable, DMA_CCR_EN"
+        ],
+        "answer": 0,
+        "why": "Without MINC the memory address never moves, so every byte lands on the same element. The tempting answer, circular mode, controls what happens at the end of the buffer, not how the address moves inside it." }
     ] }
     </script>
   </div>

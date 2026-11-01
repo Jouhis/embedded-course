@@ -15,16 +15,16 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 8. The lessons immediately before yours in `lessons/`, so tone, terminology and difficulty connect.
 
 ## 2. The learner
-- Already programs (doesn't need loops, functions or variables explained), but is **new to electronics**.
+- Already programs (doesn't need loops, functions, variables or basic C syntax explained), but is **new to electronics and new to embedded**. Assume nothing else: no prior knowledge of registers, buses, interrupts, RTOSes, datasheets, voltages or toolchains beyond what earlier lessons in this course taught. A lesson must work for someone meeting the topic for the first time, not only as a refresher. See section 17.
 - Studied computer architecture at university and found it very helpful. Connect explanations to what the CPU, the bus and memory actually do.
 - Career-focused: wants industry practice (plain C, vendor SDKs, testing), not Arduino.
 - Number everything with **digits only** (1, 2, 2.1). Never use letters (A, B) or Roman numerals.
 
 ## 3. What a lesson is
-- **One tightly scoped skill**, completable in **10–20 minutes**. Working memory is small: if you have more than about 3 new ideas, the lesson is too big. Put extra material in a sidenote or a reference sheet instead.
+- **One skill, taught from the ground up**, in about **25–40 minutes** including the hands-on task. The explainer is typically **2,500–3,500 words** of prose (not counting code, quizzes and diagrams). If a topic needs much more than that to be explained properly, it is too big for one lesson: say so in your report (the lead splits lessons; never renumber or create lessons yourself).
 - **Knowledge first, then skill.** A short explainer, then a hands-on task with a feedback loop (a Wokwi exercise and/or a quiz).
 - **One tangible win**, stated in the `.win` box.
-- Beautiful and printable: Tufte style, short paragraphs, inline SVG diagrams, no walls of text.
+- Beautiful and printable: Tufte style, short paragraphs (3–5 sentences), clear `<h2>`/`<h3>` headings every few paragraphs, inline SVG diagrams. Long is fine; walls of text are not: break it up with headings, lists, tables, diagrams and worked examples.
 
 ## 4. Required structure (enforced by `tools/check_course.py`)
 File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/manifest.js`, and `<body data-lesson="<id>">` uses the exact id (`0007`, `lab03`, `cp02`).
@@ -141,3 +141,24 @@ Several authors work in parallel. Before writing any file that might already exi
 - Template `rust-pico`: rp2040-hal 0.11, cortex-m-rt 0.7, embedded-hal 1.0, rp2040-boot2 0.3, built with the GNU host toolchain pinned in rust-toolchain.toml (stable-x86_64-pc-windows-gnu + thumbv6m-none-eabi, already installed). Create with `python -I tools/new_project.py <id> <slug> rust-pico`.
 - `python -I tools/build.py <dir>` runs `cargo build --release` (release has debug info). The ELF is target/thumbv6m-none-eabi/release/blink, which wokwi.toml points at. If you rename the package in Cargo.toml, update wokwi.toml too.
 - Do not install extra cargo tools (probe-rs, flip-link, elf2uf2-rs): Wokwi runs the ELF directly.
+
+## 17. Depth standard: explain from the ground up
+A learner who has never seen the topic must be able to follow the lesson without looking anything up. Every lesson's explainer covers, in this order (use these as `<h2>` sections, with your own wording for the headings):
+
+1. **Where we are and why it matters.** One or two paragraphs linking to the earlier lessons this builds on (with links), and the concrete problem this lesson solves. Name a real product or job situation where it comes up.
+2. **The concepts, one at a time.** Introduce each idea separately before combining them. **Define every term on first use**, in plain words, before using its abbreviation (for example "the Nested Vectored Interrupt Controller (NVIC), the part of the CPU that ..."). Link the term to `../reference/glossary.html#<anchor>` the first time. Explain *why* the hardware or software works this way, not only *what* to do: connect it to what the CPU, the bus and memory physically do.
+3. **A worked example, step by step.** Walk through one concrete case with real numbers: a calculation, a register value built bit by bit, a timeline, or a trace of what happens cycle by cycle or event by event. Show intermediate steps; never jump to the answer.
+4. **The code, explained line by line.** Every code snippet is followed (or preceded) by an explanation of each line or small group of lines: what it does, which register or API it touches, and why it is written that way. For register writes, name each field and the value written to it, with the reference-manual or datasheet section.
+5. **Common mistakes and how to spot them.** At least three realistic mistakes beginners make with this topic, each with its symptom (what you see in Wokwi or on the serial monitor) and the fix.
+6. **In real projects.** How professionals use this: typical industry practice, what code review or a senior engineer would expect, and where it shows up in interviews.
+7. **Summary.** 5–8 bullet points with the key facts to remember.
+
+Then the hands-on task, `.win`, quizzes, `.interview`, `.source` and `.ask` as in section 4. Hands-on instructions are numbered steps that say exactly what to open, what to change and what output to expect.
+
+Rules:
+- Keep everything already correct in the lesson: facts, citations, links, project references, quizzes, diagrams and the interview drill. You are expanding and improving, not replacing. Fix anything wrong you find, and verify every new fact (section 6).
+- Add at least 2 quiz questions to "Check your understanding" that test the new material (keep the section 5 quiz rules).
+- Every new fact, number, register name, bit position or API signature must come from a source you checked (section 6), not from memory. If you cannot verify something, leave it out.
+- Diagrams: add one when it explains something better than words (timing, memory layout, signal flow). Follow the style of the existing diagrams: `currentColor` strokes and text, `font-family="JetBrains Mono, monospace"`, `role="img"` and an `aria-label`. Check them by rendering (see the diagram notes in NOTES.md if any); never add a diagram you have not looked at.
+- Don't change the Wokwi projects unless the lesson text and project disagree; if they do, fix the lesson text to match the working project and mention it in your report.
+- Concept-only lessons (section 8) and labs follow the same depth standard; labs explain the design choices, not only the steps. Checkpoints keep their quiz format.

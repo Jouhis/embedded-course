@@ -23,7 +23,7 @@
 
 #define UART_BAUD          115200U
 #define TASK_STACK_WORDS   160U
-#define LOW_WORK_MS        200U   /* low's critical section, CPU time */
+#define LOW_WORK_MS        200U   /* low's critical section, measured in elapsed ticks (burn_ms busy-waits) */
 #define MEDIUM_START_MS    20U
 #define MEDIUM_WORK_MS     300U
 #define HIGH_START_MS      50U

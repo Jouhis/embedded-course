@@ -17,22 +17,62 @@
     By the end of this lesson you can say where the arguments and the return value go in a call, which registers a function must preserve, and what a full-descending stack looks like after a <code>PUSH</code>, then check all of it in the CPU simulator.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The <strong>stack</strong> is a region of RAM that a function uses for its local data, saved registers and return addresses. On Cortex-M it grows downward, toward lower addresses. The ABI document calls this a <strong>full-descending</strong> stack: the stack pointer SP points at the last item pushed, and a push first moves SP down, then writes (<a href="https://github.com/ARM-software/abi-aa">Arm ABI, Procedure Call Standard for the Arm Architecture, "The Stack"</a>).
+    Lesson 32 traced <code>sum_to</code> and showed the caller putting 100 in R0 and calling the function with <code>bl</code>. It said that the calling convention decides where the argument goes, and this lesson gives the rules. Lesson 31 introduced LR and SP as registers with special roles. Lesson 34 will show that the hardware itself uses the stack when an interrupt arrives, so the same rules apply there too.
   </p>
   <p>
-    The <strong>Procedure Call Standard for the Arm Architecture (AAPCS)</strong> is the agreement between caller and callee. The rules that matter first are these.
+    The calling convention matters on real boards for three reasons. A function that does not follow it silently corrupts its caller, and the bug appears far from the cause. A stack that is too small overwrites other RAM, and the crash appears in an unrelated function. And an RTOS gives each task its own stack, so the stack layout decides how many tasks you can run. Each of these needs the rules in this lesson.
   </p>
-  <ul>
-    <li><strong>Arguments:</strong> "The first four registers r0-r3 (a1-a4) are used to pass argument values into a subroutine" (AAPCS, Core registers).</li>
-    <li><strong>Return value:</strong> "A word-sized Fundamental Data Type (e.g., int, float) is returned in r0" (AAPCS, Result Return).</li>
-    <li><strong>Preserved:</strong> "A subroutine must preserve the contents of the registers r4-r8, r10, r11 and SP" (AAPCS, Core registers). R9 is also preserved in the variants of the standard that designate it as a callee-saved register. Check which variant your toolchain uses before you rely on R9.</li>
-    <li><strong>Scratch:</strong> R12 (IP) "may be used by a linker as a scratch register between a routine and any subroutine it calls" (AAPCS, Core registers).</li>
-    <li><strong>Stack alignment:</strong> at a public interface, "SP mod 8 = 0. The stack must be double-word aligned" (AAPCS, Stack constraints).</li>
-  </ul>
+
+  <h2>The concepts, one at a time</h2>
+  <h3>The stack is a region of RAM</h3>
   <p>
-    The return address is kept in LR. A <code>BL</code> instruction writes it there. A function that calls another function must save LR on the stack, because the inner call would overwrite it. The usual pattern is <code>PUSH {..., LR}</code> at the start and <code>POP {..., PC}</code> at the end, which pops the return address straight into the PC.
+    The <strong><a href="../reference/glossary.html#stack">stack</a></strong> is a region of RAM that a program uses for data that belongs to a function call: its saved registers, its local variables that do not fit in registers, and the return address. Unlike flash, RAM can be written, so the stack can change while the program runs. On the RP2040 the SRAM begins at <code>0x20000000</code>, and the Pico SDK defines the end of that region as <code>0x20042000</code>, which is 264 KB (<a href="https://github.com/raspberrypi/pico-sdk">pico-sdk 2.3.1, <code>src/rp2040/hardware_regs/include/hardware/regs/addressmap.h</code></a>).
+  </p>
+  <p>
+    The stack pointer, SP (R13), holds the address of the top of the stack, which is the most recent item pushed. The AAPCS describes the stack as <strong><a href="../reference/glossary.html#full-descending-stack">full-descending</a></strong>: "The stack implementation is full-descending, with the current extent of the stack held in the register SP" (<a href="https://github.com/ARM-software/abi-aa">Arm ABI, AAPCS, "The Stack"</a>). Full means that SP points at the last item pushed. Descending means the stack grows toward lower addresses, so a push first moves SP down and then writes the item. A pop reads the item at SP and then moves SP up.
+  </p>
+  <p>
+    Two of the AAPCS stack constraints apply to every function. The first is that "SP mod 4 = 0", which means the stack is always word-aligned. The second is that a program "may only store data in the closed interval of the entire stack delimited by [SP, stack base − 1]". In other words, a function may write only to the stack between the current top and the base, never below SP. The stack has a size, and the linker reserves it. The Pico SDK reserves a stack of <code>PICO_STACK_SIZE</code> bytes, whose default is <code>0x800</code>, which is 2 KB per core (<a href="https://github.com/raspberrypi/pico-sdk">pico-sdk 2.3.1, <code>src/rp2040/pico_platform/include/pico/platform.h</code></a>).
+  </p>
+
+  <h3>Caller and callee: who does what</h3>
+  <p>
+    The <strong>caller</strong> is the function that makes the call. The <strong>callee</strong> is the function that is called. The AAPCS divides the registers between them. The rules that matter first are these, quoted from the AAPCS "Core registers" section.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Register</th><th>Role under the AAPCS</th><th>Who must care</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>R0 to R3</td><td>Arguments in, result out. "The first four registers r0-r3 (a1-a4) are used to pass argument values into a subroutine" and to return a result. They may be changed freely.</td><td>The callee may change them. The caller must not expect them to survive the call.</td></tr>
+      <tr><td>R4 to R8, R10, R11, SP</td><td>"A subroutine must preserve the contents of the registers r4-r8, r10, r11 and SP."</td><td>The callee must restore them before it returns.</td></tr>
+      <tr><td>R9</td><td>"The role of register r9 is platform specific." On some platforms it is preserved, and on others it is a special register.</td><td>Check the platform's documentation before you use it.</td></tr>
+      <tr><td>R12 (IP)</td><td>"May be used by a linker as a scratch register between a routine and any subroutine it calls."</td><td>Treat it as changed by any call.</td></tr>
+      <tr><td>LR (R14)</td><td>Holds the return address after a <code>bl</code>.</td><td>A function that calls another must save LR first.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The rule for R4 to R8 is the one that matters most in practice. The callee owns the promise to restore them, and the caller can rely on them after the call. A function that uses R4 for its own work must save R4 on entry and restore it on exit. If it does not, the caller's R4 is changed, and the caller finds the wrong value later, far from the place where it went wrong.
+  </p>
+
+  <h3>Arguments beyond four go on the stack</h3>
+  <p>
+    The four argument registers are enough for most functions. When a function has more arguments, the rest are placed on the stack. The AAPCS calls the address for the next stacked argument the NSAA, and its parameter-passing rules copy each argument that does not fit in the registers "to memory at the NSAA" (<a href="https://github.com/ARM-software/abi-aa">Arm ABI, AAPCS, Parameter Passing, rules C.5 to C.8</a>). The caller reserves that space before the call. So the fifth argument is at the caller's SP when the call starts, and the callee reads it from there.
+  </p>
+
+  <h3>Return addresses and the link register</h3>
+  <p>
+    A <code>bl</code> writes the return address into LR and then branches. A function returns with <code>bx lr</code>, which branches to the address in LR. A function that calls another function would overwrite LR with its own inner return address, so it must save LR on the stack before its own call, and restore it at the end. The common pattern is <code>push {..., lr}</code> at the start and <code>pop {..., pc}</code> at the end, which pops the saved return address straight into the PC. The <code>pop</code> into PC is the return.
+  </p>
+
+  <h2>Stack frames and PUSH</h2>
+  <p>
+    A <strong><a href="../reference/glossary.html#stack-frame">stack frame</a></strong> is the block of words a function or an exception pushes onto the stack. A <code>push</code> instruction takes a list of registers, moves SP down by four bytes for each register in the list, and stores the registers there. A <code>pop</code> reverses it: it loads the registers from the stack and moves SP up. The list is one instruction, so one <code>push {r4, lr}</code> moves SP down by 8 bytes.
+  </p>
+  <p>
+    The figure shows the course simulator's layout for <code>PUSH {R4, LR}</code> from <code>SP = 0x20000100</code>. The simulator puts R4 at the lowest address, where SP points, and LR in the word above it. The order of the registers inside a real <code>push</code> is a detail of the hardware. Check a real frame in the debugger's memory view before you rely on an offset.
   </p>
 
   <figure>
@@ -55,15 +95,46 @@
 
   <div class="warning">The ABI rule that R4 is preserved is a promise to the caller. A function that uses R4 must push it on entry and pop it before it returns. Forgetting this does not fail on the spot: the caller's R4 is silently wrong later, which is one of the hardest bugs to find.</div>
 
-  <h2>Try it in the CPU simulator</h2>
+  <h2>A worked example: a call with a saved register</h2>
   <p>
-    The program calls <code>add_pair</code> with 3 and 4 in R0 and R1. Inside, it saves R4 and LR, uses R4 for a constant, and returns. Before you step through, predict the final R0. Then use the stack view to see the frame.
+    The program calls <code>add_pair</code> with 3 and 4 in R0 and R1. Inside, it saves R4 and LR, uses R4 for a constant, and returns. The table traces the state after each instruction. The start state is <code>SP = 0x20000100</code>, every register zero, and the program at address 0.
   </p>
-  <ol class="steps">
-    <li>Press <em>Instruction</em> three times. Predict SP and R0 after the <code>BL</code>. The LR value is the return address, with the low bit set, as Thumb addresses are written.</li>
-    <li>Press <em>Instruction</em> once more, to run <code>PUSH {R4, LR}</code>. Predict SP, then check the stack view: the new top of the stack should hold R4 and then LR.</li>
-    <li>Press <em>Run</em> or keep pressing <em>Instruction</em> until the halt. Check the final R0 and SP.</li>
-  </ol>
+  <table>
+    <thead>
+      <tr><th>Step</th><th>Instruction</th><th>R0</th><th>R4</th><th>LR</th><th>SP</th><th>Note</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>1</td><td><code>MOV R0, #3</code></td><td>3</td><td>0</td><td>0</td><td>0x20000100</td><td>-</td></tr>
+      <tr><td>2</td><td><code>MOV R1, #4</code></td><td>3</td><td>0</td><td>0</td><td>0x20000100</td><td>R1 is 4, which is not in the table</td></tr>
+      <tr><td>3</td><td><code>BL add_pair</code></td><td>3</td><td>0</td><td>0x7</td><td>0x20000100</td><td>LR gets the return address 0x6 with bit 0 set; the branch goes to the function</td></tr>
+      <tr><td>4</td><td><code>PUSH {R4, LR}</code></td><td>3</td><td>0</td><td>0x7</td><td>0x200000F8</td><td>R4 and LR are stored in the two words, SP moves down 8 bytes</td></tr>
+      <tr><td>5</td><td><code>MOV R4, #100</code></td><td>3</td><td>100</td><td>0x7</td><td>0x200000F8</td><td>R4 is now the constant, and the saved copy is in memory</td></tr>
+      <tr><td>6</td><td><code>ADD R0, R0, R1</code></td><td>7</td><td>100</td><td>0x7</td><td>0x200000F8</td><td>3 + 4 = 7</td></tr>
+      <tr><td>7</td><td><code>ADD R0, R0, R4</code></td><td>107</td><td>100</td><td>0x7</td><td>0x200000F8</td><td>7 + 100 = 107</td></tr>
+      <tr><td>8</td><td><code>POP {R4, PC}</code></td><td>107</td><td>0</td><td>0x7</td><td>0x20000100</td><td>R4 is restored to 0, SP moves back up, and the saved LR goes into PC</td></tr>
+      <tr><td>9</td><td><code>B .</code></td><td>107</td><td>0</td><td>0x7</td><td>0x20000100</td><td>The program parks at address 0x6, the instruction after the call</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Three things are worth noticing in the table. First, the <code>BL</code> changes LR and nothing else, and the function changes SP only when it pushes. Second, R4 comes back as 0 after the pop, because the callee restored the value the caller had before the call. The function used R4 for 100, but the caller never sees that. Third, SP returns to <code>0x20000100</code>, which is what a correct function must do. The final R0 is 107, which is the answer to the quiz on this page.
+  </p>
+  <p>
+    The return address in LR is 7, not 6. The simulator uses the Thumb convention of setting bit 0 of a return address. The <code>pop {..., pc}</code> then clears bit 0 when it loads the PC, so the program returns to address 6. On the real core, bit 0 of a return address is the Thumb state bit, as lesson 32 described.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The program in the simulator is the trace above, written in assembly. Read it with the table beside it.
+  </p>
+  <ul>
+    <li><code>main: MOV R0, #3</code> and <code>MOV R1, #4</code> put the two arguments into the first two argument registers, as the AAPCS says.</li>
+    <li><code>BL add_pair</code> calls the function. It saves the return address in LR and jumps. The <code>@ call; LR gets the return address</code> comment is the important part.</li>
+    <li><code>B .</code> is the halt that the call returns to.</li>
+    <li><code>add_pair: PUSH {R4, LR}</code> saves the two registers the function must preserve. R4 is the one the function will change, and LR is the one the function's own return depends on.</li>
+    <li><code>MOV R4, #100</code> uses R4 for a constant. Because R4 was saved, the caller's R4 can be restored later.</li>
+    <li><code>ADD R0, R0, R1</code> and <code>ADD R0, R0, R4</code> compute the result into R0, which is where the return value goes.</li>
+    <li><code>POP {R4, PC}</code> restores R4 and loads the saved LR into PC. That is the return, and it also undoes the push, so SP returns to its starting value.</li>
+  </ul>
   <div class="widget cpusim" data-title="A call with a saved register" data-show="regs,stack">
     <script type="text/plain">
     main:   MOV  R0, #3
@@ -83,11 +154,57 @@
     <summary>Hint</summary>
     <p>The arguments are 3 and 4, and the function adds a constant of 100. Work out the final R0 before you look. After the <code>POP</code>, SP should be back to its starting value.</p>
   </details>
+
+  <h2>Try it in the CPU simulator</h2>
   <p>
-    The simulator follows the same calling pattern as the real core, with a few teaching simplifications: 2-byte instructions, a small instruction set and one stack pointer. The real Cortex-M3 pushes exception frames on the same stack, which lesson 34 covers.
+    Before you step through, predict the final R0. Then use the stack view to see the frame.
+  </p>
+  <ol class="steps">
+    <li>Press <em>Instruction</em> three times. Predict SP and R0 after the <code>BL</code>. The LR value is the return address, with the low bit set, as Thumb addresses are written.</li>
+    <li>Press <em>Instruction</em> once more, to run <code>PUSH {R4, LR}</code>. Predict SP, then check the stack view: the new top of the stack should hold R4 and then LR.</li>
+    <li>Press <em>Run</em> or keep pressing <em>Instruction</em> until the halt. Check the final R0 and SP.</li>
+  </ol>
+  <p>
+    The simulator follows the same calling pattern as the real core, with a few teaching simplifications: 2-byte instructions, a small instruction set and one stack pointer in use. The real Cortex-M3 pushes an exception frame on the same stack, which lesson 34 covers.
   </p>
 
-  <div class="win">You traced a call with a saved register: the arguments in R0 and R1, the return address in LR, and the stack frame, and you checked the final result.</div>
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li>
+      <strong>Forgetting to save LR in a function that makes a call.</strong> The inner <code>bl</code> overwrites LR, so the outer function's <code>bx lr</code> returns into the wrong place. The symptom is a function that returns to an address inside itself, or to garbage, and the bug moves when you change unrelated code. The fix: push LR on entry and pop it into PC on exit, as the simulator's <code>add_pair</code> does.
+    </li>
+    <li>
+      <strong>Changing R4 without restoring it.</strong> The warning above describes this one. The symptom is that the caller's variable has the wrong value after the call, while the same value is right in a debugger during the call. The fix: push R4 on entry and pop it on exit. A compiler does this for you, which is why the mistake appears in hand-written assembly and in interrupt code.
+    </li>
+    <li>
+      <strong>Overrunning the stack.</strong> A stack that grows past its reserved size writes into whatever lies below it in RAM. On the Pico the SDK reserves 2 KB of stack per core by default, so a deep call chain or a large local array can exceed it. The symptom is random corruption in a variable that is far from the function that caused it, or a HardFault. The fix: keep large arrays out of the stack, check the call depth, and measure the stack's high-water mark, which lesson 91 covers.
+    </li>
+    <li>
+      <strong>Passing the fifth argument where the callee does not look.</strong> A caller that puts the fifth argument in R4 instead of on the stack gives the callee the wrong value. The symptom is a correct first four arguments and a wrong later one. The fix: follow the AAPCS rule that arguments beyond the fourth go on the stack, at the caller's SP, in order.
+    </li>
+    <li>
+      <strong>Breaking the alignment rule at an interface.</strong> The AAPCS says "SP mod 8 = 0" at a public interface, and the Cortex-M3 has an STKALIGN bit in its Configuration Control Register that makes exception frames 8-byte aligned (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, revision history</a>). Hand-written assembly that calls compiled code with an odd-word stack breaks the contract. The symptom appears only in some call paths, which makes it hard to reproduce. The fix: align the stack before the call, and check SP in the debugger at each public entry point.
+    </li>
+  </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    Stack size is a design decision, and it is written down. A team that uses an RTOS gives each task a stack of a size it chose, and it checks the usage with a high-water mark, the deepest the stack reached during a test run. Lesson 91 covers that measurement, and lesson 41 covers the linker script where the main stack is placed. A team with no RTOS still sizes the main stack in the linker script and in its design notes, because the stack is shared by all the code that runs in thread mode and in every interrupt.
+  </p>
+  <p>
+    In code review, a reviewer checks every <code>push</code> against its matching <code>pop</code>, checks that a function that calls another saves LR, and checks that a function that uses R4 to R8 saves them. Interview questions often ask which registers a function may change. The answer is R0 to R3 for arguments and results, R12 as a scratch, and the preserved set for everything else, and then the question about alignment.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The stack is a region of RAM, and SP points at the last item pushed. The AAPCS calls it full-descending.</li>
+    <li>R0 to R3 carry arguments in and the result out. R4 to R8, R10, R11 and SP must be preserved by the callee. R12 is scratch.</li>
+    <li>Arguments beyond the fourth go on the stack at the caller's SP, in order.</li>
+    <li>A <code>bl</code> writes the return address into LR. A function that calls another saves LR, and returns by popping it into PC.</li>
+    <li>The stack must stay word-aligned at all times, and double-word aligned (SP mod 8 = 0) at a public interface.</li>
+    <li>On the Pico the RP2040 SRAM is 264 KB from <code>0x20000000</code>, and the SDK reserves 2 KB of stack per core by default.</li>
+    <li>A <code>PUSH {R4, LR}</code> moves SP down by 8 bytes, and the matching <code>POP</code> moves it back.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -113,7 +230,16 @@
       { "type": "number",
         "prompt": "At a public interface, what must SP mod 8 equal?",
         "answer": 0, "tolerance": 0,
-        "why": "The AAPCS requires SP mod 8 = 0, which means double-word alignment. The tempting answer is 4, which is word alignment, enough for a single register but not for the interface rule." }
+        "why": "The AAPCS requires SP mod 8 = 0, which means double-word alignment. The tempting answer is 4, which is word alignment, enough for a single register but not for the interface rule." },
+      { "type": "mc",
+        "prompt": "A function receives five arguments. Where does the fifth one arrive?",
+        "options": ["On the stack, in order", "In register R4 as well", "In register R12 by default"],
+        "answer": 0,
+        "why": "Arguments that do not fit in R0 to R3 are copied to the stack at the next stacked argument address, which is the caller's SP. R4 is a preserved register and R12 is scratch, so neither carries arguments. The tempting answer is R4, which is the first register the convention names as preserved." },
+      { "type": "number",
+        "prompt": "The RP2040 SRAM runs from 0x20000000 to 0x20042000, not including the end address. How many kilobytes is that?",
+        "answer": 264, "tolerance": 0,
+        "why": "0x42000 bytes is 270336 bytes, which is 264 KB, because 256 KB is 0x40000 and 8 KB more is 0x2000. The tempting answer is 256, which is the size if the end were 0x20040000." }
     ] }
     </script>
   </div>
@@ -133,13 +259,15 @@
     </script>
   </div>
 
+  <div class="win">You traced a call with a saved register: the arguments in R0 and R1, the return address in LR, and the stack frame, and you checked the final result against the rules of the calling convention.</div>
+
   <div class="interview">
     <p><strong>"Which registers can a function clobber, and which must it preserve? Why does the stack pointer have to be 8-byte aligned at a public interface?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>R0 to R3 carry arguments and R0 carries the result, so a function may change them. R12 is scratch. R4 to R8, R10, R11 and SP must be preserved, and R9 depends on the variant. The stack must be 8-byte aligned at a public interface so that a callee can rely on a known alignment, which lets the core stack an extra word to meet it. The AAPCS states the rule as SP mod 8 = 0.</p></details>
+    <details><summary>Model answer</summary><p>R0 to R3 carry arguments and R0 carries the result, so a function may change them. R12 is scratch. R4 to R8, R10, R11 and SP must be preserved, and R9 depends on the platform. The stack must be 8-byte aligned at a public interface so that a callee can rely on a known alignment. The Cortex-M3 can make its exception frames 8-byte aligned with the STKALIGN bit. The AAPCS states the rule as SP mod 8 = 0.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://github.com/ARM-software/abi-aa">Arm ABI documents, including the AAPCS</a>: read the "Core registers" section for the preserved set and the argument registers, and the "Stack constraints at a public interface" section for the alignment rule. The release notes list the current version.
+    <a href="https://github.com/ARM-software/abi-aa">Arm ABI documents, including the AAPCS</a>: the "Core registers" section for the argument and preserved sets, "The Stack" and "Universal stack constraints" for the full-descending rule and SP mod 4, "Stack constraints at a public interface" for the SP mod 8 rule, and the Parameter Passing rules C.5 to C.8 for stacked arguments. The release notes list the current version.
   </div>
 
   <div class="ask">

@@ -24,10 +24,16 @@ ENTRY_HEAD = re.compile(r"^- \[[^\]]+\]\((https?://[^)\s]+)\)")
 
 
 def split_sections(text):
-    """Return (glossary_part, resources_part) of a proposal file."""
-    g = re.search(r"^## GLOSSARY[^\n]*$", text, re.M)
-    r = re.search(r"^## RESOURCES[^\n]*$", text, re.M)
-    gl = text[g.end(): r.start() if r and r.start() > g.start() else len(text)] if g else ""
+    """Return (glossary_part, resources_part) of a proposal file. Headers are matched case-insensitively
+    ("## GLOSSARY.md additions", "## Glossary terms", ...); a file with term blocks but no glossary header
+    is treated as all glossary up to its resources header."""
+    g = re.search(r"^## [^\n]*GLOSSARY[^\n]*$", text, re.M | re.I)
+    r = re.search(r"^## [^\n]*RESOURCE[^\n]*$", text, re.M | re.I)
+    g_start = g.end() if g else 0
+    if not g and not re.search(r"^\*\*[^*\n]+\*\*:\s*$", text, re.M):
+        gl = ""
+    else:
+        gl = text[g_start: r.start() if r and r.start() > g_start else len(text)]
     if r:
         rest = text[r.end():]
         nxt = re.search(r"^## ", rest, re.M)
@@ -37,7 +43,29 @@ def split_sections(text):
     return gl, rs
 
 
-def glossary_terms(part):
+GROUP_ALIASES = {
+    "digital logic": "Computer architecture", "cpu architecture": "Computer architecture",
+    "computer architecture / firmware": "Computer architecture",
+    "electronics and clocks": "Electronics", "tools": "Firmware and tools", "testing and ci": "Firmware and tools",
+    "robustness and diagnostics": "Firmware and tools", "security": "Firmware and tools",
+    "embedded c / firmware": "Firmware and tools", "industrial communication": "Communication",
+}
+
+
+def heading_group(line, existing):
+    """Group named by a heading line: '### X (group: Y)' -> Y, '## Peripherals' -> Peripherals."""
+    m = re.search(r"\(group: ([^);]+)", line) or re.search(r'proposed for "([^"]+)"', line)
+    name = (m.group(1) if m else re.sub(r"^#+\s*", "", line)).strip()
+    name = re.sub(r"\s*\(.*$", "", name).strip()
+    if not name or re.search(r"glossary|resource|note|usage|lead|gap|reference sheet", name, re.I):
+        return None
+    for g in existing:
+        if g.lower() == name.lower():
+            return g
+    return GROUP_ALIASES.get(name.lower(), name)
+
+
+def glossary_terms(part, existing=()):
     """Yield (group, block) pairs."""
     group, lines, i = None, part.splitlines(), 0
     while i < len(lines):
@@ -45,6 +73,8 @@ def glossary_terms(part):
         m = re.findall(r"`(## [^`]+)`", line)
         if m:
             group = m[-1][3:].strip()
+        elif line.startswith("#"):
+            group = heading_group(line, existing) or group
         if TERM_HEAD.match(line):
             block = [line]
             i += 1
@@ -124,7 +154,8 @@ def main(argv):
     n_terms = n_res = 0
     for f in files:
         gl, rs = split_sections(f.read_text(encoding="utf-8"))
-        for group, block in glossary_terms(gl):
+        groups = re.findall(r"^## (.+?)\s*$", gdoc, re.M)
+        for group, block in glossary_terms(gl, groups):
             name = TERM_HEAD.match(block.splitlines()[0]).group(1).strip()
             if name.lower() in known or "_Avoid_" not in block:
                 continue

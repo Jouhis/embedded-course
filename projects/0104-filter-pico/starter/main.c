@@ -37,7 +37,7 @@ int main(void) {
     ma_init(&ma, MA_WINDOW);
     ema_init(&ema, EMA_SHIFT);
 
-    // TODO(learner): print "FILTER OK" once, after the moving average's window is full (MA_WINDOW samples).
+    // TODO(learner): print "FILTER OK" once here, before the loop starts (the solution and the lesson do this).
     printf("ms,raw,median,ma8,ema\n");   // CSV header: the Serial Plotter and any spreadsheet read this
 
     uint32_t sample = 0;
@@ -49,7 +49,8 @@ int main(void) {
         if (raw < 0) raw = 0;                 // keep the value inside the ADC range
         if (raw > ADC_MAX) raw = ADC_MAX;
 
-        // TODO(learner): feed raw through median3_update, then ma_update, then ema_update.
+        // TODO(learner): feed raw through median3_update. Then feed the median's output to BOTH
+        // ma_update and ema_update (in parallel, not one after the other), so you can compare them.
         // Until you do, the three columns just repeat the raw value.
         int32_t m = raw;
         int32_t a = raw;

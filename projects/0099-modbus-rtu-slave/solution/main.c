@@ -28,7 +28,8 @@
 
 /* Modbus over Serial Line: a frame ends after a silence of 3.5 characters. Above 19200 baud
  * the specification fixes this silence at 1.750 ms (V1.02, section 2.5.1.1, not checked here).
- * At 115200 baud a character takes about 95 us, so 1750 us is the fixed value to use. */
+ * At 115200 baud an 8N1 character is 10 bits, about 86.8 us, so 3.5 characters would be only
+ * about 304 us; the fixed 1750 us applies instead. */
 #define FRAME_SILENCE_US   1750u
 #define COUNTER_PERIOD_US  1000000u
 

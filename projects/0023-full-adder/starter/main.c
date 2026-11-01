@@ -65,8 +65,9 @@ int main(void) {
     gpio_set_dir(PIN_COUT, GPIO_IN);
 
     while (true) {
-        // The expected results above are complete. The task is the circuit in diagram.json:
-        // one wire is missing, so one gate input floats. Find it and add the wire.
+        // The expected results above are complete, and so is the circuit in diagram.json.
+        // The task (see the lesson): check that every row prints OK, then delete one wire
+        // and read which rows the test bench reports as WRONG.
         run_truth_table();
         sleep_ms(REPEAT_MS);
     }

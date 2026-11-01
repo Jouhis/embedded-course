@@ -17,12 +17,20 @@
     By the end of this lesson you can calculate the system clock of an RP2040 or an STM32F103 from its oscillator and PLL settings, and name the clock source each chip uses straight after reset.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>clock tree</strong> is the set of oscillators, multipliers, dividers and selectors between the crystal and the logic that needs a clock. An oscillator makes a reference frequency. A <strong>PLL</strong> (phase-locked loop) multiplies it up. Dividers and multiplexers pick the frequency each block uses. The core runs from the system clock, and the peripherals run from their own clocks, which may be divided from the same source.
+    Lesson 36 introduced wait states: flash cannot always answer as fast as the core asks, so the core waits. Lesson 38 showed that a peripheral is a block of registers at a base address. Neither lesson said where the clock comes from, and every peripheral needs one. The UART you used to print values in lesson 38 divides the clock to get its baud rate, and the timers you will meet in later lessons count clock ticks. Change the clock, and every one of those numbers changes with it.
   </p>
   <p>
-    The architecture course's point about the clock applies directly: the core executes one instruction per clock at best, so a timing number such as "one microsecond" is a count of cycles at a known frequency. If the frequency is wrong, every delay is wrong by the same ratio.
+    The problem this lesson solves is the one a firmware engineer meets on the first day with a new board. The datasheet offers a 12 MHz crystal, a 72 MHz target, and a list of registers with names like <code>PLLMUL</code> and <code>SWS</code>. You need to turn those into one number, the system clock, and check it on the chip. A firmware team that cannot do this has bugs that show up as slow timing, wrong baud rates, and motors or displays that behave differently at each build.
+  </p>
+
+  <h2>The idea: a tree of clocks</h2>
+  <p>
+    A <strong><a href="../reference/glossary.html#clock-tree">clock tree</a></strong> is the set of oscillators, multipliers, dividers and selectors between a crystal and the logic that needs a clock. Each block has one job. An <strong>oscillator</strong> makes a reference frequency. A <strong><a href="../reference/glossary.html#pll-phase-locked-loop">PLL</a></strong>, the phase-locked loop, multiplies that reference up to a higher frequency. Dividers and selectors then choose what each block receives. The core runs from the <em>system clock</em>, and the peripherals run from their own clocks, which may be divided from the same source.
+  </p>
+  <p>
+    The architecture course gave you the reason this matters. The core counts time in clock cycles, so a time such as one microsecond is a number of cycles at a known frequency. If the frequency is wrong, every delay is wrong by the same ratio. Take a delay loop that was sized for 500 ms at 8 MHz, which is 4,000,000 cycles. If the clock becomes 72 MHz and the loop is unchanged, the same loop finishes in 4,000,000 ÷ 72,000,000 seconds, about 56 ms.
   </p>
 
   <figure>
@@ -54,40 +62,133 @@
     <figcaption>Figure 1. The shape of a clock tree. Each block on the RP2040 and STM32F103 has the same job, though the names and register fields differ.</figcaption>
   </figure>
 
+  <h2>Four terms you need before the numbers</h2>
+  <p>
+    The two chips use the same few terms, so define them once. A <strong>crystal oscillator</strong> is a quartz crystal driven by a circuit that makes it vibrate at a fixed frequency. It is accurate, but it must be started and it takes time to settle. A <strong><a href="../reference/glossary.html#ring-oscillator-rosc">ring oscillator</a></strong> is a loop of logic gates that oscillates on its own. It needs no external part, but its frequency moves with voltage and temperature, so it is only roughly known.
+  </p>
+  <p>
+    A PLL has three numbers. The reference frequency goes in. A <strong>feedback divider</strong> sets the multiplication: the voltage-controlled oscillator (VCO) runs at the reference times the feedback value, and the PLL keeps that locked. Then one or more <strong>post-dividers</strong> divide the VCO output down to the frequency the chip uses. The VCO must stay within a fixed range. The RP2040 datasheet gives that range as 750 to 1600 MHz (section 2.18.1). The VCO is an internal stage, not the clock that drives the core.
+  </p>
+  <p>
+    The STM32 names the same pieces differently. Its internal 8 MHz RC oscillator is called <strong>HSI</strong>, for high-speed internal, and its external crystal input is <strong>HSE</strong>, for high-speed external. The PLL takes HSI divided by two, or HSE, optionally divided by two, and multiplies it by a factor that is set in a 4-bit register field.
+  </p>
+
   <h2>RP2040: 12 MHz crystal, PLL to 125 MHz</h2>
   <p>
-    The RP2040 reference design uses a 12 MHz crystal. The crystal oscillator (XOSC) is off at power-up, and software must enable it and wait for the <code>XOSC_STABLE</code> flag before using it or starting the PLLs. Until then the system clock runs from a ring oscillator at about 6.5 MHz. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, sections 2.15.2.2 (Crystal Oscillator), 2.16 (XOSC) and 2.7 (Boot Sequence)</a>.
+    The RP2040 reference design uses a 12 MHz crystal, and the datasheet states this in its crystal section (section 2.15.2.2). The crystal oscillator (XOSC) is inactive at power-up. Software must enable it and wait for the <code>XOSC_STABLE</code> flag before it uses the crystal or starts the PLLs. The datasheet's reason is physical: before the flag is set, the output "may be non-existent or may have very short pulse widths which will corrupt logic if used" (section 2.15.2.2). A clock that is too short for the logic is a clock that the logic cannot read.
   </p>
   <p>
-    The system PLL, PLL_SYS, multiplies the 12 MHz reference. The datasheet's own example gives the arithmetic: 12 MHz ÷ 1 × 125 = 1500 MHz in the VCO, then ÷ 6 ÷ 2 = 125 MHz. The SDK's default settings produce this 125 MHz system clock. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.18.3 (PLL Configuration) and 2.15.6.1 (Configuring a clock generator)</a>.
+    What runs in the meantime? The ring oscillator. The datasheet's boot sequence says the ROSC is started at power-up and that <code>clk_sys</code> and <code>clk_ref</code> run at a relatively low frequency, typically 6.5 MHz (section 2.7). The ROSC section says the typical startup frequency is 6 MHz, in a range of 4 to 8 MHz, and that it is guaranteed to be between 1.8 and 12 MHz (section 2.15.2.1). The two numbers are both typical values, and they do not contradict each other. Neither one is a number you should build a delay on.
   </p>
   <p>
-    The clock table gives the nominal frequency of <code>clk_sys</code> as 125 MHz, and says the chip cannot exceed 133 MHz across process, voltage and temperature. The same note says 200 MHz is possible with an elevated core supply. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.15.3.1 (Instances)</a>.
+    The RP2040 has two PLLs, and <code>PLL_SYS</code> feeds the system clock. The datasheet gives the arithmetic in section 2.18.2. With a 12 MHz reference, the feedback value (FBDIV) must stay between 63 and 133, which gives a VCO between 756 and 1596 MHz. The worked example there sets FBDIV to 100, so the VCO is 12 × 100 = 1200 MHz. Then POSTDIV1 is 6 and POSTDIV2 is 2, so the output is 1200 ÷ 6 ÷ 2 = 100 MHz. The jitter section (2.18.2.1) gives the 125 MHz case: a 1500 MHz VCO, which comes from FBDIV 125, divided by 6 and then by 2. The SDK's default system clock is 125 MHz as well. Its platform definition sets <code>SYS_CLK_HZ</code> to 125000000 unless a project overrides it (<code>src/rp2040/hardware_regs/include/hardware/platform_defs.h</code>, pico-sdk 2.3.1).
   </p>
   <div class="note">Notice the VCO. 1500 MHz is not the system clock, even though it is the largest number in the calculation. The post-dividers come after the VCO, and the answer you want is the output. This is the mistake most people make first.</div>
+  <p>
+    The clock table in section 2.15.3.1 gives the nominal frequency of <code>clk_sys</code> as 125 MHz. The same table notes that <code>clk_sys</code> and <code>clk_peri</code> have a maximum of 133 MHz across all process, voltage and temperature variations. It also says that 200 MHz can be reached by running the core supply at an elevated voltage and setting the regulator to 1.15 V. So 125 MHz is the normal operating point, and the datasheet limits are the outer edges of it.
+  </p>
 
   <h2>STM32F103: HSI at reset, HSE through the PLL</h2>
   <p>
-    After every reset the STM32F1 uses its internal 8 MHz RC oscillator, HSI, as the system clock. The ST system file says so directly: "After each device reset the HSI (8 MHz) is used as system clock source", and <code>SystemInit()</code> then configures the clock before <code>main()</code> runs (<code>system_stm32f1xx.c</code>).
+    After every reset the STM32F1 uses its internal 8 MHz oscillator, HSI, as the system clock. The ST system file says so in its header: "After each device reset the HSI (8 MHz) is used as system clock source" (<code>third_party/cmsis-device-f1/Source/Templates/system_stm32f1xx.c</code>). The same file starts the variable <code>SystemCoreClock</code> at <code>8000000</code>, so the value is correct before any code runs.
+  </p>
+  <div class="warning">The system file's header says that SystemInit configures the clock before main() runs. In this version of the file, the code does not. SystemInit only writes the vector table offset register, and only when <code>USER_VECT_TAB_ADDRESS</code> is defined. Your own code must switch the clock. Read the function body, not only the comment above it.</div>
+  <p>
+    The clock is a sequence of register writes. Three fields of <code>RCC_CFGR</code> control the PLL, and the header defines each one (<code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>):
+  </p>
+  <ul>
+    <li><code>PLLSRC</code>, bit 16, chooses the PLL input: 0 for HSI divided by two, 1 for HSE.</li>
+    <li><code>PLLXTPRE</code>, bit 17, divides HSE by two before the PLL when set.</li>
+    <li><code>PLLMUL</code>, bits 21 to 18, is the multiplier field. The system file computes the factor as the field value plus 2, so a field of 7 gives ×9. The header names that value <code>RCC_CFGR_PLLMULL9</code>, with the comment "PLL input clock*9".</li>
+  </ul>
+  <p>
+    The system file's <code>SystemCoreClockUpdate()</code> reads these bits back, and it gives the formulas for this chip. For the PLL with HSI, it uses <code>(HSI_VALUE &gt;&gt; 1U) * pllmull</code>. For the PLL with HSE, it uses <code>HSE_VALUE * pllmull</code>, or <code>(HSE_VALUE &gt;&gt; 1U) * pllmull</code> when <code>PLLXTPRE</code> is set. The F100 variant has a different formula with a PREDIV1 divider, and that is not the F103 path, so do not copy it.
   </p>
   <p>
-    The PLL input is the HSE crystal or the HSI divided by two, and the PLL multiplies it. The system file shows both formulas in the code path that sets <code>SystemCoreClock</code>: <code>(HSE_VALUE / prediv1factor) * pllmull</code> for HSE, and <code>(HSI_VALUE &gt;&gt; 1U) * pllmull</code> for HSI. The header defines the multiplier <code>RCC_CFGR_PLLMULL9</code> as "PLL input clock*9". With HSE at its default of 8 MHz and the ×9 multiplier, the PLL gives 8 MHz × 9 = 72 MHz. The course's Zephyr board for the Blue Pill also runs HSE plus PLL at 72 MHz, as <code>NOTES.md</code> records.
+    The header also gives the frequency limits for this part. It defines <code>RCC_HSE_MIN</code> as 4000000 and <code>RCC_HSE_MAX</code> as 16000000, and <code>RCC_MAX_FREQUENCY</code> as 72000000 (<code>stm32f103xb.h</code>, lines 10168 to 10173). So 72 MHz is the highest system clock the header allows, and the Blue Pill's 8 MHz crystal fits the HSE range.
   </p>
-  <div class="warning">The flash wait states must go up before the clock does. The HAL does this in the order described in lesson 36. A faster clock with the old wait states reads flash too early and returns bad data, so the order is part of the recipe, not a detail.</div>
-  <div class="note">The 72 MHz maximum for the STM32F103 is the datasheet's limit, which this course has not yet checked against the datasheet text. The arithmetic above uses only the header and the system file.</div>
+
+  <h2>A worked example: 8 MHz to 72 MHz</h2>
+  <p>
+    Take the Blue Pill with an 8 MHz crystal on HSE, and work out what to write for a 72 MHz system clock. Show each step, because the order matters.
+  </p>
+  <ol class="steps">
+    <li><strong>Choose the input.</strong> Use HSE with no pre-divide, so <code>PLLSRC</code> is 1 and <code>PLLXTPRE</code> is 0. The PLL input is 8 MHz.</li>
+    <li><strong>Choose the multiplier.</strong> You need 72 MHz out, so the factor is 72 ÷ 8 = 9. The system file's rule is factor = field + 2, so the field must be 7. Binary 0111 in bits 21 to 18 is <code>0x7 &lt;&lt; 18</code>, which is <code>0x001C0000</code>. That matches the header's <code>RCC_CFGR_PLLMULL9</code> mask.</li>
+    <li><strong>Check the result with the formula.</strong> The system file gives <code>HSE_VALUE * pllmull</code>, which is 8,000,000 × 9 = 72,000,000 Hz. That equals <code>RCC_MAX_FREQUENCY</code>, so there is no margin left.</li>
+    <li><strong>Raise the flash wait states first.</strong> At 72 MHz the flash needs more wait states than at 8 MHz. Lesson 36 showed the <code>LATENCY</code> field of <code>FLASH_ACR</code>, which is bits 2 to 0 in the header. The HAL writes the new latency before it raises the clock, with the comment "Increasing the number of wait states because of higher CPU frequency" (<code>third_party/stm32f1xx-hal-driver/Src/stm32f1xx_hal_rcc.c</code>, around line 830).</li>
+    <li><strong>Switch the system clock and wait.</strong> Turn on the PLL, wait until it is ready, then select it. The <code>SWS</code> field in <code>RCC_CFGR</code> reports which source the core is using. The header gives the value for PLL as <code>0x00000008</code>, so you wait until <code>SWS</code> reads that value.</li>
+    <li><strong>Update the variable.</strong> Call <code>SystemCoreClockUpdate()</code>, so that <code>SystemCoreClock</code> holds 72000000 and the baud-rate divisor and delay code use the new frequency.</li>
+  </ol>
+  <p>
+    The reverse for the RP2040 is simpler to check. A 12 MHz crystal, FBDIV 125, POSTDIV1 6 and POSTDIV2 2 gives 12 × 125 = 1500 MHz, then 1500 ÷ 6 ÷ 2 = 125 MHz, which is the system clock the SDK uses by default.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The project <code>projects/0040-clock-tree</code> reads the clock state. Its key lines are these:
+  </p>
+  <pre><code>USART1-&gt;BRR = SystemCoreClock / 115200U;           <span class="c">/* baud divisor from the clock */</span>
+print_line(<span class="s">"SystemCoreClock (Hz): "</span>, SystemCoreClock);
+print_line(<span class="s">"SWS (clock source):   "</span>, (RCC-&gt;CFGR &gt;&gt; 2) &amp; 0x3U);   <span class="c">/* 0 = HSI */</span>
+print_line(<span class="s">"PLLMUL field:         "</span>, (RCC-&gt;CFGR &gt;&gt; 18) &amp; 0xFU);</code></pre>
+  <p>
+    The first line sets the UART baud divisor. <code>BRR</code> is the baud-rate register, and the divisor is the system clock divided by the baud rate, so the clock value has to be right before the UART starts. The second line prints the variable that the timing code uses. The third line reads <code>RCC-&gt;CFGR</code>, the clock configuration register, and shifts right by 2. Masking with <code>0x3U</code> keeps two bits, which is the <code>SWS</code> field at bits 3 and 2. The fourth line shifts by 18 and masks four bits, which is the <code>PLLMUL</code> field. Each mask has a width that matches its field in the header.
+  </p>
+  <p>
+    Every value passes through <code>print_hex</code>, so the serial monitor shows hex. A line that reads <code>0x007A1200</code> is the number 8000000 in decimal, which is 8 MHz.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <h3>Mistake 1: using the VCO as the clock</h3>
+  <p>
+    <strong>Symptom:</strong> on the RP2040, you use the 1500 MHz VCO as the clock, so your delay loops assume 1500 MHz cycles per second. The real clock is 125 MHz, so each loop takes 12 times longer than intended, and the LED blinks far too slowly. <strong>Fix:</strong> divide by the post-dividers. The answer is the output after POSTDIV1 and POSTDIV2, which is 125 MHz in the example.
+  </p>
+  <h3>Mistake 2: switching to a faster clock before the flash waits go up</h3>
+  <p>
+    <strong>Symptom:</strong> the chip runs for a while, then executes wrong instructions or reads wrong data. The fault changes with the build, so it is hard to reproduce. <strong>Fix:</strong> set <code>LATENCY</code> in <code>FLASH_ACR</code> first, then switch the clock. The HAL does this in that order, and the lesson 36 rule is one-way: more clock means more wait states, set first.
+  </p>
+  <h3>Mistake 3: changing the clock but not SystemCoreClock</h3>
+  <p>
+    <strong>Symptom:</strong> the LED blinks at the right rate, but the serial monitor shows garbage. The baud divisor was computed from the old clock, so the UART runs at the wrong speed. <strong>Fix:</strong> call <code>SystemCoreClockUpdate()</code> after every clock change, and compute the baud divisor after that call. Then the divisor and the delays use the same number.
+  </p>
+  <h3>Mistake 4: selecting a clock source that is not ready</h3>
+  <p>
+    <strong>Symptom:</strong> you write the new source to the switch, and the core keeps running at 8 MHz. Or the core switches to a source that is still settling, and the timing is wrong for a few milliseconds. <strong>Fix:</strong> wait for each oscillator and the PLL to report ready, and then check <code>SWS</code> to see which source is in use. The RP2040 needs the same wait for <code>XOSC_STABLE</code>, as section 2.15.2.2 says.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    In a real project the clock setup is one of the first things <code>main()</code> does, and a code review checks it line by line. The reviewer asks three questions. Is the flash latency raised before the clock? Is the source checked after the switch? Is <code>SystemCoreClock</code> updated, and is every peripheral that depends on the clock set up after that? Vendor code generators, such as STM32CubeMX, produce this sequence for you, and a good engineer can still check the output against the register fields.
+  </p>
+  <p>
+    Interviewers ask about clock setup because it touches almost every other part of the firmware: timers, serial speeds, flash timing, power use and the watchdog's time base. A candidate who can calculate the system clock from a PLL setup, and who knows the order of the steps, shows that they can debug timing problems that other people cannot even locate.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A clock tree is oscillators, PLLs, dividers and selectors. The core runs from the system clock, and peripherals run from their own clocks.</li>
+    <li>On the RP2040, the crystal is inactive at power-up. Wait for <code>XOSC_STABLE</code> before you use it, and the ROSC runs until then.</li>
+    <li>On the RP2040, the output frequency is 12 MHz × FBDIV ÷ POSTDIV1 ÷ POSTDIV2. The example 1500 ÷ 6 ÷ 2 gives 125 MHz.</li>
+    <li>On the STM32F103, the system clock is HSI at 8 MHz after reset. The PLL output is the input times the field plus 2, with HSE divided by two if <code>PLLXTPRE</code> is set.</li>
+    <li>The F103 header limits SYSCLK to 72 MHz (<code>RCC_MAX_FREQUENCY</code>).</li>
+    <li>Raise the flash wait states before you raise the clock, and update <code>SystemCoreClock</code> after you change it.</li>
+    <li>Check the <code>SWS</code> field after each switch, so you know which source the core is really using.</li>
+  </ul>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0040-clock-tree</code> is a single demo. It prints <code>SystemCoreClock</code>, the clock source bits of <code>RCC_CFGR</code>, and the PLL multiplier field.
+    The project <code>projects/0040-clock-tree</code> is a single demo. It prints <code>SystemCoreClock</code>, the value of <code>RCC_CFGR</code>, the clock source bits and the PLL multiplier field. The demo does not change the clock, so you are checking the reset state.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0040-clock-tree</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Read the <code>SystemCoreClock</code> line. It should be <code>8000000</code>, which is HSI at 8 MHz. Explain why the PLL field reads zero.</li>
-    <li>Press <kbd>F5</kbd> to debug, stop at <code>main</code>, and type <code>print/x RCC-&gt;CFGR</code> in the debug console. Find the SWS bits, which are bits 2 and 3, and confirm they show HSI.</li>
+    <li>Read the first line, <code>SystemCoreClock (Hz): 0x007A1200</code>. That is 8000000 in decimal, the HSI value. The line <code>PLLMUL field: 0x00000000</code> should follow, which means no multiplier is selected.</li>
+    <li>Read the <code>SWS (clock source): 0x00000000</code> line. Zero means HSI, as the header defines <code>RCC_CFGR_SWS_HSI</code>. Explain why the PLL field reads zero even though the chip has a PLL.</li>
+    <li>Press <kbd>F5</kbd> to debug, stop at <code>main</code>, and type <code>print/x RCC-&gt;CFGR</code> in the debug console. Check that bits 3 and 2 are zero, which is the SWS value in the line above.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The SWS field is bits 3:2 of <code>RCC_CFGR</code>, so shift right by two and mask two bits. A value of 0 means HSI. The PLLMUL field is bits 21:18, so it is zero when the PLL is not selected.</p>
+    <p>The SWS field is bits 3 and 2 of <code>RCC_CFGR</code>, so shift right by two and mask two bits. A value of 0 means HSI, 4 means HSE and 8 means PLL. The PLLMUL field is bits 21 to 18, so it is zero when no multiplier is set.</p>
   </details>
 
   <div class="win">You can calculate a system clock from a PLL configuration on both chips, and you know which oscillator each chip uses straight after reset.</div>
@@ -98,7 +199,7 @@
       { "type": "number",
         "prompt": "An RP2040 uses a 12 MHz crystal and PLL_SYS with feedback 125, then post-dividers 6 and 2. What is clk_sys in MHz?",
         "answer": 125, "tolerance": 0, "unit": "MHz",
-        "why": "The VCO is 12 × 125 = 1500 MHz, then 1500 ÷ 6 ÷ 2 = 125 MHz, the value in the datasheet example. The tempting answer, 1500, is the VCO, which comes before the post-dividers." },
+        "why": "The VCO is 12 × 125 = 1500 MHz, then 1500 ÷ 6 ÷ 2 = 125 MHz, the value in the datasheet example (section 2.18.2.1). The tempting answer, 1500, is the VCO, which comes before the post-dividers." },
       { "type": "mc",
         "prompt": "Which clock drives the STM32F103 system clock straight after reset?",
         "options": ["the internal HSI oscillator", "the external HSE crystal", "the PLL output directly", "the internal LSI clock"],
@@ -112,7 +213,16 @@
         "prompt": "Why must the RP2040 wait for XOSC_STABLE before it switches clk_sys to the crystal?",
         "options": ["early output corrupts logic", "the crystal draws power", "the timer needs ticks", "the bootrom must reboot"],
         "answer": 0,
-        "why": "Before XOSC_STABLE the crystal output may be missing or have very short pulses, which corrupts logic (datasheet section 2.15.2.2). The tempting answer, the crystal draws power, is true but says nothing about timing." }
+        "why": "Before XOSC_STABLE the crystal output may be missing or have very short pulses, which corrupts logic (datasheet section 2.15.2.2). The tempting answer, the crystal draws power, is true but says nothing about timing." },
+      { "type": "mc",
+        "prompt": "Which bits of RCC_CFGR show which clock source is driving SYSCLK right now?",
+        "options": ["bits 3 to 2", "bits 21 to 18", "bits 17 to 16", "bits 7 to 4"],
+        "answer": 0,
+        "why": "SWS is bits 3 to 2, which the header defines with a mask of 0xC. The tempting answer, bits 21 to 18, is the PLLMUL multiplier field, which sets the multiplier and does not report the source." },
+      { "type": "number",
+        "prompt": "The STM32F103 PLL takes HSE at 8 MHz, divided by two because PLLXTPRE is set, and the PLLMUL field is 7. What is SYSCLK in MHz?",
+        "answer": 36, "tolerance": 0, "unit": "MHz",
+        "why": "HSE divided by two is 4 MHz, and the field 7 gives ×9, so 4 × 9 = 36 MHz. The tempting answer, 72, forgets the PLLXTPRE divider on the PLL input." }
     ] }
     </script>
   </div>
@@ -134,11 +244,11 @@
 
   <div class="interview">
     <p><strong>"Your firmware boots on an STM32F103 at 8 MHz. How do you get to 72 MHz, and what must you change first?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Enable HSE and wait until it is ready. Set the PLL source to HSE, set the multiplier to ×9, and turn the PLL on, then wait for it to lock. Raise the flash wait states first, so the flash can keep up. Switch the system clock source to the PLL and check the status bits until the switch completes. Finally, update <code>SystemCoreClock</code> so your delays and baud rates use the new frequency. Changing the clock before the wait states go up is the classic mistake.</p></details>
+    <details><summary>Model answer</summary><p>Enable HSE and wait until it is ready. Set the PLL source to HSE, set the multiplier field to give ×9, and turn the PLL on, then wait for it to lock. Raise the flash wait states first, so the flash can keep up. Switch the system clock source to the PLL and check the SWS status bits until the switch completes. Finally, call SystemCoreClockUpdate so that SystemCoreClock and the delays and baud rates use the new frequency. Changing the clock before the wait states go up is the classic mistake.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.15 (Clocks), especially the clock table in 2.15.3.1 and the PLL example in 2.15.6.1. It shows the same arithmetic as this lesson, with the register settings.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: read section 2.15.2.1 (Ring Oscillator), 2.15.2.2 (Crystal Oscillator), the clock table in 2.15.3.1, and the PLL calculation in 2.18.2 and 2.18.2.1. Those sections give the same arithmetic as this lesson, with the register settings. For the STM32, read the system file and the header, which this lesson cites by line.
   </div>
 
   <div class="ask">

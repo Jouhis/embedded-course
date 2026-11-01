@@ -17,12 +17,31 @@
     By the end of this lesson you can write a discrete PID update with output limits and an anti-windup clamp, make it avoid derivative kick by differentiating the measurement, and tune a simulated heater to a settling time and overshoot that a test checks.
   </div>
 
+  <h2>Where we are, and why a heater needs a controller</h2>
+  <p>
+    Lesson <a href="0059-pwm.html">59</a> showed PWM: the microcontroller switches a pin on and off, and the fraction of each period that the pin is high, the <a href="../reference/glossary.html#duty-cycle">duty cycle</a>, sets the average power. Lesson <a href="0058-adc.html">58</a> showed how an ADC reads a <a href="../reference/glossary.html#thermistor">thermistor</a>, and lesson <a href="0104-digital-filtering.html">104</a> showed how to smooth that reading. This lesson closes the loop. The reading goes in, a controller chooses the duty cycle, and the heater's temperature responds. The sensor, the actuator and the filter are already in place; the controller is the decision in the middle.
+  </p>
+  <p>
+    The concrete job is a heater that must hold a temperature. Printer hotends, filament dryers and sous-vide cookers all do it. A heater that is simply switched fully on until it reads the target keeps warming after the switch-off and overshoots. A heater held at a fixed half power stops short, because the room keeps drawing heat away and the balance point sits below the target. A controller changes the power continuously in response to the error, and that is what holds the temperature at the target.
+  </p>
+  <p>
+    Klipper, the firmware that runs many printers, shows the same choice. Its heater control is either <code>pid</code> or <code>watermark</code> (a simple on-off rule), and the PID settings are three gains, <code>pid_Kp</code>, <code>pid_Ki</code> and <code>pid_Kd</code> (<a href="https://www.klipper3d.org/Config_Reference.html">Klipper Config Reference</a>). Those are the three gains this lesson tunes.
+  </p>
+
   <h2>The idea</h2>
   <p>
     A feedback controller measures the output, compares it with the setpoint, and changes the input to shrink the difference. The difference is the <em>error</em>: error = setpoint − measurement. The PID controller computes its output from three things about that error: its present size (P), its running sum (I), and its rate of change (D). The output is the power you send to the heater, as a fraction from 0 to 1.
   </p>
   <p>
     A PID loop runs on a fixed clock, once every sample period <i>dt</i>. The controller never sees the future. Everything it knows is the past and the present, which is why tuning is a trade between speed and stability.
+  </p>
+
+  <h2>The loop, one word at a time</h2>
+  <p>
+    Five terms carry the whole lesson, and each one is defined here before it is used. The <a href="../reference/glossary.html#setpoint">setpoint</a> is the value the loop is trying to reach, here 60 °C. The <i>measurement</i> is what the sensor reports right now. The <i>error</i> is the setpoint minus the measurement, so it is positive when the heater is too cold. The <a href="../reference/glossary.html#plant">plant</a> is the physical process being controlled: the heater element, its thermal mass and the room that cools it. The <a href="../reference/glossary.html#closed-loop">closed loop</a> is the arrangement in which the output is set from a measurement, so the loop is closed through the sensor.
+  </p>
+  <p>
+    The controller runs on a fixed clock with a sample period <i>dt</i>, here one second. Every sample it reads the measurement, computes the error, and writes a new output. The output in this lesson is a fraction from 0 to 1 of full power. Two measures judge the response. The <a href="../reference/glossary.html#overshoot">overshoot</a> is how far the temperature goes past the setpoint. The <a href="../reference/glossary.html#settling-time">settling time</a> is the time after which the temperature stays within a stated tolerance of the setpoint. A good loop has both small.
   </p>
 
   <h2>The P, I and D terms</h2>
@@ -68,6 +87,20 @@
     <span class="sidenote">The same three terms appear in PID libraries and in industrial controllers. The names are fixed; the implementation details are where engineers differ.</span>
   </p>
 
+  <h2>Worked example: the first two seconds</h2>
+  <p>
+    Use the reference gains from the project, kp = 0.04, ki = 0.0005 and kd = 0.5, with the setpoint at 60 °C, the room at 25 °C, a full-power rise of 80 °C and a time constant of 60 s. The plant updates once per second with T ← T + dt × (P × 80 − (T − 25)) ÷ 60, where P is the power from 0 to 1. Figure 1 showed the parts; the numbers below show how the parts add up.
+  </p>
+  <p>
+    <strong>Second 1.</strong> The measurement is the room temperature, 25 °C, so the error is 35. P = 0.04 × 35 = 1.40. The integral starts at zero and gains 0.0005 × 35 × 1 = 0.0175. There is no previous measurement yet, so D is zero. The sum is 1.4175, which the output limit clamps to 1.0, so the heater runs at full power. The plant then warms by (1.0 × 80 − 0) ÷ 60 = 1.333 °C, and the temperature becomes 26.333 °C.
+  </p>
+  <p>
+    <strong>Second 2.</strong> The measurement is 26.333 °C, so the error is 33.667. P = 0.04 × 33.667 = 1.347. The integral grows by 0.0005 × 33.667 = 0.0168, to 0.0343. D = −0.5 × (26.333 − 25) ÷ 1 = −0.667, because the temperature rose and the derivative pulls the output down. The sum is 1.347 + 0.034 − 0.667 = 0.714, inside the limits, so the power is 0.7143. The plant warms by (0.7143 × 80 − 1.333) ÷ 60 = 0.930, and the temperature becomes 27.264 °C.
+  </p>
+  <p>
+    The two rows match the simulator's CSV output exactly, and they show the three terms at work. P gives most of the push. I is small so far, and it will grow. D is the only term that reacts to the rise, and it already takes a visible bite out of the output in the second second.
+  </p>
+
   <h2>Discretisation: one line per sample</h2>
   <p>
     The controller runs once per sample period <i>dt</i>, so the integral becomes a sum and the derivative a difference. The forms that code uses are:
@@ -81,12 +114,23 @@ u  = clamp(P + I + D, out_min, out_max);</code></pre>
     The plant itself is discretised the same way. The heater model is first order: dT/dt = (P·k − (T − T<sub>amb</sub>)) / τ. Euler's step gives T ← T + dt·(P·k − (T − T<sub>amb</sub>))/τ. That step is accurate when dt is small compared with τ, which the simulation in this lesson satisfies with dt = 1 s and τ = 60 s.
   </p>
 
+  <p>
+    Line by line: the first line is the error the controller acts on. The second is the proportional term, which is just the gain times the error. The third adds the integral, the error times the gain times the sample period, which is the area of one rectangle under the error curve. The fourth is the derivative: the change in measurement since the last sample, divided by <i>dt</i> to make it a rate, with a minus sign so that a rising temperature lowers the output. The last line adds the three and clamps the result to the actuator's range. In the project the same arithmetic lives in <code>pid_update</code>, with the integral clamped before it is added, which the next section explains.
+  </p>
+  <p>
+    Why <i>dt</i> is in the code at all. The gains are defined per second, so the sample period converts each step into seconds. A controller sampled every 100 ms with the same gains is a different controller, and the gains must be retuned. Keep <i>dt</i> in the same unit as the plant's time constant, here seconds, and check it when you change the sample rate.
+  </p>
+
   <h2>Windup and the anti-windup clamp</h2>
   <p>
     If the output is clamped at 100 % while the error stays positive, the integral keeps growing. When the setpoint is reached, the integral is far too large, and the output stays high until the error has been negative for a long time. That overshoot is <em>integral windup</em>. The fix is to clamp the integral itself to the output range, so it cannot store more than the actuator can use. The code in this lesson clamps the I term to [out_min, out_max] on every step.
   </p>
   <p>
-    The effect is easy to see. With ki = 1 and the output limited to 0 to 1, a hundred steps of error +10 leave the integral at 1, not 1000. One step of error −10 then brings the output straight to 0. Without the clamp, the output would stay at 1 for another hundred steps.
+    The effect is easy to see. With ki = 1 and the output limited to 0 to 1, a hundred steps of error +10 leave the integral at 1, not 1000. One step of error −10 then brings the output straight to 0. Without the clamp, the output would stay at 1 for about another hundred steps.
+  </p>
+
+  <p>
+    The clamp matters most in a real heater, because a real heater saturates. The simulator tests this. In a scratch copy of the project, with the starter gains (kp 0.05, ki 0.002, kd 0), removing the integral clamp raised the overshoot from 6.18 °C to 7.48 °C. With the tuned gains the overshoot stayed at 0.63 °C either way, because the integral never reached its limit with those gains. The clamp protects the loop when the output saturates, and it changes nothing when the loop does not saturate.
   </p>
 
   <h2>Derivative on measurement, not on error</h2>
@@ -94,20 +138,41 @@ u  = clamp(P + I + D, out_min, out_max);</code></pre>
     If the derivative uses the error, a setpoint step is a sudden jump in the error, and the D term kicks the output for one sample. The measurement does not jump when the setpoint does, so differentiating the measurement avoids the kick. The minus sign is needed because a rising measurement must reduce the output. The first sample has no previous measurement, so its D term is zero.
   </p>
 
+  <p>
+    Put numbers on the kick. With kd = 0.5 and a setpoint step of 35 °C, a derivative of the error would add 0.5 × 35 = 17.5 to the output for one sample. A derivative of the measurement adds nothing on that sample, because the temperature has not moved yet. The first sample is the one exception, and the code handles it with a <code>first</code> flag. Without that flag, the previous measurement starts at zero, and the derivative of a 25 °C reading against zero is −0.5 × 25 = −12.5, which clamps the output to zero on the very first second.
+  </p>
+
   <h2>Tuning</h2>
   <p>
     Tune in this order: first P alone until the loop responds quickly without too much overshoot, then add I until the offset goes away, then add D to damp the approach. The classic closed-loop rule is Ziegler and Nichols's method: raise kp until the loop oscillates steadily with period T<sub>u</sub> at gain K<sub>u</sub>, then set kp = 0.6 K<sub>u</sub>, Ti = T<sub>u</sub>/2 and Td = T<sub>u</sub>/8, which gives ki = kp/Ti and kd = kp·Td. The rule is a starting point, not a finish line: it tends to overshoot, and a physical process rarely matches the model it assumes.
   </p>
   <div class="note">Set the output limits before you tune. A loop that saturates at 100 % during tuning looks unstable, when the real problem is windup.</div>
+  <p>
+    The table shows what the simulator reports for six gain sets, each run for the full 1200 simulated seconds with the same setpoint and plant. Read it as a map, not a recipe. Lowering the integral gain removes most of the overshoot in this model, and the derivative gain trades a little speed for a calmer approach.
+  </p>
+  <table>
+    <thead><tr><th>kp</th><th>ki</th><th>kd</th><th>Overshoot (°C)</th><th>Settling time (s)</th></tr></thead>
+    <tbody>
+      <tr><td>0.05</td><td>0.002</td><td>0</td><td>6.18</td><td>105</td></tr>
+      <tr><td>0.05</td><td>0.0005</td><td>0</td><td>0.00</td><td>119</td></tr>
+      <tr><td>0.05</td><td>0.002</td><td>0.5</td><td>5.46</td><td>119</td></tr>
+      <tr><td>0.04</td><td>0.002</td><td>0.5</td><td>5.96</td><td>118</td></tr>
+      <tr><td>0.04</td><td>0.0005</td><td>0.5</td><td>0.63</td><td>83</td></tr>
+      <tr><td>0.03</td><td>0.0005</td><td>0.5</td><td>1.82</td><td>215</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The first row is the starting point the Try it task uses. Its overshoot is 6.18 °C, and the integral gain is the lever: cutting ki to 0.0005 brings the overshoot to 0.00 °C, though it settles a little later. The fifth row is the reference set. It differs from the second row only by adding kd = 0.5 and cutting kp to 0.04, and it settles fastest of the six. Lowering kp alone, from the fifth row to the sixth, makes the approach too slow, and the settling time rises to 215 s. Three rows overshoot by more than the 3 °C limit and fail the overshoot test. The other three pass both limits, so a pass alone does not pick the best set. Read the settling time as well.
+  </p>
 
   <h2>Try it: the host tests and the simulated heater</h2>
   <p>
     The project <code>projects/0105-pid-host</code> has a PID module, a first-order heater model, and a closed-loop runner. The setpoint is 60 °C, the room is 25 °C, and the heater's full-power rise is 80 °C. A pass needs a settling time of 600 s or less, an overshoot of 3 °C or less, and a final temperature within 1 °C of the setpoint.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0105-pid-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0105-pid-host/starter --test</code> from the workspace root.</li>
-    <li>Your task: write <code>pid_update</code> in <code>src/pid.c</code>. Make the arithmetic tests pass first, then the anti-windup test, then the derivative tests. The plant tests already pass.</li>
-    <li>Then tune <code>src/tuning.h</code>. The starting gains reach the setpoint but overshoot by about 6 °C. Lower the proportional gain or the integral gain until the overshoot test passes, and keep the settling test passing.</li>
+    <li>Open <code>projects/0105-pid-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0105-pid-host/starter --test</code> from the workspace root. Expected output: the plant tests already pass, and the arithmetic, anti-windup and derivative tests fail. Those failures are correct at this point.</li>
+    <li>Your task: write <code>pid_update</code> in <code>src/pid.c</code>. Make the arithmetic tests pass first, then the anti-windup test, then the derivative tests. The plant tests already pass. You will know it works when the Unity summary reads <code>12 Tests 0 Failures 0 Ignored</code>, which is the line the reference solution prints.</li>
+    <li>Then tune <code>src/tuning.h</code>. With the starting gains, the loop reaches the setpoint but overshoots by 6.18 °C. Lower the proportional gain or the integral gain until the overshoot test passes, and keep the settling test passing.</li>
   </ol>
   <details>
     <summary>Hint for the I term</summary>
@@ -118,9 +183,48 @@ u  = clamp(P + I + D, out_min, out_max);</code></pre>
     <p>The integral gain causes most overshoot in this model. Lowering ki from 0.002 to 0.0005 is a good first step, and the derivative gain can damp what is left.</p>
   </details>
   <p>
-    Print the response. The program <code>app/pid_sim.c</code> prints a CSV row per simulated second and its metrics on stderr. From the workspace root, run <code>projects/0105-pid-host/solution/build/pid_sim.exe &gt; response.csv</code> after building. Open <code>response.csv</code> in a spreadsheet, select the columns <code>t_s</code>, <code>setpoint_c</code> and <code>temp_c</code>, and insert a line chart with <code>t_s</code> on the horizontal axis. The curve should rise, touch the setpoint, and settle.
+    Print the response. The program <code>app/pid_sim.c</code> prints a CSV row per simulated second and its metrics on stderr. Expected output: the terminal shows <code>final=60.00 C overshoot=0.63 C settle=83 s</code>, and <code>response.csv</code> has 1201 lines, the header and 1200 rows. From the workspace root, run <code>projects/0105-pid-host/solution/build/pid_sim.exe &gt; response.csv</code> after building. Open <code>response.csv</code> in a spreadsheet, select the columns <code>t_s</code>, <code>setpoint_c</code> and <code>temp_c</code>, and insert a line chart with <code>t_s</code> on the horizontal axis. The curve should rise, touch the setpoint, and settle.
   </p>
   <p>The reference solution is in <code>projects/0105-pid-host/solution</code>. It passes all 12 tests. Its tuned gains (kp 0.04, ki 0.0005, kd 0.5) settle in 83 s with 0.63 °C overshoot.</p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <h3>Mistake 1: clamping only the output</h3>
+  <p>
+    The most common windup bug is to clamp the final output but let the integral keep growing. The output looks correct, but the integral is far larger than the actuator can use, and the loop overshoots when the error changes sign. The symptom is an overshoot larger than the clamped version gives, as in the experiment above, 7.48 °C against 6.18 °C. The host test <code>test_anti_windup_stops_the_integral_at_the_limit</code> catches it: after 100 saturated steps, one step of −10 error must bring the output to zero, and an unclamped integral keeps it high. The fix is the clamp on the stored integral, before it is added to the output.
+  </p>
+  <h3>Mistake 2: the wrong unit for dt</h3>
+  <p>
+    If the controller takes <i>dt</i> in milliseconds while the gains expect seconds, the integral grows a thousand times too fast. In the simulator, passing 1000 as <i>dt</i> with the reference gains drives the power to 1.0000 on the second row, where the correct loop reads 0.7143. The response reaches the setpoint in 32 s, but only because the integral is pinned at its limit and the output stays saturated. The symptom is power at the limit for the first several rows, and a settling time that looks suspiciously good. The fix is to keep <i>dt</i> in seconds, the same unit as the plant's time constant, and to check the first few rows of the CSV against your hand calculation.
+  </p>
+  <h3>Mistake 3: the wrong sign on the derivative</h3>
+  <p>
+    The minus sign in the derivative term is easy to drop. In the simulator, removing it with the reference gains changes the response to an overshoot of 0.00 °C and a settling time of 147 s, against the correct 0.63 °C and 83 s. The three loop tests still pass, because 147 s is inside the 600 s limit, so only the unit test <code>test_derivative_reacts_to_the_measurement_change</code> fails. A learner who tunes the gains against the loop tests alone would not see it. The symptom is a settling time much worse than the reference, with the loop tests green. The fix is to check the derivative sign against the rule in the text: a rising measurement must lower the output. Always compare the settling time with the reference, not only with the pass limit.
+  </p>
+  <h3>Mistake 4: no first-sample handling in the derivative</h3>
+  <p>
+    If the derivative has no previous measurement on the first call, it differentiates against zero. The symptom is the first row of the CSV showing power 0.0000 when the room is cold and the setpoint is 60 °C, which is the opposite of what the controller should do. The fix is the <code>first</code> flag in <code>pid_update</code>, which makes the first derivative zero, as the code comment says.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Industrial and printer controllers are PID loops with the same three terms, and the same four traps. Engineers tune on the real plant, not only in a model, and they log the response the way this lesson's CSV does, because a settling time and an overshoot are the two numbers a reviewer asks for first. Klipper exposes its heater gains in the printer configuration, and its documentation says that temperature measurements are smoothed over a time window for the PID derivative (<code>pid_deriv_time</code>), which is the same smoothing idea as the filter in lesson <a href="0104-digital-filtering.html">104</a>.
+  </p>
+  <p>
+    A code reviewer checks four things in a controller: that the integral is clamped, that the derivative is on the measurement, that the first sample is handled, and that <i>dt</i> has the right unit and is the real sample period. Each of them has a host test in this project, which is why the controller is written in plain C and tested on the PC before it runs on the Pico. The same <code>pid_update</code> runs unchanged in the firmware, once a real sensor feeds it.
+  </p>
+  <p>
+    Interviewers ask about windup more than any other control topic, because the answer shows whether you have seen a real saturated actuator. The drill below is the one to practise.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A PID controller sums three terms: P reacts to the error now, I removes the leftover error over time, and D reacts to how fast the measurement changes.</li>
+    <li>The discrete form is one line per term per sample, with dt in seconds to match the plant's time constant.</li>
+    <li>Clamp the stored integral to the output range, so it cannot store more than the actuator can use.</li>
+    <li>Differentiate the measurement, not the error, so a setpoint step does not kick the output; handle the first sample with a flag.</li>
+    <li>Tune P first, then I to remove the offset, then D to damp the approach, and check the settling time as well as the overshoot.</li>
+    <li>Compare a tuned loop against a reference set: a passing test can hide a slower or wrong loop.</li>
+  </ul>
 
   <div class="win">You wrote a discrete PID with output limits, an anti-windup clamp and derivative on measurement, then tuned a simulated heater until a test checks its settling time and overshoot. The same update runs on the Pico, once you feed it a real sensor.</div>
 
@@ -149,7 +253,21 @@ u  = clamp(P + I + D, out_min, out_max);</code></pre>
       { "type": "number",
         "prompt": "With kp = 0.05 and no integral term, the heater settles at what final temperature, in degrees C?",
         "answer": 53, "tolerance": 0.02, "unit": "C",
-        "why": "The steady state of P only is where the heater's power balances the heat loss, giving 53 C against a setpoint of 60 C. The tempting answer, 60, is what the I term would give, and P alone cannot reach it." }
+        "why": "The steady state of P only is where the heater's power balances the heat loss, giving 53 C against a setpoint of 60 C. The tempting answer, 60, is what the I term would give, and P alone cannot reach it." },
+      { "type": "number",
+        "prompt": "A PI integral starts at 0 with ki = 0.002, dt = 1 s and a constant error of 20 degrees C. After 50 steps, with no clamp, what is the integral term?",
+        "answer": 2.0, "tolerance": 0.01, "unit": "units",
+        "why": "Each step adds ki × error × dt = 0.002 × 20 × 1 = 0.04, so 50 steps add 2.0. The tempting answer, 0.04, is the change after one step, which forgets the running sum. A clamp to an output range of 0 to 1 would hold the stored value at 1." },
+      { "type": "mc",
+        "prompt": "The starting gains overshoot by 6.18 degrees C. Which single change removes most of that overshoot?",
+        "options": ["Lower the integral gain", "Raise the proportional gain", "Remove the output clamp"],
+        "answer": 0,
+        "why": "Lowering ki from 0.002 to 0.0005 takes the overshoot to 0.00 degrees C in the simulator. Raising kp is the tempting answer, since it speeds the approach, but the overshoot in this model comes from the integral. Removing the output clamp is not a tuning change: the heater cannot take more than full power." },
+      { "type": "mc",
+        "prompt": "A tuned loop's first CSV row shows power 0.0000 while the room is cold and the setpoint is 60 degrees C. Which fault fits?",
+        "options": ["Derivative on first sample", "Integral clamp too wide", "Setpoint read as zero"],
+        "answer": 0,
+        "why": "With no previous measurement, the first derivative is computed against zero: -0.5 × 25 = -12.5, which clamps the output to 0. The tempting answer, the integral clamp, only limits the I term, which is 0.0175 on the first sample, so it cannot make the output zero." }
     ] }
     </script>
   </div>

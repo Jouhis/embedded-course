@@ -17,9 +17,29 @@
     By the end of this lesson you can write a vector table as an array of function pointers, a reset handler that copies <code>.data</code> and clears <code>.bss</code>, and a linker script that places them, and you can replace the CMSIS startup in a CMake project.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Two files make the C language's rules true on a Cortex-M. The linker script decides where each piece of the program lives. The startup code, running first, makes the RAM match what the script promised. The vendor's startup and the course's linker script do this for you. Writing your own shows what each line is for.
+    Lesson 41 introduced the linker and its script, and lesson 42 showed that the startup file has a vector table and a reset handler. Lesson 66 used the vendor's startup and the course's linker script without changing either. The C language promises that a global variable starts with the value you wrote in its declaration, and that a global with no value starts at zero. Something has to make that true before <code>main</code> runs, and this lesson shows the two files that do it.
+  </p>
+  <p>
+    The reason to learn this, rather than just using the vendor's file, is debugging and porting. A bootloader that hands over to an application, a board with external RAM, and a firmware that must fit a tight memory budget all need a startup or a linker script that differs from the vendor's. In an interview, "what happens between reset and main" is a common question, and this lesson gives the full answer.
+  </p>
+
+  <h2>Concepts, one at a time</h2>
+  <h3>Reset and the vector table</h3>
+  <p>
+    A <em>reset</em> is the event that starts the core from its beginning: power-on, the reset pin, or a watchdog. On a Cortex-M, the core does not read a boot address from a register. It reads two words from the start of flash. Word 0 is the initial value for the stack pointer, and word 1 is the address of the first code to run, the <em>reset handler</em>. Those two words sit at the start of the <em>vector table</em>, a list of handler addresses, one per exception. The rest of the table holds the other exceptions in the order the programming manual lists them.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, Cortex-M3 programming manual (exception vector table)</a>
+  </p>
+
+  <h3>Sections: where the compiler puts things</h3>
+  <p>
+    The compiler does not place variables in memory. It groups them into <em>sections</em>, and each section is a named block of bytes with a size and a kind. Code goes in <code>.text</code>, constants in <code>.rodata</code>, initialised globals in <code>.data</code>, and zero-initialised globals in <code>.bss</code>. The linker script assigns each section to a memory region, such as flash or RAM. Section names are conventions, and the script decides where each one goes.
+  </p>
+
+  <h3>Load address and run address</h3>
+  <p>
+    A global like <code>volatile uint32_t g_initialised = 0xCAFEF00D;</code> has two addresses. Its <em>load address</em> is where its initial value is stored, in flash, so the value survives power-off. Its <em>run address</em> is where the program reads and writes it, in RAM, because flash is slow to write and cannot be changed as a variable. The startup code copies the value from the load address to the run address before <code>main</code> runs. A <code>.bss</code> variable has no load address in flash, because its value is always zero, so the startup clears its run address instead.
   </p>
   <figure>
     <svg viewBox="0 0 480 230" role="img" aria-label="Flash holds the vector table, code and the initial values of .data. RAM holds .data at its run address, then .bss, and the stack grows down from the top. Reset_Handler copies the .data values from flash to RAM.">
@@ -54,10 +74,14 @@
     <figcaption>Figure 1. One variable that has an initial value has two addresses: its load address in flash, where the value is stored, and its run address in RAM, where the program reads it.</figcaption>
   </figure>
 
+  <h3>Symbols: names the linker gives to addresses</h3>
+  <p>
+    A linker <em>symbol</em> is a name for an address. The linker script defines symbols such as <code>_sdata</code>, the start of <code>.data</code> in RAM, and the startup code refers to them with <code>extern</code>. The startup never uses their values, only their addresses. Writing <code>&amp;_sdata</code> gives the address the linker chose, which is how the two files agree on where things are without sharing a header that lists addresses.
+  </p>
+
   <h2>Part 1: the vector table</h2>
   <p>
     On reset, the core reads word 0 of flash as the initial stack pointer, and word 1 as the address of the first code to run. Each later word is the handler for one exception, in the order PM0056 lists them. In C, a table of function pointers does the same job, and lesson 49's callbacks are the same mechanism.
-    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, Cortex-M3 programming manual (exception vector table)</a>
   </p>
   <pre><code><span class="c">/* startup.c: the table lives in a section that the linker script places first in flash */</span>
 __attribute__((used, section(<span class="s">".isr_vector"</span>)))
@@ -69,10 +93,10 @@ __attribute__((used, section(<span class="s">".isr_vector"</span>)))
     SysTick_Handler                <span class="c">/* 15 */</span>
 };</code></pre>
   <p>
-    Word 0 is the stack pointer, which is a data address, so it needs a cast to the function pointer type. A cast like that is correct here, because the core only reads the word as a number. The <code>used</code> attribute stops the compiler from dropping a table that nothing in C refers to, and the section name puts it where the script expects it.
+    Line by line: <code>__attribute__((used, section(".isr_vector")))</code> does two things. <code>section</code> puts the array in a section with that name, which the linker script then places at the start of flash. <code>used</code> tells the compiler to keep the array even though nothing in the C code reads it. The line <code>const isr_fn g_vectors[16]</code> declares an array of 16 function pointers. Each entry is four bytes on this 32-bit core, so the table is 64 bytes. The first entry is cast from an address in RAM to a function pointer type, because the core reads that word as a number, not as code. The cast is correct here, and it would be wrong anywhere else.
   </p>
   <p>
-    Every handler you do not write is a weak alias for <code>Default_Handler</code>. A weak symbol is a default definition that a strong one replaces at link time, so a later file can define <code>SysTick_Handler</code> without touching this one. The table has 16 entries here. The external interrupts (IRQ0 onwards) start at index 16, and the CMSIS startup lists all 43 of them for the STM32F103xB. This table is safe only while no external interrupt is enabled.
+    Entries 7 to 10 and 13 are reserved and must be zero, as the lesson's project comments say. Every handler you do not write is a weak alias for <code>Default_Handler</code>. A weak symbol is a default definition that a strong one replaces at link time, so a later file can define <code>SysTick_Handler</code> without touching this one. The table has 16 entries here. The external interrupts (IRQ0 onwards) start at index 16. The vendor's <code>startup_stm32f103xb.s</code> lists 43 of them, IRQ0 through IRQ42, and this minimal table stops at index 15. That is safe only while no external interrupt is enabled, because an enabled interrupt would jump past the end of the table.
   </p>
 
   <h2>Part 2: the reset handler</h2>
@@ -94,11 +118,37 @@ __attribute__((used, section(<span class="s">".isr_vector"</span>)))
     main();                                        <span class="c">/* 4. hand over */</span>
     while (1) { }
 }</code></pre>
+  <p>
+    Line by line: <code>SystemInit()</code> is the vendor function that sets the clock. It runs first, so the copy and clear loops run at the final clock speed. <code>src</code> starts at the load address in flash. The <code>for</code> loop starts <code>dst</code> at the run address in RAM and stops at <code>_edata</code>, which is the end of <code>.data</code>, so it copies exactly the bytes in that section. <code>*dst = *src++</code> copies one 32-bit word and advances the source pointer. The third block clears <code>.bss</code> the same way, with zero as the value. Finally <code>main()</code> is called. The trailing loop is a safety net, because <code>main</code> should never return on firmware.
+  </p>
   <div class="warning">Both loops move one 32-bit word at a time. The linker script aligns the start and end symbols of <code>.data</code> and <code>.bss</code> to 4 bytes, so each loop begins and ends on a word boundary. If a symbol were misaligned, the loop would stop short or copy past the end of the section.</div>
+  <p>
+    The vendor's startup does one more thing that this minimal version skips: it calls <code>__libc_init_array</code> before <code>main</code>, which runs the C library's constructors. This project has no C++ constructors and no global objects that need one, so skipping it is safe here. A project that uses a library with constructors needs that call.
+  </p>
+
+  <h2>Worked example: the .data copy, with real addresses</h2>
+  <p>
+    The solution's build writes a map file, <code>build/blink.map</code>, that lists where each section and variable ended up. Its <code>.data</code> section looks like this, with the numbers copied from the build:
+  </p>
+  <table>
+    <thead><tr><th>Item</th><th>Address</th><th>Size</th><th>Contents</th></tr></thead>
+    <tbody>
+      <tr><td><code>.data</code> load address (<code>_sidata</code>)</td><td><code>0x080002B4</code></td><td>8 bytes</td><td>the initial values, stored in flash</td></tr>
+      <tr><td><code>g_initialised</code> (run address, <code>_sdata</code>)</td><td><code>0x20000000</code></td><td>4 bytes</td><td><code>0xCAFEF00D</code></td></tr>
+      <tr><td><code>SystemCoreClock</code></td><td><code>0x20000004</code></td><td>4 bytes</td><td><code>8000000</code>, which is <code>0x007A1200</code></td></tr>
+      <tr><td><code>g_zeroed</code> (in <code>.bss</code>)</td><td><code>0x20000008</code></td><td>4 bytes</td><td>cleared to zero</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Trace the copy loop. <code>src</code> is <code>0x080002B4</code>, and the loop's first pass copies the word there, <code>0xCAFEF00D</code>, into <code>dst</code> at <code>0x20000000</code>. Then <code>src</code> advances by four to <code>0x080002B8</code>, and <code>dst</code> advances to <code>0x20000004</code>. The second pass copies <code>0x007A1200</code>, which is the default clock value, into <code>SystemCoreClock</code>. Now <code>dst</code> equals <code>_edata</code> at <code>0x20000008</code>, and the loop stops. Two words were copied, and eight bytes of flash were used for the initial values.
+  </p>
+  <p>
+    The same map file shows that <code>g_zeroed</code> sits at <code>0x20000008</code>, which is the first address after <code>.data</code>, and that <code>_ebss</code> is at <code>0x2000000C</code>. The clear loop writes zero to the four bytes in between. Lesson 70 uses <code>SystemCoreClock</code> to compute the baud rate, which is why the clock must be copied correctly before <code>main</code> reads it.
+  </p>
 
   <h2>Part 3: the linker script</h2>
   <p>
-    The script has three jobs. It describes the memory, it assigns each section to a region, and it exports symbols that the startup code uses. Lesson 41 introduced these terms. The key point for <code>.data</code> is the difference between the load address (<code>AT&gt; FLASH</code>, where the initial bytes are stored) and the run address (<code>&gt; RAM</code>, where the program reads them).
+    The script has three jobs. It describes the memory, it assigns each section to a region, and it exports symbols that the startup code uses. The key point for <code>.data</code> is the difference between the load address (<code>AT&gt; FLASH</code>, where the initial bytes are stored) and the run address (<code>&gt; RAM</code>, where the program reads them).
   </p>
   <pre><code>MEMORY {
   FLASH (rx)  : ORIGIN = 0x08000000, LENGTH = 64K
@@ -120,16 +170,13 @@ SECTIONS {
   } &gt; RAM
 }</code></pre>
   <p>
-    <code>KEEP</code> stops the linker from discarding the vector table, which nothing references by name. <code>LOADADDR(.data)</code> reads the flash address that the linker chose for the initial values, and the startup code copies from that address. <code>.bss</code> has no <code>AT&gt;</code>, because zeroed variables store nothing in flash.
-  </p>
-  <p>
-    In this build of the solution, the linker put <code>.isr_vector</code> at <code>0x08000000</code> with a size of <code>0x40</code> bytes, the variable <code>g_initialised</code> at <code>0x20000000</code> with its load address at <code>0x080002B4</code>, and <code>g_zeroed</code> at <code>0x20000008</code>. Your addresses may differ slightly, but the pattern is the same. Find yours in <code>build/blink.map</code>.
+    Line by line. <code>MEMORY</code> names the two regions and gives their start and size. The Blue Pill's flash is 64 KB and its RAM is 20 KB, as the part page says. <code>_estack</code> is set to the end of RAM, so the stack starts at the top and grows down. <code>.isr_vector</code> is placed first, at the start of flash, and <code>KEEP</code> stops the linker from discarding the table, which nothing references by name. <code>.text</code> follows, with code and constants in flash. <code>LOADADDR(.data)</code> reads the flash address that the linker chose for the initial values, and the startup code copies from that address. In the <code>.data</code> block, <code>&gt; RAM</code> sets the run address and <code>AT&gt; FLASH</code> sets the load address. <code>.bss</code> has no <code>AT&gt;</code>, because zeroed variables store nothing in flash.
   </p>
   <div class="warning">This script reserves no heap and no stack. The course's own <code>stm32f103c8.ld</code> reserves a minimum of 0x200 bytes of heap and 0x400 bytes of stack at the top of RAM. Without that reserve, a deep call chain can grow the stack down into <code>.bss</code>, and nothing reports it. Lesson 78 covers stack sizing and detection.</div>
 
   <h2>Part 4: swap them into the build</h2>
   <p>
-    <code>stm32f1.cmake</code> sets two things for you, and you need to replace both. Its <code>STM32_STARTUP</code> list names the CMSIS startup file, and its <code>add_link_options()</code> call passes <code>-T</code> with the course's linker script. A project replaces the first by setting the variable, and the second by clearing the directory's link options and adding its own. The solution's <code>CMakeLists.txt</code> does both.
+    <code>stm32f1.cmake</code> sets two things for you, and you need to replace both. Its <code>STM32_STARTUP</code> list names the vendor startup file, and its <code>add_link_options()</code> call passes <code>-T</code> with the course's linker script. A project replaces the first by setting the variable, and the second by clearing the directory's link options and adding its own. The solution's <code>CMakeLists.txt</code> does both.
   </p>
   <pre><code>set(STM32_STARTUP
   ${CMAKE_CURRENT_SOURCE_DIR}/startup.c
@@ -139,9 +186,12 @@ SECTIONS {
 set_property(DIRECTORY PROPERTY LINK_OPTIONS "")
 add_link_options(${MCU_FLAGS} -T${CMAKE_CURRENT_SOURCE_DIR}/minimal.ld
                  -Wl,--gc-sections -Wl,-Map=${PROJECT_NAME}.map
-                 --specs=nano.specs --specs=nosys.specs)</code></pre>
+                 --specs=nano.specs --specs=nosys.specs -Wl,--no-warn-rwx-segments)</code></pre>
   <p>
-    Two details matter. We keep the CMSIS <code>system_stm32f1xx.c</code>, because <code>SystemInit()</code> and <code>SystemCoreClock</code> are there, and the baud rate depends on that clock. And we add <code>syscalls.c</code>. Without it the nano C library's <code>_write</code>, <code>_read</code> and <code>_close</code> stubs are missing, and the linker prints warnings that they "will always fail". The stubs are not needed by this program, but the library refers to them.
+    Line by line: the <code>set</code> replaces the vendor startup with our <code>startup.c</code>, keeps the vendor's <code>system_stm32f1xx.c</code>, and adds <code>syscalls.c</code>. <code>set_property</code> clears the link options that <code>stm32f1.cmake</code> added for this directory. <code>add_link_options</code> then adds the flags back, with our script after <code>-T</code>. <code>--gc-sections</code> drops unused code, <code>-Map</code> writes the map file we just read, and the <code>--specs</code> flags choose the small C library and its system-call stubs. <code>--no-warn-rwx-segments</code> silences a warning about a memory region that is readable, writable and executable.
+  </p>
+  <p>
+    Two details matter. We keep the CMSIS <code>system_stm32f1xx.c</code>, because <code>SystemInit()</code> and <code>SystemCoreClock</code> are there, and the baud rate depends on that clock. And we add <code>syscalls.c</code>. Without it, the linker prints warnings: <code>_write is not implemented and will always fail</code>, and the same for <code>_read</code>, <code>_close</code> and <code>_lseek</code>. The project does not call those functions, but the small C library refers to them, so the linker warns. We checked this by linking the solution's objects by hand with and without <code>syscalls.c</code>.
     <span class="sidenote">Clearing a directory's link options is a blunt tool. It works here because this project wants a different set of link flags from the template. A cleaner design is a variable for the linker script in the shared file, which Part 6 can refactor.</span>
   </p>
 
@@ -150,7 +200,7 @@ add_link_options(${MCU_FLAGS} -T${CMAKE_CURRENT_SOURCE_DIR}/minimal.ld
     The starter has the CMake change done, and the startup and linker script partly written. The build succeeds, but <code>OWN STARTUP FAIL</code> prints, because the copy loop is missing.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0068-own-startup-linker/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints the two values and <code>OWN STARTUP FAIL</code>.</li>
+    <li>Open <code>projects/0068-own-startup-linker/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints the two values and <code>OWN STARTUP FAIL</code>. The values shown are <code>g_initialised = 0x00000000</code> and <code>g_zeroed = 0x00000000</code> until the copy works.</li>
     <li>Your task. Step 1: write the copy loop from <code>_sidata</code> to <code>_sdata</code>, up to <code>_edata</code>, in <code>startup.c</code>. Step 2: write the clear loop from <code>_sbss</code> to <code>_ebss</code>. Step 3: add the <code>.bss</code> section to <code>minimal.ld</code>, with <code>_sbss</code> and <code>_ebss</code> around its contents. The starter script does not have this section, so step 2 cannot link until step 3 is done.</li>
     <li>You will know it works when the monitor prints <code>OWN STARTUP OK</code>, after <code>g_initialised = 0xCAFEF00D</code>.</li>
   </ol>
@@ -165,6 +215,43 @@ add_link_options(${MCU_FLAGS} -T${CMAKE_CURRENT_SOURCE_DIR}/minimal.ld
   <p>The reference solution is in <code>projects/0068-own-startup-linker/solution</code>. Try first, compare after.</p>
 
   <div class="win">You wrote a vector table, a reset handler and a linker script, swapped them into the build in place of the vendor's startup, and watched a program check that its initialised and zeroed globals really started right.</div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <h3>Mistake 1: the copy loop goes the wrong way</h3>
+  <p>
+    The copy loop has its source and destination swapped, so it copies RAM back into flash. In the simulator the monitor shows <code>g_initialised = 0x00000000</code> and <code>OWN STARTUP FAIL</code>, because RAM started at zero. The fix is to check which pointer starts at the load address: <code>src</code> starts at <code>_sidata</code> and only ever reads, and <code>dst</code> starts at <code>_sdata</code> and only ever writes. Tracing the first iteration by hand, with the addresses from the map file, catches it in a minute.
+  </p>
+  <h3>Mistake 2: the clear loop is missing and the test still passes</h3>
+  <p>
+    The <code>.bss</code> clear is skipped, and the monitor still prints <code>OWN STARTUP OK</code>. That is because the simulator starts RAM at zero, so an uncleared variable is already zero. The check is only meaningful on real hardware, where RAM holds old values after a reset. The fix is to test on a board, or to write a value into the <code>.bss</code> variable before the reset and check it again. Treat a passing simulator test as weaker evidence for <code>.bss</code> than for <code>.data</code>.
+  </p>
+  <h3>Mistake 3: the linker reports "multiple definition of Reset_Handler"</h3>
+  <p>
+    The build fails with that message, because both the vendor's <code>startup_stm32f103xb.s</code> and your <code>startup.c</code> define <code>Reset_Handler</code>. The cause is a CMake list that still contains the vendor file. The fix is to set <code>STM32_STARTUP</code> to your list, as the solution does, so the vendor file is not compiled. The symptom appears at link time, not in the simulator, so read the build output first.
+  </p>
+  <h3>Mistake 4: the program runs but nothing prints, after a changed linker script</h3>
+  <p>
+    The build succeeds, but the simulator shows nothing, or the program resets over and over. The likely cause is that <code>.isr_vector</code> is not first in flash. If the vector table is not at <code>0x08000000</code>, the core reads the wrong words at reset. Check the map file: <code>.isr_vector</code> should start at <code>0x08000000</code>. The fix is to keep the <code>.isr_vector</code> block at the top of the <code>SECTIONS</code> list, with <code>KEEP</code>.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Most product firmware uses the vendor's startup file and a linker script that the vendor or the team generates, and few engineers write one from scratch. Custom startup code appears when a project boots from a bootloader in one part of flash and jumps to the application in another, or when the memory map has external RAM that the startup must initialise. In those cases, a reviewer checks three things: that the vector table address matches the bootloader's jump, that the copy and clear loops cover exactly the sections the script defines, and that the stack reserve is large enough for the deepest call chain.
+  </p>
+  <p>
+    The map file is the main tool. An experienced engineer reads it after every link to check the sizes and addresses of <code>.text</code>, <code>.data</code> and <code>.bss</code>, and confirms that nothing moved unexpectedly. Interviewers often ask what a map file tells you, and the honest answer is "where every symbol is, and how big each section is".
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>On reset the core reads word 0 of the vector table as the initial stack pointer and word 1 as the reset handler.</li>
+    <li>Each initialised global has a load address in flash, where its value is stored, and a run address in RAM, where the program uses it.</li>
+    <li>The reset handler copies <code>.data</code> from its load address to its run address, clears <code>.bss</code>, and calls <code>main</code>.</li>
+    <li>The linker script defines the memory regions, places the sections in them, and exports the symbols the startup uses.</li>
+    <li><code>KEEP</code> stops the linker from discarding the vector table, and <code>LOADADDR</code> gives the flash address of <code>.data</code>.</li>
+    <li>The map file lists where every section and symbol ended up. Read it after each link.</li>
+    <li>The minimal script has no heap or stack reserve, so a deep call chain can corrupt <code>.bss</code> without warning.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -191,7 +278,17 @@ add_link_options(${MCU_FLAGS} -T${CMAKE_CURRENT_SOURCE_DIR}/minimal.ld
         "prompt": "Reset_Handler calls <code>main()</code> without clearing <code>.bss</code>. What is the consequence?",
         "options": ["Globals start with old RAM values", "The stack starts at address zero", "Main is never called at all"],
         "answer": 0,
-        "why": "C requires zero-initialised globals to start at zero, so the program reads leftover RAM instead. The tempting answer, the stack, is set by the vector table, not by the clear loop. Main is still called in this order." }
+        "why": "C requires zero-initialised globals to start at zero, so the program reads leftover RAM instead. The tempting answer, the stack, is set by the vector table, not by the clear loop. Main is still called in this order." },
+      { "type": "mc",
+        "prompt": "In the solution's map file, <code>SystemCoreClock</code> starts at <code>0x20000004</code>. Where is its initial value stored in flash?",
+        "options": ["0x080002B8", "0x20000004", "0x080002B4"],
+        "answer": 0,
+        "why": "The first .data word is at 0x080002B4, so the second word is at 0x080002B8. The tempting answer, 0x20000004, is the run address in RAM, where the program reads the value, not where it is stored." },
+      { "type": "mc",
+        "prompt": "The build fails with 'multiple definition of Reset_Handler'. What is the most likely cause?",
+        "options": ["vendor startup is in", "heap is too small", "stack is too big"],
+        "answer": 0,
+        "why": "Two startup files define the same symbol, so the list still contains the vendor's file. The heap and stack sizes do not create a symbol clash, so they cannot cause this error." }
     ] }
     </script>
   </div>
@@ -217,7 +314,7 @@ add_link_options(${MCU_FLAGS} -T${CMAKE_CURRENT_SOURCE_DIR}/minimal.ld
   </div>
 
   <div class="source">
-    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 programming manual</a>: read the exception and vector table description, and the reset sequence. Then compare your <code>startup.c</code> with <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code>, which does the same things in assembly.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 programming manual</a>: read the exception and vector table description, and the reset sequence. Then compare your <code>startup.c</code> with <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code>, which does the same things in assembly, and which also calls <code>__libc_init_array</code>.
   </div>
 
   <div class="ask">

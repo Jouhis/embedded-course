@@ -17,18 +17,48 @@
     By the end of this lesson you can write a traffic-light controller as a table of transitions, feed it debounced button events, and print each transition, such as <code>STATE RED-&gt;GREEN</code>, on the serial monitor.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A state machine has a set of <strong>states</strong>, a set of <strong>events</strong>, and a rule that says, for each state and event, which state comes next. The state is a variable. An event is one thing that happened, such as a timer expiring or a debounced press. Your main loop turns raw inputs into events, and the state machine decides what they mean.
-    <span class="sidenote">The machine sees events, not raw pins. The debouncer from lesson 52 turns a noisy pin into one press event, and the state machine never has to think about bounce.</span>
+    Lesson 52 turned a bouncing button into one clean press, using an integrator that counted up and down. Lesson 55 gave you the deadline pattern: store the time at which something should happen, and check it on every pass of a loop that never blocks. Both lessons end with a loop that knows what happened, such as "the button was pressed" or "the timer is due". The question this lesson answers is what the loop does next.
   </p>
   <p>
-    Miro Samek's free video course builds the same idea from bare metal to event-driven designs, and it shows the generated code for each step. Its state-machine material is the source to read after this lesson <a href="https://www.state-machine.com/video-course">(Samek, Modern Embedded Systems Programming)</a>.
+    In a small program the answer is one <code>if</code>. A traffic light has three colours, a timer for each colour, a button that can change the timing, and rules about which change is allowed when. Written as nested conditions, that logic spreads across the loop, and a reviewer cannot see all the rules at once. In real products the same problem appears as a motor controller that must refuse a start while it is braking, a battery charger that moves between charge, hold and fault, or a Bluetooth stack that moves through advertising, connecting and bonding. Each has a small set of modes and events that cause changes between them. The state machine is the standard way to write that down.
   </p>
 
-  <h2>Switch-based</h2>
+  <h2>The concepts, one at a time</h2>
   <p>
-    The switch-based form is one function with a <code>switch</code> on the state, and a second <code>switch</code> or <code>if</code> on the event. It reads like the diagram, and it is the right first step. Each case returns the next state, so the transition is in one place.
+    Four ideas make up a state machine. Take them one at a time, because each one is simple on its own.
+  </p>
+
+  <h3>A state is a variable</h3>
+  <p>
+    A <strong>state</strong> is one of a fixed set of modes that the program can be in. In C you name the modes with an <code>enum</code> and keep the current one in a variable, such as <code>static state_t state = ST_RED;</code>. The CPU has no notion of "being in RED". It only has a register or a RAM location that holds a small number, and the code reads that number to decide what to do. The state is data, which is why it can be stored, printed and tested.
+    <span class="sidenote">A state variable is a few bytes of RAM. The machine's behaviour lives in the code and in the table, not in the variable.</span>
+  </p>
+
+  <h3>An event is one thing that happened</h3>
+  <p>
+    An <strong>event</strong> is a single occurrence that the machine should react to: a timer reached its deadline, a debounced press was confirmed, a sensor crossed a limit. Events are named with an <code>enum</code> too, such as <code>EV_TIMEOUT</code> and <code>EV_REQUEST</code>. An event does not carry the raw electrical signal. The input code in the main loop turns raw samples into events, and the state machine only sees the events. That split matters later, when we talk about testing.
+  </p>
+
+  <h3>A transition is a rule</h3>
+  <p>
+    A <strong>transition</strong> is the rule that says: in state S, when event E arrives, move to state T. A transition can also keep the same state, which means the event is ignored there. The complete set of rules for a machine is the list of every pair of a state and an event, with the answer for each pair. A machine with three states and two events has six pairs, so six answers must exist. That is the key discipline: every pair has an answer, including the ones that do nothing.
+  </p>
+
+  <h3>The dispatch step</h3>
+  <p>
+    <strong>Dispatch</strong> is the code that takes the current state and one event, looks up the rule, and applies the answer. Dispatch runs once per event, not once per loop pass. Between two events the state does not change, so the machine can sleep, wait or do other work without losing its place. The state is stored in memory, and the CPU reads it back each time, so nothing has to be kept on the stack between events.
+  </p>
+
+  <h2>Two ways to write the same rules</h2>
+  <p>
+    The rules can be written as code or as data. Both forms give the same behaviour, and both are common in professional firmware. The switch-based form is the right first step, because it reads like the diagram. The table-driven form is the one to prefer once the machine has more than a handful of states.
+  </p>
+
+  <h3>Switch-based</h3>
+  <p>
+    The switch-based form is one function with a <code>switch</code> on the state, and a second <code>switch</code> or <code>if</code> on the event. Each case returns the next state, so the transition is in one place.
   </p>
   <pre><code><span class="k">static</span> state_t on_event(state_t s, event_t e) {
     <span class="k">switch</span> (s) {
@@ -45,10 +75,13 @@
     <span class="k">return</span> s;
 }</code></pre>
   <p>
+    Read the code as a list of questions. The outer <code>switch</code> asks "which state am I in?". Each <code>case</code> asks "which event arrived?" with an <code>if</code>, and returns the next state. The <code>return s;</code> at the end of each case is the answer for every event that the case does not name. Without it, the function would fall through to the next case, which is a bug the compiler will not report, because the code is valid C.
+  </p>
+  <p>
     The weakness shows as the machine grows. Every new event adds a condition to every state, and nothing tells you whether you forgot one. Each state's code is spread across the function, so a reviewer must read the whole thing to see what state RED does.
   </p>
 
-  <h2>Table-driven</h2>
+  <h3>Table-driven</h3>
   <p>
     The table-driven form stores the same rules as data. A two-dimensional array indexed by state and event gives the next state, and one dispatch function does the work for every transition. Adding a state means adding a row. A missing cell is easy to see, because the table has a fixed shape.
   </p>
@@ -95,11 +128,45 @@
     <figcaption>Figure 1. The traffic-light machine as a graph. Each arrow is one row-and-column cell of the table. A request event adds one more arrow, from GREEN to YELLOW, so the light turns early. In the table, every cell has a meaning, including the ones that do nothing.</figcaption>
   </figure>
 
+  <h2>Worked example: one cycle of the light, event by event</h2>
+  <p>
+    Trace the table-driven machine with real numbers, because the trace is what you will check against the serial monitor. The durations are the ones in the solution: RED 3000 ms, GREEN 3000 ms, YELLOW 1000 ms. Time is in milliseconds from power-up, and the machine starts in RED with its deadline at 3000 ms.
+  </p>
+  <ol class="steps">
+    <li><strong>t = 0 ms.</strong> The state is RED, and the deadline is 3000 ms. No event has arrived, so nothing is printed.</li>
+    <li><strong>t = 3000 ms.</strong> The timer is due, so the loop calls <code>dispatch(EV_TIMEOUT, 3000)</code>. The table cell for RED and TIMEOUT is GREEN. That differs from RED, so the function prints <code>STATE RED-&gt;GREEN</code>, changes the state to GREEN, turns on the green LED, and sets the deadline to 3000 + 3000 = 6000 ms.</li>
+    <li><strong>t = 4200 ms.</strong> The button was pressed. The integrator from lesson 52 confirms the press, and the loop calls <code>dispatch(EV_REQUEST, 4200)</code>. The cell for GREEN and REQUEST is YELLOW. The function prints <code>STATE GREEN-&gt;YELLOW</code>, turns on the yellow LED, and sets the deadline to 4200 + 1000 = 5200 ms. The green phase ended early, after 1.2 s instead of 3 s.</li>
+    <li><strong>t = 5200 ms.</strong> The timer is due. The cell for YELLOW and TIMEOUT is RED, so the function prints <code>STATE YELLOW-&gt;RED</code> and sets the deadline to 8200 ms.</li>
+    <li><strong>t = 5800 ms, a second press.</strong> The machine is in RED. The cell for RED and REQUEST is RED, the same state. The function returns at the first <code>if</code> and prints nothing. The request is ignored, which is the design choice the table records.</li>
+  </ol>
+  <p>
+    The serial log for that trace is three lines: <code>STATE RED-&gt;GREEN</code>, <code>STATE GREEN-&gt;YELLOW</code>, <code>STATE YELLOW-&gt;RED</code>. A line appears only when the state changes, and each line names the old state and the new one. If your log shows a different sequence, the first line that differs tells you which cell is wrong.
+  </p>
+
   <h2>Events, not pins</h2>
   <p>
     The button is an input with bounce, and the lights are outputs. Keep them out of the transition table. The debounced press from lesson 52 becomes <code>EV_REQUEST</code>, and the timer becomes <code>EV_TIMEOUT</code>. The state machine is then easy to test: you can call it with a list of events and check the transitions, without any hardware (lesson 80 covers host testing).
   </p>
+  <p>
+    The reason is that a test on a PC cannot press a button. It can call <code>dispatch()</code> with <code>EV_REQUEST</code> and check the state afterwards. If the machine read <code>gpio_get()</code> itself, the same test would need a pin, a simulator or a mock of the SDK. Keeping the pin reads in the main loop costs one function call and buys a test that runs in milliseconds.
+  </p>
   <div class="warning">A state machine that reads GPIO inside its transition code is hard to test and easy to break. Read the pins in the main loop, turn them into events, and pass the events in.</div>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The solution's <code>dispatch()</code> is short, and each line has a job. Going through it once makes the table-driven form concrete.
+  </p>
+  <ol class="steps">
+    <li><code>state_t next = next_state[state][e];</code> is one lookup. The two indexes are the current state and the event. The result is a number in the range of states, so the lookup cannot run off the end of the table, because both enums end with a <code>_COUNT</code> entry that sizes the array.</li>
+    <li><code>if (next == state) return;</code> handles the "ignored" cells. Nothing is printed, the lights do not change, and the deadline keeps its value. A cell that keeps the state is therefore a complete answer, not a missing one.</li>
+    <li><code>printf("STATE %s-&gt;%s\n", ...)</code> writes the transition. The names come from <code>state_name[]</code>, an array of strings indexed by the state, so the log uses the same enum as the code. Printing happens only on a change, which keeps the serial log readable.</li>
+    <li><code>state = next;</code> stores the new state. This is the only write to the state variable, so every transition goes through one place.</li>
+    <li><code>gpio_put_masked(LIGHT_PINS, light_mask[state]);</code> sets all three lights in one write. The mask has a bit for each pin, and the write changes only the bits in <code>LIGHT_PINS</code>. One write also means the three lights change together, so no intermediate state with two lights on is ever visible on the pins.</li>
+    <li><code>deadline_us = now_us + state_ms[state] * 1000u;</code> starts the timer for the new state. The multiplication converts milliseconds to microseconds, which is the unit <code>time_us_32()</code> returns. The deadline is set from <code>now_us</code>, the time the event was handled, so a late event does not shorten the next phase by more than the delay.</li>
+  </ol>
+  <p>
+    The main loop calls <code>dispatch()</code> only for events. It samples the button, checks the deadline, and sleeps for a millisecond. The <code>is_due()</code> helper from lesson 55 does the wraparound-safe comparison, so the timeout still works when the 32-bit microsecond counter wraps.
+  </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
@@ -157,7 +224,31 @@
       { "type": "text",
         "prompt": "In the table, what does a cell that returns the same state mean? Write one word.",
         "accept": ["ignored", "nothing", "stay", "noop"],
-        "why": "The event is ignored in that state, and nothing changes. The tempting answer, error, is wrong: a request during red is a valid event that the design chooses to ignore." }
+        "why": "The event is ignored in that state, and nothing changes. The tempting answer, error, is wrong: a request during red is a valid event that the design chooses to ignore." },
+      { "type": "mc",
+        "prompt": "A switch-based machine has a case that does not name one event. What does the code do for that event?",
+        "options": [
+          "The compiler rejects the code here",
+          "It moves to the first state",
+          "It keeps the current state quietly",
+          "It crashes the whole program now"
+        ],
+        "answer": 2,
+        "why": "The closing return s in the case keeps the state, and the code compiles. The tempting answer, a compile error, is not what happens, because the code is valid C. Moving to the first state would need an explicit return of ST_RED." },
+      { "type": "number",
+        "prompt": "The light is GREEN, and a request arrives 1.2 s after GREEN began. How many seconds after GREEN began does RED start?",
+        "answer": 2.2, "tolerance": 0.01, "unit": "s",
+        "why": "The request ends GREEN at 1.2 s. YELLOW then lasts 1 s, so RED starts at 2.2 s. The tempting answer, 3 s, is the full GREEN time, which a request cuts short." },
+      { "type": "mc",
+        "prompt": "Why does dispatch() return early when the next state equals the current state?",
+        "options": [
+          "So the lights flicker on every pass",
+          "So the state variable is never read",
+          "So the table stays in flash memory",
+          "So nothing prints or restarts the timer"
+        ],
+        "answer": 3,
+        "why": "An ignored event must not print, touch the lights or restart the deadline. The tempting answer, flicker, describes what would happen if the check were missing, not the reason for it." }
     ] }
     </script>
   </div>
@@ -177,6 +268,42 @@
     </script>
   </div>
 
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: the deadline is not reset on a change.</strong> Symptom: the serial log prints RED-&gt;GREEN, then GREEN-&gt;YELLOW, then YELLOW-&gt;RED within a few milliseconds, and the lights flash through all three colours. The old deadline is still in the past, so the next pass sees a timeout at once. Fix: set <code>deadline_us</code> in the same place that changes the state, as the solution's last line of <code>dispatch()</code> does.
+  </p>
+  <p>
+    <strong>Mistake 2: a missing case in the switch.</strong> Symptom: the light goes RED to GREEN and then stays green for ever, because the GREEN case has no timeout branch. The code compiles and runs, so nothing warns you. Fix: write a line for every state and event, even the ones that return the same state, and check that every case ends in a return.
+  </p>
+  <p>
+    <strong>Mistake 3: printing on every pass.</strong> Symptom: the serial monitor fills with the same line many times a second, and the useful transitions scroll away. The print is outside the change test, so it runs every time the loop runs. Fix: print only after the comparison that detects a change, as <code>dispatch()</code> does with its early return.
+  </p>
+  <p>
+    <strong>Mistake 4: reading the pin inside the transition.</strong> Symptom: the machine behaves correctly with the button in the simulator, but a test on the PC needs a fake GPIO before it can run. A bounce can also cause two transitions from one press, because the transition code sees the raw pin. Fix: move the <code>gpio_get()</code> call into the main loop, pass in an event, and let the integrator from lesson 52 decide when a press is confirmed.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional firmware uses state machines for anything with modes: protocol stacks, power management, motor control, bootloaders and communication links. A reviewer looks for three things. Every state has a name in one place. Every event that can arrive in each state has an answer. Transitions are the only place that writes the state variable. A table that a reviewer can read in one screen earns trust quickly, and a switch statement that spans three pages hides bugs.
+  </p>
+  <p>
+    Testing follows from the same structure. Because the machine takes events and returns states, a host test can feed it a list of events and check the states, which is how lesson 80 tests real code. The event list is a script, and the expected states are the table, so the test and the design say the same thing.
+  </p>
+  <p>
+    In interviews, state machines come up as design questions. The interviewer wants to hear you list the states and events first, write the transitions as a table, handle the ignored cases explicitly, and say how you would test the machine without the hardware. Samek's material, linked below, shows the same design written as event-driven code for real projects.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A state is a variable that holds one of a fixed set of modes. An event is one thing that happened. A transition is the rule that maps a state and an event to the next state.</li>
+    <li>The switch-based form puts the rules in code. The table-driven form puts them in a <code>static const</code> array, so a missing cell is easy to see.</li>
+    <li>Every pair of state and event needs an answer. An ignored event is an answer: the table keeps the current state.</li>
+    <li>Dispatch runs once per event. It looks up the next state, returns early when nothing changes, prints the change, updates the outputs and restarts the timer.</li>
+    <li>Read the pins in the main loop and pass events in. A machine that takes events can be tested on a PC without hardware.</li>
+    <li>Set the deadline in the same place as the state change, so the next timeout is measured from the new phase.</li>
+    <li>Check the machine by its serial log. Each line is one transition, and the first wrong line points at the wrong cell.</li>
+  </ul>
+
   <div class="interview">
     <p><strong>"How would you design a controller with many modes and events, and how would you test it?"</strong> Answer out loud in 60 seconds, then compare.</p>
     <details><summary>Model answer</summary><p>I'd list the states and the events first, then write the transitions as a table, one cell per state and event, with an explicit entry for every combination, even the ones that do nothing. Inputs become events in the main loop, so the state machine is pure logic: it takes an event and returns the next state and an action. I'd test it on the host by feeding event sequences and checking the state after each one, including the ignored events. On the target I'd log each transition with a level, so a field problem leaves a trace of the states the device went through.</p></details>
@@ -188,7 +315,7 @@
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me a hierarchical state machine for the traffic light, with a fault state that every state can enter, and say how the table changes."
-    Related: <a href="0052-gpio-input-and-debouncing.html">Lesson 52: GPIO input and debouncing</a>, <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html">Glossary</a>.
+    Related: <a href="0052-gpio-input-and-debouncing.html">Lesson 52: GPIO input and debouncing</a>, <a href="0055-timing-and-non-blocking-super.html">Lesson 55: Timing and non-blocking super-loops</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html#state-machine">Glossary: State machine</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

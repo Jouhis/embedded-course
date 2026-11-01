@@ -17,40 +17,94 @@
     By the end of this lesson you can predict the N, Z, C and V flags after an add, a subtract or a compare, and say which flag a signed or an unsigned comparison uses, by running the same values in the CPU simulator.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The <strong>ALU</strong> (arithmetic logic unit) is the combinational block that computes add, subtract, AND, OR, EOR and shifts on two operands. You have built its adder in lesson 23. The result goes to a register, and the ALU also sets four <strong>status flags</strong> in the program status register (APSR, which the simulator shows as xPSR's top bits):
+    Lesson <a href="0023-combinational-logic.html">23</a> built a full adder from gates, and said that a row of them makes the adder at the heart of the CPU's arithmetic. Lesson <a href="0025-registers-counters-shift-registers.html">25</a> gave you registers to hold the operands and the result. This lesson puts those pieces together into the unit that does the arithmetic on every instruction, and shows what it records about each result.
+  </p>
+  <p>
+    The reason to understand this is the comparison. A line like <code>if (count &lt; limit)</code> does not compare two numbers directly. The compiler emits a subtract or a compare instruction, and then a conditional branch that reads a few bits the subtract left behind. If those bits are misread, the branch goes the wrong way, and the bug shows up only for some values, usually negative ones or ones near the top of the range. Lesson <a href="0032-reading-arm-assembly.html">32</a> shows the same compare in the disassembly of compiled C, and the flags are what link the two.
+  </p>
+  <p>
+    The problem this lesson solves is therefore practical. You should be able to look at two values, predict the four flags, and know which flag a particular branch reads. Once you can do that, the disassembly and the debugger stop being mysteries.
   </p>
 
+  <h2>Concept 1: the ALU is a combinational block</h2>
+  <p>
+    The <strong>ALU</strong> (arithmetic logic unit) is the combinational block that computes add, subtract, AND, OR, exclusive OR and shifts on two operands. A combinational block, from lesson 23, has outputs that depend only on its current inputs. The ALU takes two operands and an operation select, and produces one result. It has no memory of its own. The result is written to a register, and the ALU also produces four bits called the <strong>status flags</strong>. Those are stored in the program status register, which the Arm reference calls the Application PSR (APSR). The APSR is the top four bits of the program status register xPSR, as the simulator shows.
+  </p>
+  <p>
+    Here is what each flag means, using the Cortex-M3 Technical Reference Manual's bit assignments (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, section 2.3.2, Table 2-1</a>):
+  </p>
   <table>
-    <thead><tr><th>Flag</th><th>Name</th><th>Set when (add, or subtract as a + ~b + 1)</th></tr></thead>
+    <thead><tr><th>Flag</th><th>Bit in xPSR</th><th>Name</th><th>Set when</th></tr></thead>
     <tbody>
-      <tr><td>N</td><td>Negative</td><td>bit 31 of the result is 1</td></tr>
-      <tr><td>Z</td><td>Zero</td><td>the result is 0</td></tr>
-      <tr><td>C</td><td>Carry</td><td>add: a carry came out of bit 31. Subtract: no borrow, so a ≥ b as unsigned numbers</td></tr>
-      <tr><td>V</td><td>Overflow</td><td>signed overflow: two operands with the same sign gave a result with the other sign</td></tr>
+      <tr><td>N</td><td>31</td><td>Negative</td><td>bit 31 of the result is 1</td></tr>
+      <tr><td>Z</td><td>30</td><td>Zero</td><td>the result is 0</td></tr>
+      <tr><td>C</td><td>29</td><td>Carry or borrow</td><td>an add carries out of bit 31, or a subtract borrows (see below)</td></tr>
+      <tr><td>V</td><td>28</td><td>Overflow</td><td>the signed result is out of range</td></tr>
     </tbody>
   </table>
   <p>
-    The Arm architecture defines these flags for the M-profile cores in its architecture reference manual, and the Cortex-M3 programmer's guide describes the same program status register.
-    <a href="https://developer.arm.com/documentation/ddi0403/latest/">Armv7-M Architecture Reference Manual</a> is the definition; read the section on the APSR flags for the exact rules.
-    <span class="sidenote">Subtraction is an add. The ALU computes a + NOT b + 1, so the carry flag after a subtraction is the opposite of a borrow. That is why Arm's C flag is 1 when there is <em>no</em> borrow.</span>
+    The TRM's table says only "carry or borrow" for C. Which of the two it means for a subtract depends on the convention, and the convention matters for comparisons. The exact rules are in the Armv7-M Architecture Reference Manual, which defines the condition codes that branches read. The simulator in this lesson follows the Arm convention, and the rest of this lesson uses it.
   </p>
 
-  <h2>C and V answer different questions</h2>
+  <h2>Concept 2: subtraction is addition</h2>
   <p>
-    The same bits can be read as unsigned or signed, so the ALU does not know which you meant. It sets both flags, and the branch you choose decides which one matters.
+    The ALU has one adder, so a subtract is done as an add. The trick is that a − b equals a + NOT b + 1, where NOT b flips every bit of b. Flipping every bit of an n-bit number gives 2<sup>n</sup> − 1 − b, so adding one more gives 2<sup>n</sup> − b. Adding that to a gives 2<sup>n</sup> + (a − b). The 2<sup>n</sup> term is the carry out of the top bit, and it is what the carry flag measures.
+  </p>
+  <p>
+    Follow that through for unsigned numbers. If a is at least b, then a − b is not negative, so 2<sup>n</sup> + (a − b) is at least 2<sup>n</sup>, and a carry comes out of the top bit. C = 1 means no borrow, and it means a ≥ b. If a is less than b, the sum stays below 2<sup>n</sup>, no carry comes out, and C = 0 means a borrow happened. The carry flag after a subtract is therefore the opposite of what many people expect: 1 means "no borrow", not "borrowed". That is the convention the simulator uses, and the Arm reference uses it too. The compare instruction is a subtract that discards the result and keeps only the flags, so a compare is also a carry test.
+  </p>
+  <p>
+    The simulator's source makes this explicit. Its subtract routine calls the same adder as the add instruction with the second operand inverted and a carry-in of 1, which is the a + NOT b + 1 form. You can read it in <code>assets/cpusim.js</code>.
+  </p>
+
+  <h2>Concept 3: C and V answer different questions</h2>
+  <p>
+    The same 32 bits can be read as unsigned numbers or as two's-complement signed numbers. The adder does not know which reading you intend, so it sets both C and V, and the branch you choose decides which flag matters.
   </p>
   <ul>
-    <li><strong>Unsigned:</strong> C says the result went out of the 32-bit range. For a compare, C = 1 means unsigned a ≥ b, so <code>BHS</code> (or <code>BCS</code>) is the unsigned greater-or-equal branch, and <code>BLO</code> (or <code>BCC</code>) is the unsigned less-than branch.</li>
-    <li><strong>Signed:</strong> V says the sign of the result is wrong. A signed less-than uses N XOR V: <code>BLT</code> branches when N differs from V, and <code>BGE</code> when N equals V. Using N XOR V gives the right answer even when the subtraction overflows, because V records that the sign bit cannot be trusted.</li>
+    <li><strong>C is the unsigned flag.</strong> It says whether the true unsigned result left the 32-bit range. After a compare, C = 1 means the first operand was at least the second, unsigned. The branch <code>BHS</code> (branch if higher or same) reads C = 1. The branch <code>BLO</code> (branch if lower) reads C = 0.</li>
+    <li><strong>V is the signed overflow flag.</strong> It says whether the signed result has the wrong sign, which happens when the true answer is outside the signed range. The rule is simple: two operands with the same sign produced a result with the other sign. Signed comparisons use V together with N.</li>
+    <li><strong>N is the sign of the 32-bit result.</strong> On its own it is just bit 31. Combined with V, it tells you whether the true signed result is negative, and that is what a signed less-than needs. The branch <code>BLT</code> (signed less than) branches when N differs from V, and <code>BGE</code> (signed greater or equal) branches when N equals V.</li>
   </ul>
+  <p>
+    The reason for N XOR V is that V records when the 32-bit sign bit cannot be trusted. Normally N tells you the sign. When the subtraction overflows, the sign bit is flipped, and V is 1 to say so. Then N is the wrong sign, and N XOR V gives the right answer again. A signed less-than is therefore correct even when the subtraction overflows.
+  </p>
 
-  <div class="warning">C and V are not the same thing for signed numbers. 0x7F + 1 is 127 + 1 = 128, which is out of signed range but does not carry out of bit 31: C = 0, V = 1. 0xFF + 1 as unsigned is 255 + 1 = 256: C = 1, V = 0. Use C for unsigned values and V for signed values, never the wrong one.</div>
+  <div class="warning">C and V are not the same thing for signed numbers. In 8 bits, 0x7F + 1 is 127 + 1 = 128, which is out of the signed range but does not carry out of bit 7: C = 0, V = 1. In 8 bits, 0xFF + 1 as unsigned is 255 + 1 = 256, which carries out: C = 1, V = 0. Use C for unsigned values and V for signed values, never the wrong one.</div>
+
+  <h2>Worked example: one subtraction, bit by bit</h2>
+  <p>
+    Take an 8-bit subtraction, 0x03 − 0x05, so that you can see every step. The working is a + NOT b + 1.
+  </p>
+  <ol>
+    <li><strong>Start:</strong> a = 0000 0011 (3) and b = 0000 0101 (5).</li>
+    <li><strong>Invert b:</strong> NOT b = 1111 1010. Every bit flipped.</li>
+    <li><strong>Add the two:</strong> 0000 0011 + 1111 1010 = 1111 1101. Check the carry out of bit 7: the sum fits in 8 bits, so there is no carry out.</li>
+    <li><strong>Add the carry-in of 1:</strong> 1111 1101 + 1 = 1111 1110. Still no carry out of bit 7.</li>
+    <li><strong>Read the result:</strong> 1111 1110, which is 0xFE. In 8-bit two's complement this is −2, which is 3 − 5. Correct.</li>
+    <li><strong>Set the flags:</strong> N = 1, because bit 7 of the result is 1. Z = 0, because the result is not zero. C = 0, because no carry came out, which means a borrow: 3 is less than 5 unsigned. V = 0, because 3 − 5 = −2 is in the signed range, so there is no overflow.</li>
+  </ol>
+  <p>
+    Now check the flags against the branches. A signed less-than, <code>BLT</code>, branches when N differs from V. Here N = 1 and V = 0 differ, so <code>BLT</code> branches, and the signed test 3 &lt; 5 is true. An unsigned less-than, <code>BLO</code>, branches when C = 0. Here C = 0, so it also branches, and 3 &lt; 5 is true unsigned. For these small values the two branches agree. The next example uses a pair of values where they disagree.
+  </p>
+
+  <h2>Worked example: the same bits, two answers</h2>
+  <p>
+    Compare −1 with 1. As 32-bit words, −1 is 0xFFFFFFFF, and 1 is 0x00000001. The compare computes 0xFFFFFFFF − 1.
+  </p>
+  <ul>
+    <li><strong>Unsigned view:</strong> 0xFFFFFFFF is 4 294 967 295, the largest value, which is greater than 1. The subtract does not borrow, so C = 1. An unsigned less-than, <code>BLO</code>, reads C = 0 and does not branch. Unsigned, the first value is not less than the second.</li>
+    <li><strong>Signed view:</strong> the result 0xFFFFFFFE has bit 31 set, so N = 1. The signed values are −1 − 1 = −2, which is in range, so V = 0. Signed less-than, <code>BLT</code>, branches when N differs from V. N = 1 and V = 0 differ, so it branches. Signed, −1 is less than 1.</li>
+  </ul>
+  <p>
+    The same comparison gives two correct answers, because it asks two different questions. The branch you choose is the question. If your C code uses <code>int</code> values, the compiler picks the signed branch, and if it uses <code>unsigned</code> values, it picks the unsigned one. Mixing them in one expression is where the bug comes from.
+  </p>
 
   <h2>Try it in the CPU simulator</h2>
   <p>
-    The program below does six pieces of arithmetic on values chosen to set each flag. Each instruction sets the flags, so you can see the result and the flags after each step. Read it line by line, predict the flags, then run it.
+    The program below does six pieces of arithmetic on values chosen to set each flag. Each instruction sets the flags in this simulator, so you can see the result and the flags after each step. Read it line by line, predict the flags, then run it. In the simulator, add and subtract always set all four flags, and so do the logical instructions for N and Z. This is a teaching simplification. The comments give the expected flags.
   </p>
 
   <div class="widget cpusim" data-title="ADDS and SUBS on chosen values" data-show="regs,flags">
@@ -69,9 +123,9 @@
   </div>
 
   <ol class="steps">
-    <li>Run the program with the simulator's step control. After each instruction, check the flags against the comments.</li>
-    <li>Change <code>MOV R5, #3</code> to <code>MOV R5, #7</code> and predict <code>SUBS R6, R5, #5</code> first: 7 − 5 is positive, so N and C should change. Check which flags change, then run it.</li>
-    <li>Find the instruction where both C and V are 1, and explain in one sentence why both can be set at once.</li>
+    <li>Run the program with the simulator's step control. After each instruction, the flags panel shows N, Z, C and V. Check them against the comments. For example, after <code>ADDS R1, R0, #1</code> the flags panel should show Z and C set, and N and V clear.</li>
+    <li>Change <code>MOV R5, #3</code> to <code>MOV R5, #7</code> and predict <code>SUBS R6, R5, #5</code> first: 7 − 5 = 2 is positive, so N = 0 and C = 1 (no borrow), with Z and V clear. Check which flags change, then run it. Compared with the 3 case, N and C both change, and Z and V stay clear.</li>
+    <li>Find the instruction where both C and V are 1, and explain in one sentence why both can be set at once. The answer is <code>SUBS R7, R3, #1</code>. C = 1 because 0x80000000 is at least 1 as an unsigned number. V = 1 because a large negative minus a positive wrapped into a positive result.</li>
   </ol>
   <details>
     <summary>Hint for the signed rule</summary>
@@ -79,6 +133,42 @@
   </details>
 
   <div class="note">The simulator's <code>CMP</code> is a subtract that keeps only the flags, which is exactly what a compiler emits before a branch. Lesson 29 shows the branch instructions that read these flags, and lesson 32 shows the same compare in the disassembly of compiled C.</div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: a signed comparison branches on C.</strong> This is the one the warning above describes, and it is the most common. Symptom: a test such as <code>if (x &lt; 1)</code> works for small positive values and fails for negative ones. In the simulator, with the −1 example above, the unsigned branch <code>BLO</code> says "not less" while the signed branch <code>BLT</code> says "less". Fix: make the comparison signed when the values are signed. In C that means declaring the variables <code>int</code> or <code>int32_t</code>, not <code>unsigned</code>.
+  </p>
+  <p>
+    <strong>Mistake 2: the flags were overwritten between the compare and the branch.</strong> Symptom: the branch goes the wrong way after a line that seems unrelated. Put a flag-setting instruction, such as an <code>ADDS</code> to a counter, between the compare and the branch, and the branch reads the flags of that addition. In the simulator every arithmetic instruction sets the flags, so you can see this happen. Fix: compare immediately before the branch, and check the disassembly if you are unsure which instruction set the flags.
+  </p>
+  <p>
+    <strong>Mistake 3: reading C as a borrow flag with the wrong sense.</strong> A programmer who expects C = 1 to mean "borrowed" will invert every unsigned compare. Symptom: a loop runs one time too many or one time too few, or a range check accepts the boundary value that it should reject. Fix: remember that after a subtract, C = 1 means no borrow, which means the first operand was at least the second. Write the test as "C = 1 means greater or equal" and check it on a boundary value such as 5 and 5.
+  </p>
+  <p>
+    <strong>Mistake 4: testing for signed overflow in C after the add.</strong> A check such as <code>if (a + b &lt; a)</code> is a common way to detect overflow. For signed <code>int</code> values, the overflow in the addition is undefined behaviour in C, so the compiler may remove the check when it optimises. Symptom: the check works in a debug build and fails in a release build. Fix: check the range before the add, using the signed limits, or use unsigned arithmetic for the wrap test.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Firmware reviewers look for two things in comparisons: that the operand types match the branch, and that a compare is near the branch that uses it. A mismatch of signed and unsigned types is one of the most common findings in embedded code review, and most static analysis tools warn about it. When you debug a branch in GDB, the flags are visible in the program status register, and reading N, Z, C and V from it lets you check the branch decision without guessing.
+  </p>
+  <p>
+    The RP2040 uses Cortex-M0+ cores, which implement a smaller instruction set than the M3 in this lesson. Which instructions update the flags depends on the instruction and its encoding, not only on the core. Before you rely on a flag after an instruction you have not used before, read that instruction's entry in the Arm reference for your core.
+  </p>
+  <p>
+    In an interview, expect the question "how does a CPU decide whether a comparison is signed or unsigned, and what do the C and V flags mean?" A strong answer says the ALU always sets all four flags, and the branch decides which ones matter. It gives the no-borrow meaning of C after a subtract, the signed-overflow meaning of V, and the N XOR V rule for signed less-than.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The ALU is a combinational block. It computes add, subtract and logic on two operands, and it produces the result and four status flags.</li>
+    <li>A subtract is an add: a − b is a + NOT b + 1, using the same adder.</li>
+    <li>After a subtract, C = 1 means no borrow, which means the first operand was at least the second, unsigned.</li>
+    <li>V means the signed result is out of range. N is bit 31 of the result.</li>
+    <li>Unsigned branches read C. Signed branches read N and V, and <code>BLT</code> branches when N differs from V.</li>
+    <li>The same bits can give two correct answers. The branch you choose decides which question is asked.</li>
+    <li>Compare right before the branch, and make sure the types match the branch you expect.</li>
+  </ul>
 
   <div class="win">You ran real add and subtract instructions on values that set each flag, and you can say which flag an unsigned compare and a signed compare each read. That is the step from an adder in gates to an <code>if</code> statement in firmware.</div>
 
@@ -90,10 +180,10 @@
         "answer": 1, "tolerance": 0,
         "why": "The sum 0xFFFFFFFF + 1 = 0x1_0000_0000 carries out of bit 31, so C = 1, and the result is 0 with Z = 1. The tempting answer, 0, assumes an unsigned add cannot overflow, but it does: it wraps." },
       { "type": "mc",
-        "prompt": "For signed 8-bit <code>0x7F + 1</code>, which flag is set?",
+        "prompt": "For signed 8-bit <code>0x7F + 1</code>, which flag reports that the signed result is wrong?",
         "options": ["V (overflow) flag", "C (carry) flag", "N (negative) flag"],
         "answer": 0,
-        "why": "127 + 1 = 128 is out of signed range, so V = 1. C = 0, because there is no carry out of bit 7. N is also 1, because the result 0x80 has its sign bit set, but N only reports that sign, not that it is wrong. The tempting answer, C, confuses signed overflow with an unsigned carry." },
+        "why": "127 + 1 = 128 is out of signed range, so V = 1. C = 0, because there is no carry out of bit 7. N is also 1 here, because bit 7 of the result is set, but N only reports the sign bit, not that the result is wrong. The tempting answer, C, confuses signed overflow with an unsigned carry." },
       { "type": "mc",
         "prompt": "Which flag tells you that an unsigned subtraction borrowed?",
         "options": ["the C flag is clear", "the C flag is set", "the V flag is set"],
@@ -106,7 +196,16 @@
       { "type": "text",
         "prompt": "Which flag, together with N, does a signed less-than (<code>BLT</code>) branch read?",
         "accept": ["V", "V flag", "the V flag", "overflow"],
-        "why": "BLT branches when N differs from V. The tempting answer, C, is the flag for unsigned comparisons, which is a different branch." }
+        "why": "BLT branches when N differs from V. The tempting answer, C, is the flag for unsigned comparisons, which is a different branch." },
+      { "type": "mc",
+        "prompt": "Which branch reads only the C flag after a compare?",
+        "options": ["BHS for unsigned values", "BLT for signed values", "BEQ for equal values"],
+        "answer": 0,
+        "why": "BHS branches when C = 1, which is an unsigned greater-or-equal test. BLT reads N and V, and BEQ reads Z. The tempting answer, BLT, is the less-than branch most people reach for first, but it is signed." },
+      { "type": "number",
+        "prompt": "R0 holds 0xFFFFFFFF. After <code>CMP R0, #1</code>, what is the N flag, 0 or 1?",
+        "answer": 1, "tolerance": 0,
+        "why": "The compare computes 0xFFFFFFFF − 1 = 0xFFFFFFFE, and bit 31 of that result is 1, so N = 1. The tempting answer, 0, reads the unsigned meaning of R0 as a large positive value and forgets that N only looks at the bits of the result." }
     ] }
     </script>
   </div>
@@ -133,7 +232,7 @@
   </div>
 
   <div class="source">
-    <a href="https://developer.arm.com/documentation/ddi0403/latest/">Arm Architecture Reference Manual for Armv7-M (ARM DDI 0403)</a>: the definition of the N, Z, C and V flags in the APSR, and the conditional branch table. Read the flag rules before you trust any simulator, including this one.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 Technical Reference Manual, DDI0337G, section 2.3.2 and Table 2-1</a>: the bit assignments of N, Z, C and V in the APSR. Then read the condition-code table in the <a href="https://developer.arm.com/documentation/ddi0403/latest/">Armv7-M Architecture Reference Manual (DDI 0403)</a>, which defines the branch conditions. We have not checked that table line by line for this lesson, so check it yourself before you rely on it.
   </div>
 
   <div class="ask">

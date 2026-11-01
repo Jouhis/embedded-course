@@ -18,10 +18,15 @@
   </div>
 
   <!-- ===== 1. Knowledge ===== -->
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Continuous integration (CI) is a server that runs a fixed list of checks on every change. The checks are the same ones you run at your desk, but they run on every push, on a clean machine, so "it works on my laptop" cannot slip through. In firmware work, a CI job usually has five stages: build, <a href="0080-unit-testing-on-the-host.html">host unit tests</a> (lesson 80), static analysis, simulation, and keeping the outputs. The branch and review habits that decide what reaches the pipeline are in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>.
-    <span class="sidenote">Interviewers ask "what does your pipeline look like?" to see whether you can separate fast checks from slow ones, and whether you keep the checks reproducible on a laptop.</span>
+    The last three lessons gave you the checks one at a time. <a href="0080-unit-testing-on-the-host.html">Lesson 80</a> ran unit tests on the PC, and <a href="0081-mocks-and-fakes.html">lesson 81</a> faked the bus so a driver could be tested without a sensor. <a href="0041-the-build-pipeline.html">Lesson 41</a> showed the build from source to ELF, map and hex file, and <a href="0001-set-up-your-environment.html">lesson 1</a> installed the Arm toolchain on your PC. Each check works when you run it by hand. The problem this lesson solves is that people forget to run them, or run them on a different machine.
+  </p>
+  <p>
+    The job situation is common. A colleague changes a shared driver, runs the tests on a laptop that has the right toolchain and a leftover file, and pushes. The build fails on the team's compiler, or the simulation shows a boot loop that nobody tested. Continuous integration (CI) removes both problems. A server, called a runner, takes every push, starts from a clean machine, and runs a fixed list of checks in the same order. The result is recorded against the commit, so a bad change is visible before a reviewer reads it.
+  </p>
+  <p>
+    In firmware work, a CI job usually has five stages: the host unit tests, static analysis (lesson 83), the firmware build, the simulation, and the keeping of outputs. The habits that decide what reaches the pipeline, such as branches and code review, are in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>.
   </p>
 
   <figure>
@@ -45,35 +50,75 @@
     <figcaption>Figure 1. Fast checks run first and stop the pipeline early. The simulation needs the firmware, so it waits for the build. The dashed box is what the job keeps for a human to read later.</figcaption>
   </figure>
 
-  <h2>Why each job exists</h2>
+  <h2>The vocabulary: runners, jobs, steps and exit codes</h2>
   <p>
-    <strong>Host unit tests</strong> (lesson 80) run in seconds on a plain Linux runner, with no toolchain for the board. <strong>Static analysis</strong> (lesson 83) fails the job on warnings before anything is built for the board. <strong>The build</strong> uses the same Arm GCC release every time, pinned in the workflow, because a compiler change can move bugs and sizes. <strong>The simulation</strong> runs the firmware on a virtual board, so the boot path, the serial output and the timing are checked, not just the compile.
+    A <strong>runner</strong> is the machine that runs a job. The sample workflow uses a hosted Linux runner, <code>ubuntu-latest</code>, which GitHub starts fresh for every job. A clean machine means nothing from your laptop is present: no installed tools, no leftover build folder, no environment variable. That is the point. If the job passes there, the change does not depend on something only you have.
   </p>
   <p>
-    <strong>Artifacts</strong> are the build outputs the job keeps: the <code>.elf</code> for a debugger, the <code>.map</code> for the memory layout (lesson 41), and the <code>.hex</code> for flashing. When a test fails on the server, the artifact lets you look at the same binary.
+    A <strong>workflow</strong> is a YAML file that describes when to run and what to do. It has <strong>jobs</strong>, and each job has <strong>steps</strong>. A step is either an action, which is a packaged piece of automation someone else wrote, or a <code>run:</code> block of shell commands. Jobs run in parallel unless you link them with <code>needs:</code>, which says that one job waits for others to pass.
+  </p>
+  <p>
+    Every step reports success or failure through an <strong>exit code</strong>: a number a program returns when it stops. Zero means success, and any other value means failure. The CI server decides the outcome of a job from exit codes, not from what the program printed. This matters, because some tools print a warning and still exit with zero. You will see an example of that in the static-analysis job below, and it is one of the common mistakes.
+  </p>
+  <p>
+    An <strong>artifact</strong> is a file a job keeps after it finishes (glossary: <a href="../reference/glossary.html#artifact-ci">artifact (CI)</a>). For firmware, the useful artifacts are the <code>.elf</code> for a debugger, the <code>.map</code> for the memory layout (lesson 41), and the <code>.hex</code> for flashing. When a run fails on the server, the artifact lets you examine the same binary that failed, instead of a rebuilt one.
   </p>
 
-  <h2>Wokwi CLI: the flags that matter</h2>
+  <h2>Why each job exists</h2>
   <p>
-    <code>wokwi-cli</code> runs a project headless. The options that matter for a test (from the <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage page</a>):
+    The jobs are ordered by cost. The host unit tests run in seconds on a plain Linux runner, with no board toolchain at all. Static analysis (lesson 83) comes next, because it fails fast on warnings before anything is built for the board. The firmware build uses one Arm GCC release, pinned in the workflow, because a compiler change can move bugs and change code size. The simulation is last, because it needs the firmware and takes the longest.
+  </p>
+  <p>
+    The simulation checks what the compiler cannot: the boot path, the startup code, the clock setup and the serial output. A build that links cleanly can still hang at boot, and only a run shows it. In a real project, the simulation is also where a team checks the behaviour of the whole program with its peripherals, and the simulated board is a cheap way to do that for every push.
+  </p>
+
+  <h2>The local version: verify_projects.py</h2>
+  <p>
+    The course gives you the same checks on your own machine. <code>tools/verify_projects.py</code> builds a project, lints its Wokwi diagram, and checks that the paths in <code>wokwi.toml</code> point at real files. With <code>--sim</code>, it also runs the simulator. Its help text says where the expected serial text comes from: a line in <code>main.c</code> of the form <code>// EXPECT: &lt;text&gt;</code>. The script reads that line with a regular expression, <code>//\s*EXPECT:\s*(.+)</code>, and then passes the text to the simulator as <code>--expect</code>. If the line is missing, the script still runs the simulator, but with no text to check.
+  </p>
+  <p>
+    That last point is the reason the convention matters. The course's <code>tools/sim.py</code> wraps the Wokwi command-line tool. Its job is to run the firmware for a time limit and decide pass or fail. With no expected text, a run that reaches its time limit without an error counts as a pass. So a missing <code>EXPECT</code> line does not fail loudly. It weakens the check quietly.
+  </p>
+
+  <h2>The Wokwi CLI: the options that matter</h2>
+  <p>
+    <code>wokwi-cli</code> runs a project headless, which means without a window. Its options are documented on the <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage page</a>. These are the ones a test needs:
   </p>
   <table>
     <thead><tr><th>Option</th><th>What it does</th></tr></thead>
     <tbody>
       <tr><td><code>--timeout &lt;ms&gt;</code></td><td>Simulated milliseconds before the run stops. The default is 30000. It is simulated time, not wall-clock time.</td></tr>
-      <tr><td><code>--expect-text &lt;text&gt;</code></td><td>The run passes only if this text appears on the serial monitor.</td></tr>
+      <tr><td><code>--expect-text &lt;text&gt;</code></td><td>The run passes only if this text appears in the output (the serial monitor).</td></tr>
       <tr><td><code>--fail-text &lt;text&gt;</code></td><td>The run fails as soon as this text appears, for example <code>HardFault</code>.</td></tr>
       <tr><td><code>--serial-log-file &lt;path&gt;</code></td><td>Saves the serial output, so you can read the log of a failed run.</td></tr>
       <tr><td><code>--scenario &lt;path&gt;</code></td><td>Runs a YAML file of steps (below).</td></tr>
+      <tr><td><code>--timeout-exit-code &lt;number&gt;</code></td><td>The process exit code when the timeout is reached. The default is 42.</td></tr>
     </tbody>
   </table>
   <div class="note">
-    The timeout is simulated time. A 10000 ms timeout is 10 simulated seconds, and the simulator may run faster or slower than the clock on the wall.
+    The timeout is simulated time. A 10000 ms timeout is 10 simulated seconds, and the simulator may run faster or slower than the clock on the wall. The GitHub Action has its own default, 10000, and the sample sets it explicitly.
   </div>
+
+  <h2>A worked example: one push, step by step</h2>
+  <p>
+    Follow one push to the sample workflow. The example uses the real numbers from the project. The LED period is 1000 ms, so <code>led_half_period_ms(1000)</code> returns 500 (the function in <code>src/led_pattern.c</code> halves the period). The firmware prints <em>LED on</em>, waits 500 ms, prints <em>LED off</em>, and repeats. The simulation timeout is 10000 ms of simulated time.
+  </p>
+  <ol>
+    <li><strong>The push starts the run.</strong> The workflow says <code>on: push</code> and <code>on: pull_request</code>, so GitHub starts the workflow on the runner pool for every push and every pull request.</li>
+    <li><strong>Three jobs start at once.</strong> <code>host-tests</code> and <code>static-analysis</code> have no <code>needs:</code> line, so they run in parallel. Each starts with <code>actions/checkout</code>, which copies the repository onto the clean runner.</li>
+    <li><strong>The host tests build and run.</strong> The job installs CMake and Ninja, configures the host-tests folder, builds it, and runs <code>ctest --output-on-failure</code>. The test <code>led_half_period_ms</code> checks 1000 gives 500, 5 gives 2, and 0 or 1 give 1. If any test fails, ctest exits with a failure code, and the job stops.</li>
+    <li><strong>Static analysis runs cppcheck.</strong> It checks the pure C sources and the host-test folder with <code>--enable=warning,style</code>. The flag <code>--error-exitcode=1</code> is what makes a finding fail the job. Without it, the exit code is 0 and the job is green (the example in the mistakes section shows this).</li>
+    <li><strong>The firmware job waits.</strong> <code>firmware</code> has <code>needs: [host-tests, static-analysis]</code>, so it starts only after both pass. It installs Arm GCC release 15.3.Rel2, builds in Debug, and uploads the <code>.elf</code>, <code>.hex</code> and <code>.map</code> as an artifact named <em>firmware</em>.</li>
+    <li><strong>The simulation runs last.</strong> <code>simulate</code> waits for <code>firmware</code>, downloads the artifact into the build folder, and runs the Wokwi action with <code>timeout: 10000</code> and <code>expect_text: 'LED on'</code>. The first <em>LED on</em> appears soon after the boot, so the expected text is found early in the run. The run would stop at 10 simulated seconds, which is about ten blink cycles, if the text never appeared.</li>
+    <li><strong>The result comes back.</strong> If <em>LED on</em> appears, the simulator exits with 0, and the job passes. If the text never appears, the run fails at the timeout. The firmware job's artifacts stay available for a human to open, whichever way the run ends.</li>
+  </ol>
+  <p>
+    The local equivalent of steps 3 to 6 is <code>python -I tools/verify_projects.py 0082</code> for the build, lint and path check, and the same command with <code>--sim</code> for the simulation. The local run cannot replace the pipeline, because it runs on your machine and its toolchain. It catches most problems early, so the pipeline only confirms what you already saw.
+  </p>
 
   <h2>Scenarios: steps instead of one text match</h2>
   <p>
-    A scenario is a YAML file of steps that run in order. The Wokwi docs describe it as an alpha feature, so its format may change. The sample has one (<code>smoke.scenario.yaml</code>):
+    <code>--expect-text</code> answers one question: does this text appear. A scenario answers a sequence of questions in order. A scenario is a YAML file of steps. The Wokwi docs mark the feature as alpha, which means its format may change. The sample has one, <code>smoke.scenario.yaml</code>:
   </p>
   <pre><code>name: 'LED blinks on the serial monitor'
 version: 1
@@ -83,33 +128,120 @@ steps:
   - delay: 500ms
   - wait-serial: 'LED off'</code></pre>
   <p>
-    <span class="sidenote">The automation page lists steps such as <code>set-control</code>, which presses a virtual button, and <code>expect-pin</code>, which checks a pin level. Use the steps the docs list, and check the page before you rely on one.</span>
-    Run it from the project folder with <code>wokwi-cli . --scenario smoke.scenario.yaml</code>, as the <a href="https://docs.wokwi.com/wokwi-ci/automation-scenarios">automation scenarios page</a> shows.
+    Read the file as a script for the simulator. The first step blocks until <em>LED on</em> appears. The second waits 500 ms of simulated time, which is one half period of the blink. The third waits for <em>LED off</em>. A test with this scenario checks that the LED toggles, which the single-text test does not. The automation page lists the other step types: <code>expect-pin</code> checks a pin level, <code>set-control</code> changes a part such as a button, and <code>write-serial</code> sends text to the firmware. Use the steps the docs list, and check the page before you depend on one, because the feature is alpha.
+  </p>
+  <p>
+    Run it from the project folder with <code>wokwi-cli . --scenario smoke.scenario.yaml</code>. The scenario path is relative to the project root, as the <a href="https://docs.wokwi.com/wokwi-ci/automation-scenarios">automation scenarios page</a> describes.
   </p>
 
-  <h2>The workflow file</h2>
+  <h2>The workflow file, line by line</h2>
   <p>
-    GitHub reads workflows from <code>.github/workflows/</code> at the repository root. The sample's <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code> has four jobs: <code>host-tests</code>, <code>static-analysis</code>, <code>firmware</code> and <code>simulate</code>. The last job uses the Wokwi action, <code>wokwi/wokwi-ci-action@v1</code>, from the <a href="https://github.com/wokwi/wokwi-ci-action">action repository</a>. It takes the token from a repository secret named <code>WOKWI_CLI_TOKEN</code>. The Arm toolchain comes from <code>carlosperate/arm-none-eabi-gcc-action@v1</code>.
+    GitHub reads workflows only from <code>.github/workflows/</code> at the root of the repository. The sample's <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code> is a copy for reading, not a file GitHub will run from this folder. The file has four jobs: <code>host-tests</code>, <code>static-analysis</code>, <code>firmware</code> and <code>simulate</code>. The key lines are these.
+  </p>
+  <pre><code>on:
+  push:
+  pull_request:</code></pre>
+  <p>
+    The <code>on:</code> block lists the events that start the workflow. Here, a push to any branch and a pull request both start it. A pull request from your own branch then runs the workflow twice, once for the push and once for the pull request, which is a cost you can reduce later with a branch filter.
+  </p>
+  <pre><code>static-analysis:
+  steps:
+    - name: Check the pure C sources
+      run: &gt;
+        cppcheck --enable=warning,style --inline-suppr --error-exitcode=1 --std=c11 --quiet
+        projects/0082-continuous-integration/src
+        projects/0082-continuous-integration/host-tests</code></pre>
+  <p>
+    The <code>run: &gt;</code> form folds the following lines into one shell command. <code>--enable=warning,style</code> turns on the warning and style checks, as in lesson 83. <code>--inline-suppr</code> lets a source file silence one finding with a comment, so that a known false alarm does not block the team, and each suppression is visible in review. <code>--error-exitcode=1</code> makes cppcheck return 1 when it reports anything, so the step fails. <code>--std=c11</code> sets the language standard. The two paths are the folders to check.
+  </p>
+  <pre><code>firmware:
+  needs: [host-tests, static-analysis]
+  steps:
+    - uses: carlosperate/arm-none-eabi-gcc-action@v1
+      with:
+        release: '15.3.Rel2'</code></pre>
+  <p>
+    <code>needs:</code> says the job waits until both listed jobs pass. The <code>uses:</code> line runs an action, a packaged step that another author wrote, and <code>with:</code> sets its inputs. The action's README gives <code>15.3.Rel2</code> as its example release, and the input chooses which Arm GCC release to install. A real project pins one release in both places: the workflow and the developer setup. Your laptop has Arm GNU 14.2 from lesson 1. Two releases can produce different code, so this difference is worth raising in review (the checklist is in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>).
+  </p>
+  <pre><code>simulate:
+  if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository</code></pre>
+  <p>
+    This is a condition. It says the job runs when the event is not a pull request, or when the pull request comes from this same repository. A pull request from a fork has a different repository name, so the job is skipped. GitHub does not pass repository secrets to a workflow triggered from a forked repository, so without this line the job would run with no token and fail. Skipping it is the honest result: the simulation cannot run for an outside contributor, and the other jobs still do.
+  </p>
+  <pre><code>- name: Run the simulation
+  uses: wokwi/wokwi-ci-action@v1
+  with:
+    token: ${{ secrets.WOKWI_CLI_TOKEN }}
+    path: projects/0082-continuous-integration
+    timeout: 10000
+    expect_text: 'LED on'</code></pre>
+  <p>
+    The action takes the token from the repository secret named <code>WOKWI_CLI_TOKEN</code>. The expression <code>${{ secrets.WOKWI_CLI_TOKEN }}</code> is how the workflow reads a secret without writing its value into the file. The <code>path</code> input points at the folder with <code>wokwi.toml</code>, and <code>timeout</code> and <code>expect_text</code> match the CLI options in the table above. The action's README lists further inputs, such as <code>fail_text</code> and <code>scenario</code>.
   </p>
   <div class="warning">
     Never put a token in the YAML file or in a commit. Anyone who can read the repository can read the file, and the token lets them run simulations under your account. Store it in the repository settings as a secret, and reference it as <code>${{ secrets.WOKWI_CLI_TOKEN }}</code>. Pull requests from forks do not receive secrets, which is why the sample's <code>simulate</code> job has an <code>if</code> line.
   </div>
+
+  <h2>Wokwi in CI: what the simulation proves</h2>
   <p>
-    The sample uses the Arm toolchain release <code>15.3.Rel2</code>, which the action documents. Your laptop has Arm GNU 14.2 (lesson 1). Two releases can produce different code, so a real project pins one release in both places, and this is a reasonable thing to raise in review (the checklist is in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>).
+    The simulation proves that the firmware boots on the simulated board, that the code path to the expected text runs, and that nothing faults before that text appears. It does not prove that the blink is the right speed on a real board, because the simulator's clock and peripherals are a model. The limits in <code>NOTES.md</code> matter here: some peripherals are not simulated on the Blue Pill, so a test that depends on them cannot pass in the pipeline. A good CI design uses the simulation for the things it can check, and keeps the rest for hardware tests.
   </p>
+  <p>
+    The sample's <code>main.c</code> carries the expected text on a line of its own, <code>// EXPECT: LED on</code>. That is the convention the local script reads, and the pipeline's <code>expect_text</code> input repeats it. Keeping both in step is a small thing that prevents a common error, which the mistakes section describes.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: cppcheck without <code>--error-exitcode</code>.</strong> The static-analysis job stays green while cppcheck prints findings. On this machine, cppcheck 2.22.0 run on the lesson 83 starter with the warning and style checks on printed several errors and style findings, and it still exited with 0. With <code>--error-exitcode=1</code> the same run exited with 1. The symptom is a green job with error lines in its log. The fix is the flag, as in the sample.
+  </p>
+  <p>
+    <strong>Mistake 2: a missing or misspelled EXPECT line.</strong> The local script finds no expected text and runs the simulator without one. A run that reaches its timeout then counts as a pass, so the check that was supposed to prove <em>LED on</em> proves nothing. The symptom is a passing <code>verify_projects.py --sim</code> that never checked the text. The fix is to keep the line exactly in the form <code>// EXPECT: text</code>, with the two slashes, and to check the log once after you add it.
+  </p>
+  <p>
+    <strong>Mistake 3: a secret in the file.</strong> A developer pastes the token into <code>ci.yml</code> to test it, and commits the change. Now the token is in the history of the repository, and anyone who reads the history can run simulations under the account. The symptom is a token in <code>git log</code>. The fix is to revoke the token, create a new one, store it as a repository secret, and remove the value from the file before the next commit.
+  </p>
+  <p>
+    <strong>Mistake 4: a compiler that differs from the one on your laptop.</strong> The laptop has Arm GNU 14.2, and the workflow installs 15.3.Rel2. A warning that appears only in CI, or a map file whose sizes differ between the two, is the symptom. The fix is to pin the same release in the setup script and the workflow, or to record the difference in the project so that the next person knows it is there.
+  </p>
+  <p>
+    <strong>Mistake 5: a timeout in the wrong unit.</strong> A developer writes <code>timeout: 10</code>, meaning ten seconds, but the value is in simulated milliseconds, so the run lasts 10 ms. The symptom is a run that ends before the first line prints, with the expected text reported as missing. The fix is to write the unit in a comment next to the value, or to write the value in milliseconds as the sample does.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    In a professional team, the pipeline is a gate. The team configures the repository so that a merge is blocked until the required checks pass. The names of those checks are part of the project's configuration, and a reviewer expects to see them listed in the pull request. A reviewer also reads changes to the workflow file itself with care, because a change there can weaken the gate, for example by removing <code>--error-exitcode</code> or by adding a job that skips the tests. Changing the pipeline is a code change, and it gets the same review.
+  </p>
+  <p>
+    Teams separate fast checks from slow ones, as the sample does, so that a developer learns about a compile error in minutes and a simulation failure later. They also keep the outputs of each run. When a field report arrives weeks later for a release, the artifact of that release's pipeline run is the binary to decode (lesson 84). A pipeline that keeps no artifacts makes that impossible.
+  </p>
+  <p>
+    In interviews, the question "what does your pipeline look like?" tests whether you can name the stages, explain why they are ordered as they are, and say how a developer reproduces a failure locally. The model answer below gives those three points in a minute.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>CI runs a fixed list of checks on a clean runner for every push, so a result does not depend on one laptop.</li>
+    <li>A workflow has jobs, jobs have steps, and <code>needs:</code> orders the jobs. A job passes or fails by exit code.</li>
+    <li>The firmware pipeline is host tests and static analysis first, then the build, then the simulation, with the build outputs kept as artifacts.</li>
+    <li>cppcheck exits with 0 even when it reports findings, unless you pass <code>--error-exitcode=1</code>.</li>
+    <li>The simulator's timeout is in simulated milliseconds. The default CLI timeout is 30000, which is 30 simulated seconds.</li>
+    <li>The expected serial text comes from a <code>// EXPECT:</code> line in <code>main.c</code>, and a missing line weakens the check quietly.</li>
+    <li>Secrets live in repository settings, and a fork's pull request does not receive them, so the simulation job is skipped for forks.</li>
+    <li>Pin the toolchain release in the workflow and in your setup, and treat a change to the workflow as a code change.</li>
+  </ul>
 
   <!-- ===== 2. Skill: hands-on ===== -->
   <h2>Try it on your machine</h2>
   <ol class="steps">
-    <li>In a terminal at the workspace root, run <code>python -I tools/verify_projects.py 0082</code>. It builds the sample, lints its diagram, and checks the <code>wokwi.toml</code> paths. You should see <em>ok</em> and <em>1/1 projects ok</em>.</li>
-    <li>Run the host tests: <code>python -I tools/build.py projects/0082-continuous-integration/host-tests --test</code>. The summary line is <em>100% tests passed, 0 tests failed out of 1</em>.</li>
-    <li>Open <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code>. Find the job that runs <code>cppcheck</code>, and say which of its options turns a warning into a failed job.</li>
-    <li>Your task: find where the sample's <code>main.c</code> tells the simulation what text to expect. Then explain why the line must start with two slashes, using <code>tools/verify_projects.py</code>.</li>
+    <li>In a terminal at the workspace root, run <code>python -I tools/verify_projects.py 0082</code>. It builds the sample, lints its diagram, and checks the <code>wokwi.toml</code> paths. You should see a line starting <em>ok</em> with the project path, and then <em>1/1 projects ok</em>.</li>
+    <li>Run the host tests: <code>python -I tools/build.py projects/0082-continuous-integration/host-tests --test</code>. The last summary line in a real run is <em>100% tests passed out of 1</em>, followed by a line with the total test time.</li>
+    <li>Open <code>projects/0082-continuous-integration/.github/workflows/ci.yml</code>. Find the job that runs <code>cppcheck</code>, and say which of its options turns a finding into a failed job. The answer is <code>--error-exitcode=1</code>. Then say what the job would do if you removed that option.</li>
+    <li>Your task: find where the sample's <code>main.c</code> tells the simulation what text to expect. Then explain why the line must use two slashes and the word <code>EXPECT:</code> in that exact form, using the regular expression in <code>tools/verify_projects.py</code>. Change the line to a block comment, run the verify command again, and say what changes in the output. The default run does not simulate, so nothing changes on screen, which is exactly why this mistake is hard to see.</li>
     <li>Optional, needs a token: create a token at <a href="https://wokwi.com/dashboard/ci">wokwi.com/dashboard/ci</a>, then in PowerShell run <code>setx WOKWI_CLI_TOKEN "your-token"</code>. <code>setx</code> does not change the shell you are in, so open a new terminal. Then run <code>python -I tools/verify_projects.py 0082 --sim</code>. This machine has no token set, so this step has not been run for this lesson.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The expect line is read by a regular expression, not by the C compiler. Look at <code>tools/verify_projects.py</code>, the function that reads <code>EXPECT</code>.</p>
+    <p>The expect line is read by a regular expression, not by the C compiler. Look at <code>tools/verify_projects.py</code>, the lines that read <code>EXPECT</code>. The pattern looks for two slashes, optional spaces, the word EXPECT and a colon. It does not require the line to start at column 1.</p>
   </details>
   <p>
     The reference is in <code>projects/0082-continuous-integration</code>. The firmware sources are in <code>src/led_pattern.c</code>, and the host tests are in <code>host-tests/</code>. They are plain C, so you can read them in one minute.
@@ -143,7 +275,16 @@ steps:
         "prompt": "Which line in main.c lets verify_projects.py read the text to expect in the simulation?",
         "options": ["// EXPECT: LED on", "/* EXPECT: LED */", "#define EXP LED on", "# EXPECT LED on"],
         "answer": 0,
-        "why": "The script searches for two slashes followed by EXPECT. The block-comment form is valid C but the script's pattern does not match it, so the expected text would be silently missing. The tempting answer is the block comment, which is the usual C style." }
+        "why": "The script searches for two slashes followed by EXPECT. The block-comment form is valid C but the script's pattern does not match it, so the expected text would be silently missing. The tempting answer is the block comment, which is the usual C style." },
+      { "type": "mc",
+        "prompt": "Which CLI option makes the run fail as soon as a given text appears on the serial output?",
+        "options": ["--fail-text", "--expect-text", "--timeout-ms", "--vcd-file"],
+        "answer": 0,
+        "why": "--fail-text ends the run with a failure when its text appears, such as HardFault. --expect-text is the tempting answer, but it passes the run when its text appears. The timeout and VCD file options do not look at the text." },
+      { "type": "number",
+        "prompt": "The CLI default timeout is 30000. How many simulated seconds does the default allow?",
+        "answer": 30, "tolerance": 0, "unit": "s",
+        "why": "The timeout is in simulated milliseconds, so 30000 ms is 30 s. The tempting answer, 30000, treats the value as seconds." }
     ] }
     </script>
   </div>
@@ -174,7 +315,7 @@ steps:
 
   <!-- ===== 6. Source ===== -->
   <div class="source">
-    <a href="https://docs.wokwi.com/wokwi-ci/getting-started">Wokwi CI: getting started</a>, then <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage</a> for the flags. Use the GitHub Actions page for the workflow example, and the automation scenarios page for the YAML steps.
+    <a href="https://docs.wokwi.com/wokwi-ci/getting-started">Wokwi CI: getting started</a>, then <a href="https://docs.wokwi.com/wokwi-ci/cli-usage">CLI usage</a> for the flags (checked for this lesson: the option names, the 30000 ms default and the simulated-time note). Use the <a href="https://docs.wokwi.com/wokwi-ci/automation-scenarios">automation scenarios page</a> for the YAML steps, which it marks as alpha. For the fork rule, GitHub's page on <a href="https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions">using secrets in GitHub Actions</a> says secrets are not passed to a workflow triggered from a forked repository.
   </div>
 
   <div class="ask">

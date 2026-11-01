@@ -17,9 +17,23 @@
     By the end of this lesson you can expose a register map over Modbus RTU and drive it from a host script, lay out a bootloader and an application in one image with a linker script and a version header, and read a CI workflow that builds, tests, analyses and simulates the firmware.
   </div>
 
-  <h2>The idea: the product talks to the world</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Industrial equipment is controlled by a host over a serial bus, usually Modbus (lesson 99). The protocol is simple, which is its strength: a request has an address, a function, two fields and a CRC, and a reply is the same length or an exception. The master (here, a Python script) asks for the status and writes a command. The dryer's job is to keep its register map true and to answer, without ever letting the bus stall the heater.
+    Lessons <a href="0110-capstone-1-requirements-and-architecture.html">110</a> to <a href="0112-capstone-3-rtos-threads-and.html">112</a> built the dryer's inside: its drivers, its state machine, its control loop and its tasks. The dryer still has no way to tell the outside world what it is doing. A factory line, a home server or a technician's laptop cannot ask it for its temperature, and nobody can start a drying cycle except by pressing the button on the case.
+  </p>
+  <p>
+    This stage solves two problems that every product in the field has. The first is talking to the device over a wire, which is what <a href="0099-rs-485-and-modbus-rtu.html">lesson 99</a> taught and this lesson applies to a real product. The second is changing the firmware after the device has left the factory, which is the job of a bootloader (<a href="0102-bootloaders-and-firmware-updates.html">lesson 102</a>). Both need care, because a mistake in either one can make a working dryer unreachable.
+  </p>
+
+  <h2>What Modbus is, in plain words</h2>
+  <p>
+    A bus is a wire, or a pair of wires, that several devices share. Modbus is a protocol for a serial bus: devices take turns sending short messages, one byte after another. In the usual arrangement there is one <em>master</em>, which starts every conversation, and one or more <em>slaves</em>, which answer only when addressed. Here the master is a Python script on a PC, and the dryer is a slave with address 1.
+  </p>
+  <p>
+    The data the slave exposes is a list of <em>holding registers</em>. A holding register is a 16-bit number, which is two bytes, with an index (its address) starting at 0. The slave keeps the list in its own memory, and the master reads and writes entries of it. The register is not the same as a CPU register or a peripheral register from earlier lessons: it is a slot in a table that the protocol defines, and the firmware decides what each slot means.
+  </p>
+  <p>
+    The protocol is simple, which is its strength. Every request has the same shape: an address, a function code that says what to do, some fields, and a checksum. Every reply is either the same kind of message with the answer in it, or an <em>exception</em>, a short message that says why the request was refused. The physical layer, which is how the bits travel on the wire, is covered in lesson 99. A real RS-485 installation adds a transceiver chip that converts the signal levels; the simulator, and this build, talk to the UART pins directly.
   </p>
 
   <h2>The register map</h2>
@@ -39,16 +53,66 @@
       <tr><td>7</td><td>MATERIAL</td><td>read and write</td><td>0 PLA, 1 PETG, 2 ABS; a write is applied only while IDLE</td></tr>
     </tbody>
   </table>
+
+  <h3>Why the temperature needs a sign</h3>
   <p>
-    Two details are worth discussing in an interview. Temperatures are signed, but Modbus registers are unsigned 16-bit values, so the code writes the two's complement and the host converts it back (the Python test checks −5.0 °C). And the slave must not pretend to accept a write it will ignore. <code>modbus_slave_t</code> has an optional <code>check_write</code> hook, and the dryer sets it to <code>regmap_check_write()</code>: a write to a read-only register gets exception 02 (illegal data address), and an out-of-range command or material gets exception 03 (illegal data value), as the Modbus application protocol defines (lesson 99). With the hook left NULL, the module behaves exactly like lesson 99's, so the change is backwards compatible. A host test sends a real frame and checks the <code>0x86 0x02</code> reply.
+    A Modbus register is an <em>unsigned</em> 16-bit number, so it can hold 0 to 65535. A chamber temperature can be below zero, and the dryer's register layout needs a way to carry −5.0 °C. The answer is <a href="../reference/glossary.html#two-s-complement">two's complement</a>, the standard way that binary hardware stores negative numbers. The bits of a negative value are the bits that, added to the positive value, give zero in 16 bits.
+  </p>
+  <p>
+    Take −50 tenths of a degree (that is −5.0 °C). Work in 16 bits, step by step:
+  </p>
+  <ol class="steps">
+    <li>Write 50 in binary: 50 is 0x0032, which is 0000 0000 0011 0010.</li>
+    <li>Invert every bit (the one's complement): 0xFFCD, which is 1111 1111 1100 1101.</li>
+    <li>Add 1: 0xFFCD + 1 = 0xFFCE. This is the value stored in the register.</li>
+    <li>Check: the register holds 0xFFCE = 65486. Since 65536 − 65486 = 50, the register is −50 when read as a signed number.</li>
+  </ol>
+  <p>
+    The firmware does this by casting. It converts the signed value to <code>int16_t</code>, which the compiler stores as two's complement, and then to <code>uint16_t</code>, which keeps the same 16 bits. The host does the reverse: it reads the same 16 bits and interprets them as signed. The mistake that catches people is to read the register as unsigned. Then 0xFFCE is 65486 tenths, which is 6548.6 °C. The bits are right, and the reading is absurd, so it is worth testing both directions.
+  </p>
+
+  <h3>The write check and the exceptions</h3>
+  <p>
+    The slave must not pretend to accept a write it will ignore. <code>modbus_slave_t</code> has an optional <code>check_write</code> hook, and the dryer sets it to <code>regmap_check_write()</code>. A write to a read-only register gets exception 02 (illegal data address), and an out-of-range command or material gets exception 03 (illegal data value), as the Modbus application protocol defines (lesson 99). With the hook left NULL, the module behaves exactly like lesson 99's, so the change is backwards compatible. A host test sends a real frame and checks the <code>0x86 0x02</code> reply.
+  </p>
+  <p>
+    The byte 0x86 is the function code 0x06 with its top bit set (0x06 + 0x80). That top bit is the exception flag, and the byte after it is the exception code. The next section works one of these frames with real numbers.
+  </p>
+
+  <h2>A frame, byte by byte</h2>
+  <p>
+    A Modbus RTU frame is a sequence of bytes with nothing around it: no start byte and no end byte. The fields are the slave address, the function code, the data, and a 16-bit CRC. The CRC is a checksum: a short number computed from all the other bytes, so the receiver can tell whether the bytes arrived intact. The Modbus CRC is CRC-16/MODBUS, which lesson 99 defines, and <a href="../reference/glossary.html#crc-16-modbus">its check value</a> for the ASCII text "123456789" is 0x4B37.
+  </p>
+  <p>
+    Here is a worked example that you can check with the master script. The master wants to read register 2, the temperature, from slave 1.
+  </p>
+  <table>
+    <thead><tr><th>Step</th><th>Bytes (hex)</th><th>What each byte means</th></tr></thead>
+    <tbody>
+      <tr><td>Request</td><td>01 03 00 02 00 01 25 CA</td><td>01 slave address; 03 read holding registers; 00 02 start address 2; 00 01 quantity 1; 25 CA the CRC, low byte first</td></tr>
+      <tr><td>Reply, reg 2 = 0xFFCE</td><td>01 03 02 FF CE 78 20</td><td>01 and 03 echo the request; 02 is the byte count of the data; FF CE is the register; 78 20 the CRC</td></tr>
+      <tr><td>Refused write</td><td>01 86 02 C3 A1</td><td>86 is 0x06 with the exception flag 0x80 set; 02 is the exception code, illegal data address</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The reply's data is the same two bytes as the register in the table above, so the host reads 0xFFCE and decodes it as −5.0 °C. Notice two details of the byte order. Each 16-bit field is big-endian, so its high byte comes first: the start address 2 is sent as 00 02. The CRC is the opposite, with its low byte first (25 CA). Mixing up those two orders is a common bug in a first Modbus implementation.
+  </p>
+  <p>
+    The frame lengths are fixed for the functions this slave supports: a read or a single write is 8 bytes (the request), and a refused write is 5 bytes (address, function with the flag, exception code, and CRC). A slave that receives a frame of any other length, or a frame whose CRC does not match, stays silent. Silence is the protocol's way of saying "I did not understand, and I will not pretend to".
   </p>
 
   <h2>The RTU frame: silence, CRC and one interrupt per byte</h2>
   <p>
-    The RTU slave is the lesson 99 code, reused as it is: <code>modbus.c</code> parses a complete frame and <code>crc16.c</code> computes the CRC. Only the framing is new. A frame ends after a silence of 3.5 characters, which is 1.75 ms at 115200 baud. The tasks tick at 1 ms, so the comms task uses a gap of 2 ms, which is safe because it is longer than the required silence.
+    The RTU slave is the lesson 99 code, reused as it is: <code>modbus.c</code> parses a complete frame and <code>crc16.c</code> computes the CRC. Only the framing is new. Framing means deciding where one frame ends and the next begins, and an RTU frame has no marker for that. The rule is the <a href="../reference/glossary.html#silent-interval">silent interval</a>: a frame ends when the line has been idle for a set time.
   </p>
   <p>
-    Each received byte raises an interrupt, and the interrupt handler puts it on a FreeRTOS queue (lesson 89). A byte is never lost while the comms task is busy, and the interrupt is short. Reading the status register before the data register clears the overrun flag, so one lost byte cannot stop the receiver for good. A corrupted frame fails its CRC and gets no reply, which is the behaviour the specification asks for.
+    The Modbus serial-line specification defines the silence as 3.5 character times. A character is 11 bits on the wire (a start bit, eight data bits, a parity bit and a stop bit), so 3.5 characters at 115200 baud would be about 334 µs. The project does not use that computed value. It uses a fixed 1.75 ms, and its own comment says that is what 115200 baud needs. Lesson 99 gives the same figure. I could not open the specification from this workspace, so treat 1.75 ms as the project's value and check it in the document named in the Source box before you rely on it.
+  </p>
+  <p>
+    The tasks tick at 1 ms, so the comms task measures silence in ticks. It uses a gap of 2 ms, which is safe because it is longer than the required silence. The comms task waits up to 2 ms for the next byte. If no byte comes, the frame that has been collected so far is complete, and the task passes it to <code>modbus_process()</code>. Bytes past the end of the buffer are dropped, so an overlong frame is cut short and fails its CRC, which means it gets no reply.
+  </p>
+  <p>
+    Each received byte raises an interrupt. The interrupt handler reads the status register and then the data register, and it puts the byte on a FreeRTOS queue (lesson 89). The comms task takes bytes from the queue at its own pace. The interrupt is short, so it never keeps the heater control waiting. Reading the status register before the data register also clears the overrun flag. An overrun happens when a new byte arrives before the old one was read, and the overrun flag stops the receiver until it is cleared. The project's receive handler reads both registers in that order, so one lost byte cannot stop the receiver for good. The lost byte shows up as a bad frame, and the bad frame gets no reply.
   </p>
   <div class="note">
     <strong>One wire, one job.</strong> USART1 carries both the log and the Modbus frames. A status line printed between a request and its reply would corrupt the reply. So the build turns the once-a-second status line off with <code>DRYER_LOG_STATUS 0</code>, and the watchdog check-in in the logger task stays on. The lesson 112 build printed the line; this one reports the same state through the registers.
@@ -56,25 +120,52 @@
 
   <h2>The master: a host script</h2>
   <p>
-    <code>master_dryer.py</code> is adapted from lesson 99's master. It builds the frames, checks the CRC with its own implementation, and talks to the simulator through the RFC 2217 port in <code>wokwi.toml</code>, which is 4000 in this stage. Its <code>selftest</code> command runs without a serial port, and the other commands need <code>pyserial</code>, which you install yourself. Run its selftest now:
+    <code>master_dryer.py</code> is adapted from lesson 99's master. It builds the frames, checks the CRC with its own implementation, and talks to the simulator through the RFC 2217 port in <code>wokwi.toml</code>, which is 4000 in this stage. RFC 2217 is a standard way to carry a serial port over a network connection, so the script can talk to the simulated USART1 as if it were a real adapter. Its <code>selftest</code> command runs without a serial port, and the other commands need <code>pyserial</code>, which you install yourself. Run its selftest now:
   </p>
   <pre><code>python master_dryer.py selftest
 selftest OK: CRC-16/MODBUS 123456789 = 0x4B37, frames match, signed temperature decodes</code></pre>
   <p>
-    The status command reads all eight registers in one request and prints them decoded: the state name, the temperature with its sign, the duty, the fault name and the minutes left. The material command writes register 7, and the start command writes register 6.
+    The selftest checks three things: the CRC against the standard check value, the request frames against the worked bytes above, and the signed decoding. The status command reads all eight registers in one request (function 03, start 0, quantity 8) and prints them decoded: the state name, the temperature with its sign, the duty, the fault name and the minutes left. The material command writes register 7, and the start command writes register 6.
   </p>
 
   <h2>The bootloader and the image in one ELF</h2>
   <p>
-    A product needs a way to update the firmware in the field. The usual design is a bootloader, a small program that runs first, checks the application image, and jumps to it (lesson 102). This build keeps both in one ELF and one hex, so it stays simple to simulate. The linker script splits the flash into two regions, as in lesson 102's <code>boot.ld</code>:
+    A product needs a way to update the firmware in the field. The usual design is a bootloader, a small program that runs first, checks the application image, and jumps to it (lesson 102). The bootloader is the one part of the firmware that must never be updated by a faulty update, so it stays small and fixed.
   </p>
-  <ul>
-    <li><strong>BOOT</strong>, 16 KB at 0x08000000: the startup code, the bootloader's <code>main()</code>, and the initial values of <code>.data</code>.</li>
-    <li><strong>APP</strong>, 48 KB at 0x08004000: the image header (32 bytes), the application's vector table at +0x100, and everything else: FreeRTOS, the HAL, the drivers and the application.</li>
-    <li><strong>RAM</strong>, 20 KB at 0x20000000: shared. The startup code initialises it once, so the jump does not copy anything again.</li>
-  </ul>
   <p>
-    The header carries a magic number, the version as major and minor, the end of the image, and the offset of the vector table. The bootloader checks the magic, the vector offset, the image end, the initial stack pointer in RAM, and that the reset handler lies inside the image. Each check removes one way for a bad image to crash the boot. It does not check a CRC or a signature: the header has room for them, and lesson 103 covers why a signature is the real protection.
+    This build keeps both in one ELF and one hex, so it stays simple to simulate. An ELF file is the standard output of the linker: it holds the code, the data and the addresses they must be loaded at. The hex file holds the same bytes as text, which is what a programmer tool writes to flash. The linker script decides which code goes to which address. This one splits the flash into two regions, as in lesson 102's <code>boot.ld</code>:
+  </p>
+  <table>
+    <thead><tr><th>Region</th><th>Address and size</th><th>What is in it</th></tr></thead>
+    <tbody>
+      <tr><td>BOOT</td><td>0x08000000, 16 KB</td><td>The startup code, the bootloader's <code>main()</code>, and the initial values of <code>.data</code>.</td></tr>
+      <tr><td>APP</td><td>0x08004000, 48 KB</td><td>The image header (32 bytes), the application's vector table at +0x100, and everything else: FreeRTOS, the HAL, the drivers and the application.</td></tr>
+      <tr><td>RAM</td><td>0x20000000, 20 KB</td><td>Shared by both. The startup code initialises it once, so the jump does not copy anything again.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Flash is the chip's non-volatile memory: the program lives there and survives a power cut. RAM is the working memory, and its contents are lost at reset. Both regions of flash are read by the CPU at their addresses, which is why the header and the vector table must sit at fixed offsets.
+  </p>
+
+  <h3>The header, byte by byte</h3>
+  <p>
+    The application starts with a 32-byte header, which the bootloader reads before it trusts anything in the slot. The layout is a C structure (<code>app_header_t</code>) with a static assertion that its size is exactly 32 bytes, so the compiler refuses to build if the layout drifts.
+  </p>
+  <table>
+    <thead><tr><th>Offset</th><th>Field</th><th>This build's value</th></tr></thead>
+    <tbody>
+      <tr><td>+0</td><td>magic</td><td>0x41505031, the ASCII letters "APP1", so a stray pattern of bytes is unlikely to match</td></tr>
+      <tr><td>+4</td><td>version</td><td>(major &lt;&lt; 16) | minor, so 1.0 is 0x00010000</td></tr>
+      <tr><td>+8</td><td>image_end</td><td>The address one past the last byte of the image, taken from the linker</td></tr>
+      <tr><td>+12</td><td>vector_offset</td><td>0x100, the offset of the vector table from the header</td></tr>
+      <tr><td>+16 to +31</td><td>reserved[4]</td><td>Zero here; room for a CRC and a signature (lesson 103)</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The vector table is the list of addresses the CPU reads on reset and on each exception. Word 0 holds the initial stack pointer, which is the top of the stack, and word 1 holds the reset handler, the first code to run. The bootloader reads those two words from the application's table, sets the stack pointer to the first and jumps to the second. The application's table is at +0x100, so its first word is at 0x08004100.
+  </p>
+  <p>
+    The bootloader checks the magic, the vector offset, the image end, the initial stack pointer in RAM, and that the reset handler lies inside the image. Each check removes one way for a bad image to crash the boot. It does not check a CRC or a signature: the header has room for them, and lesson 103 covers why a signature is the real protection. An image that passes these checks can still be wrong in its contents, so the checks prevent crashes, not tampering.
   </p>
   <p>
     The version is not decorative. The application reads its own header from flash and draws <code>FW 1.0</code> on the bottom line of the display. That is how a field technician checks which image is running, and how the host learns it too.
@@ -83,29 +174,40 @@ selftest OK: CRC-16/MODBUS 123456789 = 0x4B37, frames match, signed temperature 
     <strong>The jump gives up the bootloader.</strong> After <code>__set_MSP()</code> and the branch, the bootloader's code never runs again, and it cannot recover a hung application. A watchdog that resets the chip brings the bootloader back, which is why lesson 84's watchdog and this bootloader belong together.
   </div>
 
+  <h3>The jump, step by step</h3>
+  <ol class="steps">
+    <li>The bootloader disables interrupts, so none runs in the middle of the hand-over.</li>
+    <li>It points the vector table register (VTOR) at the application's table, so exceptions now use the application's handlers.</li>
+    <li>It sets the main stack pointer (MSP) to the value in word 0 of that table.</li>
+    <li>It calls the reset handler from word 1 as a function that never returns.</li>
+  </ol>
+  <p>
+    Each step depends on the one before. If step 2 is skipped, the first interrupt in the application would run a handler from the bootloader's table. If step 3 is skipped, the application starts on the stack pointer the bootloader left behind, not on the top of its own stack. The order is the reason the code is short, and it is also the reason a mistake here shows up as a crash that looks random.
+  </p>
+
   <h2>Measured: does it fit?</h2>
   <p>
-    The build reports the sizes below, from the solution's <code>arm-none-eabi-size</code> output and its map. Flash used by the bootloader and the application together is about 21 KB of the 64 KB part. The application slot holds about 19.6 KB of its 48 KB, so the design has room to grow. RAM use is about 10 KB of 20 KB, and that includes the 8 KB FreeRTOS heap that holds the task stacks.
+    The build reports the sizes below. The numbers are from a local build of the solution on 31 October 2026. CI builds the same sources in its Debug configuration, so its numbers can differ a little from these. The <code>text</code> column is code and constants, <code>data</code> is initialised variables, and <code>bss</code> is zero-initialised variables and the heap. The map file gives the exact addresses: the bootloader uses about 1 KB of its 16 KB, and the application ends at 0x08008EC0, which is 20160 bytes (about 19.7 KB) of its 48 KB. Flash used by both together is about 21 KB of the 64 KB part. RAM use is about 10 KB of 20 KB, and that includes the 8 KB FreeRTOS heap that holds the task stacks.
   </p>
   <pre><code>   text	   data	    bss	    dec	    hex	filename
-  20802	    104	  10148	  31054	   794e	dryer.elf</code></pre>
+  20870	    104	  10148	  31122	   7992	dryer.elf</code></pre>
   <p>
-    The text section is the largest term. The HAL is linked for the I2C and the tick only, because the linker removes unused functions (<code>--gc-sections</code>), and the logic is compiled at <code>-Og</code>. If the image ever did not fit, the trims are, in order: use <code>-Os</code> for the release build, drop the font to the characters the status screen uses, and move the log strings out of the application. Each trade-off costs debuggability, which is why the course keeps the debug build for the simulator.
+    The text section is the largest term. The linker removes functions that nothing calls (<code>--gc-sections</code>, set in <code>CMakeLists.txt</code>), and the logic is compiled at <code>-Og</code>, which keeps the code easy to step through in a debugger. If the image ever did not fit, the trims are, in order: use <code>-Os</code> for the release build, drop the font to the characters the status screen uses, and move the log strings out of the application. Each trade-off costs debuggability, which is why the course keeps the debug build for the simulator.
   </p>
 
   <h2>The CI workflow</h2>
   <p>
-    CI runs the same checks on every commit, so a broken change is caught before it reaches a board. The workflow <code>projects/0113-dryer-modbus-bootloader/.github/workflows/ci.yml</code> is adapted from lesson 82, and it has four jobs:
+    Continuous integration (CI) is a service that runs a fixed list of commands on every commit, so a broken change is caught before it reaches a board (lesson 82). The workflow <code>projects/0113-dryer-modbus-bootloader/.github/workflows/ci.yml</code> is adapted from lesson 82, and it has four jobs. The jobs run in a fixed order, shown by the <code>needs</code> lines in the file: a job with <code>needs</code> waits, and it is skipped when a job it needs fails.
   </p>
   <ol>
     <li><strong>host-tests</strong>: builds the host project with CMake and Ninja and runs <code>ctest</code>. The ten test programs cover the conversion, the safety checks, the state machine, the controller, the closed loop, the Modbus frames and the register map.</li>
-    <li><strong>static-analysis</strong>: runs cppcheck with <code>--error-exitcode=1</code> on the firmware sources, so a style finding fails the job.</li>
+    <li><strong>static-analysis</strong>: runs cppcheck with <code>--error-exitcode=1</code> on the firmware sources, so a style finding fails the job. A static analyser reads the code without running it and reports patterns that are often bugs (lesson 83).</li>
     <li><strong>firmware</strong>: builds the bootloader and the application as one ELF with the Arm toolchain, prints the sizes and keeps the ELF, the hex and the map as artefacts. It needs the first two jobs to pass.</li>
     <li><strong>simulate</strong>: runs the firmware in Wokwi and expects the banner <code>DRYER RTOS OK</code> on the serial monitor, within 10 seconds. The job reads the <code>WOKWI_CLI_TOKEN</code> secret through an environment variable and skips the step when the secret is absent, which is what a fork's pull request sees.</li>
   </ol>
   <p>The local equivalents, which you can run now, give the results below.</p>
   <pre><code>python -I tools/build.py projects/0113-dryer-host-tests/solution --test
-100% tests passed, 0 tests failed out of 10
+100% tests passed out of 10
 
 cppcheck --enable=warning,style --std=c11 --quiet (firmware sources): no findings, exit code 0</code></pre>
   <div class="note">
@@ -114,15 +216,45 @@ cppcheck --enable=warning,style --std=c11 --quiet (firmware sources): no finding
 
   <h2>Try it: the register that starts the dryer</h2>
   <ol class="steps">
-    <li>Open <code>projects/0113-dryer-host-tests/starter</code> and run <code>python -I tools/build.py projects/0113-dryer-host-tests/starter --test</code> from the workspace root. Exactly one of the ten test programs fails: <code>regmap</code>.</li>
-    <li>Open <code>projects/0113-dryer-modbus-bootloader/starter/app/regmap.c</code> and find the <code>TODO(learner)</code> comment in <code>regmap_publish()</code>. Write the seven read-only registers from the table above. The fields come from the state, the output and the temperature arguments.</li>
-    <li>Rerun the host tests. You know it works when all ten pass. Then build the firmware with <code>python -I tools/build.py projects/0113-dryer-modbus-bootloader/starter</code>.</li>
-    <li>Optional, with <code>pyserial</code> installed: start the simulator on the solution, then run <code>python master_dryer.py status</code>. The eight values should match the banner's state. Compare them with your register map and fix any mismatch.</li>
+    <li>Open the <code>projects/0113-dryer-host-tests/starter</code> folder in a terminal at the workspace root and run <code>python -I tools/build.py projects/0113-dryer-host-tests/starter --test</code>. Expected output: nine test programs pass, and the summary line reads <code>90% tests passed, 1 tests failed out of 10</code>, with <code>10 - regmap (Failed)</code> in the list. The one failure is the register map, which is the part you write.</li>
+    <li>Open <code>projects/0113-dryer-modbus-bootloader/starter/app/regmap.c</code> and find the <code>TODO(learner)</code> comment in <code>regmap_publish()</code>. Write the seven registers that this function owns: the six read-only registers (SETPOINT_C, STATE, TEMP_X10, PWM_PCT, FAULT_CODE and REMAINING_MIN) and the MATERIAL register, which is copied so that a read shows the current material. The fields come from the state, the output and the temperature arguments, and the comment above the <code>TODO(learner)</code> marker gives each one. The temperature needs the cast from the section on two's complement.</li>
+    <li>Rerun the host tests. Expected output: <code>100% tests passed out of 10</code>. Then build the firmware with <code>python -I tools/build.py projects/0113-dryer-modbus-bootloader/starter</code>, which should end without errors.</li>
+    <li>Optional, with <code>pyserial</code> installed: start the simulator on the solution, then run <code>python master_dryer.py status</code>. Before you press start, expect <code>state</code> to read <code>IDLE</code>, <code>fault</code> to read <code>none</code> and <code>material</code> to read <code>PLA</code>. Compare the temperature with the NTC value on the simulated sensor, and fix any mismatch in your register map.</li>
   </ol>
   <details>
     <summary>Hint for the temperature register</summary>
     <p>The temperature is in hundredths of a degree. Divide by 10 to get tenths, and store it as an unsigned 16-bit value by casting through a signed 16-bit type. The test for −5.00 °C expects 0xFFCE, which is −50 in two's complement.</p>
   </details>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>Every one of these has happened to someone building a Modbus device or a bootloader. Each entry gives the symptom first, so you can recognise it before you find the cause.</p>
+  <h3>Mistake 1: a status line on the Modbus wire</h3>
+  <p>
+    <strong>Symptom:</strong> the master reports a bad CRC or no reply, but only while the firmware runs with the status line enabled. A frame that works with the logger off fails with it on. <strong>Cause:</strong> the log bytes land between the request and the reply, or inside the request, so the frame no longer matches its CRC. <strong>Fix:</strong> keep <code>DRYER_LOG_STATUS</code> at 0 in this build, and send any debug text to a second serial port, not to USART1.
+  </p>
+  <h3>Mistake 2: reading the temperature as unsigned</h3>
+  <p>
+    <strong>Symptom:</strong> a host script shows a chamber temperature of 6548.6 °C, or any large positive number, when the dryer is cold. The register holds 0xFFCE, and the bits are right. <strong>Cause:</strong> the script reads the 16 bits as an unsigned number, so 65486 tenths becomes 6548.6 °C. <strong>Fix:</strong> decode register 2 as signed (<code>struct</code> format <code>&lt;h</code> in Python, <code>int16_t</code> in C). The selftest checks this path.
+  </p>
+  <h3>Mistake 3: changing a register that the firmware owns</h3>
+  <p>
+    <strong>Symptom:</strong> the master writes a new material with function 06, the reply echoes the write, and the next read shows the old material again. <strong>Cause:</strong> the material is applied only while the dryer is IDLE, and <code>regmap_publish()</code> copies the real material into the register on every reply. Writes during a cycle are refused silently in the state machine. <strong>Fix:</strong> stop the cycle first, write the material, and read it back. The firmware's behaviour is the design, so the fix is in the host, not in the register.
+  </p>
+  <h3>Mistake 4: a stale image on the board</h3>
+  <p>
+    <strong>Symptom:</strong> you change <code>APP_VERSION</code> to 1.1, rebuild, and the display still reads <code>FW 1.0</code>. <strong>Cause:</strong> the programmer flashed an old <code>.hex</code> file, often from an earlier build folder, so the header on the board is the old one. <strong>Fix:</strong> flash the file from the build you just made, check its time stamp, and read the version from the display or from the header in the flash. A version that is not checked on the device is only a guess.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that ship a Modbus device publish the register map as a document or a shared header, and the host tool is written against that same document. The map is versioned like an API: adding a register is safe, and moving or changing the meaning of one breaks every installed host. Reviewers ask for the map first, and for a test that proves the firmware and the map agree.
+  </p>
+  <p>
+    A production bootloader is rarely written from scratch. Teams usually start from an existing open bootloader, such as MCUboot (its design document is listed in <code>RESOURCES.md</code>), and adapt it to their own flash layout and keys. The bootloader is reviewed harder than any other code in the product, because a bug there can make a device unrecoverable in the field.
+  </p>
+  <p>
+    CI is judged by what it blocks. A pipeline that only reports is easy to ignore, while one that fails the merge gets fixed. The four jobs here follow that rule: a failing test stops the firmware build, and a finding from cppcheck fails the job. In an interview, the question is usually "what does your CI stop, and what does it only tell you", and this capstone has a clear answer.
+  </p>
 
   <h2>What you built: the capstone, lesson by lesson</h2>
   <p>
@@ -163,10 +295,19 @@ cppcheck --enable=warning,style --std=c11 --quiet (firmware sources): no finding
 
   <h2>What to show an interviewer</h2>
   <p>
-    Open the repository and show the requirements table from lesson 110, with each acceptance criterion pointing to a test. Run the host tests live, then show the closed-loop output and explain what the 80.4 s runaway means. Show the linker script and the header, and explain why the bootloader needs no copy of RAM. Finally show the CI workflow and the cppcheck line. Be honest about the limits: the sizes are the simulator's, the PID was not tuned on a real chamber, the presets are a compile-time table, and the display flush takes a large share of the CPU. A candidate who names those limits first is more credible than one who claims a perfect design.
+    Open the repository and show the requirements table from lesson 110, with each acceptance criterion pointing to a test. Run the host tests live, then show the closed-loop output and explain what the 80.4 s runaway means: a dead heater, at full power with no rise in temperature, is caught after 80.4 s, inside the 300 s limit the test sets. Show the linker script and the header, and explain why the bootloader needs no copy of RAM. Finally show the CI workflow and the cppcheck line. Be honest about the limits: the sizes are the simulator's, the PID was not tuned on a real chamber, the presets are a compile-time table, and the display flush takes a large share of the CPU. A candidate who names those limits first is more credible than one who claims a perfect design.
   </p>
 
-  <div class="win">You built a complete embedded product from requirements to CI: a Modbus slave on a register map, a bootloader and an application in one image with a version on the display, and a pipeline that builds, tests, analyses and simulates every commit. You can explain every part of it, and you can name its limits.</div>
+  <h2>Summary</h2>
+  <ul>
+    <li>Modbus RTU is a master and slaves on a shared serial line. Holding registers are 16-bit slots, and the firmware decides what each one means.</li>
+    <li>Signed values travel as two's complement in unsigned registers. −50 tenths is 0xFFCE, and reading it as unsigned gives a wrong temperature.</li>
+    <li>A frame has no start or end marker. Its end is a silent interval, and its integrity is the CRC. Bad frames get no reply.</li>
+    <li>Exception 02 means a bad address (here, a write to a read-only register), and exception 03 means a bad value. The flag 0x80 marks any exception reply.</li>
+    <li>The bootloader checks a 32-byte header, sets VTOR and MSP, and jumps. It never returns, so a hung application needs a watchdog to bring it back.</li>
+    <li>Keep debug text off the Modbus wire, and flash the hex from the build you just made.</li>
+    <li>CI should stop a broken change, not only report it: tests, static analysis and the firmware build each gate the next job.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -188,7 +329,20 @@ cppcheck --enable=warning,style --std=c11 --quiet (firmware sources): no finding
         "prompt": "Why is the once-a-second status line off in the 113 build?",
         "options": ["The same UART carries the Modbus frames", "The status line is too slow now", "The logger task has been removed now"],
         "answer": 0,
-        "why": "The log and the Modbus frames share one serial line, so a printed line between a request and its reply corrupts the reply. The tempting answers are wrong: one line a second is easy to read, and the logger task still runs to check in with the watchdog." }
+        "why": "The log and the Modbus frames share one serial line, so a printed line between a request and its reply corrupts the reply. The tempting answers are wrong: one line a second is easy to read, and the logger task still runs to check in with the watchdog." },
+      { "type": "number",
+        "prompt": "A TEMP_X10 register holds 65486, which is 0xFFCE. Read it as a signed 16-bit value in tenths of a degree. What temperature does that give, in °C?",
+        "answer": -5.0, "tolerance": 0.01, "unit": "°C",
+        "why": "65486 is 65536 − 50, so the signed value is −50 tenths, which is −5.0 °C. The tempting 6548.6 reads the same 16 bits as unsigned, which is the mistake Mistake 2 describes." },
+      { "type": "mc",
+        "prompt": "The magic is right, but the vector offset in the header is 0x200, not 0x100. What does the bootloader do?",
+        "options": ["It jumps to the application at once", "It stays in the bootloader and reports", "It erases the whole application slot now", "It copies the image into RAM first"],
+        "answer": 1,
+        "why": "The bootloader checks the vector offset against 0x100, so a header with another offset is not this layout, and the bootloader prints its message and stays. Jumping would hand control to bytes that are not a vector table. The tempting copy into RAM never happens, because the jump keeps RAM as it is." },
+      { "type": "number",
+        "prompt": "The host writes 7 to register 2 (TEMP_X10), which is read-only. Which Modbus exception code comes back? Write the number.",
+        "answer": 2, "tolerance": 0,
+        "why": "A write to a read-only register is refused with exception 02, illegal data address. The tempting 3 is the illegal data value code, which the check returns only for an out-of-range COMMAND or MATERIAL value." }
     ] }
     </script>
   </div>
@@ -209,13 +363,15 @@ cppcheck --enable=warning,style --std=c11 --quiet (firmware sources): no finding
     </script>
   </div>
 
+  <div class="win">You built a complete embedded product from requirements to CI: a Modbus slave on a register map, a bootloader and an application in one image with a version on the display, and a pipeline that builds, tests, analyses and simulates every commit. You can explain every part of it, and you can name its limits.</div>
+
   <div class="interview">
     <p><strong>"How would you update the firmware of a device in the field, safely?"</strong> Answer out loud in 60 seconds, then compare.</p>
     <details><summary>Model answer</summary><p>I'd keep a small bootloader that never changes, and an application slot with a header. The update writes the new image into a second slot, or into the same slot behind a flag, so a power loss mid-update leaves a bootable image. The bootloader checks the header, the length and a CRC, and then a signature from the vendor's key, and it jumps only if all three pass. If the check fails, it stays and reports, rather than running a bad image. A watchdog brings it back after a hang. For a safety product I'd also require a rollback to the last good image when the new one fails its first boot.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.modbus.org/specs.php">Modbus specifications (modbus.org)</a>: the Modbus over Serial Line specification, for the RTU frame and its silent interval, and the application protocol specification, for the function codes 03 and 06 and the exception responses. Read the serial line document first.
+    <a href="https://www.modbus.org/specs.php">Modbus specifications (modbus.org)</a>: the Modbus over Serial Line specification, for the RTU frame and its silent interval, and the application protocol specification, for the function codes 03 and 06 and the exception responses. Read the serial line document first. This lesson could not open either document from the workspace, so the 1.750 ms silence is taken from the project and from lesson 99 and needs checking against the document.
   </div>
 
   <div class="ask">

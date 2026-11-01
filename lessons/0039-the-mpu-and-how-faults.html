@@ -17,15 +17,31 @@
     By the end of this lesson you can say which fault exceptions the RP2040's Cortex-M0+ and the STM32F103's Cortex-M3 can raise, whether each part has an MPU, and which status register you would read first after a fault.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>fault</strong> is an exception the core raises when an access or instruction cannot complete: a bad address, a memory protection violation, or an illegal instruction. Like any <a href="../reference/glossary.html#exception">exception</a>, it stops normal execution and runs a handler, found through the vector table.
+    Lesson 34 showed the core's exception mechanism: when an exception fires, the core saves a frame of registers on the stack, then runs the handler whose address it reads from the <a href="../reference/glossary.html#vector-table">vector table</a>. Lesson 38 showed how a peripheral register is just an address. Both ideas matter here, because a fault is simply an exception that the core raises when something goes wrong with an access or an instruction.
   </p>
   <p>
-    The <strong>memory protection unit (MPU)</strong> is the hardware that makes some addresses off limits to some code. You program it with regions: each region has a base, a size, and access permissions. An access that breaks a rule raises a fault. The MPU is optional in Cortex-M cores, and it differs between the two parts in this course.
+    The problem this lesson solves is the field failure. A device runs for days, then resets, and the only evidence is what the firmware left behind. In industry the usual first step is a fault handler that stores the fault registers somewhere that survives the reset. To write that handler, or to read one, you need to know which faults exist on your chip and which registers record them. Those depend on the core and the part, so this lesson compares the two chips you use.
   </p>
 
-  <h2>Which faults each core has</h2>
+  <h2>What a fault is</h2>
+  <p>
+    A <strong>fault</strong> is an <a href="../reference/glossary.html#exception">exception</a> that the core raises when it cannot complete an access or an instruction. Three kinds of problem usually cause one: the program touches an address that is forbidden or that has no device behind it, the program executes an instruction the core does not accept, or the program breaks a protection rule. The core does not guess. It stops the normal flow, saves the frame, and jumps to the handler for that fault, exactly as it does for an interrupt.
+  </p>
+  <p>
+    The Cortex-M3 separates faults into families. Each family has its own handler and its own status bits. The families are <strong>MemManage</strong> for protection violations, <strong>BusFault</strong> for errors reported by the bus, and <strong>UsageFault</strong> for instruction-level problems such as an undefined instruction. A fourth exception, <strong>HardFault</strong>, is the catch-all. It is taken when a configurable fault cannot be handled on its own, and when the core has no other place to go.
+  </p>
+
+  <h2>The memory protection unit</h2>
+  <p>
+    The <strong><a href="../reference/glossary.html#mpu-memory-protection-unit">memory protection unit (MPU)</a></strong> is an optional block that checks each access against a list of rules. Each rule is a <em>region</em>, with a base address, a size, and permissions that say what code may read, write or execute there. An access that matches no permitted region, or breaks the rule of the region it falls in, causes a fault. The MPU lets an operating system keep one task out of another task's memory, and it can stop a stray pointer from overwriting a stack.
+  </p>
+  <p>
+    The MPU is optional. ARM defines the Cortex-M cores with or without it, and the chip maker chooses. That is the first fact to check, and the two chips in this course answer it differently.
+  </p>
+
+  <h2>Which faults each chip has</h2>
   <table>
     <thead><tr><th>Core and part</th><th>Fault exceptions</th><th>MPU</th></tr></thead>
     <tbody>
@@ -34,36 +50,127 @@
     </tbody>
   </table>
   <p>
-    On the RP2040, the datasheet says that MPU mismatches and permission violations invoke the HardFault handler. <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.4.6.1 (About the MPU)</a>. The MPU has eight unified regions with overlapping priorities, where region 7 is the highest priority (sections 2.4.2.5 and 2.4.6.1). The SDK's startup vector table agrees: its entries for MemManage, BusFault and UsageFault are reserved slots that never fire on the RP2040 (<code>src/rp2_common/pico_crt0/crt0.S</code>, pico-sdk 2.3.1).
+    On the RP2040, the datasheet says that MPU mismatches and permission violations invoke the HardFault handler. The MPU has eight unified regions, with overlapping priorities where region 7 is the highest (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.4.6.1 (About the MPU) and the feature list in 2.4.2.5</a>). The SDK's vector table agrees. Its entries for MemManage, BusFault and UsageFault are marked "Reserved, should never fire" on the RP2040, and the four slots after HardFault are all <code>isr_invalid</code> (<code>src/rp2_common/pico_crt0/crt0.S</code>, pico-sdk 2.3.1). The M0+ has no such exceptions, so it has no handler for them.
   </p>
   <p>
-    The STM32F103's vector table has separate handlers for <code>MemManage_Handler</code>, <code>BusFault_Handler</code> and <code>UsageFault_Handler</code> (<code>startup_stm32f103xb.s</code>). The ST device header sets <code>__MPU_PRESENT</code> to 0 and says that "other STM32 devices does not provide an MPU". So the MPU is absent on this part, even though the core has the MPU architecture.
+    The STM32F103's vector table has separate handlers for <code>MemManage_Handler</code>, <code>BusFault_Handler</code> and <code>UsageFault_Handler</code>. They sit at words 4, 5 and 6 of the table, right after <code>HardFault_Handler</code> at word 3 (<code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code>). The device header sets <code>__MPU_PRESENT</code> to 0 for this part, with the comment "Other STM32 devices does not provide an MPU" (<code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, line 50). The XL-density variant, <code>stm32f103xg.h</code>, sets it to 1 with the comment "STM32 XL-density devices provide an MPU". So the same core can come with or without an MPU, depending on the chip.
   </p>
-  <div class="warning">Do not assume an MPU exists because the core is a Cortex-M3. The MPU is an option the chip maker chooses. Check <code>__MPU_PRESENT</code> in the device header before you write any MPU code.</div>
+  <div class="warning">Do not assume an MPU exists because the core is a Cortex-M3. Check <code>__MPU_PRESENT</code> in the device header for your exact part before you write any MPU code. On the Blue Pill it is 0, and MPU register writes do nothing useful.</div>
 
-  <h2>Reading the fault status</h2>
+  <h2>The status registers, one at a time</h2>
   <p>
-    The Cortex-M3 keeps its fault information in the System Control Block (SCB). The base is <code>0xE000ED00</code>. The configurable fault status register <code>CFSR</code> is at offset <code>0x28</code>, so its address is <code>0xE000ED28</code>. It combines the MemManage, BusFault and UsageFault status bits. The HardFault status register <code>HFSR</code> is at offset <code>0x2C</code>, and its <code>FORCED</code> bit (bit 30) says that a configurable fault was escalated to HardFault because the configurable fault could not be taken on its own. All of these come from <code>core_cm3.h</code> in the CMSIS sources.
+    The Cortex-M3 keeps its fault information in the <strong>System Control Block (SCB)</strong>, a block of registers in the core's own address space. The header computes its base as <code>SCS_BASE + 0x0D00</code>, where <code>SCS_BASE</code> is <code>0xE000E000</code>, so the SCB starts at <code>0xE000ED00</code> (<code>third_party/CMSIS_5/CMSIS/Core/Include/core_cm3.h</code>). Four offsets matter for faults. The struct in the same header lists them:
+  </p>
+  <ul>
+    <li><code>CFSR</code>, the Configurable Fault Status Register, at offset <code>0x28</code>, so address <code>0xE000ED28</code>. It holds the MemManage, BusFault and UsageFault status bits in one word.</li>
+    <li><code>HFSR</code>, the HardFault Status Register, at offset <code>0x2C</code>, address <code>0xE000ED2C</code>.</li>
+    <li><code>MMFAR</code>, the MemManage Fault Address Register, at offset <code>0x34</code>.</li>
+    <li><code>BFAR</code>, the BusFault Address Register, at offset <code>0x38</code>.</li>
+  </ul>
+  <p>
+    The CFSR word is three status bytes packed together. The header gives each group its bit range: bits 0 to 7 belong to MemManage, bits 8 to 15 to BusFault, and bits 16 to 31 to UsageFault. Inside each group, the header names every bit with a position. The bits this lesson uses are these:
+  </p>
+  <table>
+    <thead><tr><th>Bit</th><th>Name in core_cm3.h</th><th>Group</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>IACCVIOL</td><td>MemManage</td></tr>
+      <tr><td>7</td><td>MMARVALID</td><td>MemManage</td></tr>
+      <tr><td>8</td><td>IBUSERR</td><td>BusFault</td></tr>
+      <tr><td>9</td><td>PRECISERR</td><td>BusFault</td></tr>
+      <tr><td>15</td><td>BFARVALID</td><td>BusFault</td></tr>
+      <tr><td>16</td><td>UNDEFINSTR</td><td>UsageFault</td></tr>
+      <tr><td>24</td><td>UNALIGNED</td><td>UsageFault</td></tr>
+      <tr><td>25</td><td>DIVBYZERO</td><td>UsageFault</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The HFSR has one bit that matters first. <code>FORCED</code> is bit 30, and the header defines it as <code>1UL &lt;&lt; 30</code>. It is set when a configurable fault was escalated to HardFault. The header gives the names and positions, and that is what this lesson relies on. What each bit means in detail, and when the core sets it, is in the Cortex-M3 programming manual PM0056, which this course has not yet checked against its text. Read that section before you rely on the meaning of any bit.
+  </p>
+
+  <h2>A worked example: decoding a fault</h2>
+  <p>
+    Suppose your fault handler stored these two words in RAM, and you are now reading them on your desk. <code>HFSR = 0x40000000</code> and <code>CFSR = 0x00008200</code>. Decode them in order, the same order you would use on a real board.
+  </p>
+  <ol class="steps">
+    <li><strong>HFSR first.</strong> Write <code>0x40000000</code> in binary: a single 1 at bit 30. That is <code>FORCED</code>. The core reached HardFault because a configurable fault was escalated, so the real cause is in CFSR.</li>
+    <li><strong>Split CFSR into its groups.</strong> <code>0x00008200</code> has bits 9 and 15 set. Bit 9 and bit 15 are both in the BusFault group, bits 8 to 15. The MemManage and UsageFault bytes are zero.</li>
+    <li><strong>Add the bit values.</strong> Bit 15 is <code>0x8000</code> and bit 9 is <code>0x0200</code>. Their sum is <code>0x8200</code>, which matches the register.</li>
+    <li><strong>Name the bits.</strong> Bit 9 is PRECISERR, and bit 15 is BFARVALID, the names the header gives them. From the names, bit 15 says that BFAR holds the faulting address, and bit 9 says that the bus error is precise. PM0056 is the place to confirm both meanings.</li>
+    <li><strong>Read the address.</strong> Because BFARVALID is set, the next step is to read BFAR. Had that bit been 0, BFAR would not hold a fault address you could trust, and you would look at the stacked program counter instead.</li>
+  </ol>
+  <p>
+    Now try a UsageFault. <code>CFSR = 0x01000000</code> is 2<sup>24</sup>, so bit 24 is set. In the UsageFault group that is bit 8 (24 minus 16), and the header names it UNALIGNED. The fault came from an unaligned access, and you find the offending instruction from the stacked PC. Lesson 34 explains the frame that holds that PC.
+  </p>
+
+  <h2>The code that reads the registers</h2>
+  <p>
+    The project <code>projects/0039-mpu-and-faults</code> prints the registers without a fault, so you can see the reading code work. The key lines are these:
+  </p>
+  <pre><code><span class="k">print_line</span>(<span class="s">"SCB-&gt;CFSR (fault status):  "</span>, SCB-&gt;CFSR);
+<span class="k">print_line</span>(<span class="s">"SCB-&gt;HFSR (hard fault):     "</span>, SCB-&gt;HFSR);
+<span class="k">print_line</span>(<span class="s">"__MPU_PRESENT (header):     "</span>, __MPU_PRESENT);   <span class="c">/* 0 on STM32F103 */</span></code></pre>
+  <p>
+    <code>SCB</code> is a macro in the CMSIS header that points at the SCB struct, at <code>0xE000ED00</code>. The expression <code>SCB-&gt;CFSR</code> is therefore a load from <code>0xE000ED28</code>, the same address you computed above from the offset. The compiler does this sum for you, as lesson 38 showed. <code>__MPU_PRESENT</code> is not a register at all. It is a constant from the header, so the value it prints is decided at build time. The project prints it as hex with <code>print_hex</code>, which is why the serial line reads <code>0x00000000</code> and not <code>0</code>.
   </p>
   <p>
-    The workflow after a fault is short. Read <code>HFSR</code> to see whether it was forced. Read <code>CFSR</code> to see which kind of fault it was. Only then look at the stacked program counter in the exception frame, which tells you where the fault happened. Lesson 34 explains that frame.
+    The <code>print_line</code> helper is the only part that talks to the serial port. It sends the label, the hex value and a carriage return and line feed (<code>\r\n</code>). The UART setup in the same file routes that output to the simulator's serial monitor on PA9, as the template describes.
   </p>
-  <div class="note">The CMSIS header is the source for the register addresses and bit names used here. The meaning of each CFSR bit is in the Cortex-M3 programming manual, PM0056, in its fault section. This course has not yet checked those bit meanings against that text, so look them up before you rely on one.</div>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0039-mpu-and-faults</code> is a single demo. It prints the fault status registers, the vector table offset, and the MPU presence flag from the device header.
+    The project <code>projects/0039-mpu-and-faults</code> is a single demo. It prints the fault status registers, the vector table offset register and the MPU presence flag from the device header.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0039-mpu-and-faults</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Find the line <code>__MPU_PRESENT (header)</code> in the serial output. It should read <code>0x00000000</code>.</li>
-    <li>Find the header line that defines <code>__MPU_PRESENT</code> in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, and confirm it matches what the demo printed.</li>
-    <li>Compare the <code>CFSR</code> and <code>HFSR</code> values with the offsets in the list above. Both should be zero, because nothing has faulted yet.</li>
+    <li>Read the serial monitor. The line <code>__MPU_PRESENT (header):     0x00000000</code> should appear, with the zero exactly as printed.</li>
+    <li>Open <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code> at line 50 and confirm that <code>__MPU_PRESENT</code> is defined as <code>0U</code>. The demo's output and the header must agree.</li>
+    <li>Compare the <code>SCB->CFSR</code> and <code>SCB->HFSR</code> lines. Both should read <code>0x00000000</code>, because the demo does not fault. If either is not zero, write the value down, and check PM0056 before you explain it.</li>
+    <li>Note the <code>SCB->VTOR</code> line. The project does not write that register, so the value is whatever the reset left behind. Write it down in your notes, so you can compare it with the vector table address that lesson 42 covers.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The SCB base is <code>0xE000ED00</code>. Add the CFSR offset <code>0x28</code> to get <code>0xE000ED28</code>, and add <code>0x2C</code> for HFSR.</p>
+    <p>The SCB base is <code>0xE000ED00</code>. Add the CFSR offset <code>0x28</code> to get <code>0xE000ED28</code>, and add <code>0x2C</code> for HFSR. The HFSR bit <code>FORCED</code> is bit 30, so its mask is <code>0x40000000</code>.</p>
   </details>
+
+  <h2>Common mistakes</h2>
+  <p>
+    Each mistake below is one that people make on their first fault investigation. The symptom is what you see, and the fix is what to change.
+  </p>
+  <h3>Mistake 1: writing MPU code on a part without an MPU</h3>
+  <p>
+    <strong>Symptom:</strong> the code configures regions, the build passes, and the protection you expected never triggers. A stray pointer overwrites memory without a fault. <strong>Fix:</strong> check <code>__MPU_PRESENT</code> in the device header before any MPU code. Guard MPU setup with <code>#if __MPU_PRESENT</code> so the build fails or skips the code on a part that has no MPU.
+  </p>
+  <h3>Mistake 2: reading CFSR and skipping HFSR</h3>
+  <p>
+    <strong>Symptom:</strong> the log says "fault", and you look for a cause in the bus status bits, but you find nothing that matches. The actual fault was a UsageFault escalated to HardFault. <strong>Fix:</strong> read HFSR first. If <code>FORCED</code> is set, the cause is in CFSR, and you should decode that group. If you only read CFSR, you may decode a fault that was never the one that fired.
+  </p>
+  <h3>Mistake 3: trusting BFAR or MMFAR without checking the valid bit</h3>
+  <p>
+    <strong>Symptom:</strong> your log shows a faulting address, but it looks random, and it does not point at the code you expected. <strong>Fix:</strong> check BFARVALID (bit 15) before you read BFAR, and MMARVALID (bit 7) before you read MMFAR. If the valid bit is clear, the address register does not hold the fault address, so use the stacked program counter instead.
+  </p>
+  <h3>Mistake 4: looking for a MemManage handler on the RP2040</h3>
+  <p>
+    <strong>Symptom:</strong> you set a breakpoint on <code>MemManage_Handler</code> in a Pico project, and it never fires, even though an MPU rule was broken. <strong>Fix:</strong> on the M0+, MPU violations go to <code>HardFault</code>. Put the breakpoint on the HardFault handler, which is the only fault handler on that core.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production firmware usually has one fault handler per family, or one shared handler that saves the frame and the status registers into a region of RAM that the startup code does not clear. The RAM region and the reset reason are then read on the next boot, and the team has a crash log. Such a handler is short, and a senior engineer will ask three things in review: does it read HFSR before CFSR, does it check the valid bits before it reports an address, and does it avoid calling the functions that might fault again. Each of those checks comes straight from the sections above.
+  </p>
+  <p>
+    In interviews, the question is usually "a hard fault happened, what do you read?" The answer that shows understanding names the registers, gives the reading order, and states which parts of the answer depend on the chip. Saying "the M0+ has only HardFault, so the cause comes from the stacked frame and the program state" is a strong answer, because it shows you know the core, not only the register names.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A fault is an exception the core raises when an access or instruction cannot complete.</li>
+    <li>The RP2040's Cortex-M0+ has an 8-region MPU and only HardFault. MPU violations go to HardFault.</li>
+    <li>The STM32F103's Cortex-M3 has MemManage, BusFault and UsageFault, plus HardFault, and the Blue Pill has no MPU (<code>__MPU_PRESENT</code> is 0).</li>
+    <li>The SCB is at <code>0xE000ED00</code>. CFSR is at offset <code>0x28</code>, HFSR at <code>0x2C</code>, MMFAR at <code>0x34</code> and BFAR at <code>0x38</code>.</li>
+    <li>CFSR packs three groups: MemManage in bits 0 to 7, BusFault in bits 8 to 15, UsageFault in bits 16 to 31.</li>
+    <li>Read HFSR first, then decode CFSR, then check the valid bit before you use an address register.</li>
+    <li>The meaning of each bit is in PM0056, and the header only gives names and positions.</li>
+  </ul>
 
   <div class="win">You can say which fault exceptions each core in this course has, why the STM32F103 has no MPU, and which two registers you read first when a fault fires.</div>
 
@@ -88,7 +195,16 @@
         "prompt": "How many MPU regions does the RP2040's Cortex-M0+ MPU have?",
         "options": ["eight regions", "four regions", "sixteen regions", "twelve regions"],
         "answer": 0,
-        "why": "The RP2040 datasheet lists eight user-configurable regions (sections 2.4.2.5 and 2.4.6.1). The tempting answer, sixteen, is the region count on some other Cortex-M cores." }
+        "why": "The RP2040 datasheet lists eight user-configurable regions (sections 2.4.2.5 and 2.4.6.1). The tempting answer, sixteen, is the region count on some other Cortex-M cores." },
+      { "type": "mc",
+        "prompt": "CFSR reads 0x00008200. Which bit says that BFAR holds a valid fault address?",
+        "options": ["bit 15, BFARVALID", "bit 9, PRECISERR", "bit 8, IBUSERR", "bit 7, MMARVALID"],
+        "answer": 0,
+        "why": "0x8200 has bits 15 and 9 set. Bit 15 is BFARVALID in the BusFault group, so BFAR holds the address. The tempting answer is bit 9, PRECISERR, which is also set but says only that the bus error was precise. Bit 7 is the MemManage valid bit, which this value does not set." },
+      { "type": "number",
+        "prompt": "A pointer bug leaves CFSR as 0x02000000. Which bit is set, counting from bit 0?",
+        "answer": 25, "tolerance": 0, "unit": "",
+        "why": "0x02000000 is 2 to the power 25, so bit 25 is set. The header names bit 25 DIVBYZERO, in the UsageFault group. The tempting answer, 24, is UNALIGNED, one bit lower." }
     ] }
     </script>
   </div>
@@ -110,11 +226,11 @@
 
   <div class="interview">
     <p><strong>"A Cortex-M3 board hard-faults after a pointer bug. What do you read, and in what order?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Read HFSR first, to see whether the HardFault was forced by a configurable fault that could not be handled. Then read CFSR for the specific cause, such as a bus error or a usage fault bit. If the status says the address is valid, read the MMFAR or BFAR address register, which holds the faulting address. Finally, read the stacked program counter from the exception frame to find the instruction that faulted. On a Cortex-M0+, such as the RP2040, there is only HardFault, so the cause has to be found from the stacked frame and the program's own state.</p></details>
+    <details><summary>Model answer</summary><p>Read HFSR first, to see whether the HardFault was forced by a configurable fault that could not be handled on its own. Then read CFSR and decode its group for the specific cause, such as a bus error or a usage fault bit. If the valid bit for an address is set, read BFAR or MMFAR, which holds the faulting address. Finally, read the stacked program counter from the exception frame to find the instruction that faulted. On a Cortex-M0+, such as the RP2040, there is only HardFault, so the cause has to be found from the stacked frame and the program's own state.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: section 2.4.6 (MPU), 2.4.6.1 (About the MPU), and the MPU register summary in 2.4.6.2. Read it for the one-fault model on the M0+. For the M3 fault bits, read PM0056 next, in its fault exception section.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet</a>: section 2.4.2.5 (MPU features), 2.4.6.1 (About the MPU) and 2.4.6.2 (MPU register summary). Read it for the one-fault model on the M0+. For the M3 fault bits, read PM0056 next, in its fault exception section.
   </div>
 
   <div class="ask">

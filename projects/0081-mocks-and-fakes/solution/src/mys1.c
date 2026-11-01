@@ -13,9 +13,10 @@ static bool reg_write(uint8_t reg, uint8_t value) {
     return i2c_write(MYS1_ADDR, frame, sizeof frame, true) == (int)sizeof frame;
 }
 
-/* Set the register pointer, then read. The pointer write must NOT send a STOP
- * (stop = false): the read follows as a repeated start, so no other master can
- * take the bus and reset the sensor's pointer (datasheet section 3.2). */
+/* Set the register pointer, then read. The pointer write sends no STOP
+ * (stop = false), so the read follows as a repeated start. The MYS-1 accepts a STOP
+ * and a new START too, but the datasheet (section 3.2) asks for the repeated start:
+ * a STOP would let another master use the bus in between, and it costs time. */
 static bool reg_read(uint8_t reg, uint8_t *buf, size_t len) {
     if (i2c_write(MYS1_ADDR, &reg, 1, false) != 1) {
         return false;   /* NACK on the pointer: do not start a read */

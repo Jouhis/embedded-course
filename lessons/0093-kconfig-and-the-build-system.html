@@ -16,13 +16,43 @@
     By the end of this lesson you can <strong>turn on logging with prj.conf, explain how a Kconfig symbol gets its final value, and find that value in build/zephyr/.config</strong>.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A Kconfig symbol is a named option with a type, a default, and optional dependencies: <code>config LOG_BACKEND_UART</code> depends on <code>UART_CONSOLE</code>, so the UART log backend does not exist unless the console is on. The Kconfig files of Zephyr and of each module declare thousands of these symbols. <a href="https://docs.zephyrproject.org/4.5.0/build/kconfig/index.html">The Zephyr Kconfig guide</a> gives the syntax.
-    <span class="sidenote">Kconfig was written for the Linux kernel. Zephyr uses the same language and the same tools (the <code>menuconfig</code> family), but its build runs CMake around it.</span>
+    Lesson 92 built a Zephyr blink with west. The blink used only two options, <code>CONFIG_GPIO</code> and <code>CONFIG_PRINTK</code>, and it printed with <code>printk()</code>, which is the simplest way to write to the console. In a real product you want more than that. You want log messages with a level and a timestamp, you want to choose how much each part of the system says, and you want the image to be as small as the product needs. Each of those is a configuration choice, and each has a cost in flash and RAM.
   </p>
   <p>
-    Your application sets values in <code>prj.conf</code>. During the build, the tools merge four sources, from the lowest priority to the highest: the Kconfig defaults, the board's defconfig, the overlay config files, and then your <code>prj.conf</code>. The result is one file, <code>build/zephyr/.config</code>. The C code sees the same values through <code>autoconf.h</code>, which the build generates from that file.
+    The same question comes up in every serious product. A sensor board for a field deployment should log only warnings, to save power and flash. A development board should log debug messages, so an engineer can see what is happening. A firmware team with twenty boards needs each board's options to be explicit and reviewable. Zephyr's answer is Kconfig: every option is declared in a file, its value is set in a file, and the build writes the final result to one place. This lesson teaches the language, the merge order, and how to find out why a value is what it is.
+  </p>
+
+  <h2>What a Kconfig symbol is</h2>
+  <p>
+    A <strong><a href="../reference/glossary.html#kconfig-symbol">Kconfig symbol</a></strong> is a named build option. Its name starts with <code>CONFIG_</code> in C and in configuration files. The language that declares symbols was written for the Linux kernel, and Zephyr uses the same language and the same tools. A declaration looks like this:
+  </p>
+<pre><code>config LOG
+    bool "Logging"
+    select PRINTK if USERSPACE
+    help
+      Global switch for the logger, when turned off log calls will not be
+      compiled in.</code></pre>
+  <p>
+    The line <code>config LOG</code> names the symbol. <code>bool</code> is its type, which means it is either <code>y</code> (on) or <code>n</code> (off). The string is the prompt, which is the name a menu shows. The <code>select</code> line says that turning on <code>LOG</code> also forces <code>PRINTK</code> on, but only when <code>USERSPACE</code> is on. The <code>help</code> text is what a person reads in the menu. In Zephyr's <code>subsys/logging/Kconfig</code>, the help says the global switch decides whether log calls are compiled in at all, which is what the rest of this lesson relies on.
+  </p>
+  <p>
+    The other symbol types are <code>int</code>, <code>string</code> and <code>hex</code>. An <code>int</code> can have a <code>range</code>, and the build rejects a value outside it. You will see one of those below, with <code>CONFIG_LOG_DEFAULT_LEVEL</code>, which must be between 0 and 4.
+  </p>
+  <p>
+    Two more concepts matter. A <code>default</code> gives a symbol its starting value when nothing else sets it. A <code>depends on</code> line says that the symbol can only be set when another symbol is on. For example, <code>subsys/logging/backends/Kconfig.uart</code> says that the UART log backend <code>depends on UART_CONSOLE</code>, so without the console there is no backend to turn on. The Zephyr configuration guide describes the same rules, and it adds that an assignment is only respected when its dependencies are satisfied, with a warning otherwise.
+  </p>
+
+  <h2>Where a value comes from: the merge</h2>
+  <p>
+    A symbol's value does not come from one place. The build merges several sources into one final configuration, and the Zephyr documentation (<code>doc/build/kconfig/setting.rst</code> in the workspace) lists them in order. The initial configuration starts from three inputs. The first is the board's defconfig, a file in the board folder that sets the symbols that board needs. The second is any <code>CONFIG_</code> entries passed to CMake on the command line or in the cache. The third is the application configuration, which is <code>prj.conf</code> in the application folder by default. A symbol set in the application configuration takes precedence over the board's defconfig. If no source sets a symbol, its <code>default</code> in the Kconfig files applies.
+  </p>
+  <p>
+    The application configuration has a few variants. If <code>CONF_FILE</code> is set, its files are used instead of <code>prj.conf</code>. If a file named <code>boards/&lt;BOARD&gt;.conf</code> exists in the application, it is merged with <code>prj.conf</code>. The documentation is the place to check the exact rules for your version, and it is the reason this lesson points at it.
+  </p>
+  <p>
+    The merged result is saved to <code>build/zephyr/.config</code>. The C code sees the same values through a generated header, <code>autoconf.h</code>, where each enabled symbol becomes a <code>#define</code> such as <code>CONFIG_LOG 1</code>. Two consequences follow. The file <code>.config</code> is the one place that answers "what value did the build use?", and it is more reliable than your memory of which file you edited.
   </p>
 
   <figure>
@@ -48,55 +78,131 @@
         <text x="409" y="98">#define CONFIG_…</text>
       </g>
     </svg>
-    <figcaption>Figure 1. Where a value comes from. The file build/zephyr/.config is the single answer to "what value did the build use?"</figcaption>
+    <figcaption>Figure 1. Where a value comes from. The file build/zephyr/.config is the single answer to "what value did the build use?" The diagram shows the three main inputs; CMake cache entries and boards/&lt;BOARD&gt;.conf also feed in, as the text explains.</figcaption>
   </figure>
 
   <h2>What we set, and what it does</h2>
-  <p>The solution's <code>prj.conf</code> turns on the logger, and sets the level and the mode:</p>
-  <pre><code>CONFIG_GPIO=y
+  <p>The solution's <code>prj.conf</code> turns on the logger and sets its level and mode:</p>
+<pre><code>CONFIG_GPIO=y
 CONFIG_PRINTK=y
 CONFIG_LOG=y
 CONFIG_LOG_DEFAULT_LEVEL=3
 CONFIG_LOG_MODE_IMMEDIATE=y
 CONFIG_MAIN_STACK_SIZE=2048</code></pre>
   <p>
-    <code>CONFIG_LOG</code> is the global switch: with it off, a <code>LOG_INF()</code> call compiles to nothing. <code>CONFIG_LOG_DEFAULT_LEVEL</code> sets the level for modules that do not name their own (range 0 to 4, default 3, in <code>subsys/logging/Kconfig.filtering</code>). <code>CONFIG_LOG_MODE_IMMEDIATE</code> prints each message where it is logged, instead of queuing it for a thread.
+    Read each line as a symbol assignment. <code>CONFIG_GPIO=y</code> and <code>CONFIG_PRINTK=y</code> were already in lesson 92, so the GPIO driver and <code>printk()</code> are on. <code>CONFIG_LOG=y</code> is the global switch. <code>CONFIG_LOG_DEFAULT_LEVEL=3</code> sets the level for modules that do not name their own. Its range is 0 to 4 and its default is 3, as <code>subsys/logging/Kconfig.filtering</code> declares. The help text there lists the levels: 0 is off, 1 is error, 2 is warning, 3 is info, and 4 is debug. <code>CONFIG_LOG_MODE_IMMEDIATE=y</code> chooses the mode. The Kconfig file for modes says that in immediate mode a log message is processed in the context of the call, and that the deferred mode is the default. The last line raises the stack of <code>main()</code> to 2048 bytes, which we return to in the cost section.
+  </p>
+  <p>
+    The solution's comments say the same things in its own words. The file <code>projects/0093-kconfig-and-build/solution/prj.conf</code> comments each line, and it is the reference to compare with after you finish the hands-on task.
+  </p>
+
+  <h2>A worked example: what CONFIG_LOG does to a log call</h2>
+  <p>
+    Take the first log line in the solution, <code>LOG_INF("KCONFIG OK, blinking every 500 ms");</code>. Trace what the preprocessor does with it, step by step.
+  </p>
+  <ol>
+    <li><strong>The macro.</strong> <code>LOG_INF</code> expands to <code>Z_LOG(LOG_LEVEL_INF, ...)</code>, which is in <code>include/zephyr/logging/log.h</code>.</li>
+    <li><strong>The level.</strong> The macro that works out the level of this call, <code>_LOG_LEVEL_RESOLVE</code>, checks <code>CONFIG_LOG</code> first. If logging is off, it resolves to <code>LOG_LEVEL_NONE</code>, and the call does nothing. If logging is on, it uses the module's own level, or <code>CONFIG_LOG_DEFAULT_LEVEL</code> when the module names none.</li>
+    <li><strong>The module.</strong> In <code>main.c</code> the line <code>LOG_MODULE_REGISTER(app, LOG_LEVEL_DBG);</code> gives this file its own name, <code>app</code>, and its own level, debug. That level is the compile-time limit for this file, so a <code>LOG_DBG</code> line in it is kept in the binary.</li>
+    <li><strong>The output.</strong> With the logger on and the immediate mode chosen, the message is formatted and sent to the UART backend at once, and it appears on the serial monitor with a timestamp and a level tag.</li>
+  </ol>
+  <p>
+    The numbers matter here. Set <code>CONFIG_LOG_DEFAULT_LEVEL=2</code> and a module without its own level drops its information messages, while the module that registers <code>LOG_LEVEL_DBG</code> still keeps its debug lines, because its own level wins. That is the rule the Kconfig help describes: the default applies only to modules that do not say what they want.
+  </p>
+
+  <h2>What logging costs</h2>
+  <p>
+    Options are not free, and the build reports the price. We measured the solution and the starter in the workspace with <code>arm-none-eabi-size</code> on each <code>zephyr.elf</code>. The starter has logging off and a 1024-byte main stack. The solution has logging on and a 2048-byte main stack.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Build</th><th>Flash (text plus data)</th><th>RAM (data plus bss)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Starter: logging off, 1024-byte stack</td><td>18,196 bytes</td><td>3,974 bytes</td></tr>
+      <tr><td>Solution: logging on, 2048-byte stack</td><td>22,552 bytes</td><td>5,080 bytes</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The flash grows by about 4.4 KB, and that is the logger's code and strings. The RAM grows by about 1.1 KB, but most of that is the stack change: the 2048-byte stack is 1024 bytes more than the starter's. Only the remaining 62 bytes or so come from logging itself. The lesson is that a size table has to say which option caused which change. If you change two options in one step, you cannot tell which one cost what.
   </p>
   <div class="note">
-    Look at the cost. The same blink with logging on grows from 17.9 KB to 22.3 KB of flash and from 3.9 KB to 5.1 KB of RAM (the build reports of lessons 92 and 93, which are our measurements, not a fixed figure). Options are not free, and the memory report shows the price.
+    These are our measurements of this workspace's builds, not a fixed figure for every Zephyr version. The numbers come from the <code>zephyr.elf</code> files that the build creates, using the Arm GNU toolchain 14.2 that the course installs. The build also prints a memory summary at the end, and the workspace has the targets <code>rom_report</code> and <code>ram_report</code> that print a tree of the largest symbols (<code>cmake/reports/CMakeLists.txt</code>). Use them to see which parts of the image grew.
   </div>
 
   <h2>Dependencies explain missing options</h2>
   <p>
-    Open <code>subsys/logging/backends/Kconfig.uart</code> and you find <code>depends on UART_CONSOLE</code> and <code>default y if !SHELL_BACKEND_SERIAL</code>. Two things follow. Setting <code>CONFIG_LOG_BACKEND_UART=y</code> does nothing unless the console is on. And turning on the serial shell switches the UART log backend off by default, because the shell has its own log path (lesson 97). When an option seems to have no effect, the first question is what it depends on.
+    Open <code>subsys/logging/backends/Kconfig.uart</code> and you find the lines <code>depends on UART_CONSOLE</code> and <code>default y if !SHELL_BACKEND_SERIAL</code>. Two things follow. Setting <code>CONFIG_LOG_BACKEND_UART=y</code> does nothing unless the console is on, because the dependency is not satisfied. And the default for the UART backend is on only when the serial shell is off, so turning the shell on switches the UART backend off by default. When an option seems to have no effect, the first question is what it depends on.
+  </p>
+  <p>
+    Kconfig has two relations between symbols, and they behave differently. A <code>depends on</code> line is a condition: the symbol may be set only when the condition holds. A <code>select</code> line is a force: when the selecting symbol is on, the selected symbol is turned on too. The Zephyr guide has a section on <code>select</code> pitfalls (<code>doc/build/kconfig/tips.rst</code> in the workspace). Its example shows a <code>select</code> forcing a symbol on even though that symbol's new <code>depends on</code> is not met, so a <code>select</code> can bypass the check that a <code>depends on</code> would enforce. The build warns about the first kind of problem when an assignment is ignored, and the second kind shows up only as a symbol you did not expect in <code>.config</code>.
   </p>
   <div class="warning">
-    Kconfig's <code>select</code> forces a symbol on, and <code>depends on</code> only allows it. Some symbols are hidden until their parent is on. The tools warn you about the first kind of problem, and the second kind shows up only as a missing option in <code>.config</code>.
+    A symbol that depends on a disabled option is not an error by itself. The build prints a warning, the value you wrote is not applied, and the option is missing or <code>n</code> in <code>.config</code>. Read the warnings in the build output, not only the final line.
   </div>
+
+  <h2>Where the DesignWare driver lives</h2>
+  <p>
+    The Pico's I2C controller is a Synopsys DesignWare block, and the Zephyr driver for it is in <code>drivers/i2c/Kconfig.dw</code>. That file is sourced from <code>drivers/i2c/Kconfig</code> at line 163, which is inside the <code>if I2C</code> block that begins at line 14. So the DesignWare menu, with the symbol <code>I2C_DW</code>, exists only when the I2C subsystem is on. The subsystem symbol is <code>CONFIG_I2C</code>. If you enable the Pico's I2C in a later lesson and nothing appears, check <code>CONFIG_I2C</code> first.
+  </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The starter has logging off, with a TODO(learner) note. You turn it on, add a log line, and then check the generated file.
+    The starter has logging off, with a <code>TODO(learner)</code> note at the end of <code>prj.conf</code>. You turn it on, add two log lines, and then check the generated file.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0093-kconfig-and-build/starter</code> in VS Code.</li>
     <li>In <code>prj.conf</code>, add the three lines from the TODO(learner) note: <code>CONFIG_LOG=y</code>, <code>CONFIG_LOG_DEFAULT_LEVEL=3</code> and <code>CONFIG_LOG_MODE_IMMEDIATE=y</code>.</li>
-    <li>In <code>src/main.c</code>, add the <code>LOG_INF</code> line for "KCONFIG OK" and the <code>LOG_DBG</code> line for the LED level.</li>
-    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open <code>build/zephyr/.config</code> and search for <code>CONFIG_LOG=</code>. You'll know it works when that line reads <code>CONFIG_LOG=y</code>.</li>
-    <li>Start the simulator (<kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>) and look for the "KCONFIG OK" line in the serial monitor.</li>
+    <li>In <code>src/main.c</code>, replace the first TODO(learner) with a <code>LOG_INF</code> line that says "KCONFIG OK, blinking every 500 ms", and the second with a <code>LOG_DBG</code> line that prints the LED level after the toggle, using <code>gpio_pin_get_dt()</code>.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open <code>build/zephyr/.config</code> and search for <code>CONFIG_LOG=</code>. You will know it works when that line reads <code>CONFIG_LOG=y</code>, and when the build output contains no Kconfig warning.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor should show a line containing <code>KCONFIG OK</code>, with a timestamp and an information tag.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The solution's <code>prj.conf</code> is the answer key, but read it first. If <code>LOG_INF</code> prints nothing, check that <code>CONFIG_LOG=y</code> is in <code>build/zephyr/.config</code>, not only in your file. An edit to <code>prj.conf</code> needs a new build.</p>
+    <p>The solution's <code>prj.conf</code> is the answer key, but read it first. If <code>LOG_INF</code> prints nothing, check that <code>CONFIG_LOG=y</code> is in <code>build/zephyr/.config</code>, not only in your file. An edit to <code>prj.conf</code> needs a new build, and a build that reuses an old <code>.config</code> is covered in the mistakes below.</p>
   </details>
   <p>
-    Next, the menus. <code>west build -t menuconfig</code> opens the terminal version, and <code>west build -t guiconfig</code> opens a window. Both targets exist in this workspace, and the GUI needs Python's tkinter, which is installed here. We did not run either one interactively, because they wait for a person. Use them to browse the tree and to see which symbols are hidden.
+    Next, the menus. <code>west build -t menuconfig</code> opens the terminal version, and <code>west build -t guiconfig</code> opens a window. Both targets are defined in <code>cmake/modules/kconfig.cmake</code>, and the GUI needs Python's tkinter. We did not run either interactively, because they wait for a person. Use them to browse the tree and to see which symbols are hidden. Changes you make there are written to <code>.config</code>, so they are a valid way to try a value before you write it into <code>prj.conf</code>.
+  </p>
+  <p>The reference solution is in <code>projects/0093-kconfig-and-build/solution</code>. Try first, compare after.</p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: a misspelled symbol.</strong> Writing <code>CONFIG_LOG_DEFAULT_LEVL=3</code>, with one letter missing, is an easy typo. We built the solution with that one change, and the build stopped. The output said <em>attempt to assign the value '3' to the undefined symbol LOG_DEFAULT_LEVL</em>, followed by <em>Aborting due to Kconfig warnings</em>. The symptom is a build that fails before any code compiles, and the message names the symbol. The fix is to copy the name from the Kconfig file, not from memory. The search box in <code>menuconfig</code> is a second check.
   </p>
   <p>
-    Finally, look at the memory report. <code>cmake --build build --target rom_report</code> prints a tree of every flash symbol, and <code>ram_report</code> does the same for RAM. Both work on this machine. The first lines of the tree show the largest contributors, and the totals match the <code>FLASH:</code> and <code>RAM:</code> lines in the build output.
+    <strong>Mistake 2: a symbol whose dependency is off.</strong> Setting <code>CONFIG_LOG_BACKEND_UART=y</code> while <code>CONFIG_UART_CONSOLE</code> is off does not turn the backend on, because the dependency is not met. The symptom is a Kconfig warning in the build output, and no log lines on the serial monitor. The fix is to read the warning, check the symbol's <code>depends on</code> line, and enable the parent first. A quick check is to search <code>.config</code> for the symbol: if the line is missing or says <code>n</code>, the assignment was not applied.
+  </p>
+  <p>
+    <strong>Mistake 3: trusting an old build.</strong> The configuration file <code>build/zephyr/.config</code> is reused as long as it is newer than its inputs, as the Zephyr guide explains. If you edit files in a way that does not change the timestamps the build checks, the old values can stay. The symptom is that <code>prj.conf</code> says one thing and <code>.config</code> says another, and a change in the file has no effect. The fix is a clean build: <code>tools/build.py</code> with <code>--clean</code> removes the build folder, and the next build regenerates everything. This is the check behind the interview answer below.
+  </p>
+  <p>
+    <strong>Mistake 4: editing the generated file.</strong> A learner who opens <code>build/zephyr/.config</code> and changes a line there will see the change work once. The next build may regenerate the file from <code>prj.conf</code>, and the edit is lost. The symptom is a value that was right and then, after a clean build, is wrong. The fix is to write the value in <code>prj.conf</code>, where it belongs, and treat <code>.config</code> as output to read, not input to edit.
+  </p>
+  <p>
+    <strong>Mistake 5: ignoring the cost.</strong> Turning on logging, a larger stack or a feature can push the image past the flash or RAM of the chip. The symptom is a link error that reports the region is full, or a build that succeeds but leaves too little RAM for the stacks. The fix is to read the memory summary after each change and to keep a record of the numbers, as the table above does.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that use Zephyr keep their options in <code>prj.conf</code> and board overlay files that are checked into version control, and they review changes to them as they review code. A change to a log level or a stack size is a change to the product's behaviour and its memory budget, so the review asks what the change costs. Many teams also keep a per-build size record, so a change that adds ten kilobytes shows up as a number in the review rather than as a surprise at release.
+  </p>
+  <p>
+    A common production pattern is a development configuration with debug logging and a release configuration with warnings only, with the difference written as a small overlay file. Another pattern is a configuration check in continuous integration, which builds every board and fails when a warning appears in the Kconfig output. Interviewers like the question that opens the interview answer below, because a good answer shows a method: find the final value, check the dependencies, and rebuild from clean.
   </p>
 
   <div class="win">You turned on logging by editing prj.conf, found the merged value in build/zephyr/.config, and measured what the option cost in flash and RAM.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A Kconfig symbol has a name starting with <code>CONFIG_</code>, a type, optional defaults, and optional <code>depends on</code> and <code>select</code> lines.</li>
+    <li>The final value comes from the board defconfig, CMake cache entries and the application configuration. A value in <code>prj.conf</code> overrides the board's defconfig, and a symbol with no setting uses its Kconfig default.</li>
+    <li>The file <code>build/zephyr/.config</code> is the final answer, and <code>autoconf.h</code> is generated from it for the C code.</li>
+    <li><code>CONFIG_LOG</code> is the global switch: when it is off, the log calls do nothing. <code>CONFIG_LOG_DEFAULT_LEVEL</code> sets the level for modules that do not name their own, from 0 to 4.</li>
+    <li>An assignment whose dependencies are not met is ignored with a warning. A misspelled symbol stops the build.</li>
+    <li>Logging and bigger stacks cost flash and RAM. Measure each change, and keep the numbers.</li>
+    <li>When a value does not take effect, read <code>.config</code>, check the dependencies, and do a clean build.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -115,7 +221,7 @@ CONFIG_MAIN_STACK_SIZE=2048</code></pre>
         "prompt": "The learner sets CONFIG_LOG=n. What happens to every LOG_INF call?",
         "options": ["They compile to nothing", "They still print lines", "They print in color", "They reboot the board"],
         "answer": 0,
-        "why": "With the logger off, the LOG macros compile away, so the binary is smaller and nothing prints. The tempting answer, still printing, assumes the level setting controls the switch, but the global CONFIG_LOG is checked first." },
+        "why": "With the logger off, the LOG macros resolve to no level and the calls do nothing. The tempting answer, still printing, assumes the level setting controls the switch, but the global CONFIG_LOG is checked first." },
       { "type": "number",
         "prompt": "The solution sets CONFIG_MAIN_STACK_SIZE=2048. Type the size in bytes, decimal or hex.",
         "answer": 2048, "tolerance": 0, "unit": "bytes",
@@ -123,7 +229,16 @@ CONFIG_MAIN_STACK_SIZE=2048</code></pre>
       { "type": "text",
         "prompt": "Which symbol turns on the I2C subsystem that the Pico's DesignWare driver lives inside? Write the full name.",
         "accept": ["CONFIG_I2C"],
-        "why": "drivers/i2c/Kconfig has the DesignWare driver inside the if I2C block. The tempting answer, CONFIG_I2C_DW, is the driver, which is only compiled when the subsystem is on." }
+        "why": "drivers/i2c/Kconfig sources the DesignWare menu inside its if I2C block. The tempting answer, CONFIG_I2C_DW, is the driver, which only appears when the subsystem is on." },
+      { "type": "mc",
+        "prompt": "A symbol's depends on line is not met. What does the build do with your assignment?",
+        "options": ["The assignment is ignored with a warning", "The assignment is applied without any warning", "The symbol is forced on silently now"],
+        "answer": 0,
+        "why": "An assignment is respected only when its dependencies hold, and otherwise the build prints a warning. The tempting answer, applied without a warning, is wrong because the rule is the reverse. The forced-on answer describes select, which does not check dependencies." },
+      { "type": "number",
+        "prompt": "The starter's main stack is 1024 bytes and the solution's is 2048 bytes. How many bytes of RAM does that change alone add?",
+        "answer": 1024, "tolerance": 0, "unit": "bytes",
+        "why": "2048 minus 1024 is 1024 bytes. The tempting answer, 2048, is the new size, not the increase, and the increase is what the RAM budget sees." }
     ] }
     </script>
   </div>
@@ -145,16 +260,16 @@ CONFIG_MAIN_STACK_SIZE=2048</code></pre>
 
   <div class="interview">
     <p><strong>"A value you set in a config file does not take effect. How do you find out why?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>First check the final value in the generated config (build/zephyr/.config), which shows what the build actually used. If the symbol is missing, look at its dependencies: a symbol that depends on a disabled symbol is hidden, and a value outside the allowed range is rejected. Then rebuild from clean, because a stale configuration can keep an old value.</p></details>
+    <details><summary>Model answer</summary><p>First check the final value in the generated config (build/zephyr/.config), which shows what the build actually used. If the symbol is missing, look at its dependencies: an assignment whose depends on is not met is ignored with a warning, so read the build output for that warning. A misspelled name stops the build with an undefined-symbol message. Then rebuild from clean, because a reused .config can keep an old value. Also say that a value outside the declared range is rejected.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://docs.zephyrproject.org/4.5.0/build/kconfig/index.html">Zephyr documentation: Configuration system (Kconfig)</a>: read "Kconfig basics", "Configuration files" and the note on how prj.conf overrides defaults. Then open <code>subsys/logging/backends/Kconfig.uart</code> and read the <code>depends on</code> line.
+    <a href="https://docs.zephyrproject.org/4.5.0/build/kconfig/index.html">Zephyr documentation: Configuration system (Kconfig)</a>: read "Kconfig basics", "Configuration files" and "The Initial Configuration". In the workspace, the same text is in <code>zephyr/doc/build/kconfig/setting.rst</code>. Then open <code>subsys/logging/backends/Kconfig.uart</code> and read the <code>depends on</code> line, and <code>subsys/logging/Kconfig.filtering</code> for the level range.
   </div>
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how a select statement in a Kconfig file can force a symbol on, and what happens when it conflicts with a depends on."
-    Related: <a href="0092-zephyr-setup.html">Lesson 92: Zephyr setup</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
+    Related: <a href="0092-zephyr-setup.html">Lesson 92: Zephyr setup</a>, <a href="0094-devicetree.html">Lesson 94: Devicetree</a>, <a href="../reference/zephyr.html">Zephyr cheat sheet</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

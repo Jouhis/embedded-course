@@ -17,15 +17,41 @@
     By the end of this lesson you can enable the internal pull-up from C, explain why a raw button count is wrong, and count presses correctly with an integrator debounce that you wrote yourself.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    <code>gpio_get()</code> reads the pad level through the SIO input register <code>GPIO_IN</code> at <code>0x004</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §2.3.1.7)</a>. It returns what the pin is at right now, not what your program last wrote. An input must always be at a defined level. A pull-up resistor gives it one when the button is open, so the RP2040's internal pull-up (50 to 80 kΩ) is the simplest choice <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.4 and Table 625)</a>. Lesson 16 explains why a floating input is a bug.
-    <span class="sidenote">With the pull-up, the released button reads 1, and a press connects the pin to ground and reads 0. That is an active-low input. Its current is at most 3.3 V ÷ 50 kΩ = 66 µA, so pressing the button wins easily.</span>
+    In <a href="0051-gpio-output.html">lesson 51</a> you drove pins as outputs. You wrote a level into the SIO output register, and the pad carried that level to an LED. This lesson goes the other way. A pin is an input when the chip reads the level on the pad, and a button, a limit switch, a rotary encoder or a door sensor all arrive that way. Almost every product has at least one of them, and the code that reads them is where many field bugs live: the printer that skips a step, the coffee machine that starts twice, the alarm that fires on its own.
+  </p>
+  <p>
+    Lesson 16 introduced the electrical reason an input needs a pull-up. Here you will see the software side of the same problem. A switch is a mechanical part, and mechanical parts do not change state cleanly. The pin reads what the switch does, bounce included, so the code has to decide which changes are real. That decision is debouncing.
   </p>
 
-  <h2>Why a button bounces</h2>
+  <h2>The idea of an input register</h2>
   <p>
-    A tactile switch is a spring that closes a contact. When the contact meets, it does not stop cleanly. It hits, separates, and hits again for a short time. The Wokwi pushbutton models this on purpose, following Horowitz and Hill's description of contacts that separate and reconnect many times over about 1 ms. Its <code>bounce</code> attribute is on by default, and setting it to <code>"0"</code> turns the effect off <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">(Wokwi pushbutton part)</a>.
+    A GPIO pin is an input when its output enable bit is 0, and the chip still reads the pad. The read path is a separate register. On the RP2040 the SIO block holds it at <code>GPIO_IN</code>, offset <code>0x004</code>, and it holds one bit per pin <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §2.3.1.7, Table 16)</a>. The SDK function <code>gpio_get()</code> reads that register and tests the bit for the pin you name. It returns what the pad is at the moment of the read. It does not return the value your program last wrote, which is what <code>GPIO_OUT</code> holds. Reading the output register would report a level that the pin may not have, if an external part is pulling it the other way.
+  </p>
+  <p>
+    <span class="sidenote">The SIO read takes one cycle, because it goes through the IOPORT and not the system bus. That is why a polling loop can sample a pin every few microseconds without a bus stall (§2.3.1).</span>
+    Each read is an ordinary load instruction on the Cortex-M0+. The SDK wraps it in a small inline function, so the compiler turns <code>gpio_get(14)</code> into a load from the SIO address, a shift to make a mask, and an AND.
+  </p>
+
+  <h2>Why an input needs a defined level</h2>
+  <p>
+    A pin that is not driven and not pulled has no defined level. The input buffer amplifies whatever small voltage or noise reaches it, so the reading can flip between 0 and 1 at random. This is a floating input. Your button code will then see presses that nobody made.
+  </p>
+  <p>
+    A pull-up resistor fixes this by connecting the pin to the supply through a high resistance. When the button is open, nothing else drives the pin, so the pull-up holds it at the supply level, which reads as 1. When the button closes, it connects the pin straight to ground. The pull-up is weak, so the button wins, and the pin reads 0. The RP2040 has a pull-up inside each pad. The datasheet gives its resistance as 50 to 80 kΩ <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.4 and Table 625)</a>. You enable it with a bit in the pad control register, and you do not need an external part for a button.
+  </p>
+  <p>
+    The value of that resistance sets a current. With the button pressed and a 3.3 V supply, the current through the pull-up is 3.3 V ÷ 50 kΩ = 66 µA at most. That is small, so the internal pull-up is fine for a button. It is not fine for a long wire or a heavy load, where an external pull-up of a few kΩ is the right choice.
+  </p>
+  <span class="sidenote">The pad is set up in the PADS_BANK0 block, and the pull-up enable is bit PUE (bit 3) of the GPIO0 pad register. The pull-down enable is PDE, and the two must not both be set unless you want a bus keeper (§2.19.4.1).</span>
+
+  <h2>A button is a mechanical contact</h2>
+  <p>
+    A tactile switch is a small metal spring. When you press it, the spring pushes two contacts together. The contacts do not stop cleanly when they meet. The spring hits, separates a little, and hits again, several times, before it settles. From the chip's side, the pin changes level many times in a few milliseconds, although you pressed once.
+  </p>
+  <p>
+    The Wokwi pushbutton models this on purpose. Its <code>bounce</code> attribute is on by default, and setting it to <code>"0"</code> turns the effect off. The Wokwi documentation cites Horowitz and Hill's description of real contacts, which separate and reconnect many times over a period of about 1 ms <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">(Wokwi pushbutton part, bounce attribute)</a>. The simulator does not publish its own bounce duration, so do not treat 1 ms as a fact about Wokwi. The figure from a real switch is the one that sets the window in your code, and you should check the switch's datasheet.
   </p>
 
   <figure>
@@ -46,17 +72,40 @@
     <figcaption>Figure 1. Raw pin (solid): the contact chatters for a few milliseconds before it settles. Debounced output (dashed): one edge, after the bounce has stopped. The exact times depend on the switch.</figcaption>
   </figure>
 
-  <h2>Three ways to debounce</h2>
+  <h2>Active-low wiring</h2>
   <p>
-    <strong>Wait after the edge</strong> is the simplest: on an edge, <code>sleep_ms(20)</code> and read again. It works, but it blocks the super-loop for 20 ms, and it is blind during the wait. That is why it does not fit a loop with other work (lesson 55 covers blocking).
+    In this project the button connects GP14 to ground. The pull-up holds GP14 high while the button is open, and a press pulls it low. So the pin reads 1 when released and 0 when pressed. Engineers call this active low: the active state is the 0 level. The schematic shows it as a switch to ground, and the code has to invert the reading once, in one place. The starter does that with <code>!gpio_get(BUTTON_PIN)</code>, so the rest of the program can use the word <code>pressed</code> with its usual meaning.
   </p>
   <p>
-    <strong>An integrator</strong> keeps a small counter that climbs while the pin reads pressed and falls while it reads released. The counter is clamped to a range. The stable state changes only when the counter reaches an end of its range. A bounce is shorter than the window, so the counter never gets there. This is the method in this lesson, and the project uses it.
-  </p>
-  <p>
-    <strong>A timestamp</strong> records when the pin last changed, and accepts a new level only after it has been steady for a set time. It is the same idea on a clock, and lesson 55 uses time-based checks in the same loop.
+    Mixing up the two levels is a common source of inverted logic. If your code checks <code>gpio_get() == 1</code> to mean pressed, the program reports a press when the button is released, and it reports nothing when you press it. The symptom looks like a bug in the press logic, but the cause is the wiring convention.
   </p>
 
+  <h2>The naive count, and why it is wrong</h2>
+  <p>
+    The first code most people write is an edge detector. It remembers the previous reading, and it counts when the current reading is pressed and the previous one was not. That is a correct edge detector for a clean signal. On a bouncing contact, each bounce is a real edge on the pin, so one click gives several counts.
+  </p>
+  <p>
+    The starter keeps this naive detector on purpose. It has two counters. <code>raw_edges</code> counts every edge, and <code>presses</code> is what the user should see. Watch the serial monitor and compare the two. You will see the problem with your own eyes before you fix it, which is the best way to learn why debouncing exists.
+  </p>
+
+  <h2>Three ways to debounce</h2>
+  <p>
+    There are three common methods. Each one answers the same question: how long must a new level last before the code believes it?
+  </p>
+  <p>
+    <strong>Wait after the edge</strong> is the simplest. On an edge, the code calls <code>sleep_ms(20)</code> and reads the pin again. It works, but the call blocks the whole loop for 20 ms. During that time the program cannot sample other inputs or service other work. Lesson 55 explains why blocking calls break a super-loop, so this method suits a program that has nothing else to do.
+  </p>
+  <p>
+    <strong>An integrator</strong> keeps a small counter. The counter climbs while the raw pin reads pressed and falls while it reads released. It is clamped to a range, from 0 up to a fixed number of samples. The stable state changes only when the counter reaches one end of its range. A bounce lasts less than the window, so the counter moves up and down without reaching the top, and the stable state does not change. This is the method used in this lesson.
+  </p>
+  <p>
+    <strong>A timestamp</strong> records when the pin last changed. A new level is accepted only after it has been steady for a set time. It is the same idea, but it measures time on a clock instead of counting samples. It fits well with a timer tick, as lesson 73 shows, and it avoids a fixed sampling rate.
+  </p>
+
+  <h2>The integrator, line by line</h2>
+  <p>
+    Here is the function from the reference solution. It takes the raw pressed state, updates the counter, and returns <code>true</code> only once for each confirmed press.
+  </p>
   <pre><code><span class="k">static bool</span> debounce_press(<span class="k">bool</span> raw_pressed) {
     <span class="k">static uint8_t</span> integrator = 0;
     <span class="k">static bool</span> stable_pressed = false;
@@ -75,9 +124,34 @@
     <span class="k">return false</span>;
 }</code></pre>
   <p>
-    The window is the choice you make. At one sample per millisecond, 10 samples is a 10 ms window. It must be longer than the bounce, and shorter than the fastest press you need to catch. Wokwi's bounce lasts about 1 ms, so 10 ms is generous in the simulator. A real switch's datasheet gives its own figure, and you should check it before you choose the window.
+    Line by line, starting at the top. The two <code>static</code> variables keep their values between calls. Without <code>static</code>, <code>integrator</code> would be a fresh local on every call, and it would always start from 0. <code>integrator</code> is a <code>uint8_t</code>, which is plenty for a window of 10 samples. <code>stable_pressed</code> is the debounced state that the rest of the program is allowed to see.
+  </p>
+  <p>
+    The first <code>if</code> line moves the counter one step toward the raw reading. The counter goes up only while it is below <code>DEBOUNCE_SAMPLES</code>, and down only while it is above 0. Those two tests are the clamp. Without the clamp, a long hold would push the counter past the window, and a long release would drive it below 0 and wrap a <code>uint8_t</code> to 255. Either way the counter would take far too long to change direction.
+  </p>
+  <p>
+    The next block fires the press. A press is reported only when the counter has reached the top and the stable state was released. The <code>!stable_pressed</code> test is what makes the report happen once. While the button is held, the counter stays at the top, but the stable state is already true, so the function returns <code>false</code> on every call.
+  </p>
+  <p>
+    The last block re-arms the detector. When the counter has fallen back to 0, the stable state becomes released, and the next press can fire again. The function returns <code>false</code> in every other case.
+  </p>
+  <p>
+    The starter's main loop wraps this function. It reads the raw pin, counts raw edges for the comparison, and calls the debounce. Each step sleeps for <code>SAMPLE_MS</code>, which is 1 ms. The loop does not depend on the timing being exact, because the window is measured in samples.
+  </p>
+
+  <h2>Choosing the window</h2>
+  <p>
+    The window is the number of consecutive samples the input must agree before the change counts. At one sample per millisecond, 10 samples make a 10 ms window. The window has to be longer than the longest bounce you expect, or bounce will reach the top of the counter. It also has to be shorter than the fastest press you need to catch. A window of 500 ms would make a quick double-tap disappear, and a window of 1 ms would not stop the bounce.
+  </p>
+  <p>
+    The bounce length is a property of the switch, so look it up. Its datasheet gives contact bounce, or a manufacturer application note gives a typical value. Choose a window that is a few times longer than that. You can test the choice in the simulator too: change <code>DEBOUNCE_SAMPLES</code>, rebuild, and watch whether the press count stays at one per click. Make the window very short and the bounce starts to count again.
   </p>
   <div class="warning">A plain edge detector on the raw pin is the most common bug in button code. It works on a bench with a good switch and fails on a cheap one. Always count presses after the debounce, and count raw edges only to show the bounce.</div>
+
+  <h2>The pull-up in code</h2>
+  <p>
+    The starter asks for three calls, and the order matters. <code>gpio_init(BUTTON_PIN)</code> routes the pin to the SIO function, which is function 5 for every GPIO <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.19.2, Table 279)</a>, and it also makes the pin an input and drives it low in its output register. <code>gpio_set_dir(BUTTON_PIN, GPIO_IN)</code> then confirms the input direction, which clears the output-enable bit in <code>GPIO_OE</code>. <code>gpio_pull_up(BUTTON_PIN)</code> sets the pull-up enable bit in the pad register. In the Pico SDK, <code>gpio_pull_up()</code> is a call to <code>gpio_set_pulls(gpio, true, false)</code>, so it turns on the pull-up and turns off the pull-down. Calling it before the pin is an input is harmless, but reading the code in the order it runs makes the intent clear.
+  </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
@@ -85,9 +159,9 @@
   </p>
   <ol class="steps">
     <li>Open <code>projects/0052-gpio-input-debounce/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Click the button once. The serial monitor prints several <code>press</code> lines for one click.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Click the button once. The serial monitor prints several <code>press</code> lines for one click, because the starter's naive edge detector counts every bounce.</li>
     <li>Your task, in two places marked <code>TODO(learner)</code>. First, configure GP14 as an input with the pull-up enabled, so the released button reads 1 and the starter's inverted read is correct. Second, replace the naive <code>debounce_press()</code> with the integrator above.</li>
-    <li>You will know it works when the serial monitor prints <code>DEBOUNCE OK</code> at startup, and each click gives one <code>press</code> line. The raw-edge count may still climb, which is correct: it counts the bounce.</li>
+    <li>Build again and start the simulator again. The serial monitor prints <code>DEBOUNCE OK</code> at startup. Click once, and expect one <code>press</code> line per click. The raw-edge count may still climb, which is correct: it counts the bounce.</li>
   </ol>
   <details>
     <summary>Hint for the pull-up</summary>
@@ -102,6 +176,44 @@
     <p>In <code>diagram.json</code>, add <code>"bounce": "0"</code> to the <code>attrs</code> of <code>btn1</code>, then run the starter again. With no bounce, the raw count and the press count agree. Remove the line afterwards, so the bounce is back for the real test.</p>
   </details>
   <p>The reference solution is in <code>projects/0052-gpio-input-debounce/solution</code>. Try first, compare after. It prints <code>DEBOUNCE OK</code> at startup, then one line per press with the raw count beside it.</p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: no pull-up.</strong> If you skip the <code>gpio_pull_up()</code> step, the pin is not pulled to a defined level. Symptom: the serial monitor prints presses while you do nothing, or the count changes on a released button. Fix: enable the pull-up after <code>gpio_set_dir()</code>, then confirm that the released pin reads 1.
+  </p>
+  <p>
+    <strong>Mistake 2: inverted logic.</strong> Symptom: the program counts presses when the button is released and ignores the press. The pin reads 0 when the button is pressed and 1 when it is released, so a test for 1 means released. Fix: invert the read once, with <code>!gpio_get()</code>, and use the word pressed everywhere after that.
+  </p>
+  <p>
+    <strong>Mistake 3: the counter that is not static.</strong> Symptom: the debounced press count stays at 0, however often you click. A local integrator starts from 0 on every call, so it never climbs to the window's top. Fix: mark the integrator and the stable state <code>static</code>, so they keep their values between calls.
+  </p>
+  <p>
+    <strong>Mistake 4: no clamp.</strong> Symptom: after a long hold, the button needs many releases before it counts again. The counter kept climbing past the window. Fix: clamp the counter at both ends, as the <code>if</code> lines in the integrator do.
+  </p>
+  <p>
+    <strong>Mistake 5: a window that is too long.</strong> Symptom: fast double taps produce one press. The window is longer than the gap between the taps. Fix: measure the switch's bounce, then choose a window a few times longer than that, and no longer.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional firmware rarely calls <code>sleep_ms()</code> to debounce. It reads all inputs in one periodic function, often driven by a timer interrupt, and stores the debounced state in a struct that the rest of the program reads. The read happens at a fixed rate, so the window is a count of ticks. Hardware designers add an RC filter or a Schmitt-trigger input when a switch is long wired or noisy. The software debounce still runs, because the filter reduces the bounce without removing it.
+  </p>
+  <p>
+    A code reviewer looks for three things in button code. Is the level defined by a pull-up or pull-down? Is the active level named and inverted in one place? Is the counted event produced after the debounce, once per press? A senior engineer may also ask where the debounce state lives, because a counter shared between an interrupt and the main loop needs the same care as any other shared variable (lesson 46).
+  </p>
+  <p>
+    Interviewers ask about this topic because it sits where electronics meets code. A question about a button that counts two presses tests whether you know bounce exists, know how to measure it, and can choose a fix with a justification.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li><code>gpio_get()</code> reads the pad through the SIO <code>GPIO_IN</code> register at offset <code>0x004</code>, and it returns the pin's present level, not the output register.</li>
+    <li>An input with no pull-up or pull-down floats. The RP2040 internal pull-up is 50 to 80 kΩ, enabled with <code>gpio_pull_up()</code>.</li>
+    <li>A mechanical button bounces: one press makes several edges. Counting raw edges gives the wrong answer.</li>
+    <li>An integrator debounce climbs and falls between 0 and a fixed window, and changes state only at the ends of that range.</li>
+    <li>The window must be longer than the bounce and shorter than the fastest press you must catch.</li>
+    <li>Invert an active-low read once, in one place, and keep the counter and the stable state <code>static</code>.</li>
+  </ul>
 
   <div class="win">You read a button through a pull-up, showed that a raw edge count is wrong, and replaced it with a debounce you can explain line by line. That is the same check you need on every mechanical input.</div>
 
@@ -145,7 +257,27 @@
           "The pin's function select"
         ],
         "answer": 0,
-        "why": "gpio_pull_up() sets the pull-up enable bit in the pad control register, so the pad pulls up when no driver sets the level. The output level is GPIO_OUT, GPIO_IN is the read path, and the function select is a separate register." }
+        "why": "gpio_pull_up() sets the pull-up enable bit in the pad control register, so the pad pulls up when no driver sets the level. The output level is GPIO_OUT, GPIO_IN is the read path, and the function select is a separate register." },
+      { "type": "mc",
+        "prompt": "A debounce counter is a plain local variable. Clicks never produce a debounced press. What is the cause?",
+        "options": [
+          "The counter is reset to zero",
+          "The pin is never set up",
+          "The pull-up is far too weak",
+          "The window is far too short"
+        ],
+        "answer": 0,
+        "why": "A local variable starts from 0 on every call, so the counter never reaches the top during a single press. Marking it static keeps the value between calls. The tempting answer, a weak pull-up, would make the level noisy, not stop a press from firing." },
+      { "type": "mc",
+        "prompt": "The button wiring connects GP14 to GND. What does gpio_get(14) return when the button is pressed?",
+        "options": [
+          "Zero, the pin is pulled low",
+          "One, the pin is pulled high",
+          "Random, because the pin is floating",
+          "Whatever was last written to it"
+        ],
+        "answer": 0,
+        "why": "Pressing the button connects the pin to ground, which overpowers the weak pull-up, so the pin reads 0. The tempting answer, 1, describes the released button. A floating pin would read randomly, but the pull-up prevents that, and gpio_get() reads the pad, not the last value written to GPIO_OUT."}
     ] }
     </script>
   </div>
@@ -171,7 +303,7 @@
   </div>
 
   <div class="source">
-    <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">Wokwi pushbutton part</a>: read the Bounce section and the <code>bounce</code> attribute. Then read RP2040 datasheet Table 625 for the pull-up range, and the Pico SDK <code>gpio_pull_up</code> in <code>src/rp2_common/hardware_gpio/gpio.c</code> to see what it writes.
+    <a href="https://docs.wokwi.com/parts/wokwi-pushbutton">Wokwi pushbutton part</a>: read the bounce attribute, which defaults to on and is turned off with the value "0". Then read RP2040 datasheet Table 625 for the 50 to 80 kΩ pull-up range, and the Pico SDK <code>gpio_pull_up</code> in <code>src/rp2_common/hardware_gpio/include/hardware/gpio.h</code>, which calls <code>gpio_set_pulls(gpio, true, false)</code>.
   </div>
 
   <div class="ask">

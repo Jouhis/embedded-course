@@ -113,6 +113,42 @@
 - [Hardware design with RP2040 (Raspberry Pi, RP-008279-DS-2)](https://pip-assets.raspberrypi.com/categories/814-rp2040/documents/RP-008279-DS-2-hardware-design-with-rp2040.pdf)
   The RP2040 minimal design and board guide. Use for: decoupling (section 2.1.2: 100 nF per power pin, placed close; section 2.1.3: 1 µF on the regulator input and output), the crystal (section 2.3) and two-layer and four-layer PCB design (section 2.7). The PDF text drops the micro sign, so check the figures in the PDF.
 
+- [TI SLVA390: Calculating Efficiency and Power Dissipation in DC/DC Converters (Texas Instruments)](https://www.ti.com/lit/pdf/slva390)
+  The application report that lists the three main causes of dissipation in a DC/DC converter (inductor conduction, MOSFET conduction, MOSFET switching) and the method for computing efficiency at any output voltage. Use for: lesson 15 (buck losses). Opened in this build; the introduction and the inductor section were read.
+
+- [Panasonic CGR18650CH specification (copy hosted by orbtronic.com)](https://www.orbtronic.com/content/battery-specs-datasheet/CGR18650CH-Panasonic_18650_specification_datasheet.pdf)
+  Lithium-ion cell: 3.6 V nominal, 4.2 V charge limit, 3.0 V discharge cut-off at 430 mA, 25 °C. Use for: lesson 15 (battery and dropout). This is a third-party copy; the manufacturer's own copy should be checked before a design relies on it.
+
+- [CircuitJS source: MosfetElm.java, VoltageElm.java, ResistorElm.java, WireElm.java, GroundElm.java, OutputElm.java (sharpie7/circuitjs1, GitHub)](https://github.com/sharpie7/circuitjs1/tree/master/src/com/lushprojects/circuitjs1/client)
+  The simulator's element classes. Their getDumpType() letters (v, r, w, g, O, f) and dump fields define the netlist format, and MosfetElm.java gives the MOSFET equations and the beta and threshold fields. Use for: lessons 17, 18 and Lab 1. Read in this build.
+
+- [SN74HC00 datasheet, quad 2-input NAND gate (Texas Instruments)](https://www.ti.com/lit/ds/symlink/sn74hc00.pdf)
+  A real NAND chip. Use for: the gate function (section 8.1, Y = A · B in positive logic), the function table (Table 8-1) and the propagation delay (section 6.7, Switching Characteristics). Lesson 22.
+
+- [Vishay CRCW chip resistor product information](https://www.vishay.com/en/product/20008/)
+  Chip resistor family with power ratings and the derating rules above the rated temperature. Use for: lesson 6, choosing a power rating. Read the derating curve in the datasheet of the exact part.
+
+- [Analog Devices AN-140: Basic Concepts of Linear Regulator and Switching Mode Power Supplies](https://analog.com/en/app-notes/an-140.html)
+  Application note on linear regulator power loss and efficiency. Use for: P<sub>loss</sub> = (V<sub>in</sub> − V<sub>out</sub>) × I and the 27.5 % example (lesson 15).
+
+- [TI SLVA390: buck converter efficiency and power loss](https://ti.com/lit/pdf/slva390)
+  Application report giving the buck loss sources and an efficiency procedure. Use for: lesson 15. Verified from a search summary only; check before the next revision.
+
+- [pico-sdk watchdog.c (Raspberry Pi, GitHub)](https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_watchdog/watchdog.c)
+  The SDK's watchdog code, pico-sdk 2.3.1: _watchdog_enable() multiplies the delay by WATCHDOG_XFACTOR, which is 2 on the RP2040 (errata RP2040-E1). Use for: lesson 0044 (the code, line by line). The file was read from the local SDK 2.3.1 copy in this pass; the GitHub URL is the same file on the master branch.
+
+- [STM32F1 medium-density errata sheet (ST, DocID 14574)](https://www.st.com/en/microcontrollers-microprocessors/stm32f1-series/documentation.html)
+  The errata for STM32F101x8/B, STM32F102x8/B and STM32F103x8/B medium-density parts. The title comes from a search result, not from an opened copy. The page link is the ST F1 documentation index; open it and confirm the exact sheet and current revision before the link is used as a primary source. Use for: lesson 0044 (which errata sheet a Blue Pill needs). Not yet verified in this pass.
+
+- [Pico SDK: hardware APIs (hardware_gpio, hardware_i2c, hardware_sync, hardware_dma)](https://www.raspberrypi.com/documentation/pico-sdk/hardware.html)
+  The GPIO interrupt callback, the I2C blocking calls and their return values (PICO_ERROR_GENERIC on no acknowledge), and the spinlock and interrupt-state helpers in hardware_sync. Use for: lesson 64, lesson 65 and lab 3. Already cited by lessons 60 to 63, and not yet listed here.
+
+- [Zephyr: Twister (test runner)](https://docs.zephyrproject.org/4.5.0/develop/twister/index.html)
+  How Twister finds test description files, the platform and harness options, and the native_sim Linux requirement. Use for: lesson 97.
+
+- [Pico SDK 2.3.1 source, pico_divider/divider_hardware.S (GitHub)](https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/pico_divider/divider_hardware.S)
+  The SDK's __aeabi_idiv wrapper, which runs integer division on the RP2040 hardware divider in the SIO block. Use for: lesson 104 (why a divide by a power of two is still worth a shift on the Pico) and lesson 21.
+
 ### Books (the canonical texts)
 - [_The Definitive Guide to ARM Cortex-M3 and Cortex-M4 Processors_, Joseph Yiu (Newnes)](https://www.sciencedirect.com/book/9780124080829/the-definitive-guide-to-arm-cortex-m3-and-cortex-m4-processors)
   The standard Cortex-M text. Use for: all of Part 2.3 and 2.4, the NVIC, fault handling and context switching.
@@ -173,6 +209,30 @@
 
 - [Interrupt (Memfault): Embedded Systems Roadmap, Bridging the Gap](https://interrupt.memfault.com/blog/embedded-systems-roadmap-bridging-the-gap)
   A practitioner roadmap for software developers entering embedded work. It notes that software engineers often struggle with the hardware side, advises simple hands-on projects first, and recommends checking job postings for skills that appear consistently. Use for: lesson 114 (what hiring managers look for). Opened in this build.
+
+- [Wokwi license](https://wokwi.com/license)
+  Personal 30-day license for Wokwi VS Code, free for open-source projects, and paid for commercial use. The page does not state renewal. Use for: lesson 1 (license terms).
+
+- [Retrieval Practice](https://www.retrievalpractice.org/)
+  The research summary behind retrieval practice, with spacing and interleaving as related strategies. Use for: lesson 4 (the method and its evidence).
+
+- [SparkFun: basic red 5 mm LED, product 9590](https://sparkfun.com/products/9590)
+  Typical forward voltage 2.0 V, range 1.8 to 2.2 V, as shown on the product page. Use for: lesson 9 (the forward-voltage example). Check your own LED's datasheet before you use any value.
+
+- [Texas Instruments SN74HC595 datasheet](https://www.ti.com/lit/ds/symlink/sn74hc595.pdf)
+  The 8-bit shift register with output latch. Use for: lesson 25 (the pin names SER, SRCLK, RCLK, SRCLR, OE and QH', section 8.1 on positive-edge clocks, the one-pulse-ahead note when the clocks are tied, and Table 8-1). Checked by text extraction on 2026-10-31.
+
+- [MC74HC595A 8-bit shift register with output latches (onsemi)](https://www.onsemi.com/pdf/datasheet/mc74hc595a-d.pdf)
+  The 74HC595 datasheet from onsemi. The pin descriptions say that a low-to-high transition on the shift clock shifts the serial input in, and a low-to-high transition on the latch clock copies the shift register to the outputs. Use for: lesson 25 and lesson 62 (the mode 0 choice and the latch timing). The PDF was downloaded and its pin descriptions were read in this pass; the page numbers were not recorded.
+
+- [GitHub Docs: using secrets in GitHub Actions](https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions)
+  The page that says secrets are not passed to a workflow triggered from a forked repository (GITHUB_TOKEN is still passed). Use for: lesson 82, the simulate job's if line. Opened in this pass.
+
+- [KiCad 9.0 documentation: Pcbnew (docs.kicad.org)](https://docs.kicad.org/9.0/en/pcbnew/pcbnew.html)
+  The board editor: the design rules checker (copper clearance, minimum width, and that every pad is connected as the netlist says), the board setup dialog that holds the design rules, and the fabrication outputs and drill files. Verified as the KiCad 9.0 manual in this build. Use for: lesson 106.
+
+- [RFC 2217: Telnet COM Port Control Option (rfc-editor.org)](https://www.rfc-editor.org/rfc/rfc2217)
+  Not fetched in this pass. Lesson 0113 mentions RFC 2217 in one sentence and does not link it yet.
 
 ### Protocol and topic specifications
 - [UM10204: I2C-bus Specification (NXP)](https://www.nxp.com/docs/en/user-guide/UM10204.pdf)
@@ -244,6 +304,12 @@
 - [Microchip SRAM self-test documentation: DIAG_SRAM_MarchCMinus](https://onlinedocs.microchip.com/oxy/GUID-CA566412-3E3C-467B-98AF-9F1D156615B7-en-US-3/GUID-4236B5E8-131B-4198-BED7-A31CE5426ACD.html)
   The vendor's March C- SRAM test, which describes it as detecting stuck-at faults among others. The page was seen in a search result, not opened in full. Use for: lesson 109.
 
+- [IEC 60063 (EN 60063:2015): preferred number series for resistors and capacitors (DIN publication page)](https://www.din.de/en/getting-involved/standards-committees/dke/publications/wdc-beuth:din21:240741276)
+  The standard that defines the E12 and E24 series. Use for: lesson 9, the E12 rounding rule. The publication page does not show the table; the values are the ones in the E12 section of the sheet in `reference/electronics-formulas.html`.
+
+- [RISKS Digest 19.50: reply by Bob Rahe, "Mars Pathfinder priority inversion" (catless.ncl.ac.uk, December 1997)](https://catless.ncl.ac.uk/Risks/19/50)
+  A reply that dates the CMU priority inheritance paper to 1990 and notes earlier prior art in a mainframe locking scheme. Use for: lesson 0090, the note on prior art. The date is the replier's, not independently checked.
+
 ### Language and build references
 - [cppreference: Fixed-width integer types](https://en.cppreference.com/w/c/types/integer)
   The C page on uintN_t: exact width, no padding bits, and the rule that each type is defined only when the implementation provides it. Use for: lesson 45, and the integer rules in checkpoint 3.
@@ -287,6 +353,9 @@
 
 - [GCC manual: Warning Options](https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html)
   Every GCC warning flag, and the group that enables it (-Wall, -Wextra, or none). Use for: lesson 83 and the MISRA quick list.
+
+- [Doxygen manual: usage (doxygen.nl)](https://www.doxygen.nl/manual/doxygen_usage.html)
+  The command-line options of doxygen, including -g, which writes a template configuration file, and the rule that a run without a configuration argument looks for a file named Doxyfile. Use for: lesson 0079.
 
 ### Tools
 - [PulseView (sigrok)](https://sigrok.org/wiki/PulseView)
@@ -392,6 +461,9 @@
 
 - [CNX Software: CS32 MCU clone of STM32 in a Blue Pill board](https://cnx-software.com/?p=63676)
   Describes the CS32F103 as compatible with the STM32F103, notes the inconsistent flash size in its datasheet, and quotes readers who had debugging problems (anecdotes, not tests). Use for: lesson 116 (the Blue Pill clone warning). Secondary source.
+
+- [Wokwi for VS Code: getting started](https://docs.wokwi.com/vscode/getting-started)
+  Installing the Wokwi extension and requesting a license with F1, then Wokwi: Request a new License. Use for: lesson 1 (license steps).
 
 ## Wisdom (Communities)
 - [r/embedded](https://www.reddit.com/r/embedded/)

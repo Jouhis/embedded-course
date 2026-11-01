@@ -10,7 +10,7 @@
 #define NTC_INPUT       0       // adc_select_input() takes the AINSEL number, not the GPIO number
 #define POT_INPUT       1
 #define ADC_FULL_SCALE  4095    // 12-bit ADC: codes 0 to 4095. Wokwi's docs formula uses 1023 (10-bit)
-#define ADC_VREF        3.3f    // volts: ADC_AVDD is a nominal 3.3 V (RP2040 datasheet, Table 591)
+#define ADC_VREF        3.3f    // volts: ADC_AVDD, the ADC's reference, is 3.3 V on the Pico (RP2040 datasheet, section 4.9)
 #define ADC_CODES       4096.0f // 2^12: the same factor the SDK's adc_console example uses
 #define OVERSAMPLE      16      // readings averaged per output value
 #define NTC_BETA        3950.0f // Wokwi part default; the thermistor's beta coefficient

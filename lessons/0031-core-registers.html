@@ -17,15 +17,26 @@
     By the end of this lesson you can name the core registers R0 to R12, SP, LR, PC and xPSR, say which xPSR bits hold the NZCV flags, and predict the flags after a <code>CMP</code>.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The core has <strong>13 general-purpose registers, R0 to R12</strong>. Arm's TRM lists them with the link register (LR, R14), the program counter (PC, R15) and one program status register, xPSR (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §2.3</a>). The stack pointer (SP, R13) is different: it is a banked register with two physical copies, and only one is visible at a time.
+    Lesson 25 covered storage cells and lesson 26 covered the ALU, the part of the core that adds and subtracts and sets the status flags. Lessons 28 to 30 showed the core fetching, decoding and executing instructions. Every one of those instructions reads and writes registers, so the registers are the working memory of the core. Lesson 29 showed that the 16-bit forms can name only R0 to R7 in their register fields.
   </p>
   <p>
-    The two stack pointers are <strong>SP_main</strong> (the main stack pointer, MSP) and <strong>SP_process</strong> (the process stack pointer, PSP). Lesson 35 explains when each one is active. Reset uses the main stack, and the TRM says that all exceptions use it (§2.2.1).
-    <span class="sidenote">The simulator has only one SP. It does not model MSP and PSP, so the register table shows one stack pointer and does not switch it.</span>
+    The register names matter in practice. A HardFault handler on a real board prints the registers at the moment of the fault, and you must know which value is the return address and which is the faulting program counter to find the bug. A debugger's register pane shows the same names. A compiler warning about a clobbered register is a message about the calling convention, which lesson 33 covers. This lesson gives you the vocabulary and the bit layout you need for those tasks.
   </p>
 
+  <h2>What a register is</h2>
+  <p>
+    A <strong><a href="../reference/glossary.html#register-cpu">register</a></strong> is one of a small set of storage cells inside the CPU core. Each register holds one 32-bit word on a Cortex-M. The ALU reads its inputs from registers and writes its result to a register, so an instruction such as <code>ADD R0, R0, #1</code> never touches memory. Memory is reached only through loads and stores, which is the RISC style from lesson 29.
+  </p>
+  <p>
+    Registers are the fastest storage the core has. A register read needs no bus transaction, and the ALU can use the value in the same cycle. A variable in RAM needs a load before the ALU can use it, and that load goes over the bus and may wait for memory. This is why a compiler tries to keep the values of a hot loop in registers, and why a debugger that shows a variable must sometimes read it from memory instead.
+  </p>
+
+  <h2>The sixteen register names</h2>
+  <p>
+    The core has 13 general-purpose registers, R0 to R12, plus three registers with special roles: the stack pointer (SP), the link register (LR) and the program counter (PC). Together those are the sixteen names. Arm's TRM lists them in its programmer's model, together with one program status register, xPSR (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §2.3</a>). The TRM says the general-purpose registers "have no special architecturally-defined uses", although the calling convention gives some of them a role, as lesson 33 explains.
+  </p>
   <table>
     <thead>
       <tr><th>Register</th><th>Name</th><th>What it holds</th></tr>
@@ -38,20 +49,66 @@
       <tr><td>xPSR</td><td>Program status</td><td>The flags and the status fields, read as APSR, IPSR and EPSR (below).</td></tr>
     </tbody>
   </table>
+  <p>
+    LR is the register that makes a short function cheap. Because a <code>bl</code> puts the return address in a register, a leaf function, which calls nothing, can return with <code>bx lr</code> and never touches the stack. A function that does call something must save LR first, which is the subject of lesson 33. The design choice shows up in every listing: a leaf function ends in <code>bx lr</code> with no <code>push</code> at all.
+  </p>
+  <p>
+    Two details in the table come from the TRM and from the encodings in lesson 29. The first is that R0 to R7 are "accessible by all instructions that specify a general-purpose register", while R8 to R12 are "not accessible by all 16-bit instructions" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §2.3.1</a>). That is why <code>movs r8, #1</code> fails on a Cortex-M0+. The second is that R13, the stack pointer, is a banked register, which is the subject of the next section.
+  </p>
+
+  <h2>The stack pointer is banked</h2>
+  <p>
+    The stack pointer is not one register. It is an alias for one of two physical registers, and only one is visible at a time. The two are <strong><a href="../reference/glossary.html#main-stack-pointer-msp">SP_main (MSP)</a></strong>, the main stack pointer, and <strong><a href="../reference/glossary.html#process-stack-pointer-psp">SP_process (PSP)</a></strong>, the process stack pointer. The TRM says it directly: "Only one stack, the process stack or the main stack, is visible, using r13, at any time" (DDI0337G, §2.2.1).
+  </p>
+  <p>
+    Which one is visible depends on the mode. Out of reset all code uses the main stack. The TRM also says that "all exceptions continue to use the main stack" (§2.2.1). A Thumb program that runs in thread mode can switch to the process stack, which an RTOS does so that each task has its own stack. Lesson 35 covers the switch. For this lesson, the only fact you need is that the SP you see in a debugger is the one in use, and inside an interrupt handler it is almost always MSP.
+  </p>
+  <p>
+    The simulator in this lesson does not switch stacks: its program stays in thread mode on the main stack, so one SP is in use. The simulator does model MSP and PSP, which lesson 35 uses. Keep that in mind when you compare its register panel with a real debugger.
+  </p>
 
   <h2>xPSR: three views of one register</h2>
   <p>
-    xPSR is one 32-bit register, but Arm's TRM describes it as three overlapping views. The <strong>APSR</strong> holds the condition flags. The <strong>IPSR</strong> holds the number of the exception being handled. The <strong>EPSR</strong> holds the Thumb state bit and the bits for interruptible instructions (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, Tables 2-1 to 2-3</a>).
+    xPSR is one 32-bit register, but Arm's TRM describes it as three overlapping views. The <strong><a href="../reference/glossary.html#program-status-register-xpsr">APSR</a></strong> holds the condition flags. The IPSR holds the number of the exception being handled. The EPSR holds the Thumb state bit and the bits for interruptible instructions (DDI0337G, Tables 2-1 to 2-3). Because the three views are fields of one register, a read of xPSR gives all of them at once, and a write changes whichever fields you name.
   </p>
   <ul>
-    <li><strong>APSR, bits 31 to 28:</strong> N (negative), Z (zero), C (carry) and V (overflow). The TRM's figure labels them in that order from bit 31 down.</li>
-    <li><strong>IPSR, bits 8 to 0:</strong> the active exception number. Zero means thread mode, which is the normal program.</li>
-    <li><strong>EPSR:</strong> the T bit (Thumb state) and the interruptible-instruction and If-Then state.</li>
+    <li><strong>APSR, bits 31 to 28:</strong> N at bit 31 (negative), Z at bit 30 (zero), C at bit 29 (carry or borrow) and V at bit 28 (overflow). Table 2-1 defines them in that order from bit 31 down. Bit 27 is the Q flag, a sticky saturation flag.</li>
+    <li><strong>IPSR, bits 8 to 0:</strong> the number of the active exception. Table 2-2 gives 0 for base level, which is thread mode running the main program, 11 for SVCall and 16 for the first peripheral interrupt. The IPSR field is 9 bits wide.</li>
+    <li><strong>EPSR:</strong> the T bit, which is bit 24 and must be set for Thumb code, and the interruptible-instruction and If-Then state bits (Table 2-3).</li>
   </ul>
+
+  <p>
+    The TRM says why the flags matter across an interrupt: "Before entering an exception, the processor saves the condition code flags on the stack" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §2.3</a>). The flags are part of the frame the hardware pushes, so a handler that runs a compare does not corrupt the flags its interrupted code will test when it resumes.
+  </p>
 
   <div class="widget bitreg" data-width="32" data-value="0xF0000000" data-title="The APSR flags, bits 31 to 28" data-fields="31:N,30:Z,29:C,28:V"></div>
   <p>
     The bitreg widget above shows the flag bits. Click them to see how the value changes. It does not show the IPSR or EPSR, which share the register but are separate fields.
+  </p>
+
+  <h2>A worked example: the flags after CMP R0, #11</h2>
+  <p>
+    A compare is a subtraction that throws away its result and keeps only the flags. Take <code>R0 = 10</code> and compare it with 11. Work it in 32-bit binary, because the flags describe 32-bit results.
+  </p>
+  <ol class="steps">
+    <li>
+      Write the operands. 10 is <code>0x0000000A</code>. 11 is <code>0x0000000B</code>.
+    </li>
+    <li>
+      Compute the subtraction as the core does: add the bitwise NOT of 11, plus 1. The NOT of <code>0x0000000B</code> is <code>0xFFFFFFF4</code>, and adding 1 gives <code>0xFFFFFFF5</code>. The simulator uses the same rule in its <code>addFlags</code> routine.
+    </li>
+    <li>
+      Add <code>0x0000000A + 0xFFFFFFF5</code>. The sum is <code>0xFFFFFFFF</code>, with no carry out of bit 31.
+    </li>
+    <li>
+      Read the flags. Bit 31 of the result is 1, so <strong>N = 1</strong>. The result is not zero, so <strong>Z = 0</strong>. There was no carry out, so <strong>C = 0</strong>, which means a borrow happened. The operands have different signs, so there is no signed overflow and <strong>V = 0</strong>.
+    </li>
+  </ol>
+  <p>
+    The result of the subtraction, <code>0xFFFFFFFF</code>, is −1 in two's complement, which is what 10 − 11 should be. N = 1 says the result is negative. C = 0 says the unsigned subtraction borrowed, so 10 is less than 11 as an unsigned number. Both facts are true at once, and which one a branch uses depends on which comparison you wrote in C, as the quiz below tests.
+  </p>
+  <p>
+    Now take <code>SUB R2, R0, R1</code> with both registers holding 10. The same steps give <code>10 + 0xFFFFFFF5 + 1 = 0x1_00000000</code>. The low 32 bits are zero and there is a carry out, so R2 = 0, Z = 1 and C = 1. The carry flag is set here because there was no borrow.
   </p>
 
   <h2>Try it in the CPU simulator</h2>
@@ -77,10 +134,52 @@
   </div>
   <details>
     <summary>Hint</summary>
-    <p>For <code>CMP</code>, compute 10 − 11, which is −1. A negative result sets N. It is not zero, so Z stays clear. Work out C and V from the subtraction too: a borrow clears C.</p>
+    <p>For <code>CMP</code>, compute 10 − 11, which is −1. A negative result sets N. It is not zero, so Z stays clear. Work out C and V from the subtraction too: a borrow clears C, as the worked example showed.</p>
   </details>
 
-  <div class="win">You named every core register, wrote down which xPSR bits hold the flags, and predicted the flags from a compare. That is the vocabulary you need for the rest of Part 2.</div>
+  <h2>The code, line by line</h2>
+  <ul>
+    <li><code>MOV R0, #10</code> writes the immediate 10 into R0. It is a data operation, so it sets N and Z from its result, which is 10.</li>
+    <li><code>MOV R1, #10</code> does the same for R1.</li>
+    <li><code>SUB R2, R0, R1</code> computes R0 − R1 into R2. The result is 0, so Z is set and the other flags follow the rule in the worked example.</li>
+    <li><code>CMP R0, #11</code> subtracts 11 from R0 and keeps only the flags. R0 is unchanged. It leaves N = 1, Z = 0, C = 0 and V = 0, which is what the worked example predicted.</li>
+    <li><code>B .</code> is the halt. The branch goes to its own address, so the register and flag panels stay as they are.</li>
+  </ul>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li>
+      <strong>Writing to PC by accident.</strong> Writing a value to PC branches to it. A line such as <code>MOV PC, R0</code> with a stale value in R0 sends the core to an address that holds no code. The symptom is often a HardFault, with a PC value that points into an unused part of the map. The fix: check which register holds the target, and remember that LR holds a return address, not a place to jump to.
+    </li>
+    <li>
+      <strong>Treating LR as preserved across a call.</strong> A <code>BL</code> overwrites LR with the return address. A function that calls another function must save LR first, or the return goes to the wrong place. The symptom is a function that returns to the instruction after the wrong call. Lesson 33 shows the fix.
+    </li>
+    <li>
+      <strong>Reading the borrow as a carry.</strong> After <code>CMP R0, #11</code> with R0 = 10, C is 0. A beginner who reads "C set" as "a larger value" gets the unsigned comparison backwards. The symptom is a branch that is taken when it should not be, or the reverse. The fix: remember that for a subtraction C is the NOT of the borrow, and that a branch such as <code>BCS</code> tests C = 1.
+    </li>
+    <li>
+      <strong>Using the wrong stack pointer in a handler.</strong> In an interrupt handler the SP is MSP, even if the thread was using PSP. A debugger that shows SP in a handler shows MSP. The symptom is a stack pointer value that does not match the one the task had. The fix: read the stacked frame from the stack the exception used, as lesson 34 explains.
+    </li>
+  </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    The register names are the first thing you read in any crash. On a Cortex-M, the exception entry sequence pushes eight words onto the stack: xPSR, PC, R0, R1, R2, R3, R12 and LR (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §5.5.1</a>). A HardFault handler that prints those eight words gives you the PC of the faulting instruction and the flags at that moment. Most firmware projects have a handler like this, and the names in this lesson are the names its output uses.
+  </p>
+  <p>
+    A senior engineer reviewing low-level code expects you to know which registers a function may change and which it must preserve, and to read xPSR when a flag matters. In an interview, the question "which registers does a Cortex-M have, and what is special about the stack pointer" is answered by the banked MSP and PSP, not by the list of sixteen names.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A register is a storage cell inside the core, 32 bits wide on a Cortex-M. The ALU works on registers, and loads and stores move data to and from memory.</li>
+    <li>The core has R0 to R12, SP (R13), LR (R14), PC (R15) and xPSR.</li>
+    <li>R0 to R7 are accessible to every instruction. R8 to R12 are not accessible to every 16-bit instruction.</li>
+    <li>SP is banked as MSP and PSP. Out of reset and in every exception, the core uses MSP.</li>
+    <li>xPSR is one register with three views: APSR (flags, N at bit 31, Z at 30, C at 29, V at 28), IPSR (exception number, bits 8 to 0) and EPSR (T bit at 24).</li>
+    <li>For a subtraction, C is set when there is no borrow. A result of 10 − 11 gives N = 1, Z = 0, C = 0 and V = 0.</li>
+    <li>A HardFault handler reads the stacked frame of eight words, which includes the PC of the faulting instruction.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -106,7 +205,16 @@
       { "type": "number",
         "prompt": "The IPSR holds the active exception number in its low bits. How many bits wide is that field?",
         "answer": 9, "tolerance": 0,
-        "why": "The field runs from bit 8 down to bit 0, which is 9 bits (DDI0337G, Table 2-2). The tempting answer is 8, which counts only the bit gap (8 − 0) and forgets the bit at position 0." }
+        "why": "The field runs from bit 8 down to bit 0, which is 9 bits (DDI0337G, Table 2-2). The tempting answer is 8, which counts only the bit gap (8 − 0) and forgets the bit at position 0." },
+      { "type": "mc",
+        "prompt": "After CMP R0, #11 with R0 = 10 on a Cortex-M0+, which branch is taken?",
+        "options": ["BCS is not taken", "BCS is taken here", "BEQ is taken here"],
+        "answer": 0,
+        "why": "The borrow leaves C = 0, and BCS tests C = 1, so it is not taken. The tempting answer is BCS, because a borrow is easy to read as a carry, and BEQ is wrong because Z is clear." },
+      { "type": "number",
+        "prompt": "In the subtraction 10 − 11 done as a 32-bit result, what is the value before the flags are read, in decimal?",
+        "answer": 4294967295, "tolerance": 0,
+        "why": "The 32-bit pattern is 0xFFFFFFFF, which as an unsigned number is 2^32 − 1 = 4294967295. As a signed number it is −1. The tempting answer is −1, which is right for signed code but not for the bit pattern in the register." }
     ] }
     </script>
   </div>
@@ -126,13 +234,15 @@
     </script>
   </div>
 
+  <div class="win">You named every core register, wrote down which xPSR bits hold the flags, and predicted the flags from a compare. That is the vocabulary you need for the rest of Part 2.</div>
+
   <div class="interview">
     <p><strong>"Which registers does a Cortex-M have, and what is special about the stack pointer?"</strong> Answer out loud in 60 seconds, then compare.</p>
     <details><summary>Model answer</summary><p>R0 to R12 are general-purpose. R13 is the stack pointer, which is banked: there is an MSP for handlers and reset, and a PSP that a thread can use. R14 is the link register, R15 is the PC, and xPSR holds the flags in its top bits and the active exception number in its low bits. The stack pointer is special because the hardware switches it on exception entry and return.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §2.3 (the registers) and Tables 2-1 to 2-3 (the xPSR fields). Yiu's <em>The Definitive Guide to ARM Cortex-M3 and Cortex-M4 Processors</em> covers the same registers in its programmer's model chapters, if you want a longer explanation.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §2.2.1 (main and process stacks), §2.3 and §2.3.1 (the registers and their access rules), Tables 2-1 to 2-3 (the xPSR fields) and §5.5.1 (the eight stacked words). Yiu's <em>The Definitive Guide to ARM Cortex-M3 and Cortex-M4 Processors</em> covers the same registers in its programmer's model chapters, if you want a longer explanation.
   </div>
 
   <div class="ask">

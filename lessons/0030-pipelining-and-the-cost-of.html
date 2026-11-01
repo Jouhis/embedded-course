@@ -17,13 +17,35 @@
     By the end of this lesson you can count the cycles a taken branch costs in the simulator's 3-stage model, and explain why a loop with a conditional branch slows down each time the branch is taken.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>pipeline</strong> splits the fetch-decode-execute loop from lesson 28 into stages that run at the same time. With three stages, while one instruction is executing, the next is being decoded and the one after is being fetched. Each instruction still takes the same number of steps, but the core finishes about one instruction per cycle in steady state.
+    Lesson 28 showed the core running one instruction at a time through three phases: fetch, decode and execute. Lesson 29 showed what the instruction bits mean. Neither lesson said how long each phase takes, and that question decides how fast your code runs. A motor step loop that must finish in 50 microseconds, a bit-banged protocol that must keep its edges on time, and an interrupt handler that must finish before the next interrupt all depend on counting cycles correctly.
+  </p>
+  <p>
+    The cost of a branch is the part of that count most often guessed wrong. Every <code>if</code>, every loop and every function call is a branch, so the cost is paid all over a real program. This lesson explains where the cost comes from, using the simulator's simple model, and then checks the model against the Arm timing table for a real Cortex-M3.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+  <p>
+    A <strong>clock cycle</strong> is one tick of the core's clock. The Pico runs its core at 125 MHz, which is 8 nanoseconds per cycle, and the work the core does is measured in these ticks. A <strong>pipeline</strong> is the split of the fetch, decode and execute work into <strong>stages</strong> that run at the same time. While one instruction is in the execute stage, the next is in decode, and the one after that is being fetched from memory.
+  </p>
+  <p>
+    The pipeline's benefit is <strong>throughput</strong>, the number of instructions finished per cycle. Its cost is <strong>latency</strong>, the time one instruction takes from fetch to the end. A pipeline makes latency slightly longer and throughput much higher. Without a pipeline, a 3-stage core would finish one instruction every three cycles and leave two of its three stages idle at any moment. With a pipeline, once the first instruction is through, one instruction finishes every cycle.
     <span class="sidenote">A pipeline is only as good as its guess about what comes next. Straight-line code keeps every stage busy. A branch is the exception, because the instructions fetched after it may be the wrong ones.</span>
   </p>
   <p>
-    The Cortex-M3 has a <strong>three-stage pipeline</strong>: fetch, decode and execute (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §1.1 and §1.3</a>). The TRM also describes branch target forwarding (§1.5), a hardware feature that reduces the cost of some branches. The Cortex-M0+ has a <strong>two-stage pipeline</strong> and implements Armv6-M (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ datasheet</a>). A shorter pipeline has less work in flight to throw away, but it also overlaps less.
+    The Cortex-M3 has a <strong>three-stage pipeline</strong>: fetch, decode and execute. Arm's TRM names the three stages in its section on the execution pipeline (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §1.3</a>). The Cortex-M0+ has a <strong>two-stage pipeline</strong> and implements Armv6-M (<a href="https://documentation-service.arm.com/static/620545c494e7af28dd7c9cbc">Arm Cortex-M0+ datasheet</a>). A shorter pipeline has less work in flight to throw away, but it also overlaps less.
+  </p>
+
+  <h2>Why a branch is different from other instructions</h2>
+  <p>
+    A pipeline keeps several instructions in flight, so the core must decide what to fetch next before the current instruction has finished. For straight-line code the answer is simple: the next address in memory. For a branch the answer depends on the branch's outcome, which the core only knows once the branch reaches execute. A <strong>conditional branch</strong> such as <code>BNE</code> is taken only when a flag test passes, so the core cannot know in the fetch stage whether to fetch the next instruction in memory or the branch target.
+  </p>
+  <p>
+    The core makes a guess. The TRM says that for conditional branches "the address is speculatively presented", and that the forwarded result then decides "if the branch path flushes the fetch queue or is preserved" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §1.4</a>). If the branch is not taken, the guess was right and nothing is lost. If it is taken, the fetched instructions are on the wrong path. The core discards them, and that discarding is called a <strong>pipeline flush</strong>. The instructions are not executed, but the fetch cycles that brought them in are gone, and the core must start fetching from the target before it can do useful work.
+  </p>
+  <p>
+    The TRM also describes <strong>branch target forwarding</strong> (§1.5). For some branch types the core presents the branch's memory access "at least a cycle earlier than when the opcode reaches execute". That shortens the wait for the target, but it does not make the cost zero, and the TRM says conditional branches are still speculated. Read the section before you assume a branch is free.
   </p>
 
   <figure>
@@ -69,19 +91,85 @@
     <figcaption>Figure 1. In steady state three instructions are in flight, one in each stage. Read the letters as F (fetch), D (decode) and E (execute). A taken branch in instruction 2 would make the two fetches behind it wrong, and the simulator marks them with a cross.</figcaption>
   </figure>
 
-  <h2>What a taken branch costs</h2>
+  <h2>A worked example: what a loop costs on a Cortex-M3</h2>
   <p>
-    When a branch is taken, the next instruction is not the one that followed it in memory. The core has already fetched the instructions behind the branch, and they are on the wrong path. Those instructions are <strong>flushed</strong>: thrown away without any effect. The cycles spent on them are lost.
+    The TRM gives timings for every Thumb instruction in its instruction timing chapter (Chapter 18, Table 18-1). We will use three rows of that table and check the simulator against them. The rows we need say the following, in the table's own words.
+  </p>
+  <ul>
+    <li><strong>Data operations</strong> such as <code>ADD</code>, <code>MOV</code> and <code>CMP</code> take <strong>1 cycle</strong> in the 16-bit form.</li>
+    <li><strong>Branches</strong> take <strong>1 cycle</strong> plus any fetch stalls, which we ignore here.</li>
+    <li>For a branch <strong>taken</strong>, "pipeline reloads (two cycles are added)". So a taken <code>B</code>, <code>BNE</code> or <code>BL</code> takes 1 + 2 = <strong>3 cycles</strong>.</li>
+  </ul>
+  <p>
+    Table 18-1 is a Cortex-M3 table. The text also says that "additional cycles can be taken because of fetch stalls", which happen when the memory cannot supply an instruction in time. We assume memory keeps up, so the numbers below are the best case. Real code on a real board can be slower.
   </p>
   <p>
-    The simulator uses the simplest model of this. It has a 3-stage pipeline, and each taken branch flushes the two instructions that follow it, so it loses 2 cycles. An untaken branch loses nothing, because the next instruction in memory is the right one. Real Cortex-M cores differ in detail: the exact cost depends on the instruction, the core and the memory, and the TRM's instruction timing chapter (Chapter 18) gives the figures. We did not check those figures for this lesson, so use the TRM before you quote a number.
+    Now take the loop in the simulator example below. It starts with <code>MOV R0, #0</code>, then runs an <code>ADD</code>, a <code>CMP</code> and a <code>BNE</code> four times. The <code>BNE</code> is taken on the first three passes and falls through on the fourth. Work out the cycles pass by pass:
+  </p>
+  <ol>
+    <li><strong>Before the loop:</strong> <code>MOV R0, #0</code> takes 1 cycle. Total so far: 1.</li>
+    <li><strong>Pass 1:</strong> <code>ADD</code> takes 1, <code>CMP</code> takes 1, and <code>BNE</code> is taken, so it takes 3. The pass costs 5 cycles. Total: 6.</li>
+    <li><strong>Pass 2:</strong> the same as pass 1, 5 cycles. Total: 11.</li>
+    <li><strong>Pass 3:</strong> the same again, 5 cycles. Total: 16.</li>
+    <li><strong>Pass 4:</strong> <code>ADD</code> takes 1, <code>CMP</code> takes 1, and <code>BNE</code> falls through, so it takes 1. The pass costs 3 cycles. Total: 19.</li>
+  </ol>
+  <p>
+    The same penalty applies to calls and returns. Table 18-1 puts <code>B</code>, <code>BL</code> and <code>BX</code> in one row of 16-bit branches, with the same "two cycles are added" rule when they are taken. A call therefore costs the same flush as a loop's back-edge, and a function that is called inside a hot loop pays it twice per pass, once for the call and once for the return.
+  </p>
+  <p>
+    The loop runs for 19 cycles in total, counting the <code>MOV</code>. Three taken branches each cost 2 cycles more than an untaken one, so 6 of the 19 cycles are the branch penalty. The other 13 are the work itself: four adds and four compares, plus the four branch instructions' base cycles, plus the initial move. That 6-cycle figure is the number the simulator reports as "cycles lost to branch flushes" for this loop, with the halt added on top.
+  </p>
+
+  <h2>The simulator's model</h2>
+  <p>
+    The simulator is a teaching model, not a Cortex-M3. It has a 3-stage pipeline, and each taken branch flushes the two instructions that follow it, so it loses 2 cycles. An untaken branch loses nothing in this model. That matches the TRM's "two cycles are added" for a taken branch, which is why the number is 2 and not 1. Real cores differ in detail. The Cortex-M0+ has a two-stage pipeline, so its numbers are different, and we did not check its branch cycle counts for this lesson. Use the datasheet and the TRM for the chip you are building for.
+  </p>
+  <p>
+    The simulator's pipeline view draws the three stages and marks the flushed instructions with a cross. It is a picture of the model, not a trace of real hardware. The count it prints is the number of taken branches times 2, and it includes the halt at the end of the program. The next section explains the halt.
   </p>
 
   <div class="warning">The simulator's halt, <code>B .</code>, counts as a taken branch too, because it jumps to itself. When you count flushes in the program below, do not count the final halt. The pipeline view adds it to the total, so the total on screen is one branch higher than the loop's real cost.</div>
 
+  <h2>The code, line by line</h2>
+  <p>
+    The program below is the loop from the worked example, written in the simulator's assembly. Read it line by line before you run it.
+  </p>
+  <ul>
+    <li><code>MOV R0, #0</code> sets the counter to zero. It is a data operation, so 1 cycle.</li>
+    <li><code>loop: ADD R0, R0, #1</code> adds 1 to R0. The label <code>loop</code> is an address the branch can jump back to.</li>
+    <li><code>CMP R0, #4</code> subtracts 4 from R0 and keeps only the flags, so R0 is not changed. The Z flag is set when R0 equals 4.</li>
+    <li><code>BNE loop</code> branches back to <code>loop</code> when the Z flag is clear, which means R0 is not yet 4. This is the back-edge, and it is the branch whose cost we count.</li>
+    <li><code>B .</code> branches to its own address, so the program parks there. It is the simulator's way to stop.</li>
+  </ul>
+  <div class="widget cpusim" data-title="Count to four with a branch" data-show="regs,flags,pipeline">
+    <script type="text/plain">
+            MOV  R0, #0
+    loop:   ADD  R0, R0, #1
+            CMP  R0, #4
+            BNE  loop                @ taken while R0 != 4
+            B    .                   @ halt
+    </script>
+  </div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li>
+      <strong>Counting the untaken branch as if it costs the same.</strong> A beginner adds 2 cycles for every branch, including the one that falls through. The symptom is a predicted cycle count that is too high by two for every loop exit. The fix: charge the penalty only when the branch is taken, and charge the base cycle to every branch.
+    </li>
+    <li>
+      <strong>Forgetting that the halt is a taken branch.</strong> The pipeline view on screen counts <code>B .</code>, so its total is one branch higher than the loop's cost. The symptom is that your prediction matches the loop's cost but not the number on screen. The fix: subtract the halt, as the warning above says.
+    </li>
+    <li>
+      <strong>Treating a flush as a wait state.</strong> Flash wait states are a separate effect: the memory is slower than the core, so the core waits for it. A flush throws away work the core already did. The symptom is that the loop is slow even though its code is short, and a student blames flash when the cause is taken branches. The fix: count taken branches first, then check the wait states in the datasheet and the clock setup.
+    </li>
+    <li>
+      <strong>Using one core's numbers for another.</strong> The 2-cycle penalty comes from the Cortex-M3 pipeline model. A Cortex-M0+ has a shorter pipeline, and its numbers are not the same. The symptom is a timing estimate that is right on one board and wrong on the Pico. The fix: check the timing source for the core in your project.
+    </li>
+  </ol>
+
   <h2>Try it in the CPU simulator</h2>
   <p>
-    The loop below adds 1 to R0 until R0 equals 4. The <code>BNE</code> at the end is taken while R0 is not 4. Turn on the pipeline view and run the program. Before you run it, predict how many times the <code>BNE</code> is taken.
+    The loop above adds 1 to R0 until R0 equals 4. The <code>BNE</code> at the end is taken while R0 is not 4. Turn on the pipeline view and run the program. Before you run it, predict how many times the <code>BNE</code> is taken.
   </p>
   <ol class="steps">
     <li>
@@ -94,21 +182,29 @@
       Compare the count of taken branches with your prediction. Remember the halt is one more taken branch in the total on screen.
     </li>
   </ol>
-  <div class="widget cpusim" data-title="Count to four with a branch" data-show="regs,flags,pipeline">
-    <script type="text/plain">
-            MOV  R0, #0
-    loop:   ADD  R0, R0, #1
-            CMP  R0, #4
-            BNE  loop                @ taken while R0 != 4
-            B    .                   @ halt
-    </script>
-  </div>
   <details>
     <summary>Hint</summary>
     <p>R0 goes 1, 2, 3, 4. The <code>BNE</code> is taken after 1, 2 and 3, and falls through after 4. Count the taken ones, then multiply by 2 for the cycles.</p>
   </details>
 
-  <div class="win">You counted the taken branches in a loop, converted them to cycles with the 2-cycle flush model, and explained why a branch in a loop is the expensive part of the loop.</div>
+  <h2>In real projects</h2>
+  <p>
+    Professional firmware engineers rarely count cycles by hand for a whole program. They count them where timing matters: an interrupt handler, a bit-banged waveform, or the body of a loop that runs at a fixed rate. For interrupts the TRM gives a fixed figure. It says there is "a 12-cycle latency from asserting the interrupt to the first instruction of the ISR executing" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">DDI0337G, §5.5.1, Figure 5-2</a>), which is a number a reviewer can check. The rest of the timing is measured on the board with a timer or the debugger, because the cache, the flash wait states and the bus contention all change the result.
+  </p>
+  <p>
+    A code review of a hot loop often asks two questions: is there a branch in the loop that could be removed, and does the loop's back-edge go to a short distance? Both are about the same cost. In an interview the question "why do branches cost so much in a pipelined core" is a good place to show that you understand the flush, not only the word.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A pipeline overlaps the fetch, decode and execute stages, so one instruction finishes per cycle in steady state.</li>
+    <li>The Cortex-M3 has three pipeline stages (TRM §1.3). The Cortex-M0+ has two.</li>
+    <li>A conditional branch is speculated: the core fetches the next instructions in memory until it knows the outcome (TRM §1.4).</li>
+    <li>A taken branch flushes the instructions behind it. In the Arm timing table the taken branch costs 3 cycles against 1 for an untaken one (Table 18-1).</li>
+    <li>The simulator's model charges 2 cycles per taken branch and includes the halt in the on-screen total.</li>
+    <li>A loop with a taken back-edge pays the penalty on every pass except the last.</li>
+    <li>Flash wait states and flushes are different effects, and the cycle count of a real loop needs both checked.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -133,7 +229,16 @@
       { "type": "text",
         "prompt": "Which Cortex-M core has the two-stage pipeline?",
         "accept": ["Cortex-M0+", "M0+", "Cortex M0+", "cortex-m0+", "Cortex-M0plus"],
-        "why": "The Cortex-M0+ has a two-stage pipeline in its datasheet. The Cortex-M3 has three stages, so it is the tempting wrong answer." }
+        "why": "The Cortex-M0+ has a two-stage pipeline in its datasheet. The Cortex-M3 has three stages, so it is the tempting wrong answer." },
+      { "type": "number",
+        "prompt": "On a Cortex-M3 with no fetch stalls (Table 18-1), how many cycles does a loop of ADD, CMP and BNE take if the BNE is taken once and falls through once?",
+        "answer": 8, "tolerance": 0,
+        "why": "The taken pass costs 1 + 1 + 3 = 5 cycles and the untaken pass costs 1 + 1 + 1 = 3, so the two passes take 8. The tempting answer is 6, which charges no penalty for the taken branch and so gives the untaken cost twice." },
+      { "type": "mc",
+        "prompt": "What does branch target forwarding do on a Cortex-M3?",
+        "options": ["It fetches the target earlier", "It removes all branch cost", "It speeds up flash reads"],
+        "answer": 0,
+        "why": "The TRM says the branch's memory access is presented at least a cycle before the opcode reaches execute, which is an earlier fetch of the target. It does not remove the cost: conditional branches are still speculated. The tempting answer is that it removes all branch cost, which the TRM does not claim." }
     ] }
     </script>
   </div>
@@ -153,13 +258,15 @@
     </script>
   </div>
 
+  <div class="win">You counted the taken branches in a loop, converted them to cycles with the 2-cycle flush model, and explained why a branch in a loop is the expensive part of the loop.</div>
+
   <div class="interview">
     <p><strong>"Why do branches cost so much in a pipelined core, and what does a shorter pipeline change?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>The core fetches and decodes past the branch before it knows the outcome, so a taken branch makes those instructions wrong and flushes them. A longer pipeline has more of them in flight, so it loses more per taken branch. A shorter one, like the M0+'s two stages, loses less per branch but overlaps less work. Real cores add tricks such as branch target forwarding to reduce the cost.</p></details>
+    <details><summary>Model answer</summary><p>The core fetches and decodes past the branch before it knows the outcome, so a taken branch makes those instructions wrong and flushes them. A longer pipeline has more of them in flight, so it loses more per taken branch. A shorter one, like the M0+'s two stages, loses less per branch but overlaps less work. Real cores add tricks such as branch target forwarding to reduce the cost. On the Cortex-M3 Table 18-1 counts a taken branch at 3 cycles against 1 for an untaken one.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §1.3 (the execution pipeline stages), §1.5 (branch target forwarding) and Chapter 18 (instruction timing). Read Chapter 18 before you quote a branch cost for a real chip.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §1.3 (the execution pipeline stages), §1.4 (the prefetch unit and speculative fetch), §1.5 (branch target forwarding), Table 18-1 in Chapter 18 (instruction timing) and §5.5.1 (the 12-cycle interrupt latency). Read Table 18-1 before you quote a branch cost for a real chip, and check the M0+ numbers in its own datasheet.
   </div>
 
   <div class="ask">

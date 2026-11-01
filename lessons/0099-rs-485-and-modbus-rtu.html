@@ -17,13 +17,24 @@
     By the end of this lesson you can <strong>build a Modbus RTU request and response with CRC-16/MODBUS, answer function 03 (read holding registers) and 06 (write single register), and find the end of a frame from the silent interval</strong>.
   </div>
 
-  <h2>The idea: RS-485 is the wire, Modbus is the language</h2>
+  <h2>Where we are, and why this matters</h2>
   <p>
-    RS-485 carries each bit as the voltage difference between two wires, A and B, the same differential idea as CAN in lesson 98. It is <em>half-duplex</em>: one pair carries both directions, so only one node may drive the line at a time. A driver stays off unless its driver-enable pin (DE) is high, and the receiver is usually enabled on the same chip by an active-low RE pin. Termination resistors at the two ends stop reflections on a long line, and many nodes can share the bus. These electrical facts are general, so check a transceiver's datasheet before you design a board.
-    <span class="sidenote">The Pico's UART0 is a TTL serial port, not RS-485. In Wokwi there is no transceiver, so the firmware has no DE pin to drive. On a real board you would drive DE high before each reply and low once the last byte has left the shifter.</span>
+    Lesson 53 gave you the UART: a start bit, eight data bits and a stop bit per byte, at an agreed baud rate. The Pico's UART0 in this project uses that format, 8N1, at 115200 baud. Lesson 70 gave you the ring buffer that moves bytes from the interrupt into the main loop. Lesson 98 introduced the differential pair, two wires carrying one signal as a voltage difference. RS-485 uses the same idea, and this lesson adds the rules for many devices sharing one pair of wires.
   </p>
   <p>
-    Modbus defines what the bytes mean. Modbus RTU is the binary version: each byte is sent as-is, with a CRC at the end. The master starts every exchange, and a slave answers only when it is addressed. The Modbus specifications are published by the Modbus organisation (<a href="https://www.modbus.org/specs.php">modbus.org specifications</a>): the serial-line specification covers the frame and the timing, and the application protocol specification covers the function codes. This lesson did not open the PDFs, so cite section numbers from the originals when you need them.
+    The job situation is common in factories and buildings. An energy meter, a motor drive and a temperature controller hang off one pair of wires, and a supervisory computer asks each of them for values in turn. That conversation needs a wire standard that is robust over long cable and a message format that says who is being asked and whether the answer arrived intact. RS-485 supplies the first. Modbus RTU supplies the second. The rest of this lesson builds the second, and tests it on a PC before it touches the board.
+  </p>
+
+  <h2>The idea: RS-485 is the wire, Modbus is the language</h2>
+  <p>
+    RS-485 carries each bit as the voltage difference between two wires, A and B, the same differential idea as CAN in lesson 98. Its transceiver is the chip between the UART and the wires. Two control pins decide what the chip does. On the TI SN65HVD3082E, a 5 V RS-485 transceiver used here as a reference, the driver is enabled by a logic high on DE, and when DE is low both bus outputs go high-impedance and the driver stops affecting the line. The receiver is enabled by a logic low on RE. With DE left open, the driver is disabled by default, because the pin has an internal pull-down (Texas Instruments, SN65HVD3082E datasheet, sections 8.4 and Table 8-1).
+  </p>
+  <p>
+    That makes RS-485 <em>half-duplex</em>: one pair carries traffic in both directions, so only one node may drive the line at a time. Every node that talks must switch its driver on for its own reply and off again afterwards. The datasheet's application section recommends a termination resistor at each cable end, matched to the cable's characteristic impedance, to stop reflections on a long line (datasheet, section 9.2). A stub, the short run from the main cable to one node, should be kept as short as possible for the same reason (section 9.2.1.2).
+    <span class="sidenote">The Pico's UART0 is a TTL serial port, not RS-485. In Wokwi there is no transceiver, so the firmware has no DE pin to drive. On a real board you would set DE high before each reply and drop it once the last byte has been sent.</span>
+  </p>
+  <p>
+    Modbus defines what the bytes mean. Modbus RTU (<a href="../reference/glossary.html#modbus-rtu">glossary</a>) is the binary version: each byte is sent as-is, with a CRC at the end. The master starts every exchange, and a slave answers only when it is addressed. The Modbus organisation publishes the specifications (<a href="https://www.modbus.org/specs.php">modbus.org specifications</a>): the serial-line specification covers the frame and the timing, and the application protocol specification covers the function codes. Those PDFs could not be downloaded for this lesson, so the section numbers you will see in the project's comments are unchecked, and you should read the originals before you cite one.
   </p>
 
   <h2>The RTU frame</h2>
@@ -48,10 +59,39 @@
     <figcaption>Figure 1. An RTU frame has no start or end byte. The silence between frames marks the edges, and the CRC checks the contents.</figcaption>
   </figure>
   <p>
-    The fields are the slave address (1 to 247; 0 is broadcast), the function code, the data, and a 16-bit CRC. Multi-byte fields are big-endian, which is the opposite of the CRC: the CRC's low byte is sent first. The CRC is CRC-16/MODBUS, with the reflected polynomial 0xA001, an initial value of 0xFFFF and no final XOR. You will check your code against the standard test value: the ASCII string "123456789" gives <code>0x4B37</code>.
+    The fields are the slave address (1 in this project), the function code, the data, and a 16-bit CRC. Multi-byte fields are big-endian, meaning the most significant byte comes first, which is the opposite of the CRC: the CRC's low byte is sent first. The CRC is CRC-16/MODBUS, with the reflected polynomial 0xA001, an initial value of 0xFFFF and no final XOR. You will check your code against the standard test value: the ASCII string "123456789" gives <code>0x4B37</code>.
   </p>
   <p>
-    A frame has no start or end byte. The receiver decides that a frame has ended when the line is silent for 3.5 character times. At 115200 baud that is about 334 µs, but the serial-line specification fixes the silence at 1.750 ms for rates above 19200 baud. The firmware uses 1750 µs. Check that value in the specification before you rely on it, because this lesson did not open it.
+    A frame has no start or end byte and no length field. The receiver decides that a frame has ended when the line is silent for 3.5 character times. At 115200 baud, one 8N1 character is 10 bit times, or 86.8 µs, so 3.5 characters are 35 bit times, about 304 µs. The serial-line specification fixes the silence at 1.750 ms above 19200 baud instead of computing it, and both the firmware and the Python master use 1750 µs. The specification itself was not opened for this lesson, so check that rule there before you rely on it.
+  </p>
+
+  <h2>How the CRC is computed, one bit at a time</h2>
+  <p>
+    A CRC is a checksum built from polynomial division. You do not need the algebra to use it. You need the procedure, which the project's <code>crc16_modbus()</code> function follows exactly. Start with the register <code>crc</code> set to 0xFFFF. For each byte, XOR the byte into the low eight bits of <code>crc</code>. Then repeat eight times: look at the bit that falls off the right end. If it is 1, shift right and XOR with 0xA001. If it is 0, just shift right. After the last byte, <code>crc</code> is the checksum.
+  </p>
+  <p>
+    Here is the trace for the single byte 0x01, one line per step:
+  </p>
+  <table>
+    <thead><tr><th>Step</th><th>Bit shifted out</th><th>crc after the step</th></tr></thead>
+    <tbody>
+      <tr><td>Start</td><td>-</td><td>FFFF</td></tr>
+      <tr><td>XOR 01 into the low byte</td><td>-</td><td>FFFE</td></tr>
+      <tr><td>Shift 1</td><td>0</td><td>7FFF</td></tr>
+      <tr><td>Shift 2</td><td>1</td><td>9FFE</td></tr>
+      <tr><td>Shift 3</td><td>0</td><td>4FFF</td></tr>
+      <tr><td>Shift 4</td><td>1</td><td>87FE</td></tr>
+      <tr><td>Shift 5</td><td>0</td><td>43FF</td></tr>
+      <tr><td>Shift 6</td><td>1</td><td>81FE</td></tr>
+      <tr><td>Shift 7</td><td>0</td><td>40FF</td></tr>
+      <tr><td>Shift 8</td><td>1</td><td>807E</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Look at shift 2. The bit shifted out is 1, so the shifted value 0x7FFF is XORed with 0xA001, which gives 0x9FFE. The XOR is what makes the checksum depend on every bit, not only on the byte's value. The result after one byte is 0x807E. Each further byte is folded in the same way, so the checksum of a whole frame depends on its order as well as its contents.
+  </p>
+  <p>
+    Two more facts help you check your work. The request <code>01 03 00 00 00 02</code> has CRC 0x0BC4, which is sent as <code>C4 0B</code>, low byte first. The reply <code>01 03 04 12 34 AB CD</code> has CRC 0x2000, sent as <code>00 20</code>. If you run the CRC over a whole frame, including its two CRC bytes, the result is zero for both of these frames. That is a quick self-test, because a wrong byte order breaks it and a wrong polynomial does too.
   </p>
 
   <h2>Function 03 and function 06</h2>
@@ -62,11 +102,15 @@
       <tr><td>06 write single register</td><td>register address, value</td><td>an echo of the request</td></tr>
     </tbody>
   </table>
+  <h3>Worked example: a request and its reply, field by field</h3>
   <p>
-    A request for registers 0 to 1 from slave 1 is <code>01 03 00 00 00 02 C4 0B</code>. The reply that carries 0x1234 and 0xABCD is <code>01 03 04 12 34 AB CD 00 20</code>. Those bytes come from the Python code in the project and are repeated in the C host tests, so the two implementations check each other.
+    A master asks slave 1 for registers 0 and 1. The request has four fields: the address <code>01</code>, the function <code>03</code>, the start address <code>00 00</code> (register 0), and the quantity <code>00 02</code> (two registers). The CRC of those six bytes is 0x0BC4, so the frame on the wire is <code>01 03 00 00 00 02 C4 0B</code>.
   </p>
   <p>
-    When the slave cannot honour a request, it sends an exception: the function code with its high bit set (0x83 for a 03 request), then an exception code. Code 01 is an illegal function, 02 an illegal data address, and 03 an illegal data value (application protocol specification, section 7; not opened for this lesson). A bad CRC or a frame for another address gets no reply at all.
+    The slave reads the registers and answers with <code>01 03 04 12 34 AB CD</code>, then the CRC <code>00 20</code>. The fields are: the address <code>01</code>, the function <code>03</code>, the byte count <code>04</code> (two registers at two bytes each), the register 0 value <code>12 34</code>, the register 1 value <code>AB CD</code>, and the CRC. The values 0x1234 and 0xABCD are the ones the C host test loads into the registers before it asks. Those bytes are repeated in the C host tests and in the Python selftest, so the two implementations check each other.
+  </p>
+  <p>
+    When the slave cannot honour a request, it sends an exception: the function code with its high bit set (0x83 for a 03 request), then an exception code. Code 01 is an illegal function, 02 an illegal data address and 03 an illegal data value. The project's header defines these three codes. Take a master that asks for three registers starting at register 2 from a slave that has only three. The start plus the quantity runs past the end, so the slave answers <code>01 83 02</code> with CRC <code>C0 F1</code>, which is <code>01 83 02 C0 F1</code> on the wire. A bad CRC or a frame for another address gets no reply at all.
   </p>
 
   <h2>Try it: the host tests first</h2>
@@ -75,7 +119,7 @@
   </p>
   <ol class="steps">
     <li>From the workspace root, run <code>python -I tools/build.py projects/0099-modbus-rtu-tests/starter --test</code>. The output ends with <code>9 Tests 6 Failures 0 Ignored</code>, and <code>0% tests passed</code>.</li>
-    <li>Open <code>src/crc16.c</code> and write the inner loop of <code>crc16_modbus()</code>. The check value test is the first to pass. Run the command again.</li>
+    <li>Open <code>src/crc16.c</code> and write the inner loop of <code>crc16_modbus()</code>. The CRC check-value test is one of the first to pass, because it only needs the CRC loop. Run the command again.</li>
     <li>Open <code>src/modbus.c</code> and handle functions 03 and 06 where the <code>TODO(learner)</code> comment is. Use <code>finish_frame()</code> for the CRC and <code>exception_response()</code> for every error.</li>
     <li>You will know it works when the output ends with <code>9 Tests 0 Failures 0 Ignored</code>, and ctest reports <code>100% tests passed</code>.</li>
   </ol>
@@ -108,6 +152,39 @@
   </div>
   <p>The reference solution is in <code>projects/0099-modbus-rtu-slave/solution</code>. Try first, compare after.</p>
 
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    The first mistake is to send the CRC high byte first, because data fields are big-endian and it is tempting to treat everything the same way. The symptom is a slave that never replies, so the master prints <code>reply:   (none)</code>. The Python <code>selftest</code> still passes, because it checks only the master's own frames and says nothing about what the firmware sends. The fix is to append the low byte first, as the <code>finish_frame()</code> function does. Run the residue check from this lesson on a captured frame. A swapped CRC gives a non-zero result.
+  </p>
+  <p>
+    The second mistake is to end a frame too early or too late. A fixed delay of a few milliseconds may work at one baud rate and fail at another, and a delay started from the wrong event splits a request in two. The symptom is a master that reads a reply of <code>(none)</code> for a request that was valid, or a slave that answers only the first half of a frame. The fix is to measure the silence from the last received byte, as the firmware does with <code>last_byte_us</code>, and to compare it with <code>FRAME_SILENCE_US</code> every time through the loop.
+  </p>
+  <p>
+    The third mistake is to forget to clear the receive buffer after a frame that gets no reply. A bad CRC or a frame for another address is still a frame, and if <code>rx_len</code> is not reset, the next request is appended to the old bytes. The symptom is a slave that answers a while, then stays silent: each later request is appended to the old bytes, so its CRC fails. The fix is to reset the length after every attempt, whether or not a reply was sent, as the solution does.
+  </p>
+  <p>
+    The fourth mistake is to leave the driver on. On a real RS-485 board, a slave whose DE pin stays high after its reply keeps driving the line while the master starts its next request. The symptom is garbage on the master's side, and on a scope the two drivers fight. The fix is to raise DE just before the reply and lower it after the last byte has gone out. The TI datasheet's Table 8-1 shows that a low DE puts the bus outputs in high impedance, which is the state the slave must return to.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    In industry, Modbus RTU is a polling protocol. A supervisory computer, the master, sends each device a request in turn, and each device answers only its own address. Engineers expect a master to handle silence: a timeout, a retry, and a decision about what to show when a meter stops answering. A slave is expected to be strict. A bad CRC gets silence, and a request it cannot serve gets an exception code, so a master can tell a corrupt frame from a refusal.
+  </p>
+  <p>
+    A review of this kind of firmware looks for three things. The CRC must be checked against the standard test value, not against a value the same code produced. The frame parser must be separate from the hardware, so it can run on a PC, which is how this project is built. And the bus direction must be handled explicitly, because RS-485 is half-duplex. The TI datasheet notes that a node can keep its receiver enabled while it transmits, so that it hears its own reply and can check it. That is a useful design choice when a bus collision would otherwise go unnoticed.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>RS-485 is a differential, half-duplex bus, so one node drives the pair at a time and every reply needs DE switched on and then off.</li>
+    <li>Modbus RTU frames have no start or end byte. The silence of 3.5 character times, fixed at 1.750 ms above 19200 baud, marks the end.</li>
+    <li>CRC-16/MODBUS starts at 0xFFFF, uses the reflected polynomial 0xA001, and checks as 0x4B37 on the ASCII string 123456789.</li>
+    <li>The CRC goes on the wire low byte first, while the data fields are big-endian.</li>
+    <li>Function 03 reads holding registers, with a byte count of twice the quantity. Function 06 writes one register and is answered with an echo.</li>
+    <li>An exception sets the high bit of the function code and adds a code: 01 illegal function, 02 illegal address, 03 illegal value.</li>
+    <li>A bad CRC or an address for another slave gets no reply, so a master must time out and retry.</li>
+  </ul>
+
   <div class="win">You built a Modbus RTU slave whose CRC checks against the standard value, and whose frame handler is tested on the PC first. You also know how a frame ends, and why a bad CRC gets no reply.</div>
 
   <div class="widget quiz" data-title="Check your understanding">
@@ -135,7 +212,16 @@
         "prompt": "A master writes 0x2A to register 1 with function 06. What does a healthy slave send back?",
         "options": ["It echoes the request frame", "It sends only the value", "It sends an exception reply", "It sends nothing at all"],
         "answer": 0,
-        "why": "A successful write is answered with an echo of the request, so the master can check that the write arrived. The tempting answer, nothing, is what a bad CRC gets, not a good write." }
+        "why": "A successful write is answered with an echo of the request, so the master can check that the write arrived. The tempting answer, nothing, is what a bad CRC gets, not a good write." },
+      { "type": "number",
+        "prompt": "How many bit times does one 8N1 character take on the wire, counting the start and stop bits?",
+        "answer": 10, "tolerance": 0, "unit": "bits",
+        "why": "One start bit, eight data bits and one stop bit make ten. The tempting answer, eight, counts only the data bits, and the start bit is what lets the receiver find each byte." },
+      { "type": "mc",
+        "prompt": "A slave with address 1 receives a valid-CRC request addressed to slave 2. What does it do?",
+        "options": ["It sends nothing back", "It raises an exception", "It echoes the request", "It returns register zero"],
+        "answer": 0,
+        "why": "A frame for another address is ignored, so the slave stays silent. The tempting answer, an exception, would tell the master that its request was refused, which only a valid request for this slave can receive." }
     ] }
     </script>
   </div>

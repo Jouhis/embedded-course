@@ -141,6 +141,10 @@ def check_file(path, manifest):
         target = (path.parent / link.split("#")[0]).resolve()
         if not target.exists():
             errors.append(f"broken local link: {link}")
+        elif "#" in link and target.suffix == ".html" and target.name == "glossary.html":
+            anchor = link.split("#", 1)[1]
+            if f'id="{anchor}"' not in target.read_text(encoding="utf-8"):
+                errors.append(f"glossary anchor not found: #{anchor} (run build_reference.py, or fix the spelling)")
 
     for proj in set(re.findall(r"projects/(\d{4}-[a-z0-9-]+)", text)):
         if not (ROOT / "projects" / proj).exists():
@@ -151,6 +155,17 @@ def check_file(path, manifest):
                 or re.search(r"<body[^>]*\bdata-concept\b", text))
     if item["kind"] == "lesson" and not item["conceptOnly"] and not hands_on and item["number"] >= 2:
         warnings.append("hands-on lesson references no Wokwi project (fine only for pure-theory lessons)")
+    if item["kind"] in ("lesson", "lab"):
+        import re as _re
+        body = _re.sub(r"<script.*?</script>|<svg.*?</svg>|<pre.*?</pre>", " ", text, flags=_re.S)
+        prose = len(_re.sub(r"<[^>]+>", " ", body).split())
+        if prose < 2000:
+            warnings.append(f"explainer is short ({prose} words of prose; the depth standard is about 2,500-3,500, LESSON-SPEC section 17)")
+        heads = " | ".join(h.lower() for h in _re.findall(r"<h[23][^>]*>(.*?)</h[23]>", text, flags=_re.S))
+        for need, words in (("common mistakes", ("mistake", "pitfall", "gotcha")),
+                            ("summary", ("summary", "key points", "recap", "remember"))):
+            if not any(w in heads for w in words):
+                warnings.append(f"no '{need}' heading (<h2>/<h3>; LESSON-SPEC section 17)")
 
     if not re.search(r'href="https?://', text):
         errors.append("no external citation links")

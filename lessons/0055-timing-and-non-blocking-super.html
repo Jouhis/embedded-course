@@ -17,18 +17,35 @@
     By the end of this lesson you can run three LEDs at 1, 2 and 4 Hz from one loop with no <code>sleep_ms()</code>, and write a deadline comparison that stays correct when the 32-bit microsecond counter wraps.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The Pico has a 64-bit microsecond counter, driven by the TIMER block at <code>0x40054000</code>. Reading it takes two registers: read <code>TIMELR</code> first, which latches the high word, then <code>TIMEHR</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §4.6.2 and Table 527)</a>. The SDK does that pair for you in <code>time_us_64()</code>. <code>time_us_32()</code> returns the low 32 bits, and that wraps about every 71.6 minutes (2<sup>32</sup> µs).
-    <span class="sidenote">The datasheet warns that reading <code>TIMELR</code> on one core can leave the high word latched for the other core. The SDK's read is safe for its own use, but you should not write your own two-register read in code that runs on both cores.</span>
+    Lesson 51 showed how to set a pin, and lesson 52 showed how to read one. Both were quick operations. Real firmware does a lot of work between them: it blinks a status LED, reads a button, parses bytes from a UART (lesson 53), and talks to a sensor over a slow bus. If each of those steps waits in its own <code>sleep_ms()</code>, the others stop. The debounce in lesson 52 already ran into this. Its sampling loop could not wait for 20 ms without blinding itself to the button.
   </p>
   <p>
-    The SDK also has <code>absolute_time_t</code>, an opaque timestamp in microseconds since boot. You get one with <code>get_absolute_time()</code>, make a deadline with <code>make_timeout_time_ms()</code>, compare with <code>absolute_time_diff_us()</code>, and wait with <code>sleep_until()</code> <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/common/pico_time/include/pico/time.h">(pico-sdk 2.3.1, pico/time.h)</a>. Those helpers are the right tool when you write a delay. Inside a super-loop with several deadlines, a plain 32-bit integer is smaller and faster to compare, and the code below uses one.
+    Almost every small embedded product is built this way. A kitchen timer, a thermostat, a 3D printer controller and a battery charger all run a loop that checks several things, one after another, many times a second. That structure is called a super-loop. Making it work requires a clock, a way to compare times that stays correct, and the discipline to never wait. Lesson 56 builds on this structure to hold each task's state explicitly.
+  </p>
+
+  <h2>What a clock gives the program</h2>
+  <p>
+    A clock in firmware is a counter that goes up at a known rate, read from a register. The RP2040 has a system timer that counts microseconds. It is a single 64-bit counter that increments once per microsecond, and the datasheet says it cannot overflow in practice. The counter is clocked from a one-microsecond reference derived from the crystal oscillator, so its rate does not drift with the CPU clock <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(RP2040 datasheet §4.6.1)</a>. The timer block sits at address <code>0x40054000</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.6, TIMER_BASE)</a>.
+  </p>
+  <p>
+    The bus is 32 bits wide, and the counter is 64 bits, so the CPU cannot read it in one access. The timer uses a pair of registers. Reading <code>TIMELR</code>, the low word, latches the high word into <code>TIMEHR</code>, so the high word stops changing until it is read. The datasheet's rule is to read <code>TIMELR</code> first, then <code>TIMEHR</code> <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.6.2, Table 527)</a>. Without the latch, the low word could roll over between the two reads, and the combined value would be off by about 4 295 seconds. The SDK's <code>time_us_64()</code> avoids the latch: it reads the raw high and low words, <code>TIMERAWH</code> and <code>TIMERAWL</code>, reads the high word again, and retries if it has changed <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_timer/timer.c">(pico-sdk 2.3.1, timer.c)</a>. Use the SDK function rather than writing your own two-register read.
+  </p>
+  <span class="sidenote">The datasheet warns about two cores reading <code>TIMELR</code> at the same time, for example in an interrupt and in the main loop. If one core reads <code>TIMELR</code> and the other core reads it before the first has read <code>TIMEHR</code>, the high word may not match the low word. Use the SDK function in both places.</span>
+  <p>
+    For most timing, the 32-bit <code>time_us_32()</code> is enough. It returns the low 32 bits of the same counter. It wraps every 2<sup>32</sup> µs, which is about 4 295 seconds, or 71.6 minutes. The SDK also has <code>absolute_time_t</code>, an opaque timestamp in microseconds since boot. You get one with <code>get_absolute_time()</code>, make a deadline with <code>make_timeout_time_ms()</code>, compare with <code>absolute_time_diff_us()</code>, and wait with <code>sleep_until()</code> <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/common/pico_time/include/pico/time.h">(pico-sdk 2.3.1, pico/time.h)</a>. Those helpers are the right tool when you write a delay. Inside a super-loop with several deadlines, a plain 32-bit integer is smaller and faster to compare, and the code below uses one.
   </p>
 
   <h2>Blocking vs checking the time</h2>
   <p>
     <code>sleep_ms(500)</code> does not return until 500 ms have passed. The CPU does nothing else during that time, and any LED, button or UART byte that should be handled in those 500 ms waits. That is blocking. A non-blocking loop asks instead: is the deadline reached yet? If not, it moves on, and the loop keeps running.
+  </p>
+  <p>
+    Compare the two with a timeline. Suppose a button press arrives 100 ms after a <code>sleep_ms(500)</code> starts. The press is not read until 500 ms have passed, so the program responds 400 ms late. The button is still pressed, and the code is still correct, but the delay is visible to the user. In a loop that checks a deadline, the same press is read on the next pass, which is typically a few microseconds after it arrives. The work done per pass is small, so the response time depends on the loop's period and not on any single delay.
+  </p>
+  <p>
+    The loop's period matters too. A super-loop that does 50 µs of work per pass checks its deadlines about 20 000 times a second. A deadline is then caught within 50 µs of its exact time, and that is usually fine for a blink. A loop that stalls in a 20 ms <code>printf</code>, as lesson 53 showed, delays every deadline by that much. The timing is only as good as the slowest path through the loop.
   </p>
   <figure>
     <svg viewBox="0 0 520 130" role="img" aria-label="Three rows of blinks on a common time axis. Each row marks deadlines at its own spacing, and the loop checks all three on every pass.">
@@ -48,6 +65,32 @@
     <figcaption>Figure 1. Three independent blinks on one time axis. Each waveform changes state at its own deadlines. Nothing waits, so each change happens on time.</figcaption>
   </figure>
 
+  <h2>A worked example: three blinks on one timeline</h2>
+  <p>
+    The project's three LEDs toggle at 1, 2 and 4 Hz. A 1 Hz blink has a period of one second, and its LED is on for half of it, so it toggles every 500 000 µs. A 2 Hz blink toggles every 250 000 µs, and a 4 Hz blink every 125 000 µs. Each deadline is the start time plus a multiple of its half period. Take the start as time 0, which is the value <code>time_us_32()</code> returned once before the loop.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Time (ms)</th><th>1 Hz (GP2)</th><th>2 Hz (GP3)</th><th>4 Hz (GP4)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>125</td><td>–</td><td>–</td><td>toggle</td></tr>
+      <tr><td>250</td><td>–</td><td>toggle</td><td>toggle</td></tr>
+      <tr><td>375</td><td>–</td><td>–</td><td>toggle</td></tr>
+      <tr><td>500</td><td>toggle</td><td>toggle</td><td>toggle</td></tr>
+      <tr><td>625</td><td>–</td><td>–</td><td>toggle</td></tr>
+      <tr><td>750</td><td>–</td><td>toggle</td><td>toggle</td></tr>
+      <tr><td>875</td><td>–</td><td>–</td><td>toggle</td></tr>
+      <tr><td>1000</td><td>toggle</td><td>toggle</td><td>toggle</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Read the table to see what the loop must do. At 500 ms and at every whole second, all three deadlines fall on the same instant, so one pass of the loop must service all three. The loop does that, because <code>blink_service()</code> is called for each blink on every pass, and each call checks only its own deadline. At 125 ms, 375 ms and every other odd multiple of 125 ms, only the 4 Hz blink is due. Over one second the 4 Hz LED toggles eight times, which is four full blinks, the 2 Hz LED toggles four times, and the 1 Hz LED toggles twice.
+  </p>
+  <p>
+    Now the timing error. If a pass arrives at 503 ms, the 500 ms deadline is 3 ms late, and the toggle happens at 503 ms. The code then adds the half period to the old deadline, 500 ms, and gets 1000 ms as the next deadline, not 1003 ms. The next toggle still lands on time. This is the reason the deadline is advanced from the old value. If the code added the half period to the current time, every late pass would push the whole blink later, and the error would grow over time.
+  </p>
+
   <h2>The deadline pattern</h2>
   <p>
     A blink is a deadline and a toggle. Store the time of the next toggle, and on each pass ask whether it has arrived. If it has, toggle, and add the half period to the stored deadline. Add to the old deadline, not to the current time, so a late pass does not make the blink slower over time.
@@ -63,6 +106,12 @@
     }
 }</code></pre>
   <p>
+    Line by line. <code>is_due()</code> returns true when <code>now_us</code> is at or after <code>deadline_us</code>. The subtraction is done in <code>uint32_t</code>, so it wraps modulo 2<sup>32</sup>, and the cast to <code>int32_t</code> reads the result as a signed distance. The next section explains why that works. The cast is an implementation detail that the C standard leaves to the compiler for values out of range, but on the Arm compiler the cast keeps the bit pattern, which is the behaviour this code relies on.
+  </p>
+  <p>
+    <code>blink_service()</code> takes a pointer to the blink's state. When the deadline has come, it calls <code>gpio_xor_mask(b-&gt;mask)</code>. That is the SIO's <code>GPIO_OUT_XOR</code> alias from lesson 51: one store that flips only the pins named in the mask, so the other two LEDs are untouched. Then <code>b-&gt;next_us += b-&gt;half_us</code> moves the deadline on by one half period. The stored value is the one from the last deadline, not the current time, which is what keeps the rate exact.
+  </p>
+  <p>
     The main loop calls <code>blink_service()</code> for each LED and does nothing else that waits. The loop runs many times per millisecond, so the toggles land within a few microseconds of their deadlines.
   </p>
 
@@ -72,6 +121,12 @@
   </p>
   <p>
     Subtract instead. In unsigned arithmetic, <code>now − deadline</code> is the true distance between the two times, modulo 2<sup>32</sup>. Reading that result as a signed value gives a positive number when <code>now</code> is at or after the deadline, and a negative one when it is before. Here is the check with the numbers above: <code>0x00000008 − 0xFFFFFFF0 = 0x00000018 = +24</code>, so the deadline has passed. <code>0xFFFFFFE0 − 0xFFFFFFF0 = 0xFFFFFFF0 = −16</code>, so it has not.
+  </p>
+  <p>
+    Work through the first case by hand. The deadline is 16 µs below the wrap, so 2<sup>32</sup> − 16. The time is 8 µs after the wrap. The true distance from the deadline to now is 16 + 8 = 24 µs. The unsigned subtraction <code>8 − (2<sup>32</sup> − 16)</code> equals <code>24 − 2<sup>32</sup></code>, which is 24 modulo 2<sup>32</sup>. The bit pattern is 0x00000018. Its top bit is 0, so the signed reading is +24, and the test says due.
+  </p>
+  <p>
+    The second case shows the other direction. The time is 0xFFFFFFE0, which is 16 µs before the deadline's bit pattern. The subtraction gives 0xFFFFFFF0, whose top bit is 1, so the signed reading is −16, and the test says not yet. The trick works for any two times whose true distance is less than half the counter's range.
   </p>
   <div class="warning">The subtraction is right only if the two times are less than 2<sup>31</sup> µs apart, which is about 35.8 minutes. A deadline further away than that is a different problem: it needs a 64-bit time, or a check that you reschedule the deadline before it gets that far.</div>
   <div class="note">The trick is the same as the one you know from unsigned arithmetic: the result of a modulo-2<sup>32</sup> subtraction is correct even when the operands have wrapped. Lesson 45 covers unsigned wraparound.</div>
@@ -84,7 +139,7 @@
     <li>Open <code>projects/0055-nonblocking-blinks/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
     <li>Observe the starter. Only LED A blinks, and the serial monitor prints <code>NONBLOCKING starter</code> once. The loop is stuck in <code>sleep_ms()</code>.</li>
     <li>Your task: replace the blocking loop with the deadline pattern. Keep three <code>blink_t</code> values, one for each LED, with a half period of 500 ms, 250 ms and 125 ms. Call <code>blink_service()</code> for each one in a loop with no sleep. Then check the wraparound with <code>is_due()</code> at the top of <code>main()</code> before you start the blinks.</li>
-    <li>You will know it works when the serial monitor prints <code>NONBLOCKING OK</code> at startup and the three LEDs blink at 1, 2 and 4 Hz, all at once. Every two seconds it prints an <code>uptime</code> line.</li>
+    <li>Build and start the simulator again. You will know it works when the serial monitor prints <code>NONBLOCKING OK</code> at startup and the three LEDs blink at 1, 2 and 4 Hz, all at once. Every two seconds it prints an <code>uptime</code> line.</li>
   </ol>
   <details>
     <summary>Hint for the half period</summary>
@@ -96,7 +151,48 @@
   </details>
   <p>The reference solution is in <code>projects/0055-nonblocking-blinks/solution</code>. Try first, compare after. It also prints an uptime line from <code>absolute_time_t</code>, so you can see both timing styles in one program.</p>
 
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: a sleep left in the loop.</strong> You leave one <code>sleep_ms()</code> in the loop while you add the blinks. Symptom: the 4 Hz LED blinks in bursts, and the uptime line comes out late. Fix: remove every wait from the loop, and measure the loop with a spare GPIO on a logic analyzer if you need proof.
+  </p>
+  <p>
+    <strong>Mistake 2: testing equality instead of at-or-after.</strong> You write <code>if (now == b-&gt;next_us)</code>. Symptom: a blink stops after a few seconds, and never restarts. The loop samples the time about every 50 µs, so the exact microsecond of the deadline may never be seen. Once the deadline is missed, the test is false forever, because the deadline never moves. Fix: use <code>is_due()</code>, which catches any time at or after the deadline.
+  </p>
+  <p>
+    <strong>Mistake 3: adding the half period to now.</strong> You write <code>b-&gt;next_us = now + b-&gt;half_us</code>. Symptom: all three LEDs run a little slower than they should, and the error grows over minutes. Each late pass pushes the deadline later, and the errors add up. Fix: advance the stored deadline from its old value, as the code does.
+  </p>
+  <p>
+    <strong>Mistake 4: a plain greater-than at the wrap.</strong> You write <code>now &gt;= b-&gt;next_us</code>. Symptom: all LEDs stop together about 71 minutes after boot, and they stay stopped until the next wrap at the same point. Fix: use the signed distance in <code>is_due()</code>.
+  </p>
+  <p>
+    <strong>Mistake 5: a deadline more than half the range away.</strong> You set a timeout of an hour with <code>time_us_32()</code>. Symptom: the timeout fires early, or the check reports it as already past. The signed distance is only valid for times less than 2<sup>31</sup> µs apart. Fix: use a 64-bit time for long intervals, or reschedule the deadline before it gets that far.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Super-loops are common in small products, and the same deadline pattern appears in larger systems. A typical design keeps a list of periodic tasks, each with a period and a next deadline, and the scheduler runs every task whose deadline has arrived. An RTOS does the same job with its own tick, and lesson 87 introduces FreeRTOS tasks. In both cases the wraparound rule still applies, so the RTOS code compares tick counts with the same subtraction trick.
+  </p>
+  <p>
+    Professional firmware often moves the timing from polling to interrupts. The timer raises an alarm interrupt at the deadline, and the handler sets a flag or runs a short action. The main loop then does not check the time on every pass. The RP2040 timer has four alarms that each raise an interrupt on a match of the low 32 bits of the counter <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§4.6.3)</a>. The trade-off is that an interrupt handler must stay short, which lesson 57 covers.
+  </p>
+  <p>
+    A reviewer checks timing code for three things. Is there a wait anywhere in the loop? Does each comparison handle wraparound? Does each deadline advance from its old value? A senior engineer also asks how the timing was measured. A toggle that looks right on the screen can still be late by milliseconds, so a logic analyzer on a spare pin is the honest test.
+  </p>
+  <p>
+    Interviewers ask about this because the answer shows that you understand time as a number that wraps. A question about a timer that stops working after a long run is a test of exactly this knowledge.
+  </p>
+
   <div class="win">You replaced a blocking wait with deadlines that a single loop checks, and you wrote a comparison that stays right across the 32-bit wrap. That is the core structure of a firmware super-loop.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The RP2040 timer is a 64-bit microsecond counter. Read it with <code>time_us_64()</code>, or use <code>time_us_32()</code> for short intervals.</li>
+    <li>The 32-bit counter wraps every 2<sup>32</sup> µs, which is about 71.6 minutes.</li>
+    <li>A blink is a deadline and a toggle. Advance the deadline from its old value, not from now.</li>
+    <li>Test a deadline with at-or-after, using a signed distance, so the test stays right across the wrap.</li>
+    <li>The distance trick is valid only for times less than 2<sup>31</sup> µs apart, about 35.8 minutes.</li>
+    <li>A super-loop must never wait. Its timing is set by the slowest path through the loop.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -132,7 +228,21 @@
       { "type": "text",
         "prompt": "Which SDK function returns the full 64-bit microsecond time? Write its name.",
         "accept": ["time_us_64"],
-        "why": "time_us_64() returns the 64-bit counter. time_us_32() returns only the low 32 bits, which wrap every 71.6 minutes." }
+        "why": "time_us_64() returns the 64-bit counter. time_us_32() returns only the low 32 bits, which wrap every 71.6 minutes." },
+      { "type": "number",
+        "prompt": "The deadline is 0xFFFFFFF0 and now is 0x00000010. How many microseconds past the deadline is it, as a positive number?",
+        "answer": 32, "tolerance": 0, "unit": "µs",
+        "why": "The distance is 0x10 − (−16) = 16 + 16 = 32 µs. The tempting answer, 16, forgets the 16 µs that the deadline sits before the wrap." },
+      { "type": "mc",
+        "prompt": "A loop tests now == deadline, and it runs about every 50 µs. What can go wrong?",
+        "options": [
+          "The deadline gets missed",
+          "The LED toggles twice",
+          "The timer stops counting",
+          "The blink period grows"
+        ],
+        "answer": 0,
+        "why": "The loop samples the time every 50 µs, so the exact deadline microsecond may never be seen. The deadline then stays in the past, and the test never becomes true again. The tempting answer, two toggles, describes a level test that fires again, not an equality test. The timer keeps counting." }
     ] }
     </script>
   </div>
@@ -158,7 +268,7 @@
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.6 (Timer)</a>: read 4.6.2 (Counter) for the TIMELR and TIMEHR latch and the note about two cores. The register table shows the TIMER base at <code>0x40054000</code>.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 4.6 (Timer)</a>: read 4.6.1 for the 64-bit counter and its 1 µs reference, 4.6.2 (Counter) for the TIMELR and TIMEHR latch and the note about two cores, and 4.6.3 (Alarms) for the 32-bit alarm match. The register table shows the TIMER base at <code>0x40054000</code>.
   </div>
 
   <div class="ask">

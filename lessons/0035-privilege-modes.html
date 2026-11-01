@@ -17,13 +17,30 @@
     By the end of this lesson you can say which mode a handler runs in, which stack pointer exceptions use, what privileged and unprivileged code can and cannot do, and why an RTOS switches tasks to the process stack.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The core has two <strong>modes</strong>. <strong>Thread mode</strong> runs your main program and the RTOS tasks. <strong>Handler mode</strong> runs exception handlers, including interrupt service routines. Arm's TRM says thread mode "is entered on reset, and can be entered as a result of an exception return", and handler mode "is entered as a result of an exception" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §2.1.1</a>).
+    This lesson builds on three earlier ones. Lesson 31 introduced the registers, including the stack pointer SP and the status register xPSR. Lesson 33 explained the stack and the calling convention. Lesson 34 showed that an interrupt pushes an eight-word frame and returns through EXC_RETURN. Each of those topics touches the stack, and this lesson shows that the core has more than one stack.
   </p>
   <p>
-    Separately from the mode, code is either <strong>privileged</strong> or <strong>unprivileged</strong>. The TRM says that "unprivileged execution limits or excludes access to some resources", and that "privileged execution has access to all resources". Handler mode is always privileged. Thread mode can be either, and is privileged out of reset (§2.2). So an interrupt handler can always touch the system registers, while a task can be restricted if the software arranges it.
-    <span class="sidenote">Which CONTROL bit makes thread mode unprivileged is in the TRM's register description. We did not check that for this lesson, so read it before you rely on it.</span>
+    The reason is a product problem. Consider the firmware of a 3D printer. It runs a motion task, a temperature task, a display task and a communication task, and each one needs its own stack. Now suppose the display task has a bug that writes to a timer register, or that overruns its stack into the motion task's data. The printer then misbehaves in a way that is hard to trace, because the fault is far from its cause. A multitasking system needs two things from the hardware. Each task needs a stack of its own. And some code, the kernel, must be able to stop a task from touching the system registers. The Cortex-M gives you both, through its modes, its privilege level and its two stack pointers.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+
+  <h3>Thread mode and handler mode</h3>
+  <p>
+    The core has two modes, <a href="../reference/glossary.html#thread-mode">thread mode</a> and <a href="../reference/glossary.html#handler-mode">handler mode</a>. Thread mode runs your main program and the RTOS tasks. Handler mode runs exception handlers, including interrupt service routines. Arm's TRM says that thread mode "is entered on reset, and can be entered as a result of an exception return", and that handler mode "is entered as a result of an exception" (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G, §2.1.1</a>). So the mode is not chosen by your code. It changes when the core takes an exception and when it returns from one.
+  </p>
+
+  <h3>Privileged and unprivileged code</h3>
+  <p>
+    Mode and privilege are different things. Mode says which kind of code is running. Privilege says what that code is allowed to touch. The TRM says that "unprivileged execution limits or excludes access to some resources", and that "privileged execution has access to all resources" (§2.2). The TRM also says that privilege "is decoupled from all other concepts in ARMv7-M" (§5.4.2), which is a useful reminder that the two ideas are separate.
+  </p>
+  <p>
+    The rules are short. Handler mode is always privileged. Thread mode can be either, and it starts privileged after reset (§2.2). The TRM lists what unprivileged code cannot do: use some instructions such as <code>CPS</code>, which changes the interrupt mask, and access most of the system control space (SCS) registers (§2.2). The SCS holds the system registers of the core itself, not the peripheral registers of the chip. Access to the chip's peripherals depends on the design of the system, and a memory protection unit can restrict it further, which lesson 39 covers.
+  </p>
+  <p>
+    One rule is easy to miss. Only a handler can give thread mode back its privilege. The TRM says that once thread mode has been changed from privileged to user, "it cannot change itself back to privileged. Only a Handler can change the privilege of Thread mode" (§2.2). That rule is what lets a kernel run tasks safely, and it is the reason the SVC instruction exists, as you will see below.
   </p>
 
   <table>
@@ -37,22 +54,54 @@
     </tbody>
   </table>
 
-  <h2>Two stack pointers</h2>
+  <h3>Two stack pointers</h3>
   <p>
-    The core has two stack pointers, SP_main and SP_process, and SP (R13) is the one currently selected. The TRM states that out of reset all code uses the main stack, and that <strong>all exceptions continue to use the main stack</strong> (§2.2.1). Thread mode can use either stack, chosen by bit 1 of the CONTROL register, which the TRM says you can change with an MSR instruction in thread mode. An exception return can also change the choice, through the EXC_RETURN value that the handler exits with (§2.2.1).
+    The core has two stack pointers, which the TRM calls SP_main and SP_process. SP is register R13, and it is banked: only one of the two is visible at a time. The TRM says that "out of reset, all code uses the main stack", and that "all exceptions continue to use the main stack" (§2.2.1). Thread mode can switch to the process stack, and it does so through bit 1 of the CONTROL register, <code>CONTROL[1]</code>, which the TRM names and this course calls SPSEL. Writing that bit with <code>MSR</code> selects the process stack in thread mode (§2.2.1). An exception return can also select it, through the EXC_RETURN value (Table 5-6 in lesson 34).
   </p>
   <p>
-    That is the reason an RTOS works the way it does. Each task has its own stack, and the task runs in thread mode with the process stack selected. When an interrupt arrives, the core stacks the frame on the main stack, so the kernel's handler work never lands on a task's stack. Lesson 88 shows this in full, when the RTOS switches the process stack pointer between tasks.
+    The CONTROL register has two bits that matter here. Bit 0 is the privilege bit: setting <code>CONTROL[0]</code> makes thread mode unprivileged (§2.2). Bit 1 is the stack select. The two bits are independent, so a task can run unprivileged on the process stack, which is the setting an RTOS uses for a protected task.
+  </p>
+  <p>
+    Where does an interrupt's frame go? The TRM answers this directly. "An exception that pre-empts a user thread saves the context of the user thread on the stack that the Thread mode is using" (§5.4). So the eight-word frame from lesson 34 goes on the task's process stack, not on the main stack. After that first push, the handler runs on the main stack, and "all subsequent interrupt pre-emptions use the main stack" (§5.4). The main stack is used for the handler's own work, and the process stack holds the task's frame.
+  </p>
+  <p>
+    That layout is the reason an RTOS works the way it does. The TRM spells out the reason in one paragraph. A task switch needs the kernel to save the state of the task it is leaving, and the frame that the hardware already pushed onto the task's stack is part of that state. The TRM says that "to reschedule, the kernel only requires to save the eight registers not pushed by hardware, r4-r11, and to copy SP_process into the Thread Control Block (TCB). If the processor saved the context on the main stack, the kernel would have to copy the 16 registers to the TCB" (§5.4). The hardware did half the saving on the task's own stack, so the kernel does half the work.
   </p>
 
-  <div class="note">The simulator models both stack pointers, the CONTROL register (SPSEL in bit 1, nPRIV in bit 0), <code>MRS</code>/<code>MSR</code> and <code>SVC</code>. Two simplifications: nested exceptions are not modelled, and the first exercise below uses the main stack only. The second exercise switches to the process stack.</div>
+  <h3>Getting into the kernel with SVC</h3>
+  <p>
+    Unprivileged code cannot change its own privilege, and it cannot touch the system registers. So when a task needs a kernel service, it asks for one with the <code>SVC</code> instruction, the supervisor call. The instruction raises the SVCall exception, which is exception number 11 in the TRM's table (Table 5-1). The SVCall handler runs in handler mode, which is privileged, so it can do the work the task asked for. When it returns, the task continues. This is the gate between the two worlds. The task never gets the privilege itself. It gets a service that a privileged handler performs for it.
+  </p>
+
+  <h2>A worked example with real numbers</h2>
+  <p>
+    The second exercise below sets up a process stack at <code>0x20000080</code>, drops privilege, and makes an SVC call. Here is the whole sequence, with the stack pointer values, so you can check each step against the simulator.
+  </p>
+  <table>
+    <thead><tr><th>Step</th><th>What happens</th><th>Mode and privilege</th><th>Stack in use</th><th>Stack pointer value</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>Reset; the main stack starts at <code>0x20000100</code></td><td>Thread, privileged</td><td>MSP</td><td><code>0x20000100</code></td></tr>
+      <tr><td>2</td><td><code>MSR PSP, R0</code> with R0 = <code>0x20000080</code></td><td>Thread, privileged</td><td>MSP</td><td>MSP unchanged; PSP holds <code>0x20000080</code></td></tr>
+      <tr><td>3</td><td>CONTROL = 2, which sets SPSEL</td><td>Thread, privileged</td><td>PSP</td><td><code>0x20000080</code></td></tr>
+      <tr><td>4</td><td>CONTROL = 3, which sets nPRIV too</td><td>Thread, unprivileged</td><td>PSP</td><td><code>0x20000080</code></td></tr>
+      <tr><td>5</td><td><code>SVC #0</code> pushes the frame</td><td>Handler, privileged</td><td>Frame on PSP, handler runs on MSP</td><td>PSP falls to <code>0x20000060</code></td></tr>
+      <tr><td>6</td><td>Handler clears nPRIV, then <code>BX LR</code> with EXC_RETURN <code>0xFFFFFFFD</code></td><td>Handler, then thread privileged</td><td>MSP, then PSP</td><td>PSP rises to <code>0x20000080</code></td></tr>
+    </tbody>
+  </table>
+  <p>
+    Step 5 is the one to check carefully. The frame is 32 bytes, which is <code>0x20</code>. Subtract it from <code>0x20000080</code> and you get <code>0x20000060</code>. The frame sits at <code>0x20000060</code> to <code>0x2000007F</code>, in the process stack. The handler then reads PSP with <code>MRS</code> and gets <code>0x20000060</code>, the address of its own caller's frame. That value is how the kernel finds the frame of the task that asked for the service.
+  </p>
+  <p>
+    Step 6 shows why the return value matters. The handler returns with <code>0xFFFFFFFD</code> in LR. Table 5-6 lists this as a return to thread mode that gets its state from the process stack. If the handler had left LR as <code>0xFFFFFFF9</code>, the core would have unstacked from the main stack, and the task would have resumed with the wrong stack pointer and the wrong frame. The value in LR is part of the state, and the handler must leave it alone.
+  </p>
+
   <h2>Try it in the CPU simulator</h2>
   <p>
     The program counts up in thread mode. Its handler is a single instruction and a return. Watch the mode label in the register panel, which reads "Thread mode" or "Handler mode", and the stack pointer.
   </p>
   <ol class="steps">
     <li>Press <em>Run</em>, then <em>Pause</em>. The register panel shows "Thread mode". Note the SP.</li>
-    <li>Press <em>IRQ ⚡</em>, then <em>Step</em> until the interrupt is taken. Predict the SP value: an eight-word frame is 32 bytes. Check the mode label.</li>
+    <li>Press <em>IRQ ⚡</em>, then <em>Step</em> until the interrupt is taken. Predict the SP value: an eight-word frame is 32 bytes, so SP reads <code>0x200000E0</code> if it started at <code>0x20000100</code>. Check the mode label.</li>
     <li>Press <em>Instruction</em> until the handler returns. Check that the mode is back to "Thread mode" and the SP is back to its starting value.</li>
   </ol>
   <div class="widget cpusim" data-title="Thread mode and handler mode" data-show="regs,phases">
@@ -71,16 +120,15 @@
     <p>The starting SP is 0x20000100. An eight-word frame is 32 bytes. After the return, the stacked frame is removed and the SP returns to 0x20000100. R1 reads 0 again afterwards, not 1: the handler's write is undone when the frame restores R1, the same effect as in lesson 34.</p>
   </details>
 
-
   <h2>Try it: two stacks and unprivileged code</h2>
   <p>
     This program gives thread mode its own process stack, drops privilege, and then makes a supervisor call, which is how unprivileged code asks the kernel for something. Turn on the <em>System registers</em> panel (it is shown below) and watch MSP, PSP, CONTROL and IPSR.
   </p>
   <ol class="steps">
-    <li>Press <em>Instruction</em> four times. Before each press, predict which register changes. After the fourth, CONTROL is 2 and <em>Active SP</em> reads PSP: thread mode now runs on the process stack at 0x20000080.</li>
-    <li>Two more presses set CONTROL to 3 (unprivileged). Then the <code>MSR CONTROL, R0</code> that tries to set it back to 0 is <strong>ignored</strong>: read the message. Unprivileged code cannot promote itself.</li>
-    <li>Step over <code>SVC #0</code>. Predict first: on which stack is the frame pushed, and what will LR hold? Then check: the frame lands on the <em>PSP</em> (PSP drops by 32), the handler runs on the <em>MSP</em>, IPSR is 11 (SVCall) and LR is 0xFFFFFFFD, meaning "return to thread mode, process stack".</li>
-    <li>The handler, which is privileged, clears nPRIV, then returns. The thread is privileged again and still on the PSP.</li>
+    <li>Press <em>Instruction</em> four times. Before each press, predict which register changes. After the fourth, CONTROL is 2 and <em>Active SP</em> reads PSP: thread mode now runs on the process stack at <code>0x20000080</code>.</li>
+    <li>Two more presses set CONTROL to 3, which makes thread mode unprivileged. The next two presses load 2 into R0 and try to write it to CONTROL. The write is <strong>ignored</strong>, and the simulator says so. Writing 2 would clear the privilege bit, so the ignored write is the rule from the TRM at work: unprivileged code cannot promote itself.</li>
+    <li>Step over <code>SVC #0</code>. Predict first: on which stack is the frame pushed, and what will LR hold? Then check: the frame lands on the <em>PSP</em> (PSP drops by 32, to <code>0x20000060</code>), the handler runs on the <em>MSP</em>, IPSR is 11 (SVCall) and LR is <code>0xFFFFFFFD</code>, meaning "return to thread mode, process stack".</li>
+    <li>The handler, which is privileged, clears nPRIV, then returns. The thread is privileged again and still on the PSP. Check that PSP is back at <code>0x20000080</code> and that the final <code>MRS R2, CONTROL</code> reads 2.</li>
   </ol>
   <div class="widget cpusim" data-title="MSP, PSP, CONTROL and SVC" data-show="regs,sys">
     <script type="text/plain">
@@ -104,6 +152,63 @@
     </script>
   </div>
   <p class="sidenote">This is the skeleton of an RTOS: tasks on PSP, kernel on MSP, and SVC as the gate between them. Lesson 88 adds the missing piece, swapping the PSP between tasks.</p>
+
+  <h3>Line by line</h3>
+  <p>
+    The first four lines give thread mode its own stack. <code>LDR R0, =0x20000080</code> loads the address into R0. The assembler places the constant in a literal pool near the code and loads it from there, which is why the line uses the <code>=</code> form. <code>MSR PSP, R0</code> writes R0 into the process stack pointer. It comes before the next step on purpose. Once SPSEL selects PSP, every push and pop uses whatever PSP holds, so PSP must be valid first.
+  </p>
+  <p>
+    The next two lines select the process stack and drop privilege. <code>MOV R0, #2</code> sets bit 1 of the value, which is SPSEL, and <code>MSR CONTROL, R0</code> writes it. From this point thread mode uses PSP. <code>MOV R0, #3</code> sets both bits, SPSEL and nPRIV, and the write makes thread mode unprivileged. The program is still in thread mode, and the core keeps its stack choice.
+  </p>
+  <p>
+    <code>MOV R0, #2</code> followed by <code>MSR CONTROL, R0</code> is the attempt to restore privilege. It is ignored, because the core is in thread mode and thread mode cannot raise its own privilege. <code>SVC #0</code> then asks the kernel for help. It pushes the eight-word frame on PSP and switches to the handler.
+  </p>
+  <p>
+    The handler has three instructions. <code>MRS R1, PSP</code> reads the process stack pointer, which now points at the frame, so R1 holds the caller's stack pointer for the kernel to use. <code>MOV R0, #2</code> and <code>MSR CONTROL, R0</code> clear nPRIV for the caller. This write is allowed because the code is in handler mode, which is privileged. <code>BX LR</code> returns with <code>0xFFFFFFFD</code>, which unstacks the frame from PSP and resumes the thread on the process stack. The final <code>MRS R2, CONTROL</code> reads 2, which shows that the thread is privileged again.
+  </p>
+  <h2>Common mistakes and how to spot them</h2>
+
+  <h3>1. Expecting unprivileged code to raise its own privilege</h3>
+  <p>
+    A task that writes 2 to CONTROL to drop its privilege back has no effect, because the TRM does not let thread mode restore privilege. The simulator reports the write as ignored, and the next <code>MRS</code> shows the old value. The symptom is code that works on paper and then behaves differently when it runs unprivileged. The fix is to ask the kernel for the change through an SVC, and to let the privileged handler write CONTROL.
+  </p>
+
+  <h3>2. Selecting PSP before loading it</h3>
+  <p>
+    Setting SPSEL to 1 switches the stack at once. If PSP has never been set, the next push or pop uses whatever value PSP holds, which may point into a peripheral register or an unused part of memory. The symptom is a fault or memory corruption that appears far from the cause. The fix is the order the program above uses: write PSP first, then set SPSEL. A good habit is to check that PSP lies inside RAM before the switch.
+  </p>
+
+  <h3>3. Giving a task a stack with no room for the frame</h3>
+  <p>
+    The first frame of an interrupt taken in a task goes on the task's process stack (§5.4). That is 32 bytes on top of whatever the task uses. A task whose stack is sized exactly for its own variables will overflow the first time an interrupt fires, even though its code never overflowed before. The symptom is a crash or corrupted data that appears only once interrupts are enabled. The fix is to budget for the frame, and to remember that the second and later pre-emptions use the main stack, so a task needs room for only one frame of this kind.
+  </p>
+
+  <h3>4. Changing LR before the return</h3>
+  <p>
+    The handler's return depends on the EXC_RETURN value the hardware put in LR. If that value is overwritten, the return picks the wrong stack. A handler that leaves LR as <code>0xFFFFFFF9</code> returns to thread mode on the main stack, and the task resumes with the wrong frame. The symptom is a task whose local variables look like garbage after a service call, and an SP that reads the main stack value instead of the process stack value. The fix is to leave LR alone between entry and return. In C the compiler handles this. In assembly, return with <code>BX LR</code> and nothing that writes LR in between.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    In a production RTOS port, the kernel's exception handlers run in handler mode on the main stack, and each task runs in thread mode on its own process stack. The context switch saves the registers that the hardware did not save and swaps the process stack pointer. Lesson 88 builds that switch. When a memory protection unit is fitted, it can also restrict which memory an unprivileged task may write, so a bug in one task has less room to overwrite another task's stack. Lesson 39 covers the protection unit.
+  </p>
+  <p>
+    A code reviewer looks for three things in this area. Task code should never write CONTROL or change the stack pointer, because that belongs to the port. System calls should go through an SVC, not through a direct call into kernel data. And every task's stack should be sized with the frame in mind, not only the task's own locals. Reviewers also check that a handler that switches stacks leaves LR alone, because a change there sends the task back to the wrong stack.
+  </p>
+  <p>
+    Interviewers ask this question because it connects the hardware to the RTOS. A strong answer explains the two stacks in one sentence, says which stack the frame is on, and mentions the cost of a context switch.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Thread mode runs the main program and tasks. Handler mode runs exception handlers and is always privileged.</li>
+    <li>Privilege is separate from mode. Unprivileged code cannot change system registers, and thread mode cannot restore its own privilege.</li>
+    <li>Only a handler can make thread mode privileged again. The SVC instruction is how unprivileged code asks for that service.</li>
+    <li>There are two stack pointers, MSP and PSP. Out of reset, and for all handlers, the main stack is used. Thread mode can use PSP, selected by CONTROL[1].</li>
+    <li>The first interrupt frame of a task goes on the task's process stack, so a task must have room for 32 bytes beyond its own use.</li>
+    <li>On a context switch, the kernel saves only R4 to R11 and the process stack pointer, because the hardware already saved the rest.</li>
+    <li>The return value in LR, EXC_RETURN, chooses the stack and the mode after return. Leave LR alone.</li>
+  </ul>
 
   <div class="win">You watched the core switch from thread mode to handler mode and back, predicted an exception frame, and moved thread mode onto its own stack with reduced privilege, the exact arrangement an RTOS uses.</div>
 
@@ -131,7 +236,20 @@
       { "type": "text",
         "prompt": "Which register selects the stack for thread mode, through one of its bits?",
         "accept": ["CONTROL", "CONTROL[1]", "CONTROL bit 1", "CONTROLbit1", "CONTROL1"],
-        "why": "The TRM says that writing CONTROL[1] with MSR switches thread mode to the process stack (DDI0337G §2.2.1). The tempting answer is xPSR, which holds the flags and the exception number, not the stack choice." }
+        "why": "The TRM says that writing CONTROL[1] with MSR switches thread mode to the process stack (DDI0337G §2.2.1). The tempting answer is xPSR, which holds the flags and the exception number, not the stack choice." },
+      { "type": "number",
+        "prompt": "Which bit of CONTROL makes thread mode unprivileged? Type the bit number only.",
+        "answer": 0, "tolerance": 0,
+        "why": "CONTROL[0] is the privilege bit, and setting it makes thread mode unprivileged (DDI0337G §2.2). The tempting answer is 1, which is the stack-select bit, SPSEL, a different job." },
+      { "type": "mc",
+        "prompt": "An interrupt arrives while a task runs on the process stack. Which stack holds the first eight-word frame?",
+        "options": ["The task's process stack", "The main stack, always", "A separate interrupt stack"],
+        "answer": 0,
+        "why": "The TRM says an exception that pre-empts a thread saves the context on the stack that thread mode is using (DDI0337G §5.4). The tempting answer is the main stack, which is the rule for the handler's own locals, not for the saved frame." },
+      { "type": "number",
+        "prompt": "A task runs on a process stack at 0x20000080 and is interrupted once. While the handler runs, what is PSP, in hex? Type it in hex, for example 0x1234.",
+        "answer": 536871008, "tolerance": 0,
+        "why": "The eight-word frame is 32 bytes, so PSP becomes 0x20000080 − 0x20 = 0x20000060, which is 536871008 in decimal. The tempting answer, 0x20000078, subtracts only 8 bytes, which is one word." }
     ] }
     </script>
   </div>
@@ -153,16 +271,16 @@
 
   <div class="interview">
     <p><strong>"Why does an RTOS use the process stack for tasks and the main stack for interrupts?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Each task needs its own stack, so a task's frame cannot be overwritten by another task or by the kernel. On the Cortex-M, thread mode can select the process stack, while exceptions always stack on the main stack. The kernel's handler work and the interrupt frames therefore sit on the main stack, and a context switch changes only the process stack pointer. Lesson 88 covers the switch itself.</p></details>
+    <details><summary>Model answer</summary><p>Each task needs its own stack, so a task's data cannot be overwritten by another task or by the kernel. On the Cortex-M, thread mode can select the process stack, and handlers always run on the main stack. An interrupt taken in a task pushes its eight-word frame onto that task's process stack, and the handler then runs on the main stack. Because the hardware has already saved part of the task's state on its own stack, a context switch only needs to save R4 to R11 and the process stack pointer. Lesson 88 covers the switch itself.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §2.1.1 (thread and handler modes), §2.2 (privileged and unprivileged access) and §2.2.1 (the main and process stacks and CONTROL[1]). Read §2.2.1 twice: it is the basis of the RTOS design you will meet in Part 7.
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: §2.1.1 (thread and handler modes), §2.2 (privileged and unprivileged access, and CONTROL[0]), §2.2.1 (the main and process stacks and CONTROL[1]), §5.2 and Table 5-1 (exception numbers, including SVCall at 11), §5.4 and §5.4.2 (which stack an interrupt frame uses, and why the kernel saves only R4 to R11), and §5.8.2 and Table 5-6 (EXC_RETURN). Read §5.4 twice: it is the basis of the RTOS design you will meet in Part 7.
   </div>
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Draw the stack for a task that is interrupted, showing which stack each part is on, and tell me what changes when the kernel switches tasks."
-    Related: <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>, <a href="0031-core-registers.html">Lesson 31: Core registers</a>, and <a href="../reference/cortex-m.html">Reference: Cortex-M programmer's model</a>.
+    Related: <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>, <a href="0031-core-registers.html">Lesson 31: Core registers</a>, <a href="0039-the-mpu-and-how-faults.html">Lesson 39: The MPU and how faults</a>, and <a href="../reference/cortex-m.html">Reference: Cortex-M programmer's model</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

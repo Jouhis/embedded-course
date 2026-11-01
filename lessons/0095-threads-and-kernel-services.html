@@ -16,53 +16,180 @@
     By the end of this lesson you can <strong>define a thread with <code>K_THREAD_DEFINE</code>, pass events with a message queue, guard a counter with a mutex, and explain how a Zephyr priority compares with a FreeRTOS one</strong>.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A thread is a function with its own stack, which the scheduler runs. <code>K_THREAD_DEFINE(name, stack, entry, p1, p2, p3, prio, options, delay)</code> reserves the stack and the thread control block at build time, and starts the thread after <code>delay</code> milliseconds (<code>include/zephyr/kernel.h:1029</code>). A preemptive priority is <code>K_PRIO_PREEMPT(x)</code>, where <code>x</code> counts from 0, the most urgent. A cooperative priority, <code>K_PRIO_COOP(x)</code>, is negative, so a cooperative thread is never preempted by a preemptive one.
+    Lessons <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> to <a href="0091-timing-analysis-deadlines-and-stack.html">91</a> taught a real-time operating system (RTOS) on FreeRTOS. You created tasks, passed data through queues and semaphores, protected a shared variable with a mutex, and watched the stack. Those ideas do not change in Zephyr. What changes is the API, the names and the way the priority numbers are read. Lesson <a href="0094-devicetree.html">94</a> then showed where Zephyr keeps the pin numbers, so the code in this lesson names no pin.
+  </p>
+  <p>
+    The problem this lesson solves is common in a product. A button must be read without losing presses, a counter must be shown without losing updates, a blink must keep its rhythm while the rest of the firmware is busy, and a slow print must never delay a button. Each job needs its own thread of control, and the kernel's objects let the jobs talk without stepping on each other.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+  <h3>A thread is a function with its own stack</h3>
+  <p>
+    A <a href="../reference/glossary.html#thread-zephyr">thread</a> is a function that the kernel can run, pause and resume. Each thread has a <em>stack</em>, a region of RAM where its local variables and return addresses live while it runs. Every thread also has a small record in RAM, the thread control block, which holds its priority, its state and a pointer to its saved stack position. The stack and the record are the thread's entire memory of where it was.
+  </p>
+  <p>
+    A CPU core has one set of registers. When two threads both want to run, the kernel must save the running thread's registers into that thread's stack, load the registers of another thread from its stack, and jump to where that thread stopped. This is a <a href="../reference/glossary.html#context-switch">context switch</a>, and it is the reason each thread needs its own stack. It is the same mechanism you read about in lesson <a href="0088-context-switching-at-the-register.html">88</a>, now managed by Zephyr's <a href="../reference/glossary.html#scheduler">scheduler</a>.
+  </p>
+  <p>
+    A thread is either <em>ready</em> (it could run now), <em>running</em> (it has the CPU), or <em>blocked</em> (it waits for something, such as a message or a time). Waiting costs no CPU time: a blocked thread is simply not chosen by the scheduler until its wait ends. Most of the bugs in this lesson come from a thread that waits in the wrong place, not from a thread that runs slowly.
+  </p>
+
+  <h3>Priorities come in two classes</h3>
+  <p>
+    The scheduler picks the most urgent ready thread. Zephyr measures urgency with a number, and it has one rule that surprises FreeRTOS users: <strong>a smaller number is more urgent</strong>. The macro <code>K_PRIO_PREEMPT(x)</code> gives a preemptible priority equal to <code>x</code>, so <code>K_PRIO_PREEMPT(0)</code> is the most urgent preemptible priority (<code>include/zephyr/kernel.h:90</code>). A preemptible thread can be interrupted at any moment by a ready thread of higher or equal urgency.
+  </p>
+  <p>
+    Zephyr also has <em>cooperative</em> priorities, made with <code>K_PRIO_COOP(x)</code>, which are negative (<code>include/zephyr/kernel.h:78</code>). The Zephyr threads documentation says that a cooperative thread "has a negative priority value", and that once it is running it stays running until it does something that makes it unready. A preemptible thread can never take the CPU from it. The lesson's project uses only preemptible priorities.
     <span class="sidenote">The numbers run the opposite way to FreeRTOS. In FreeRTOS a larger number is more urgent. In Zephyr a smaller number is more urgent. Check that before you copy a priority from a FreeRTOS project.</span>
   </p>
 
-  <figure>
-    <svg viewBox="0 0 560 240" role="img" aria-label="The button thread puts events on a message queue. The UI thread takes them off and updates a counter under a mutex. A timer gives a semaphore to the blink thread and submits work to the system work queue." style="max-width:728px">
-      <defs><marker id="ah64" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
-      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
-        <rect x="20" y="20" width="130" height="36" rx="3"/>
-        <rect x="210" y="20" width="130" height="36" rx="3"/>
-        <rect x="400" y="20" width="140" height="36" rx="3"/>
-        <rect x="20" y="120" width="130" height="36" rx="3"/>
-        <rect x="210" y="120" width="130" height="36" rx="3"/>
-        <rect x="400" y="120" width="140" height="36" rx="3"/>
-        <rect x="20" y="190" width="160" height="36" rx="3"/>
-        <path d="M150 38 H210" marker-end="url(#ah64)"/>
-        <path d="M340 38 H400" marker-end="url(#ah64)"/>
-        <path d="M150 138 H210" marker-end="url(#ah64)"/>
-        <path d="M340 138 H400" marker-end="url(#ah64)"/>
-        <path d="M85 156 V190" marker-end="url(#ah64)"/>
-      </g>
-      <g fill="currentColor" font-family="JetBrains Mono, monospace">
-        <text x="85" y="42.2" text-anchor="middle" font-size="12">button_thread</text>
-        <text x="275" y="42.2" text-anchor="middle" font-size="12">button_q</text>
-        <text x="470" y="42.2" text-anchor="middle" font-size="12">ui_thread (mutex)</text>
-        <text x="85" y="142.2" text-anchor="middle" font-size="12">timer</text>
-        <text x="275" y="142.2" text-anchor="middle" font-size="12">sem</text>
-        <text x="470" y="142.2" text-anchor="middle" font-size="12">blink_thread</text>
-        <text x="100" y="212.2" text-anchor="middle" font-size="12">system work queue</text>
-      </g>
-    </svg>
-    <figcaption>Figure 1. Data moves through the message queue and the semaphore. The mutex protects the shared counter that the work handler reads.</figcaption>
-  </figure>
+  <h3>Message queues copy fixed-size messages</h3>
+  <p>
+    A <a href="../reference/glossary.html#message-queue">message queue</a> passes data from one thread to another without sharing memory. The sender copies a message into the queue, and the receiver copies it out. Every message has the same size, which you set when you define the queue. <code>K_MSGQ_DEFINE(q_name, q_msg_size, q_max_msgs, q_align)</code> reserves the buffer at build time (<code>include/zephyr/kernel.h:5351</code>), so the queue can never run out of memory at run time.
+  </p>
+  <p>
+    The copy has a price, so messages should be small. A button event with one 32-bit timestamp is cheap. A whole display frame is not.
+  </p>
+  <p>
+    A queue also has a fixed depth, so a put can fail. The timeout argument decides what happens then. <code>K_NO_WAIT</code> returns at once with an error, <code>K_FOREVER</code> blocks until there is room, and a time in milliseconds blocks for at most that long. With <code>K_NO_WAIT</code> and a full queue, <code>k_msgq_put</code> returns <code>-ENOMSG</code> (<code>kernel/msg_q.c:237</code>), and the caller decides what to do.
+  </p>
 
-  <h2>The five objects in the solution</h2>
+  <h3>Semaphores count things</h3>
+  <p>
+    A <a href="../reference/glossary.html#counting-semaphore">semaphore</a> is a counter with two operations. <code>k_sem_give</code> adds one, and <code>k_sem_take</code> subtracts one, waiting first if the count is zero. A <a href="../reference/glossary.html#binary-semaphore">binary semaphore</a> is the special case with a limit of one. Zephyr defines one with <code>K_SEM_DEFINE(name, initial_count, count_limit)</code> (<code>include/zephyr/kernel.h:3874</code>), so you choose both the starting count and the most the count can reach.
+  </p>
+  <p>
+    A semaphore carries a signal, not data: giving it says "one more event happened". The Zephyr semaphore documentation says that a thread or an interrupt may give a semaphore, which makes it the right tool to wake a thread from an interrupt. An interrupt may take one only without waiting.
+  </p>
+
+  <h3>Mutexes guard shared data</h3>
+  <p>
+    A <a href="../reference/glossary.html#mutex">mutex</a> is a lock with an owner. Only the thread that locked it may unlock it, and another thread that tries to lock it waits. Use a mutex when several threads read and write the same variable. The classic bug is the read-modify-write in <code>total_presses++</code>: the CPU reads the number, adds one and writes it back, in separate steps. If a higher-priority thread preempts between the read and the write, and it also increments the number, one of the two increments is lost, which is a <a href="../reference/glossary.html#lost-update">lost update</a>. The mutex makes those steps one unit to every other thread that asks for the lock.
+  </p>
+  <p>
+    Zephyr mutexes do two things a plain lock does not. They are reentrant, so the owner can lock them again without deadlocking itself. They also implement <a href="../reference/glossary.html#priority-inversion">priority inheritance</a>. If a high-priority thread waits for a mutex held by a low-priority thread, the owner's priority is raised while the high-priority thread waits, so a middle-priority thread cannot keep the owner from finishing (the algorithm is described in the comment at the top of <code>kernel/mutex.c</code>). Lesson <a href="0090-mutexes-priority-inversion-and-deadlock.html">90</a> explains the failure that this prevents.
+  </p>
+  <p>
+    A mutex has one hard rule. An interrupt handler must never lock it, because the handler cannot wait and the thread that holds the lock may be the one the interrupt interrupted. The kernel checks this with an assertion, <code>mutexes cannot be used inside ISRs</code> (<code>kernel/mutex.c:209</code>). Assertions can be compiled out by configuration, so keep them on while you develop.
+  </p>
+
+  <h3>Timers and deferred work</h3>
+  <p>
+    A <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/timing/timers.html">kernel timer</a> runs a function after a delay and then, optionally, again at a fixed period. The function you give it is its <em>expiry function</em>. The timer documentation says that the expiry function runs in interrupt context, and that it must be kept short and non-blocking. An <a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a> is code that the hardware calls directly, and interrupt context is the state the CPU is in while an ISR runs. An ISR cannot sleep or wait for a lock.
+  </p>
+  <p>
+    The usual answer is <em>deferred work</em>. The expiry function does the minimum that must happen at the exact moment, and then hands the rest to a thread. Zephyr's <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/threads/workqueue.html">system workqueue</a> is a thread that runs work items in order. The documentation says that a work item may be submitted by an interrupt or by a thread, and the system workqueue is the thread that runs it. Deferred work lets the interrupt stay short and the slow code run where waiting is allowed.
+  </p>
+
+  <h2>Worked example: one press, from the pin to the screen</h2>
+  <p>
+    Take the solution in <code>projects/0095-threads-and-kernel/solution</code>, and follow one button press. The numbers below are chosen for the example, not measured, so that the arithmetic is easy to check. The button is on GP14 and is active low, so the pin reads 0 when pressed. The button thread runs every <code>BUTTON_POLL_MS</code>, which is 10 ms, and it looks at the pin each time.
+  </p>
   <ol>
-    <li><strong>Threads</strong>: <code>button_thread</code> (priority 2), <code>ui_thread</code> (5) and <code>blink_thread</code> (7). Lower numbers run first when several are ready.</li>
-    <li><strong>Message queue</strong>: <code>K_MSGQ_DEFINE(button_q, sizeof(struct button_event), 8, 4)</code>. It copies fixed-size messages, so the sender does not share memory with the receiver. <code>k_msgq_put(…, K_NO_WAIT)</code> drops the event when the queue is full, instead of blocking the button thread.</li>
-    <li><strong>Semaphore</strong>: <code>K_SEM_DEFINE(tick_sem, 0, 1)</code>. The timer gives it once a second, and the blink thread takes it. A semaphore is a counter, not a lock.</li>
-    <li><strong>Mutex</strong>: <code>K_MUTEX_DEFINE(stats_lock)</code> guards <code>total_presses</code>. The mutex has priority inheritance, so a low-priority thread holding it is boosted while a higher one waits (<a href="https://docs.zephyrproject.org/4.5.0/kernel/services/synchronization/mutexes.html">Zephyr mutexes</a>, "Priority Inheritance").</li>
-    <li><strong>Timer and work</strong>: <code>K_TIMER_DEFINE(tick_timer, tick_expired, NULL)</code>. The expiry runs in interrupt context, so it only gives the semaphore and submits <code>report_work</code> to the system work queue. The work handler runs in a thread, where it can take the mutex and print (<a href="https://docs.zephyrproject.org/4.5.0/kernel/services/timing/timers.html">Zephyr timers</a>, and <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/threads/workqueue.html">the system workqueue</a>).</li>
+    <li><strong>t = 1000 ms.</strong> The user presses the button. The pin falls to 0. Nothing in the firmware runs yet.</li>
+    <li><strong>t = 1010 ms.</strong> The button thread wakes from its 10 ms sleep. It calls <code>gpio_pin_get_dt(&amp;button)</code>, which returns 1 because the logical level is pressed. Its variable <code>was_pressed</code> is false, so this is a new press.</li>
+    <li><strong>t = 1010 ms, still.</strong> The thread builds an event with <code>uptime_ms = k_uptime_get_32()</code>, which is 1010, and calls <code>k_msgq_put(&amp;button_q, &amp;ev, K_NO_WAIT)</code>. The queue copies the event. The UI thread was blocked in <code>k_msgq_get</code>, so it now becomes ready. It has priority 5, and the button thread has priority 2, so the button thread keeps the CPU.</li>
+    <li><strong>t = 1020 ms.</strong> The button thread sleeps for 10 ms. The scheduler now picks the most urgent ready thread, which is the UI thread. It takes the event, locks <code>stats_lock</code>, increments <code>total_presses</code> from 0 to 1, unlocks, and prints <code>press 1 at 1010 ms</code>.</li>
+    <li><strong>t = 2000 ms.</strong> The timer expires. Its expiry function runs in interrupt context. It gives <code>tick_sem</code> and submits <code>report_work</code>. Both actions are short and never wait.</li>
+    <li><strong>t = 2000 ms, after the interrupt.</strong> The blink thread (priority 7) was waiting on the semaphore, and it is now ready. The system workqueue thread also has work to do. The scheduler runs them in priority order. The blink thread toggles the LED, and the work handler locks the mutex, reads <code>total_presses</code> as 1, unlocks, and prints <code>total presses 1</code>.</li>
   </ol>
-  <div class="warning">
-    Never take a mutex, or call <code>printk()</code> for long, inside a timer expiry. The expiry is an interrupt handler, and it may not block. The timer docs say the expiry runs in interrupt context and must be kept short.
-  </div>
+  <p>
+    Each object does one job here. The queue carried the event to the UI thread, the mutex made the increment and the read a safe pair, and the semaphore and the workqueue carried the tick out of the interrupt. The mutex was held only for one increment.
+  </p>
+  <p>
+    Notice also what the example hides. The button was polled, so a press shorter than 10 ms could come and go between two looks at the pin. That trade is deliberate in this project, and the common-mistakes section returns to it.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>The solution has three threads, one timer and one work item. Each piece is short, and each line below is named as it appears in <code>src/main.c</code>.</p>
+  <pre><code>#define BUTTON_PRIO   K_PRIO_PREEMPT(2)
+#define UI_PRIO       K_PRIO_PREEMPT(5)
+#define BLINK_PRIO    K_PRIO_PREEMPT(7)
+#define THREAD_STACK  1024</code></pre>
+  <p>
+    The three priorities are written as macros, so a reader can see the order at a glance. Button is 2, UI is 5 and blink is 7, and a smaller number runs first. <code>THREAD_STACK</code> gives each thread 1024 bytes of stack. Those bytes are reserved at build time, so a thread that uses more stack than it was given overwrites memory that belongs to another thread. Lesson <a href="0091-timing-analysis-deadlines-and-stack.html">91</a> shows how to measure the real use.
+  </p>
+  <pre><code>K_MSGQ_DEFINE(button_q, sizeof(struct button_event), QUEUE_DEPTH, 4);
+K_SEM_DEFINE(tick_sem, 0, 1);
+K_MUTEX_DEFINE(stats_lock);
+static uint32_t total_presses;</code></pre>
+  <p>
+    The queue holds up to <code>QUEUE_DEPTH</code> (8) events, each the size of one <code>struct button_event</code>. The semaphore starts at 0, so the blink thread must wait for the first tick, and its limit is 1, so ticks cannot pile up if nobody takes them. The mutex protects <code>total_presses</code>, which is an ordinary <code>static</code> variable with file scope, so only code in this file can reach it. The last argument of <code>K_MSGQ_DEFINE</code> is the alignment, which the kernel needs for the buffer.
+  </p>
+  <pre><code>static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);</code></pre>
+  <p>
+    This line is the one that connects the code to the hardware. <code>DT_ALIAS(sw0)</code> names the node that the overlay labels <code>sw0</code>, and <code>GPIO_DT_SPEC_GET</code> reads its <code>gpios</code> property into a struct with the port, the pin and the flags (<code>include/zephyr/drivers/gpio.h:376</code>). The flags include <code>GPIO_ACTIVE_LOW</code>, which <code>gpio_pin_get_dt</code> already applies, so the value 1 means pressed (<code>include/zephyr/drivers/gpio.h:1796</code>).
+  </p>
+  <pre><code>static void tick_expired(struct k_timer *timer)
+{
+    k_sem_give(&amp;tick_sem);
+    k_work_submit(&amp;report_work);
+}</code></pre>
+  <p>
+    This is the expiry function, so it runs in interrupt context. <code>k_sem_give</code> is allowed there, and <code>k_work_submit</code> is allowed there too, because it only adds the work item to the queue. The function contains no lock and no print. That is the discipline the timer documentation asks for, and the function is short enough to check by eye.
+  </p>
+  <pre><code>static void report_handler(struct k_work *work)
+{
+    k_mutex_lock(&amp;stats_lock, K_FOREVER);
+    uint32_t n = total_presses;
+    k_mutex_unlock(&amp;stats_lock);
+    printk("total presses %u\n", n);
+}
+K_WORK_DEFINE(report_work, report_handler);</code></pre>
+  <p>
+    The work handler runs in a thread, so it may lock a mutex and wait for it. It copies the shared counter into a local variable while it holds the lock, and then releases the lock before it prints. Printing can be slow, and holding a lock during a slow call would stall the UI thread for as long as the print takes. <code>K_WORK_DEFINE</code> creates the work item, and the work item knows which function to call.
+  </p>
+  <pre><code>static void button_thread(void *p1, void *p2, void *p3)
+{
+    bool was_pressed = false;
+    while (1) {
+        bool pressed = gpio_pin_get_dt(&amp;button) == 1;
+        if (pressed &amp;&amp; !was_pressed) {
+            struct button_event ev = { .uptime_ms = k_uptime_get_32() };
+            if (k_msgq_put(&amp;button_q, &amp;ev, K_NO_WAIT) != 0) {
+                printk("button queue full, press dropped\n");
+            }
+        }
+        was_pressed = pressed;
+        k_msleep(BUTTON_POLL_MS);
+    }
+}
+K_THREAD_DEFINE(button_tid, THREAD_STACK, button_thread, NULL, NULL, NULL,
+                BUTTON_PRIO, 0, 0);</code></pre>
+  <p>
+    The <code>was_pressed</code> variable turns a level into an event. The pin stays at 1 for as long as the button is held, so the code posts an event only on the step from not pressed to pressed. The <code>K_NO_WAIT</code> argument means that a full queue returns at once, and the thread prints a warning and carries on polling. The thread never waits on the queue, because a stalled button thread would miss the next press. <code>K_THREAD_DEFINE</code> reserves the stack and the thread record at build time, and starts the thread with priority 2 after a delay of 0 ms (<code>include/zephyr/kernel.h:1029</code>).
+  </p>
+  <pre><code>static void ui_thread(void *p1, void *p2, void *p3)
+{
+    while (1) {
+        struct button_event ev;
+        k_msgq_get(&amp;button_q, &amp;ev, K_FOREVER);
+        k_mutex_lock(&amp;stats_lock, K_FOREVER);
+        total_presses++;
+        uint32_t n = total_presses;
+        k_mutex_unlock(&amp;stats_lock);
+        printk("press %u at %u ms\n", n, ev.uptime_ms);
+    }
+}</code></pre>
+  <p>
+    <code>K_FOREVER</code> on the get means the thread sleeps until a message arrives and uses no CPU while it waits. The increment and the copy of the count happen under the mutex, so a reader in the work handler can never see the variable half-updated. The print comes after the unlock, for the same reason as in the work handler.
+  </p>
+  <pre><code>static void blink_thread(void *p1, void *p2, void *p3)
+{
+    while (1) {
+        k_sem_take(&amp;tick_sem, K_FOREVER);
+        gpio_pin_toggle_dt(&amp;led0);
+    }
+}</code></pre>
+  <p>
+    The blink thread waits on the semaphore once per tick. Each give from the timer adds one, and each take removes one, so the LED toggles once a second, and it blinks at a steady rhythm even when the UI is busy. If the thread were slow, the count would stay at its limit of 1 and the extra ticks would be lost, which is the reason the limit is set.
+  </p>
+  <pre><code>k_timer_start(&amp;tick_timer, K_SECONDS(1), K_SECONDS(1));</code></pre>
+  <p>
+    <code>k_timer_start</code> takes the timer, the delay before the first expiry, and the period (<code>include/zephyr/kernel.h:2013</code>). Both are one second, so the first expiry is at 1 s and then every second after. The call is in <code>main()</code>, after the LED and the button are configured, so the LED is already an output when the first tick toggles it.
+  </p>
 
   <h2>Mapping to FreeRTOS</h2>
   <p>The table lines up with lessons 87 to 90, which use FreeRTOS. Check the FreeRTOS column against those lessons before you rely on it.</p>
@@ -80,20 +207,58 @@
     FreeRTOS has no equivalent to <code>K_NO_WAIT</code> as a named constant, and it has no negative cooperative priority. Both exist in Zephyr. The priority difference is the one that causes the most bugs when people move code.
   </div>
 
+  <h2>Common mistakes and how to spot them</h2>
+  <h3>Copying a FreeRTOS priority number</h3>
+  <p>
+    Suppose a FreeRTOS project has a task at priority 6, the most urgent task in the project, and you copy the number as <code>K_PRIO_PREEMPT(6)</code> into Zephyr. In Zephyr every thread numbered 0 to 5 now runs before it, so the most urgent task has become one of the least urgent. The symptom is a UI that updates late, or a button that seems to lose presses while a background thread is busy. The fix is to decide the order you want, then write the Zephyr number for that order. The table above is the place to check.
+  </p>
+  <h3>Taking a mutex, or printing for long, inside the timer</h3>
+  <p>
+    If you put <code>k_mutex_lock(&amp;stats_lock, K_FOREVER)</code> inside <code>tick_expired</code>, the kernel's check for this (<code>kernel/mutex.c:209</code>) fails, and with assertions enabled the console reports <code>mutexes cannot be used inside ISRs</code>. The check is the safety net, not the design. The fix is the one in the solution: give the semaphore and submit work, and let the work handler lock the mutex.
+  </p>
+  <h3>Using K_FOREVER where the thread must keep polling</h3>
+  <p>
+    In the button thread, <code>k_msgq_put(&amp;button_q, &amp;ev, K_FOREVER)</code> looks harmless, because the queue has room most of the time. When the UI is slow and the queue fills, the put blocks inside the thread, the button thread stops sampling the pin, and any press that starts and ends during the wait is lost. The symptom is a count that falls behind the presses you made, while the blink thread keeps its one-second rhythm. The fix is <code>K_NO_WAIT</code> plus a warning, so the thread keeps sampling and reports the drop.
+  </p>
+  <h3>Forgetting that a poll can miss a short press</h3>
+  <p>
+    The button thread samples the pin every 10 ms. A press that lasts 3 ms, and that starts and ends between two samples, is never seen. A student who expects "one press, one line" will see fewer lines than button presses when tapping quickly. The fix depends on the requirement: poll faster, or use a GPIO interrupt, as lesson <a href="0057-interrupts-in-practice.html">57</a> and lesson <a href="0096-the-device-driver-model-and.html">96</a> do.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production firmware has a few threads with clear jobs, such as input, control, communication and logging, and the objects in this lesson connect them. A senior engineer reviewing a Zephyr change asks three questions: which context each function runs in, whether any ISR or expiry function can block, and which mutex protects each shared variable.
+  </p>
+  <p>
+    Zephyr supports many boards. The same thread, queue and mutex code runs on each of them, and only the devicetree and the drivers change. That is why this lesson uses the generic APIs and the overlay from lesson <a href="0094-devicetree.html">94</a>. The priority numbers are the one part that follows the product rather than the board, so a team writes them down in one header and reviews any change to them.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A thread has its own stack and a control block. The scheduler runs the most urgent ready thread, and a context switch saves and restores registers.</li>
+    <li>In Zephyr a smaller priority number is more urgent. <code>K_PRIO_PREEMPT(x)</code> is preemptible; <code>K_PRIO_COOP(x)</code> is negative and is never preempted by a preemptible thread.</li>
+    <li>A message queue copies fixed-size messages. <code>K_NO_WAIT</code> returns <code>-ENOMSG</code> when the queue is full, and <code>K_FOREVER</code> blocks.</li>
+    <li>A semaphore counts events. Its limit set at definition stops ticks from piling up.</li>
+    <li>A mutex is an owned, reentrant lock with priority inheritance. It is never taken inside an interrupt.</li>
+    <li>A timer expiry runs in interrupt context. Keep it to a give and a work submit, and let a thread do the rest.</li>
+    <li>Watch the priority numbers when you move code from FreeRTOS, because the order is reversed.</li>
+  </ul>
+
   <h2>Try it in Wokwi</h2>
-  <p>The starter has the three threads, the queue, the mutex and the work handler wired up. Four bodies are marked TODO(learner).</p>
+  <p>The starter has the three threads, the queue, the mutex and the work handler wired up. Five places are marked TODO(learner), and each one is a single call.</p>
   <ol class="steps">
-    <li>Open <code>projects/0095-threads-and-kernel/starter</code> in VS Code.</li>
-    <li>In <code>button_thread</code>, put the event on <code>button_q</code> with <code>k_msgq_put</code>.</li>
+    <li>Open <code>projects/0095-threads-and-kernel/starter</code> in VS Code, and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to check that it builds.</li>
+    <li>In <code>tick_expired</code>, submit <code>report_work</code> to the system workqueue with <code>k_work_submit()</code>. The semaphore give is already there.</li>
+    <li>In <code>button_thread</code>, put the event on <code>button_q</code> with <code>k_msgq_put()</code> and <code>K_NO_WAIT</code>.</li>
     <li>In <code>ui_thread</code>, take one event with <code>k_msgq_get(…, K_FOREVER)</code>, add one to <code>total_presses</code> under <code>stats_lock</code>, then print the press. Remove the placeholder <code>k_msleep</code>.</li>
-    <li>In <code>report_handler</code>, copy <code>total_presses</code> under the mutex and print it. In <code>main()</code>, start the timer with <code>k_timer_start</code>.</li>
-    <li>Build, start the simulator, and press button A (the <kbd>a</kbd> key in the diagram). You'll know it works when "press 1 at …" appears on each press and "total presses" appears every second.</li>
+    <li>In <code>report_handler</code>, copy <code>total_presses</code> under the mutex and print it. In <code>main()</code>, start the timer with <code>k_timer_start</code> for one second, then one second again.</li>
+    <li>Build again, start the simulator, and press the button (the <kbd>b</kbd> key in the diagram). You'll know it works when "press 1 at …" appears on each press, the LED toggles once a second, and "total presses" appears every second.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The message is a <code>struct button_event</code>, so put the address of a local <code>ev</code>, not the struct itself. <code>k_msgq_get</code> takes a pointer to where it should copy the message.</p>
+    <p>The message is a <code>struct button_event</code>, so put the address of a local <code>ev</code>, not the struct itself. <code>k_msgq_get</code> takes a pointer to where it should copy the message. For the timer, both arguments of <code>k_timer_start</code> are <code>K_SECONDS(1)</code>.</p>
   </details>
-  <p>The reference solution is in <code>projects/0095-threads-and-kernel/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0095-threads-and-kernel/solution</code>. It prints <code>THREADS OK</code> once at start. Try first, compare after.</p>
   <div class="note">
     The starter uses a button, not the LED, for the events. The LED still blinks once a second, from the semaphore. We could not run this in the simulator here (no token), so the build and the diagram lint are verified and the behaviour is the one you will check.
   </div>
@@ -109,15 +274,25 @@
         "answer": 0,
         "why": "In Zephyr a smaller number is more urgent, so 2 runs before 5. The tempting answer, five, comes from FreeRTOS, where a larger number is more urgent, and is wrong for Zephyr." },
       { "type": "mc",
-        "prompt": "The ui thread finds the queue full when it calls k_msgq_put with K_NO_WAIT. What happens?",
+        "prompt": "The button thread finds the queue full when it calls k_msgq_put with K_NO_WAIT. What happens?",
         "options": ["Put returns an error", "Thread waits without end", "Queue grows much larger", "Old message is lost"],
         "answer": 0,
-        "why": "With K_NO_WAIT the call returns immediately with an error, so the caller decides what to do. The tempting answer, blocking forever, is what K_FOREVER would do, and the queue does not grow or silently drop the oldest message." },
+        "why": "With K_NO_WAIT the call returns immediately with -ENOMSG, so the caller decides what to do. The tempting answer, blocking forever, is what K_FOREVER would do, and the queue does not grow or silently drop the oldest message." },
       { "type": "mc",
         "prompt": "Why does the timer expiry only give the semaphore and submit work?",
         "options": ["Expiry runs in interrupts", "Work is quicker here", "Mutexes need timers too", "Printing needs a semaphore"],
         "answer": 0,
         "why": "The expiry is an interrupt handler, and an interrupt may not block. The tempting answer, that work is faster, is not the reason: the point is that the handler runs in a thread where blocking is allowed." },
+      { "type": "mc",
+        "prompt": "A timer expiry needs to update a shared counter. Which change keeps the expiry safe?",
+        "options": ["Take the mutex in expiry", "Sleep briefly before each tick", "Give semaphore and submit work", "Call printk for each tick"],
+        "answer": 2,
+        "why": "The expiry runs in interrupt context, so it may give a semaphore and submit work, and the thread that owns the counter does the update. The tempting answer, taking the mutex, is wrong because mutexes cannot be used inside an ISR. Sleeping and printing both block in the wrong place." },
+      { "type": "mc",
+        "prompt": "A cooperative thread and a preemptible thread are both ready. Which one keeps the CPU?",
+        "options": ["The preemptible thread takes over", "Threads share the CPU evenly", "The cooperative thread keeps running", "The later created thread wins"],
+        "answer": 2,
+        "why": "A cooperative thread has a negative priority, so the preemptible thread cannot take the CPU from it until the cooperative thread blocks. The tempting answer, that the preemptible thread takes over, is the rule for two preemptible threads, not for a cooperative one." },
       { "type": "number",
         "prompt": "The solution's timer fires every second. How many times does it fire in 10 seconds?",
         "answer": 10, "tolerance": 0, "unit": "times",

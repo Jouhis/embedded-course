@@ -17,12 +17,34 @@
     By the end of this lesson you can send data between tasks with a queue, signal a task from an interrupt with a binary semaphore, use the FromISR calls and <code>portYIELD_FROM_ISR()</code> correctly, and say when an event group is the better choice.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are, and why it matters</h2>
   <p>
-    A <strong>queue</strong> is a fixed-length FIFO of items. <code>xQueueSend()</code> copies an item in, and <code>xQueueReceive()</code> copies it out. Because the kernel copies the item, the sender may reuse its variable at once. A receiver that finds the queue empty blocks, so it uses no CPU until something arrives. The FreeRTOS API reference documents both calls, and the queue implementation is <code>queue.c</code> in the kernel source.
+    Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> gave you tasks and priorities, and lesson <a href="0088-context-switching-at-the-register.html">88</a> showed what a switch does to the registers. Neither says how two tasks should talk. In the Lab 5 monitor the button is an interrupt, the sensor is a task, and the screen is another task. The button handler must wake the UI task without waiting for it, and the sensor must pass its readings to the UI without writing into the UI's variables. Both needs are met by the kernel objects in this lesson.
   </p>
   <p>
-    A <strong>semaphore</strong> carries a count rather than data. A <strong>binary semaphore</strong> is 0 or 1: it is the signal "this happened, once". A <strong>counting semaphore</strong> counts events up to a limit, such as the number of free buffers. Lesson 90 covers the mutex, which is a semaphore with an owner.
+    The button case is the one that matters most. A press arrives as an interrupt from the EXTI controller, which lesson <a href="0070-usart-and-exti-interrupts-with.html">70</a> introduced. The interrupt runs in the middle of whatever task was running, and it must finish quickly. It cannot wait for the UI task to become ready. It can only hand the press over, and the kernel's FromISR calls are how it does that.
+  </p>
+
+  <h2>Concept 1: a queue is a copying FIFO</h2>
+  <p>
+    A <a href="../reference/glossary.html#queue-rtos">queue</a> is a fixed-length first-in, first-out list of items. <code>xQueueSend()</code> copies an item in, and <code>xQueueReceive()</code> copies it out. The copy is the important part. The sender may reuse its variable as soon as the send returns, because the kernel has its own copy of the bytes. That is why a queue is safer than a pointer: passing a pointer to a local variable through a queue is a bug, because the local is gone by the time the receiver runs.
+  </p>
+  <p>
+    A queue has a fixed <em>length</em>, which is the number of items it can hold, and a fixed <em>item size</em>, which is the number of bytes in each item. The kernel allocates the storage when the queue is created, from the FreeRTOS heap. In <code>queue.c</code> line 529 the allocation is <code>sizeof(Queue_t)</code> plus the queue's storage in bytes, which is length times item size. A queue of length 4 with 4-byte items therefore holds 16 bytes of data, plus the kernel's bookkeeping.
+  </p>
+  <p>
+    A receiver that finds the queue empty blocks, so it uses no CPU while it waits. Both send and receive take a timeout. <code>portMAX_DELAY</code> means wait forever. On this port it is <code>0xffffffffUL</code> (<code>portmacro.h</code>, the 32-bit tick case, which the template uses). A timeout of zero means try once and return.
+  </p>
+
+  <h2>Concept 2: a semaphore is a count, not data</h2>
+  <p>
+    A <a href="../reference/glossary.html#binary-semaphore">binary semaphore</a> holds a count of 0 or 1. It means "this event happened, once". A <a href="../reference/glossary.html#counting-semaphore">counting semaphore</a> counts events up to a limit you choose, such as the number of free buffers in a pool. A semaphore carries no data. The task that takes it learns that something happened, and nothing else.
+  </p>
+  <p>
+    A binary semaphore created with <code>xSemaphoreCreateBinary()</code> starts empty. A task that takes it blocks until something gives it. A give while the count is already 1 changes nothing. That is the rule that bites in interviews: two presses before the task runs leave one give, so the task wakes once. A counting semaphore, or a queue of button events, keeps both. Lesson 90 covers the mutex, which is a semaphore with an owner.
+  </p>
+  <p>
+    The FreeRTOS macros make the semaphore a special queue. <code>xSemaphoreCreateBinary()</code> is <code>xQueueGenericCreate</code> with length 1, an item size of 0 and the binary type (<code>semphr.h</code> line 167), and <code>xSemaphoreGive()</code> sends into that queue with no data. The queue machinery is the same, so the semaphore has the same blocking and timeout behaviour.
   </p>
   <table>
     <thead>
@@ -36,9 +58,12 @@
     </tbody>
   </table>
 
-  <h2>Interrupts use the FromISR versions</h2>
+  <h2>Concept 3: an interrupt cannot block</h2>
   <p>
-    An interrupt cannot block, and it must not call a kernel function that might. So FreeRTOS has <code>xQueueSendFromISR()</code>, <code>xSemaphoreGiveFromISR()</code> and so on. Each takes a <code>pxHigherPriorityTaskWoken</code> pointer. If the call makes a task ready that has a higher priority than the interrupted task, the flag becomes <code>pdTRUE</code>. At the end of the ISR, <code>portYIELD_FROM_ISR(woken)</code> requests the switch (<code>portmacro.h</code> line 111 maps it to the port's end-of-switching macro). The event-group documentation gives the same pattern (<code>event_groups.h</code> around line 603).
+    An interrupt runs on the core in the middle of a task, and it must return quickly so the task can continue. If it blocked, the task it interrupted would be stuck behind it, and the interrupt itself has no task to sleep. So an ISR must use the non-blocking form of each call. FreeRTOS provides these as the FromISR versions: <code>xQueueSendFromISR()</code>, <code>xSemaphoreGiveFromISR()</code> and the rest. Each takes a pointer, <code>pxHigherPriorityTaskWoken</code>.
+  </p>
+  <p>
+    When a FromISR call makes a task ready and that task has a higher priority than the one the interrupt interrupted, the call sets the flag the pointer points to, to <code>pdTRUE</code>. The ISR passes that flag to <code>portYIELD_FROM_ISR()</code> at its end. The macro is defined in <code>portmacro.h</code> as <code>portEND_SWITCHING_ISR</code> (line 98), and line 111 maps <code>portYIELD_FROM_ISR</code> to it. If the flag is set, the port requests a switch when the interrupt returns, so the woken task runs immediately rather than after the next tick. The event-group documentation in <code>event_groups.h</code> shows the same pattern around line 603.
   </p>
 <pre><code><span class="k">void</span> EXTI15_10_IRQHandler(<span class="k">void</span>) {
     <span class="k">if</span> ((EXTI-&gt;PR &amp; EXTI_PR_PR12) != 0U) {
@@ -48,31 +73,88 @@
         portYIELD_FROM_ISR(woken);            <span class="c">/* switch now if the button task is more urgent */</span>
     }
 }</code></pre>
-  <div class="warning">An ISR that calls the plain <code>xSemaphoreGive()</code> or <code>xQueueSend()</code> is a bug, and it often works in the simulator and fails on silicon. Also, the ISR's NVIC priority must be at or below <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code> (5 in this course's template): a more urgent interrupt may not call FromISR functions.</div>
-
-  <h2>Event groups</h2>
   <p>
-    An event group is a word of flags. Several sources set bits with <code>xEventGroupSetBits()</code>, and a task waits with <code>xEventGroupWaitBits()</code> for a combination: all of the bits, or any of them. Use it when one task waits for several conditions, such as "sensor ready and button pressed". Use a queue when the data matters, and a semaphore when a single event is enough. The API reference lists the wait functions, and the event-group source is <code>event_groups.c</code>.
+    Read the handler line by line. <code>EXTI-&gt;PR</code> is the EXTI pending register, which holds one flag per line. <code>EXTI_PR_PR12</code> is the bit for line 12, the button on PB12. The <code>if</code> checks that this line is the one that fired, because the same handler serves lines 10 to 15 and the others may be set too. The next line clears the flag by writing 1 to it. The project's comment says the flag is cleared by writing 1, and if it were not cleared, the interrupt would fire again as soon as the handler returned. The vendor reference manual, RM0008, describes the EXTI pending register; this course could not download it, so check its EXTI section before you rely on the wording.
+  </p>
+  <p>
+    <code>BaseType_t woken = pdFALSE;</code> declares the flag on the ISR's stack, initialised to false. <code>xSemaphoreGiveFromISR(button_sem, &amp;woken)</code> gives the semaphore. In <code>semphr.h</code> line 640 this macro is <code>xQueueGiveFromISR</code>, which does not block and sets <code>woken</code> only if a higher-priority task was waiting on the semaphore. The last line passes that flag to the yield macro. With <code>woken</code> false the call does nothing, and the interrupt returns to the interrupted task.
+  </p>
+  <div class="warning">An ISR that calls the plain <code>xSemaphoreGive()</code> or <code>xQueueSend()</code> is a bug. The plain calls are written for tasks and may block or change the kernel's lists in ways an interrupt cannot allow. The bug often appears to work at first and then fails intermittently. The ISR's NVIC priority must also be numerically equal to or higher than <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code>, which the template sets to <code>5 &lt;&lt; 4</code> in <code>FreeRTOSConfig.h</code> line 30. The rule is explained in the next concept.</div>
+
+  <h2>Concept 4: the interrupt priority limit</h2>
+  <p>
+    Lesson 72 taught that on the NVIC a lower number is more urgent. The FreeRTOS port uses that same number for interrupts, and it adds a limit. An interrupt that calls a FromISR function must have a priority at or below the limit, which means its number must be equal to or <em>higher</em> than the limit. The port's own comment says it directly: numerically low priority numbers are logically high priorities, so the interrupt's number must be equal to or numerically higher than <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code>. The check is <code>vPortValidateInterruptPriority()</code> in <code>port.c</code> line 766, and it runs from the send and give paths in <code>queue.c</code>.
+  </p>
+  <p>
+    The template defines the limit as <code>(5 &lt;&lt; 4)</code>, not as 5. The Cortex-M3 stores priorities in the top bits of an 8-bit field, and the STM32F1 implements only the top four bits, which is what <code>__NVIC_PRIO_BITS</code> at 4 in <code>stm32f103xb.h</code> line 51 says. The shift by 4 puts the priority 5 in those bits. The call <code>NVIC_SetPriority(EXTI15_10_IRQn, 5)</code> in the project does the same shift itself, so the number you pass to <code>NVIC_SetPriority()</code> is 5, not 80.
+  </p>
+  <p>
+    With four implemented bits there are 16 priority levels, numbered 0 to 15. Level 0 is the most urgent, and level 15 the least. The kernel's own interrupts, SysTick and PendSV, are given the lowest urgency: the port writes <code>portMIN_INTERRUPT_PRIORITY</code>, which is 255, into their priority fields (<code>port.c</code> line 55). The button interrupt at level 5 is therefore less urgent than levels 0 to 4, which are the ones that must not call FromISR functions, and more urgent than the rest.
+  </p>
+  <p>
+    The port also refuses the default. An interrupt left at priority 0 is the most urgent, and it is above the limit, so a FromISR call from it fails the check. The port's comment calls this out directly: an interrupt that uses the FreeRTOS API must not be left at its default priority of zero.
   </p>
 
-  <h2>The rules that matter in interviews</h2>
+  <h2>Concept 5: event groups</h2>
+  <p>
+    An <a href="../reference/glossary.html#event-group">event group</a> is a word of flags. Several sources set bits with <code>xEventGroupSetBits()</code>, and a task waits with <code>xEventGroupWaitBits()</code> for a combination of them, either all of the bits or any of them. The bits are not counted. Setting a bit that is already set changes nothing, and that is the difference from a counting semaphore.
+  </p>
+  <p>
+    Take a task that acts only when a sensor is ready and the button has been pressed. Give the sensor bit the value 0x01 and the button bit 0x02. The waiter asks for both bits, so the mask is 0x03, and it waits for all of them. The sensor sets 0x01 when a reading is ready, the button sets 0x02 when it is pressed, and the waiter wakes when the value has both. If the button is pressed twice before the sensor reads, the bit is still set once, which is the right answer for a condition.
+  </p>
+  <p>
+    An ISR may set event bits too, with <code>xEventGroupSetBitsFromISR()</code>, which is defined in <code>event_groups.c</code>. It follows the same pattern: the call reports whether a switch is needed, and the ISR passes that to <code>portYIELD_FROM_ISR()</code>. Use a queue when the data matters, a semaphore when a single event is enough, and an event group when the task waits for a combination of conditions.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: calling the plain give from an ISR.</strong> The button handler calls <code>xSemaphoreGive()</code>, which is written for tasks. The symptom is intermittent: the button task sometimes wakes late, sometimes not at all, and the log shows lines in the wrong order. The fix is <code>xSemaphoreGiveFromISR()</code> with a <code>woken</code> flag, followed by <code>portYIELD_FROM_ISR(woken)</code>.
+  </p>
+  <p>
+    <strong>Mistake 2: the EXTI flag left set.</strong> The handler forgets the line that clears the pending bit. The symptom is the BUTTON line printed without end, or the system seems stuck inside the interrupt, because the interrupt fires again the moment it returns. The fix is to clear the flag at the start of the handler, as the project does, and to check the pending register with the debugger when a handler runs forever.
+  </p>
+  <p>
+    <strong>Mistake 3: an ISR priority above the limit.</strong> A developer gives the button interrupt priority 0 for "the most responsive button". The symptom is an assertion in <code>vPortValidateInterruptPriority()</code>. With the template's <code>configASSERT</code>, the device stops with interrupts disabled at the first FromISR call, which is the behaviour the template chose on purpose. The fix is to give the interrupt a priority numerically equal to or higher than 5.
+  </p>
+  <p>
+    <strong>Mistake 4: a binary semaphore counting presses.</strong> A developer expects each of three quick presses to print a line, and sees only one. The symptom is that the printed count is lower than the number of presses. The binary semaphore remembers at most one give. The fix is a counting semaphore, or a queue of press events, when every event matters.
+  </p>
+  <p>
+    <strong>Mistake 5: a pointer to a local through a queue.</strong> A producer sends <code>&amp;value</code>, where <code>value</code> is a local in a loop. The symptom is that the consumer prints garbage, because the local has changed or gone by the time it is read. The fix is to pass the value, not its address, which the queue then copies. The project does this with <code>&amp;i</code>, which is safe only because the queue copies <code>i</code> at the send.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Firmware teams use the FromISR rule as a review item. A reviewer checks each interrupt handler for any call that is not in the ISR-safe list, and for the priority of the interrupt against the kernel's limit. The common practice is to keep handlers short: clear the flag, move the data into a queue or set a bit, and yield. Everything slow happens in a task that the handler wakes.
+  </p>
+  <p>
+    Queues are also the standard way to hand commands between tasks in a product. A display task receives events from a button task and a sensor task on one queue, and it never reads their variables. The design is easier to test, because the queue is the interface, and a test can feed it events directly. Interviewers often ask for the difference between a queue and a semaphore, and the answer that works is the one in this lesson: data versus signal.
+  </p>
+
+  <h2>Summary</h2>
   <ul>
-    <li><strong>A binary semaphore remembers at most one give.</strong> Two presses before the task runs make one wake-up. If you need every press, use a counting semaphore or a queue.</li>
-    <li><strong>A queue copies its items.</strong> Passing a pointer to a local variable is a bug, because the local is gone when the receiver runs.</li>
-    <li><strong>Block with a timeout or with <code>portMAX_DELAY</code> on purpose.</strong> A receiver that waits forever is fine for a worker; a sender that waits forever on a full queue hides a stuck consumer.</li>
+    <li>A queue copies fixed-size items in FIFO order, and a receiver blocks while it is empty. Its storage is allocated from the heap.</li>
+    <li>A binary semaphore holds 0 or 1, so repeated gives before a take count once. A counting semaphore keeps the count up to its limit.</li>
+    <li>An ISR must call the FromISR versions, which never block, and pass <code>woken</code> to <code>portYIELD_FROM_ISR()</code> to switch at once.</li>
+    <li>An ISR that calls FromISR functions must have a priority numerically equal to or higher than <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code>, which is <code>5 &lt;&lt; 4</code> in the template.</li>
+    <li>The EXTI pending flag must be cleared in the handler, or the interrupt fires again at once.</li>
+    <li>An event group is a set of bits that a task waits on for all or any, and a repeated set counts once.</li>
   </ul>
 
   <h2>Try it: a button ISR and a queue on the Blue Pill</h2>
   <p>
+    <strong>Known issue.</strong> In the Wokwi simulator, FreeRTOS on the STM32 does not run its first task yet (see <code>CHANGELOG.md</code>). The output this project promises will not appear in the simulator until that is fixed. The expected output below is what the code prints when it runs. Do the steps anyway, so the code is ready.
+  </p>
+  <p>
     The project <code>projects/0089-queue-button-isr</code> has three tasks. A producer sends three numbers into a queue, a consumer prints them and then prints <code>QUEUE OK</code>, and a button task waits on a binary semaphore that the EXTI interrupt on PB12 gives. Open the starter in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.
   </p>
   <ol class="steps">
-    <li>In <code>starter/main.c</code>, find the <code>TODO(learner)</code> in <code>consumer_task</code>. Print <code>QUEUE OK</code> when the item is 3, using the same mutex pattern as <code>log_line()</code>.</li>
-    <li>In <code>EXTI15_10_IRQHandler</code>, replace the TODO(learner) marker. Give <code>button_sem</code> with <code>xSemaphoreGiveFromISR()</code>, passing <code>&amp;woken</code>, then call <code>portYIELD_FROM_ISR(woken)</code>.</li>
-    <li>Build and simulate. In the Wokwi diagram, click the pushbutton. The serial monitor prints <code>BUTTON pressed n=1</code>, then <code>n=2</code>, and so on.</li>
-    <li>Compare with <code>projects/0089-queue-button-isr/solution/main.c</code>. The solution prints <code>QUEUE OK</code> about 600 ms after start.</li>
+    <li>In <code>starter/main.c</code>, find the <code>TODO(learner)</code> in <code>consumer_task</code>. When the item is 3, print <code>QUEUE OK</code> with the same mutex pattern as <code>log_line()</code>. Expected lines before your change: <code>QUEUE item=1</code>, <code>QUEUE item=2</code>, <code>QUEUE item=3</code>.</li>
+    <li>In <code>EXTI15_10_IRQHandler</code>, replace the TODO(learner) marker. Give <code>button_sem</code> with <code>xSemaphoreGiveFromISR()</code>, passing <code>&amp;woken</code>, then call <code>portYIELD_FROM_ISR(woken)</code>. Do not use <code>xSemaphoreGive()</code> here.</li>
+    <li>Build and simulate. In the Wokwi diagram, click the pushbutton. Expected: the serial monitor prints <code>BUTTON pressed n=1</code>, then <code>n=2</code>, and so on, one line per click.</li>
+    <li>Compare with <code>projects/0089-queue-button-isr/solution/main.c</code>. The solution prints <code>QUEUE OK</code> about 400 ms after start. The producer sends item 1 at 0 ms, item 2 at 200 ms and item 3 at 400 ms, and the consumer prints the OK line when item 3 arrives.</li>
   </ol>
-  <div class="note">The EXTI interrupt is configured in <code>button_exti_init()</code>: PB12 is an input with a pull-up, EXTI line 12 is routed to port B through AFIO, and the interrupt is on the falling edge. Lesson 70 covers EXTI in detail.</div>
+  <div class="note">The EXTI interrupt is configured in <code>button_exti_init()</code>: PB12 is an input with a pull-up, EXTI line 12 is routed to port B through AFIO, and the interrupt is on the falling edge. The routing uses <code>AFIO-&gt;EXTICR[3]</code>, which is the EXTICR4 register, whose field for line 12 is the lowest four bits (<code>stm32f103xb.h</code> line 2448). Lesson 70 covers EXTI in detail.</div>
 
   <div class="win">You moved data through a queue, signalled a task from an interrupt with a FromISR call, and used <code>portYIELD_FROM_ISR()</code> to switch at once when the woken task is more urgent.</div>
 
@@ -101,7 +183,16 @@
         "prompt": "A task waits for both a sensor flag and a button flag before it acts. Which kernel object fits best?",
         "options": ["An event group with flags", "A binary semaphore, one signal", "A queue, copying bytes out"],
         "answer": 0,
-        "why": "An event group waits on a combination of bits set by different sources, all or any. A single binary semaphore carries one signal, and a queue carries data, which is not what the task needs." }
+        "why": "An event group waits on a combination of bits set by different sources, all or any. A single binary semaphore carries one signal, and a queue carries data, which is not what the task needs." },
+      { "type": "mc",
+        "prompt": "Which NVIC priority number may an ISR use to call xSemaphoreGiveFromISR, given configMAX_SYSCALL_INTERRUPT_PRIORITY is 5 << 4?",
+        "options": ["Numerically 5 or higher", "Numerically 4 or lower", "Exactly zero, the default"],
+        "answer": 0,
+        "why": "The port requires the interrupt's number to be equal to or numerically higher than the limit, so 5 or higher is valid. The tempting answer, 4 or lower, is more urgent than the limit, which the check forbids. Zero is the default and the most urgent level, so it fails too." },
+      { "type": "number",
+        "prompt": "The STM32F1 implements 4 priority bits (__NVIC_PRIO_BITS is 4). How many interrupt priority levels does it have?",
+        "answer": 16, "tolerance": 0, "unit": "levels",
+        "why": "Four bits give 16 levels, numbered 0 to 15. The tempting answer is 256, which is the full 8-bit priority field of a Cortex-M that implements every bit, not this chip." }
     ] }
     </script>
   </div>
@@ -123,11 +214,11 @@
 
   <div class="interview">
     <p><strong>"A button ISR must wake a task. Walk me through it, and what goes wrong if you call the non-ISR version?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>The ISR clears the interrupt flag first, then calls xSemaphoreGiveFromISR with a pointer to a local BaseType_t. The call does not block, and it sets the flag if the woken task has a higher priority than the interrupted one. The ISR then calls portYIELD_FROM_ISR with that flag, so the switch happens at the end of the interrupt. If the ISR called xSemaphoreGive, the call could try to take a lock or change the ready list from interrupt context, which the port does not allow, and the kernel's critical sections would be corrupted. The ISR's priority must also be at or below configMAX_SYSCALL_INTERRUPT_PRIORITY.</p></details>
+    <details><summary>Model answer</summary><p>The ISR clears the interrupt flag first, then calls xSemaphoreGiveFromISR with a pointer to a local BaseType_t. The call does not block, and it sets the flag if the woken task has a higher priority than the interrupted one. The ISR then calls portYIELD_FROM_ISR with that flag, so the switch happens at the end of the interrupt. If the ISR called xSemaphoreGive, the call could try to take a lock or change the ready list from interrupt context, which the port does not allow, and the kernel's critical sections would be corrupted. The ISR's priority must also be numerically equal to or higher than configMAX_SYSCALL_INTERRUPT_PRIORITY.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://www.freertos.org/a00118.html">FreeRTOS API reference: xQueueSend, xQueueReceive and the FromISR variants</a>, and <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, the chapters on queue management and interrupts. In the workspace, read <code>third_party/FreeRTOS-Kernel/event_groups.h</code> around line 600 for the ISR pattern, and <code>portmacro.h</code> line 111 for <code>portYIELD_FROM_ISR</code>.
+    <a href="https://www.freertos.org/a00118.html">FreeRTOS API reference: xQueueSend, xQueueReceive and the FromISR variants</a>, and <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, the book on the kernel. In the workspace, the line references in this lesson are the source: <code>third_party/FreeRTOS-Kernel/queue.c</code> (the allocation at line 529, <code>xQueueGenericSendFromISR</code> at 1160 with its priority check at 1189), <code>event_groups.h</code> around line 603 for the ISR pattern, <code>portmacro.h</code> line 111 for <code>portYIELD_FROM_ISR</code>, and <code>portable/GCC/ARM_CM3/port.c</code> line 766 for the priority check.
   </div>
 
   <div class="ask">

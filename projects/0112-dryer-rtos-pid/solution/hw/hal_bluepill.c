@@ -62,7 +62,7 @@ void hal_init(void) {
     ADC1->CR2 |= ADC_CR2_CAL;
     while ((ADC1->CR2 & ADC_CR2_CAL) != 0U) { }
     ADC1->CR2 |= ADC_CR2_EXTTRIG | ADC_CR2_EXTSEL;     /* EXTSEL=111: software start */
-    ADC1->SMPR2 = (ADC1->SMPR2 & ~ADC_SMPR2_SMP0) | (5U << 0);
+    ADC1->SMPR2 = (ADC1->SMPR2 & ~ADC_SMPR2_SMP0) | (6U << 0);   /* SMP0 = 6: 71.5 cycles (5 would be 55.5) */
     ADC1->SQR1 = 0U;                                   /* one conversion */
     ADC1->SQR3 = ADC_CHANNEL_NTC;
 

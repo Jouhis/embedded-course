@@ -17,39 +17,119 @@
     By the end of this lesson you can parse a big-endian 16-bit value from a byte buffer with shifts, explain why a bit-field is not a portable register layout, and say what <code>__attribute__((packed))</code> does and does not change.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A <strong>bit-field</strong> is a struct member with a width in bits: <code>unsigned mode : 2;</code>. It looks like a register map, and it is tempting for hardware work. The C standard does not fix its layout. The order of bit-fields within a storage unit, whether a bit-field can straddle a unit boundary, and whether a plain <code>int</code> bit-field is signed are all implementation-defined or unspecified.
-    <a href="https://en.cppreference.com/w/c/language/bit_field">cppreference, bit-field layout</a>
-    <span class="sidenote">The same code can give different bit positions on two compilers, or two versions of one compiler. Your register map would then depend on the toolchain, which is the opposite of what a register needs.</span>
+    <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45</a> covered fixed-width types such as <code>uint8_t</code> and <code>uint16_t</code>, and how C promotes small integers before it does arithmetic on them. <a href="0047-pointers-to-registers-and-struct.html">Lesson 47</a> showed a struct that overlays a peripheral's register block. This lesson deals with the data that moves between those two worlds: bytes that arrive from a sensor, and single bits inside a register or a status byte.
   </p>
-  <div class="warning">Do not describe a hardware register with bit-fields in portable code. Use a fixed-width integer and named mask and shift constants. The mask is exact, and the same expression works on every compiler that follows the standard.</div>
-
-  <h2>Shifts instead of casts</h2>
   <p>
-    A sensor usually sends its values big-endian: the high byte comes first on the wire. To build a 16-bit value, combine the bytes with shifts. Each byte is promoted to <code>int</code> first, so cast it to <code>uint16_t</code> before you shift the high byte up, which keeps the arithmetic in the type you intend (lesson 45).
+    The problem is common in real work. A temperature sensor on an I2C or UART link sends a short frame: a header, two data bytes, and a status byte. The driver must turn those bytes into numbers, and it must pick out the single bits that mean "valid" or "in error". Many datasheets describe the frame with a table of byte offsets and bit numbers. Your code has to match that table exactly, on every compiler the team uses, for the life of the product. This lesson shows the portable way to do it.
+  </p>
+
+  <h2>Concepts, one at a time</h2>
+
+  <h3>Bits, bytes and masks</h3>
+  <p>
+    A <strong>bit</strong> is the smallest unit of storage, holding a 0 or a 1. A <strong>byte</strong> is eight bits, and it is the unit the memory system reads and writes. Bits inside a byte are numbered from 0 for the least significant bit (the one worth 1) up to 7 for the most significant (worth 128). A value written in hexadecimal shows each byte as two digits: 0xA5 is the bit pattern 1010 0101.
+  </p>
+  <p>
+    A <strong>mask</strong> is a constant that selects some bits. To keep only bits 1 and 0 of a byte, AND it with <code>0x03</code>, which is the pattern 0000 0011. To move a field down to bit 0, shift it right. Masks and shifts are ordinary arithmetic on integers, so the compiler produces exactly the instructions you wrote. The CPU has no notion of "field": it only knows about values, AND, OR, and shift instructions.
+  </p>
+
+  <h3>What a bit-field is</h3>
+  <p>
+    A <strong>bit-field</strong> is a struct member with a width in bits. The declaration <code>unsigned mode : 2;</code> asks the compiler for a 2-bit member called <code>mode</code>. It looks like a register map, which is why it is tempting for hardware work. You can write <code>status.mode</code> instead of <code>frame[3] &amp; 0x03</code>.
+  </p>
+  <p>
+    The problem is that the C standard does not fix where the bits go. The order of bit-fields inside a storage unit is implementation-defined, which means the compiler documents its choice but the standard does not decide it. Whether a bit-field may straddle a boundary between two storage units is also implementation-defined. The alignment of the storage unit is unspecified. Whether a plain <code>int</code> bit-field is signed or unsigned is implementation-defined too. The cppreference page on bit-fields lists each of these.
+    <a href="https://en.cppreference.com/w/c/language/bit_field">cppreference, bit-field layout</a>
+  </p>
+  <p>
+    The consequence is direct. The same declaration can put <code>mode</code> at bit 0 with one compiler and at a different bit with another, and the code still compiles and runs. A register map built on bit-fields then depends on the toolchain. For a register, the bit positions are fixed by the chip, so that dependency is the opposite of what you need.
+    <span class="sidenote">The bit positions of a register are set in silicon. The compiler does not get a say, so the C code must express them as numbers, not as a layout the compiler chooses.</span>
+  </p>
+  <div class="warning">Do not describe a hardware register with bit-fields in portable code. Use a fixed-width integer, and name the mask and shift constants. A mask such as <code>0x03</code> means the same bits on every compiler that follows the standard.</div>
+
+  <h3>Byte order: the wire and the CPU</h3>
+  <p>
+    A multi-byte value, such as a 16-bit temperature, is stored as two bytes. Which byte comes first is a convention, and two parties must agree on it. The <strong>high byte</strong> is the one that carries the larger place values, and the <strong>low byte</strong> carries the smaller ones. A sensor that sends the high byte first is said to be big-endian on the wire. A sensor that sends the low byte first is little-endian.
+  </p>
+  <p>
+    <strong>Endianness</strong> is the order of the bytes of a multi-byte value in memory. A little-endian CPU stores the least significant byte at the lowest address. Cortex-M cores, including the Cortex-M0+ in the RP2040 and the Cortex-M3 in the STM32F1, are little-endian in this course. A sensor's wire format and the CPU's memory format can therefore disagree, and the code that copies bytes between them must account for it.
+  </p>
+
+  <h3>Padding and packing</h3>
+  <p>
+    <strong>Alignment</strong> is the rule that a value of a given size must start at an address that is a multiple of its size. A 32-bit value is aligned to 4, and a 16-bit value to 2. The CPU can read an aligned value in one access. An unaligned value may take extra accesses, or the core may refuse the access. To keep members aligned, the compiler inserts <strong>padding</strong>: unused bytes between struct members. A <code>uint8_t</code> followed by a <code>uint16_t</code> therefore has one byte of padding after the first member.
+  </p>
+  <p>
+    A <strong>packed</strong> struct removes that padding, so members sit at the smallest possible alignment. Packing changes where members sit in memory. It does not change the byte order of any member, and it does not make the CPU read unaligned data any faster.
+  </p>
+
+  <h3>Unions</h3>
+  <p>
+    A <strong>union</strong> is a type whose members all start at the same address. Its size is the size of its largest member. A union of a <code>uint32_t</code> and an array of four <code>uint8_t</code> lets you name the same four bytes either as one number or as bytes. It looks convenient for splitting a register into bytes, but reading a union member other than the one most recently written is subtle in C, and the result depends on rules you may not want to rely on. The next sections show a plain shift does the same job without the subtlety.
+  </p>
+
+  <h2>A worked example: one frame, byte by byte</h2>
+  <p>
+    Take the 4-byte frame from the course project. Byte 0 is a header that must equal <code>0xA5</code>. Bytes 1 and 2 hold the temperature in hundredths of a degree, big-endian. Byte 3 is a status byte: bits 1 and 0 are the mode, and bit 2 is a valid flag. The test frame is:
+  </p>
+  <pre><code>frame[0] = 0xA5   header
+frame[1] = 0x12   temperature, high byte
+frame[2] = 0x34   temperature, low byte
+frame[3] = 0x05   status</code></pre>
+  <p>
+    Step 1: check the header. <code>0xA5</code> equals <code>FRAME_HEADER</code>, so the frame is accepted. A bad header, such as <code>0x5A</code>, is rejected before any byte is read further.
+  </p>
+  <p>
+    Step 2: build the temperature with shifts. Shift the high byte left by eight bits. <code>0x12</code> is 0001 0010, and shifting it left by eight places gives <code>0x1200</code>: each bit moves up eight positions, and eight zero bits fill the bottom. Now OR in the low byte: <code>0x1200 | 0x34 = 0x1234</code>. The OR works because the low byte's bits are all zero in <code>0x1200</code>, so no bit is lost. In decimal, 0x1234 is 1 × 4096 + 2 × 256 + 3 × 16 + 4 = <strong>4660</strong>.
+  </p>
+  <p>
+    Step 3: take the status fields. <code>0x05</code> is 0000 0101. The mode is bits 1 and 0, so <code>0x05 &amp; 0x03</code> keeps 0000 0001, which is <strong>1</strong>. The valid flag is bit 2, so <code>(0x05 &gt;&gt; 2) &amp; 0x01</code> shifts the byte down two places to 0000 0001 and keeps bit 0, giving <strong>1</strong>.
+  </p>
+  <p>
+    Step 4: see what a plain copy does on a little-endian CPU. The starter uses <code>memcpy(&amp;raw, &amp;frame[1], 2)</code>. That copies the two bytes <code>0x12, 0x34</code> into memory exactly as they are. Memory now holds <code>0x12</code> at the lower address. On a little-endian CPU the lower address is the least significant byte, so the value read back is <code>0x3412</code>, which is 3 × 4096 + 4 × 256 + 1 × 16 + 2 = <strong>13330</strong>. The bytes have swapped, and the temperature is wrong by a factor of about three.
+  </p>
+  <p>
+    The two results differ only in how the bytes were combined. The shift form combines them as values, so it is correct on any CPU. The copy form combines them in memory, so it depends on the CPU's byte order.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The project's solution builds the temperature with one expression. Here it is, with each part explained:
   </p>
   <pre><code><span class="c">/* frame[1] is the high byte, frame[2] the low byte: big-endian on the wire */</span>
-uint16_t temp = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2]);</code></pre>
+out-&gt;temp_centi_c = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2]);</code></pre>
   <p>
-    This expression gives the same result whatever byte order the CPU uses, because it works on values, not on memory. The alternative, copying the two bytes into a <code>uint16_t</code> with <code>memcpy</code> or a cast, copies them in the host's byte order. Whether that is right depends on the CPU, so it is not portable.
+    <code>frame[1]</code> is a <code>uint8_t</code> read from the array. In the expression, it is first converted to <code>uint16_t</code>. C then performs the usual integer promotions, which turn any operand narrower than <code>int</code> into an <code>int</code>. On these cores <code>int</code> is 32 bits, so the 8-bit value fits with room to spare. The cast makes the intended type explicit in the source, so a reader does not need to recall the promotion rules.
+  </p>
+  <p>
+    The <code>&lt;&lt; 8</code> moves the high byte into bits 15 to 8. Because the value is held in at least 16 bits, nothing falls off the top. The <code>(uint16_t)frame[2]</code> term is the low byte, already in bits 7 to 0, and <code>|</code> combines the two without any carry, because the bit ranges do not overlap. The outer <code>(uint16_t)</code> cast converts the result back to the 16-bit type of the struct member. Nothing in the expression reads memory in a particular byte order, so the code runs the same on a big-endian core.
+  </p>
+  <p>
+    The starter's line is the one to avoid:
+  </p>
+  <pre><code>uint16_t raw;
+memcpy(&amp;raw, &amp;frame[1], 2);      <span class="c">/* copies the bytes in host order: wrong on little-endian */</span>
+out-&gt;temp_centi_c = raw;</code></pre>
+  <p>
+    <code>memcpy</code> copies <code>2</code> bytes starting at <code>&amp;frame[1]</code> into <code>raw</code>. It does no byte reordering. The copy is correct for data that was written by the same CPU in the same byte order, such as a struct moved between two buffers. For a wire format, the sender's order is fixed and the receiver's is not, so the copy is wrong on one of them.
+  </p>
+  <p>
+    The status lines use masks, and each one names the bits it means:
+  </p>
+  <pre><code>out-&gt;mode  = frame[3] &amp; 0x03U;          <span class="c">/* bits 1:0: keep the two low bits */</span>
+out-&gt;valid = (frame[3] &gt;&gt; 2) &amp; 0x01U;   <span class="c">/* bit 2: move it to bit 0, then keep one bit */</span></code></pre>
+  <p>
+    The mask <code>0x03U</code> is binary 0000 0011, so the AND keeps bits 1 and 0 and clears the rest. The <code>U</code> suffix makes the constant unsigned, which keeps the arithmetic unsigned as well. The second line first shifts the byte right by two, so bit 2 becomes bit 0, and then keeps only that bit with <code>0x01U</code>. Both lines are exact, and a reviewer can check each bit number against the datasheet table.
+  </p>
+  <p>
+    The starter also rejects a frame with the wrong header. The check comes before the parse, so a bad frame never reaches the output fields. The solution keeps the same order, and the test in <code>main</code> prints <code>bad header rejected</code> when the second frame fails the check.
   </p>
 
-  <h2>Endianness on the Cortex-M</h2>
+  <h2>Packed structs, in one example</h2>
   <p>
-    <strong>Endianness</strong> is the order of bytes in a multi-byte value in memory. Little-endian puts the least significant byte at the lowest address. The toolchain used in this course predefines <code>__ARMEL__</code> and <code>__BYTE_ORDER__</code> as little-endian for both the Cortex-M0+ (RP2040) and the Cortex-M3 (STM32F1). Compiling a file with <code>-dM -E</code> prints those macros, so you can check your own target.
-    <span class="sidenote">Little-endian is the default for these cores, so a plain <code>memcpy</code> of a big-endian wire value gives the wrong number on them. Code that must also run on a big-endian target needs the shift form.</span>
-  </p>
-
-  <h2>Unions</h2>
-  <p>
-    A <strong>union</strong> puts all its members at the same address. It can overlay a 32-bit register on four bytes, which looks convenient. In portable C, though, reading a union member other than the one last written is subtle, and the result depends on the rules you rely on. Use shifts to convert bytes to a value. Use a plain struct for a register block, as lesson 47 shows.
-  </p>
-
-  <h2>Packing</h2>
-  <p>
-    A compiler adds padding inside a struct so each member sits at its natural alignment. A <strong>packed</strong> struct removes that padding. GCC documents the attribute on a struct, which applies to every member.
-    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual, common attributes: packed</a>
+    Sometimes a driver must describe the whole frame as a struct, so that it can be copied from a buffer in one call. The struct then has to match the wire layout, and packing is the tool for that:
   </p>
   <pre><code><span class="k">typedef struct</span> __attribute__((packed)) {
     uint8_t  header;      <span class="c">/* offset 0 */</span>
@@ -57,26 +137,61 @@ uint16_t temp = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2])
     uint8_t  status;      <span class="c">/* offset 3 with packing; offset 4 without */</span>
 } WireFrame;</code></pre>
   <p>
-    Packing describes the layout of the struct in memory. It does not change the byte order, and it does not make a shift unnecessary. A packed <code>uint16_t</code> at offset 1 is an unaligned access, and on some cores that faults or runs slowly. Use packing when you need a struct to match an agreed layout, and still parse the value with shifts.
+    Without the attribute, the compiler aligns <code>temp</code> to an even address, so it leaves one byte of padding after <code>header</code>. With the attribute, <code>temp</code> sits at offset 1 and <code>status</code> at offset 3, which matches the wire. The GCC manual says a packed member "should have the smallest possible alignment", and for a struct it says each member is placed "to minimize the memory required".
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual, common attributes: packed</a>
+  </p>
+  <p>
+    Packing does two things and not a third. It fixes the offsets of the members. It does not reverse the bytes of <code>temp</code>, so the value in <code>temp</code> is still whatever the bytes in memory say, and you still need the shift form to read a big-endian field. And it creates unaligned members. On a core without unaligned access, a load of <code>temp</code> from an odd address can fault. GCC defines the macro <code>__ARM_FEATURE_UNALIGNED</code> for <code>-mcpu=cortex-m3</code> but not for <code>-mcpu=cortex-m0plus</code>, which is the compiler's own statement of the difference between the two cores. A safe driver reads the fields with shifts, and uses the packed struct only as a description.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li><strong>Copying a wire value with memcpy or a pointer cast.</strong> The value is wrong by a byte swap. In the project the symptom is <code>temp=13330</code> where <code>temp=4660</code> is expected. The fix is the shift expression. The check is to find every place a multi-byte value is taken from a buffer and confirm it uses shifts.</li>
+    <li><strong>Casting a byte buffer to a 16-bit pointer.</strong> Code such as <code>*(uint16_t *)&amp;frame[1]</code> is unaligned, because <code>frame[1]</code> sits at an odd address when the buffer is aligned. On a core without unaligned access, this can fault, and the debugger shows a HardFault. On a core that allows it, the value is still byte-swapped. The fix is the same shift form.</li>
+    <li><strong>Losing the low byte in the OR.</strong> A line such as <code>raw = frame[1] &lt;&lt; 8 | frame[2]</code> can be correct, but a line that shifts the wrong byte, or uses <code>&amp;</code> where it means <code>|</code>, produces a value with the low byte missing. In the project, a temperature of <code>0x1200</code>, which is 4608, means the low byte was dropped. The symptom is a value that is correct in its high byte and zero in its low byte. Print the value in hexadecimal to see it at once.</li>
+    <li><strong>A bit-field for a register.</strong> The code compiles and the bits are right on one toolchain. On a second compiler, or after an upgrade, the same struct puts the field at a different bit, and the device behaves differently. The symptom appears only after a toolchain change, so it is hard to trace. The fix is a mask and a shift with named constants.</li>
+    <li><strong>Believing packing fixes the byte order.</strong> A team marks a struct packed and expects the big-endian temperature to read correctly. The value is still swapped, because packing moves members and does not reverse their bytes. The symptom is the same 13330 as before. The fix is to read the fields with shifts, and to keep packing for the layout only.</li>
+  </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    Driver code for sensors and radios is mostly parsing. A typical driver reads a frame, checks a header and a checksum, and then extracts fields with masks and shifts. Teams keep these functions small and test them on a PC with a table of frames. The tests use the same functions as the firmware, so a byte-order error shows up on the desk, not on the bench.
+  </p>
+  <p>
+    Code review checks three things in such a driver. Each multi-byte field must be parsed with shifts, not with a cast. Each mask and shift must name the bit positions from the datasheet, so the reviewer can check them against the table. And any struct that describes a wire frame must say whether it is packed and why. Reviewers also look for bit-fields in any code that touches a register, and they ask for the mask form instead.
+  </p>
+  <p>
+    The interview question about parsing a big-endian value is standard for embedded roles. The answer that impresses names the shift and OR, explains that the result does not depend on byte order, and states why a pointer cast fails. The model answer at the end of this lesson covers these points.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0048-sensor-frame-parse</code> parses a 4-byte sensor frame. The frame has a header byte, a big-endian temperature in two bytes, and a status byte whose low bits are a mode field and bit 2 is a valid flag.
+    The project <code>projects/0048-sensor-frame-parse</code> runs on a Pico. It parses the 4-byte frame from the worked example and prints the result on the serial monitor. The starter is wrong in exactly the way this lesson describes.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0048-sensor-frame-parse/starter</code> in VS Code, build, and start the simulator.</li>
-    <li>Read the printed line. The test frame <code>{0xA5, 0x12, 0x34, 0x05}</code> should give <code>temp=4660</code>, which is 0x1234. Note the number the starter prints.</li>
-    <li>Your task: find out why the starter's temperature is wrong and fix <code>parse_frame</code>. The fix uses shifts, and it must still reject a bad header.</li>
+    <li>Open <code>projects/0048-sensor-frame-parse/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Read the first printed line. The starter prints <code>temp=13330 mode=1 valid=1</code>. The mode and valid values are right, but 13330 is the byte-swapped value from step 4 of the worked example. The correct temperature for this frame is 4660.</li>
+    <li>Your task: replace the <code>memcpy</code> line in <code>parse_frame</code> with the shift expression from this lesson. Leave the header check and the mask lines as they are. The header check must still reject a bad frame.</li>
     <li>You will know it works when the serial monitor prints <code>FRAME PARSE OK temp=4660 mode=1 valid=1</code>, followed by <code>bad header rejected</code>.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Work out what the two bytes 0x12 and 0x34 become when copied into a <code>uint16_t</code> on a little-endian CPU. If the number you printed is 13330, that is 0x3412, the bytes swapped.</p>
+    <p>Work out what the two bytes 0x12 and 0x34 become when copied into a <code>uint16_t</code> on a little-endian CPU. If the number you printed is 13330, that is 0x3412, the bytes swapped. The fix is to combine the bytes as values: put the high byte in bits 15 to 8 with a shift, then OR in the low byte.</p>
   </details>
   <p>The reference solution is in <code>projects/0048-sensor-frame-parse/solution</code>. Try first, compare after.</p>
 
-  <div class="win">You parsed a big-endian value from a byte buffer with shifts, so the result does not depend on the CPU's byte order. You also saw the failure a plain copy causes on a little-endian Cortex-M.</div>
+  <div class="win">You parsed a big-endian value from a byte buffer with shifts, so the result does not depend on the CPU's byte order. You also saw the failure a plain copy causes on a little-endian Cortex-M, and you can say what packing changes and what it leaves alone.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A bit-field's layout is implementation-defined, so it is not a portable register map. Use a fixed-width integer with named masks and shifts.</li>
+    <li>A wire value is combined with shifts and OR: <code>(hi &lt;&lt; 8) | lo</code>. The result is a number, so it does not depend on the CPU's byte order.</li>
+    <li>A copy with <code>memcpy</code> or a pointer cast gives the bytes in host order. On a little-endian Cortex-M, 0x12 0x34 reads as 0x3412, which is 13330.</li>
+    <li>Cortex-M cores are little-endian in this course, and <code>-dM -E</code> prints the macros that say so.</li>
+    <li>A <code>packed</code> struct removes padding and fixes member offsets. It does not change byte order and does not make unaligned access safe.</li>
+    <li>Mask with <code>0x03U</code> to keep bits 1 and 0, and shift right by 2 to move bit 2 down to bit 0.</li>
+    <li>A union reads the same bytes under two types, which is subtle in C. Use shifts for conversions.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -118,7 +233,21 @@ uint16_t temp = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2])
           "It is required for every register"
         ],
         "answer": 1,
-        "why": "Packing changes the layout of members in memory, not the order of their bytes. It also does not make unaligned access safe on every core, and registers need no packing. The tempting answer is the third: packing can produce unaligned members, which some cores do not handle well." }
+        "why": "Packing changes the layout of members in memory, not the order of their bytes. It also does not make unaligned access safe on every core, and registers need no packing. The tempting answer is the third: packing can produce unaligned members, which some cores do not handle well." },
+      { "type": "number",
+        "prompt": "The status byte is 0x05. What is the mode, the value of bits 1 and 0, in decimal?",
+        "answer": 1, "tolerance": 0,
+        "why": "0x05 is 0000 0101, so bits 1 and 0 are 01, which is 1. The tempting answer is 5, the whole byte, which is what you get if you forget the mask 0x03." },
+      { "type": "mc",
+        "prompt": "Which expression gives 0x1234 from frame[1] = 0x12 and frame[2] = 0x34 on any CPU?",
+        "options": [
+          "frame[1]&lt;&lt;8|frame[2]",
+          "frame[2]&lt;&lt;8|frame[1]",
+          "memcpy(&amp;raw,frame+1,2)",
+          "*(uint16_t*)(frame+1)"
+        ],
+        "answer": 0,
+        "why": "Shifting the high byte into bits 15 to 8 and ORing in the low byte combines them as values, so the result is 0x1234 everywhere. The second option swaps the bytes and gives 0x3412. The third and fourth copy the bytes in host order, which is correct only on a CPU whose order matches the wire." }
     ] }
     </script>
   </div>
@@ -140,16 +269,16 @@ uint16_t temp = (uint16_t)(((uint16_t)frame[1] &lt;&lt; 8) | (uint16_t)frame[2])
 
   <div class="interview">
     <p><strong>"How would you parse a 16-bit big-endian value from a byte buffer in portable C, and why not cast the buffer?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Read the two bytes with explicit indices, cast each to uint16_t, shift the high byte left by eight, and OR in the low byte. That works on any CPU. Casting the buffer to a uint16_t pointer depends on alignment and byte order, and on some cores an unaligned load faults or gives the wrong value. A bit-field struct for the same data depends on the compiler's layout, so it is not portable either.</p></details>
+    <details><summary>Model answer</summary><p>Read the two bytes with explicit indices, cast each to uint16_t, shift the high byte left by eight, and OR in the low byte. That works on any CPU, because it combines the bytes as values and never looks at memory order. Casting the buffer to a uint16_t pointer depends on alignment and byte order: an odd address can be unaligned, and on a core without unaligned access the load can fault, while on a little-endian core the bytes come out swapped. A bit-field struct for the same data depends on the compiler's layout, so it is not portable either.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual: common attributes</a>: read the packed attribute, which describes padding removal and alignment of members, and its note on bit-fields. Then read the C bit-field page on cppreference for what the standard leaves to the compiler.
+    <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Attributes.html">GCC manual: common attributes</a>: read the packed attribute, which says each member is placed "to minimize the memory required", and its note on bit-fields. Then read the C bit-field page on cppreference for the list of implementation-defined and unspecified properties.
   </div>
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me the bytes in memory for a uint16_t on the RP2040, and how a shift-based parse would read the same two bytes."
-    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and promotion</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, and <a href="../reference/glossary.html">Glossary</a>.
+    Related: <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45: stdint types and promotion</a>, <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, and <a href="../reference/glossary.html#endianness">Glossary: Endianness</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

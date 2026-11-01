@@ -17,10 +17,25 @@
     By the end of this lesson you can declare a function pointer type, register a callback in a table, dispatch an event safely with a NULL check, and explain the vector table as an array of function pointers.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A function has an address, and a <strong>function pointer</strong> stores that address. The declaration reads from the inside out: <code>void (*handler)(int)</code> is a pointer named <code>handler</code> to a function that takes an <code>int</code> and returns nothing. A <code>typedef</code> makes the type readable.
-    <span class="sidenote">Calling through a pointer is an indirect branch. The CPU loads an address from memory and jumps there. That is one more load than a direct call, and it is the reason a table of handlers is cheap.</span>
+    <a href="0046-volatile-const-and-static.html">Lesson 46</a> showed how a flag shared with an interrupt must be <code>volatile</code>, and <a href="0047-pointers-to-registers-and-struct.html">lesson 47</a> used pointers to reach registers. This lesson uses pointers for a different purpose: storing the address of a function, so that one piece of code can call another piece it does not know about. <a href="0042-startup-code-and-the-vector.html">Lesson 42</a> introduced the startup file, which contains a table of addresses that the core reads on reset.
+  </p>
+  <p>
+    The problem comes up in almost every firmware project. A UART driver receives a byte and must tell the application. A timer fires every 100 ms and must run a task. A button changes state and must wake a menu. The driver is written once, and the application changes. If the driver calls the application by name, every new application needs a change to the driver. A callback reverses the dependency: the application registers a function, and the driver calls it when the event happens. The project in lesson 46 already uses this design: it passes a callback to the SDK's repeating-timer call, which then calls it every 100 ms.
+  </p>
+
+  <h2>Concepts, one at a time</h2>
+
+  <h3>A function has an address</h3>
+  <p>
+    A function's code lives in memory, and the function has an address, just as a variable does. Calling a function is a branch to that address. A direct call names the function, and the compiler writes the branch with the address built in. An <strong>indirect call</strong> reads the address from a variable at run time and branches to it. On a Cortex-M the core loads the address into a register and branches through that register. The mechanism is one load and one branch, which is cheap.
+  </p>
+  <p>
+    A <strong>function pointer</strong> is a variable that holds such an address. Its declaration says what kind of function it points to. The declaration <code>void (*handler)(int)</code> reads from the inside out: <code>handler</code> is a pointer, and it points to a function that takes an <code>int</code> and returns <code>void</code>. The parentheses around <code>*handler</code> are required. Without them, <code>void *handler(int)</code> declares a function that returns a pointer.
+  </p>
+  <p>
+    A <code>typedef</code> gives the type a name, so the rest of the code can use it without repeating the pattern:
   </p>
   <pre><code><span class="k">typedef void</span> (*Handler)(Event ev);     <span class="c">/* a type: pointer to a function taking Event, returning void */</span>
 
@@ -33,8 +48,13 @@
 <span class="k">void</span> dispatch(Event ev) {
     handlers[ev](ev);                       <span class="c">/* call whatever address is stored for this event */</span>
 }</code></pre>
+
+  <h3>A callback is a function someone else calls</h3>
   <p>
-    This is a <strong>callback</strong>: the code that owns the event calls a function that someone else registered. The driver does not need to know what the handler does. The application does not need to poll the driver. Each event has a slot, so adding an event is one more entry, not one more <code>if</code>.
+    A <strong>callback</strong> is a function that you give to other code, which calls it later when an event occurs. The code that owns the event decides when to call. Your function decides what to do. In this lesson the event is a tick or a button press, and the owner is <code>dispatch</code>. The driver does not need to know what the handler does, and the application does not need to poll the driver for news.
+  </p>
+  <p>
+    The table is what makes it scale. Each event has one slot, and the slot holds a function pointer. Looking up the handler for event <em>n</em> is an index into an array of pointers, so adding an event means adding one enum entry and one slot. Nothing in <code>dispatch</code> has to change.
   </p>
 
   <figure>
@@ -60,39 +80,151 @@
     <figcaption>Figure 1. The table holds addresses. The dispatcher loads one and calls it. A slot that is still NULL must be checked before the call.</figcaption>
   </figure>
 
-  <h2>The NULL check</h2>
+  <h3>NULL: the address that is not a function</h3>
   <p>
-    A slot that nobody registered holds NULL. Calling NULL does not do nothing: it jumps to address 0, which is not your code, and the result is a crash or worse. Check the slot before calling it. If the event has no handler, count it or ignore it, and say so in the design.
+    A <strong>null pointer</strong> is a pointer value that means "points to nothing". In C it is written <code>NULL</code>, and a static array of pointers is set to null automatically. C requires that objects with static storage duration are zero-initialised, so <code>static Handler handlers[EV_COUNT];</code> starts with every slot null. Nobody has to write the zeros, and nobody can forget them.
+  </p>
+  <p>
+    A null function pointer is still a number, and that number is 0. Calling it branches to address 0. On the RP2040 that address is the start of the boot ROM, a region the chip uses at power-up and which is read-only. The code that runs there is not your code, so the call does something unpredictable. The only safe rule is to check the slot before the call.
   </p>
   <div class="warning">A callback runs later than its registration, often from an interrupt. Do not pass a pointer to a local variable as the user data of a callback. The stack frame it points into is gone by the time the callback runs.</div>
 
-  <h2>The vector table is a table of function pointers</h2>
+  <h3>The vector table is a table of function pointers</h3>
   <p>
-    When an interrupt or exception happens, the core does not search for a handler. It reads an array in memory, the <strong>vector table</strong>, at an index given by the exception number. The first word is the initial stack pointer. The next words are the addresses of the reset handler, NMI, HardFault and the peripheral interrupts. Each entry is a function pointer in all but name.
-    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 programming manual</a>
-    <span class="sidenote">Lesson 42 builds the startup file and the vector table itself. The table in the startup code is an array of addresses, placed at a fixed location the core reads on reset and on each exception.</span>
+    When an interrupt or exception happens, the core does not search for a handler. It reads an array in memory, the <strong>vector table</strong>, at an index given by the exception number. The first word is the initial stack pointer. The second word is the address of the reset handler, and the next words are the addresses of NMI, HardFault and the peripheral interrupts. Each entry after the first is a function pointer in all but name.
   </p>
   <p>
-    That is why the dispatcher in this lesson and the vector table are the same design. Your code registers an address in a table, and something later reads it and jumps there. The difference is that the vector table is read by the hardware, which has no NULL check, so a missing entry must be filled with a safe default handler by the startup code.
+    The course's STM32 startup file shows the table directly. Its first entry is <code>_estack</code>, the top of the stack, which the linker defines. The second entry is <code>Reset_Handler</code>, and the next entries are <code>NMI_Handler</code>, <code>HardFault_Handler</code> and so on. Each handler name is declared as a weak alias of <code>Default_Handler</code>, which is a loop that never exits. A <strong>weak symbol</strong> is a default definition that another object file can replace with a strong one. If your code defines <code>USART1_IRQHandler</code>, the linker uses yours. If it does not, the table entry points at the default loop, and the device stops there.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056, STM32F10xxx Cortex-M3 programming manual</a>
+    <span class="sidenote">Lesson 42 builds the startup file and the vector table in detail. The table is data in flash, placed at a fixed location that the core reads on reset and on each exception.</span>
+  </p>
+  <p>
+    The vector table and your dispatcher are the same design. Your code registers an address in a table, and something later reads it and jumps there. The difference is that the hardware reads the vector table and has no NULL check. A missing entry therefore has to be filled with a safe default by the startup code, and the default in this file is the infinite loop. The loop is safe in one sense: it does nothing harmful. It is also silent, so a missing handler shows up as a device that stops, which is why the debugger is the first tool to reach for.
+  </p>
+
+  <h2>Worked example: a two-event dispatcher, step by step</h2>
+  <p>
+    Take a dispatcher with two events. The enum gives <code>EV_TICK</code> the value 0, <code>EV_BUTTON</code> the value 1, and <code>EV_COUNT</code> the value 2. The table therefore has two slots. On the RP2040 a pointer is 4 bytes, so the table is 8 bytes. The address of <code>handlers[ev]</code> is the base address of the table plus <code>ev</code> times 4, which the compiler computes from the element size.
+  </p>
+  <p>
+    Step 1: the application registers a handler. <code>register_handler(EV_TICK, on_tick)</code> stores the address of <code>on_tick</code> in slot 0. Suppose the linker placed <code>on_tick</code> at <code>0x10000A40</code>. After the call, <code>handlers[0]</code> holds <code>0x10000A40</code>, and <code>handlers[1]</code> still holds 0. Nothing has run yet, because a store does not call anything.
+  </p>
+  <p>
+    Step 2: an event arrives, and the code calls <code>dispatch(EV_TICK)</code>. The index is 0. The dispatcher loads <code>handlers[0]</code>, which is <code>0x10000A40</code>, and branches to it. <code>on_tick</code> prints <code>tick</code> and returns. Control comes back to <code>dispatch</code>, and then to the caller.
+  </p>
+  <p>
+    Step 3: a button event arrives, and the code calls <code>dispatch(EV_BUTTON)</code>. The index is 1. The dispatcher loads <code>handlers[1]</code>, which is 0. The call branches to address 0. The program has left its own code, and nothing good can follow. This is the bug the starter contains.
+  </p>
+  <p>
+    Step 4: the fixed dispatcher checks the slot first. For <code>dispatch(EV_BUTTON)</code> the check finds 0, so the function increments the ignored count and returns, and the call never happens. The second <code>dispatch(EV_TICK)</code> finds the address again and calls <code>on_tick</code>. Counting the calls gives <code>handled = 2</code> (both tick events) and <code>ignored = 1</code> (the button). The summary line is <code>DISPATCH OK handled=2 ignored=1</code>.
+  </p>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The solution in <code>projects/0049-callback-dispatcher/solution</code> is the program with the fix. Its key parts are below.
+  </p>
+  <pre><code><span class="k">typedef enum</span> {
+    EV_TICK,
+    EV_BUTTON,
+    EV_COUNT          <span class="c">/* number of events: keep last */</span>
+} Event;
+
+<span class="k">typedef void</span> (*Handler)(Event ev);
+
+<span class="k">static</span> Handler handlers[EV_COUNT];   <span class="c">/* zero-initialised: every entry starts as NULL */</span>
+<span class="k">static unsigned</span> handled_count;
+<span class="k">static unsigned</span> ignored_count;</code></pre>
+  <p>
+    The enum gives each event a number, and <code>EV_COUNT</code> is the number of events. Because <code>EV_COUNT</code> comes last, it always equals the number of events, so the table is sized by the enum and cannot fall out of step with it. The typedef names the handler type once. The table is <code>static</code>, so it is visible only in this file, and as a static object it is zero-initialised by the C runtime, which makes every slot NULL. The two counters are <code>static</code> for the same reason, and they are zero at the start.
+  </p>
+  <pre><code><span class="k">static void</span> register_handler(Event ev, Handler h) {
+    <span class="k">if</span> ((<span class="k">unsigned</span>)ev &lt; EV_COUNT) {   <span class="c">/* reject an out-of-range event before indexing */</span>
+        handlers[ev] = h;
+    }
+}</code></pre>
+  <p>
+    Registration stores the address and does nothing else. The range check guards the array. An event value of 5 would index past the end of a two-slot array, and the store would overwrite whatever memory follows. The cast to <code>unsigned</code> makes a negative value large, so one comparison catches both negative and too-large values.
+  </p>
+  <pre><code><span class="k">static void</span> dispatch(Event ev) {
+    <span class="k">if</span> ((<span class="k">unsigned</span>)ev &gt;= EV_COUNT) {
+        ignored_count++;
+        <span class="k">return</span>;
+    }
+    <span class="c">/* A NULL entry means nobody registered a handler. Calling it would jump to address 0,
+     * so check first and count the event as ignored. */</span>
+    <span class="k">if</span> (handlers[ev] == NULL) {
+        ignored_count++;
+        <span class="k">return</span>;
+    }
+    handlers[ev](ev);
+    handled_count++;
+}</code></pre>
+  <p>
+    The first test rejects an event number outside the table, for the same reason as in registration. The second test is the important one. It compares the loaded pointer with <code>NULL</code> before the call, so the branch to address 0 cannot happen. The call <code>handlers[ev](ev)</code> loads the pointer, passes <code>ev</code> as the argument, and branches. The increment after the call counts an event only when its handler has returned.
+  </p>
+  <p>
+    The callback itself is an ordinary function with the matching signature:
+  </p>
+  <pre><code><span class="k">static void</span> on_tick(Event ev) {
+    (<span class="k">void</span>)ev;             <span class="c">/* unused here: the event is always EV_TICK */</span>
+    printf(<span class="s">"tick\n"</span>);
+}</code></pre>
+  <p>
+    The signature <code>void (Event)</code> must match the typedef exactly. A mismatched function pointer is a constraint violation that a compiler may accept with only a warning, depending on the flags and the types involved. The mismatched call then passes the wrong argument, or none, and the bug shows up far from the registration. Compile with warnings enabled, and treat a pointer-type warning as an error. The line <code>(void)ev;</code> tells the compiler that the parameter is unused on purpose.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li><strong>Calling a slot that nobody filled.</strong> The dispatcher calls <code>handlers[ev]</code> without the NULL check. The symptom is that the output stops after an event that has no handler, here after the first <code>tick</code>. On a device the symptom can be a reset or a hang, depending on what the chip holds at address 0. The fix is the check from the solution, with a counter so that unhandled events are visible.</li>
+    <li><strong>A handler with the wrong signature.</strong> A function declared <code>void on_tick(void)</code> is registered in a table of <code>void (*)(Event)</code>. The symptom is a garbage value in the argument, or a crash, that changes from build to build. The fix is to use the typedef for every handler and to compile with <code>-Wall</code>, so a pointer-type mismatch is reported.</li>
+    <li><strong>Passing a pointer to a local as user data.</strong> A function sets up a callback with a pointer to a variable on its own stack, and returns. The callback runs later and reads memory that now holds other values. The symptom is a rare wrong value in the callback, often only when the system is busy. The fix is to use a static or global object for context, which lives as long as the callback.</li>
+    <li><strong>Doing slow work in an interrupt callback.</strong> A handler that runs from an ISR calls a blocking function, such as a long print or a delay. While it runs, other interrupts wait, and events are missed. The symptom is missing events and a device that responds late, but only under load. The fix is to set a flag in the callback, and do the work in <code>main</code>, as lesson 46 showed.</li>
+    <li><strong>An unhandled interrupt that hangs.</strong> The application enables a peripheral interrupt and never defines its handler. The vector entry points at <code>Default_Handler</code>, and the device stops inside its loop. The symptom is that the program freezes after the interrupt is enabled. The debugger shows the program counter inside <code>Default_Handler</code>. The fix is to define the handler with the exact name from the startup file.</li>
+  </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    The Pico SDK uses callbacks throughout. The repeating-timer call takes a callback and a user-data pointer: its type <code>repeating_timer_callback_t</code> is a typedef for a pointer to a function that takes a <code>repeating_timer_t *</code> and returns <code>bool</code>. The return value tells the timer whether to keep firing. The interrupt API uses the same pattern. <code>irq_set_exclusive_handler</code> takes a handler pointer and installs it in the core's table, which is the vector-table idea applied at run time.
+  </p>
+  <p>
+    The STM32 HAL uses weak callbacks. Functions such as <code>HAL_UART_RxCpltCallback</code> are defined as <code>__weak</code> in the driver, with an empty body. The application defines a function with the same name, and the linker uses the application's version. This is the same weak-symbol mechanism that the startup file uses for interrupt handlers, and a reviewer expects it. A driver that calls a function by name with no override is a driver the team cannot customise.
+  </p>
+  <p>
+    Code review on callbacks checks four things. Every table is checked for NULL before a call. Every handler matches the typedef. Every callback that runs in an interrupt keeps its work short, and does not use blocking calls. And every context pointer outlives the registration. Reviewers also ask where the table lives, because a table in RAM can be corrupted, and one in flash cannot.
+  </p>
+  <p>
+    The interview question about the vector table is one of the most common in embedded hiring. The good answer describes the table as an array of addresses at a fixed location, explains that word 0 is the stack pointer, and says what happens when the table has no entry for an exception. The model answer at the end of this lesson does that in order.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0049-callback-dispatcher</code> has a two-event dispatcher. Only the tick event is registered, and the starter dispatches an event for the button with no handler.
+    The project <code>projects/0049-callback-dispatcher</code> runs a two-event dispatcher on a Pico. Only the tick event is registered, and the program then dispatches an event for the button, which has no handler.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0049-callback-dispatcher/starter</code> in VS Code, build, and start the simulator.</li>
-    <li>Watch the serial monitor. You should see <code>tick</code> twice, but the line <code>done</code> never appears: the dispatch for the button calls a NULL entry.</li>
-    <li>Your task: make <code>dispatch</code> skip an event that has no handler, so the program reaches the end. Count the ignored events, and print the summary.</li>
-    <li>You will know it works when the serial monitor prints <code>tick</code>, <code>tick</code>, then <code>DISPATCH OK handled=2 ignored=1</code>.</li>
+    <li>Open <code>projects/0049-callback-dispatcher/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Watch the serial monitor. You should see one <code>tick</code> line, and then no more output. The second dispatch calls the NULL slot for the button, so the program never reaches <code>done</code>.</li>
+    <li>Your task: make <code>dispatch</code> check the slot before calling it. Count the events that have no handler in <code>ignored_count</code>, and count the handled ones in <code>handled_count</code>. The comment marked <code>TODO(learner)</code> in <code>dispatch</code> explains the problem.</li>
+    <li>Replace the final <code>done</code> line in <code>main</code> with the summary line, <code>DISPATCH OK handled=%u ignored=%u</code>, printed from the two counters.</li>
+    <li>You will know it works when the serial monitor prints <code>tick</code>, then <code>tick</code> again, then <code>DISPATCH OK handled=2 ignored=1</code>.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Before the call in <code>dispatch</code>, compare the slot with NULL. If it is NULL, return early. The register function also has a range check you can add, but the crash comes from the NULL slot.</p>
+    <p>Before the call in <code>dispatch</code>, compare the slot with NULL. If it is NULL, increment the ignored count and return early. Increment the handled count after the call. The register function also has a range check you can add, but the crash comes from the NULL slot.</p>
   </details>
   <p>The reference solution is in <code>projects/0049-callback-dispatcher/solution</code>. Try first, compare after.</p>
 
   <div class="win">You built a callback table, dispatched events through it, and guarded the one call that can jump to address 0. The same table idea is the vector table the core uses for every interrupt.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A function pointer stores a function's address. Its declaration reads from the inside out, and a <code>typedef</code> gives the type a name.</li>
+    <li>A callback is a function you register with other code, which calls it when an event happens. A table of function pointers holds one callback per event.</li>
+    <li>Calling a NULL slot branches to address 0, which is not your code. Check every slot before the call, and count the events that have no handler.</li>
+    <li>Static objects are zero-initialised, so a file-scope handler table starts with every slot NULL.</li>
+    <li>The vector table is an array of addresses that the core reads on reset and on each exception. Word 0 is the initial stack pointer, and word 1 is the reset handler.</li>
+    <li>A missing vector entry points at <code>Default_Handler</code>, an infinite loop, through a weak alias. Define the handler with the exact name from the startup file.</li>
+    <li>Callbacks that run in an interrupt must keep their work short, and must not hold pointers to the stack.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -134,7 +266,27 @@
           "The handler must be declared const"
         ],
         "answer": 0,
-        "why": "A callback runs after registration, often in an interrupt, so any pointer it uses must still be valid then. A local variable's storage ends when its function returns. The tempting answer is the second, which is not a rule of C." }
+        "why": "A callback runs after registration, often in an interrupt, so any pointer it uses must still be valid then. A local variable's storage ends when its function returns. The tempting answer is the second, which is not a rule of C." },
+      { "type": "mc",
+        "prompt": "Which storage class makes the dispatcher's handler table start as all NULL?",
+        "options": [
+          "static at file scope",
+          "a local automatic array",
+          "const array in flash",
+          "a volatile pointer table"
+        ],
+        "answer": 0,
+        "why": "A static object is zero-initialised before main runs, so its pointers are NULL. The tempting answer is the second: an automatic local has no defined starting value, and it lives on the stack. The third is read-only, so the table could not be filled by register_handler." },
+      { "type": "mc",
+        "prompt": "A handler is declared as void on_tick(void) and stored in a table of void (*)(Event). What is the main risk?",
+        "options": [
+          "The argument goes wrong",
+          "The table grows large",
+          "The handler goes missing",
+          "The tick counts twice"
+        ],
+        "answer": 0,
+        "why": "The callee reads its argument from where the caller put it, and a signature mismatch makes that argument wrong or missing. The tempting answer is the second: the table size depends on the slot count, not on the handler's signature. The third is a linker problem, which the signature mismatch does not cause." }
     ] }
     </script>
   </div>
@@ -160,12 +312,12 @@
   </div>
 
   <div class="source">
-    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056: STM32F10xxx Cortex-M3 programming manual</a>: read the sections on exceptions and the vector table, and find where the first two entries are described. Then open the startup file in the course's <code>third_party</code> folder and count the entries.
+    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf">PM0056: STM32F10xxx Cortex-M3 programming manual</a>: read the sections on exceptions and the vector table, and find where the first two entries are described. Then open <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code> and compare its <code>g_pfnVectors</code> table with the manual.
   </div>
 
   <div class="ask">
-    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how a vector table entry is laid out in the startup file, and what the linker does with it."
-    Related: <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html">Glossary: Vector table</a>.
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me how a vector table entry is laid out in the startup file, and what the linker does with a weak alias."
+    Related: <a href="0047-pointers-to-registers-and-struct.html">Lesson 47: Pointers to registers</a>, <a href="0046-volatile-const-and-static.html">Lesson 46: volatile, const, and static</a>, and <a href="../reference/glossary.html#vector-table">Glossary: Vector table</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

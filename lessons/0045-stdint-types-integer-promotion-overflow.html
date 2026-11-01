@@ -17,12 +17,36 @@
     By the end of this lesson you can predict the value of an arithmetic expression on <code>uint8_t</code> values, find the loop that never ends, and say which integer type a register or a wire format should use.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The header <code>&lt;stdint.h&gt;</code> gives integer types with an exact width. <code>uint8_t</code> is an unsigned integer of exactly 8 bits with no padding bits. The standard says each <code>uintN_t</code> is defined only when the implementation provides a type of that width, so on a given toolchain you should check which ones exist.
+    Part 3 is about writing embedded C. You already know the syntax, so this lesson does not explain loops or functions. It explains what the numbers do. Earlier, <a href="0036-memory-hierarchy.html">lesson 36</a> showed that memory is a row of bytes, and that a register is a fixed group of bits. <a href="0038-the-memory-map-and-memory.html">Lesson 38</a> showed that a peripheral register has a fixed width, such as 32 bits. A C integer type that is the wrong width gives you a value that the hardware never meant.
+  </p>
+  <p>
+    The problem appears in real code every day. A sensor sends one byte per sample, and the program adds the bytes to get a total. A timer counts ticks in a register that wraps every 65,536 ticks. A loop counts to 300 with a byte counter. Each of these works in a quick test and fails in the field, because the type is narrower than the value. The fix is to pick types on purpose, and to know what C does when the numbers do not fit.
+  </p>
+
+  <h2>Concepts, one at a time</h2>
+
+  <h3>Bits, bytes and width</h3>
+  <p>
+    A <strong>bit</strong> holds a 0 or a 1. A <strong>byte</strong> is 8 bits, and an unsigned byte holds the values 0 to 255, which is 2<sup>8</sup> values counted from 0. In general, an unsigned value of N bits holds 0 to 2<sup>N</sup> − 1. A 16-bit value holds 0 to 65,535, and a 32-bit value holds 0 to 4,294,967,295.
+  </p>
+  <p>
+    The C standard's integer types, such as <code>int</code>, do not have a fixed width. An <code>int</code> is at least 16 bits, and on the ARM Cortex-M3 used in this course it is 32 bits. The header <code>&lt;stdint.h&gt;</code> gives types with an exact width: <code>uint8_t</code> is an unsigned integer of exactly 8 bits, <code>uint16_t</code> is 16 bits, and <code>uint32_t</code> is 32 bits. The <code>_t</code> types are only defined where the implementation provides a type of that width, which for these common widths every embedded toolchain does.
     <a href="https://en.cppreference.com/w/c/types/integer">cppreference, fixed-width integer types</a>
     <span class="sidenote">Use exact-width types when the size is part of the contract: a register is 32 bits, a sensor byte is 8 bits. Use plain <code>int</code> for an ordinary counter, where the range is not part of the design.</span>
   </p>
+
+  <h3>Unsigned values wrap around</h3>
+  <p>
+    When an unsigned value goes above its largest value, it wraps. The rule is modulo arithmetic: the result is the true value modulo 2<sup>N</sup>, where N is the width of the type. For a <code>uint8_t</code> the modulus is 256, so 256 becomes 0, and 257 becomes 1. The same rule makes 0 minus 1 equal to 255. The C standard defines this as the value of the unsigned type, so it is not an error and it is not undefined. It is the normal arithmetic of that type.
+    <a href="https://en.cppreference.com/w/c/language/conversion">cppreference, conversion to an unsigned type</a>
+  </p>
+  <p>
+    Hardware counters often wrap in the same way. A timer that counts to 65,535 and then restarts is doing modulo 2<sup>16</sup> arithmetic. That is why the wrap is useful for counters, and why it is dangerous for a loop that expects the value to exceed the wrap point.
+  </p>
+
+  <h3>Integer promotion: the step before the arithmetic</h3>
   <p>
     The trap is the step between the variable and the arithmetic. C does not do arithmetic on a type narrower than <code>int</code>. Before an operator runs, small integer types are <strong>promoted</strong> to <code>int</code>, or to <code>unsigned int</code> if <code>int</code> cannot hold every value of that type. This is <strong>integer promotion</strong>, and it happens to every operand of <code>+</code>, <code>-</code> and the other arithmetic operators.
     <a href="https://en.cppreference.com/w/c/language/conversion">cppreference, integer promotions</a>
@@ -54,53 +78,133 @@
     <figcaption>Figure 1. The sum is computed in <code>int</code>, where 300 fits. Only the final store to an 8-bit variable wraps it, to 300 mod 256 = 44.</figcaption>
   </figure>
 
-  <h2>Promotion, then the store</h2>
+  <h3>Signed overflow is a different rule</h3>
   <p>
-    Read this carefully, because the code below looks like it adds two bytes:
-  </p>
-  <pre><code>uint8_t a = 200;
-uint8_t b = 100;
-int s = a + b;        <span class="c">/* a and b are promoted to int first: s is 300 */</span>
-uint8_t c = a + b;    <span class="c">/* 300 is converted to uint8_t, modulo 256: c is 44 */</span></code></pre>
-  <p>
-    The sum is not wrapped when it is computed. It is wrapped when it is stored into an 8-bit variable. Unsigned conversion is modulo 2<sup>N</sup>, where N is the width of the target type, so 300 becomes 300 − 256 = 44.
-    <a href="https://en.cppreference.com/w/c/language/conversion">cppreference, conversion to an unsigned type</a>
-    <span class="sidenote">The same rule means <code>uint8_t x = 0; x--;</code> gives 255. Wrapping an unsigned value is well-defined in C. It is a value rule, not an error.</span>
-  </p>
-
-  <div class="warning"><strong>The loop that never ends.</strong> <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> compares <code>i</code> with 300. The variable can only hold 0 to 255. After 255, <code>i++</code> stores 256 as 0, so <code>i</code> never reaches 300 and the loop never stops. The fix is a counter wide enough for the bound: <code>uint16_t</code> here, or <code>int</code> if the range is not part of the design.</div>
-
-  <h2>Signed overflow is not wrapping</h2>
-  <p>
-    Unsigned overflow wraps modulo 2<sup>N</sup>. Signed overflow does not. In C it is <strong>undefined behaviour</strong>: the program may do anything, and the compiler may assume it never happens.
+    Unsigned overflow wraps. Signed overflow does not. In C, when the result of a signed operation does not fit in the type, the behaviour is <strong>undefined</strong>: the standard places no requirement on the result, and the compiler may assume the overflow never happens. An <code>int</code> that holds <code>INT_MAX</code> and is increased by 1 is the standard example.
     <a href="https://en.cppreference.com/w/c/language/operator_arithmetic">cppreference, overflows in arithmetic operators</a>
   </p>
-  <pre><code><span class="k">int</span> x = INT_MAX;   <span class="c">/* INT_MAX from &lt;limits.h&gt; */</span>
-x = x + 1;        <span class="c">/* undefined behaviour: the result does not fit in int */</span></code></pre>
   <p>
-    The danger is that the compiler's optimiser uses the assumption. A test such as <code>if (x + 1 &gt; x)</code> may be folded to true, so the check you wrote to catch overflow never runs. cppreference says the overflowed operation "may be completely optimized out by the compiler". For embedded code, check a range before the arithmetic, not after.
+    Undefined behaviour is the most dangerous word in C. A check that you wrote to detect the overflow may be removed by the optimiser, because the optimiser assumes the overflow cannot happen. The section on mistakes shows this with a real compile.
   </p>
 
-  <h2>Signed and unsigned in one comparison</h2>
+  <h3>Comparing signed and unsigned values</h3>
   <p>
-    When an operator has a signed and an unsigned operand of the same rank, the signed one is converted to unsigned first. This is the usual arithmetic conversion, and comparisons follow it too.
+    When an operator has a signed operand and an unsigned operand of the same size, the signed operand is converted to unsigned first. This is the usual arithmetic conversion, and comparisons follow it too. A negative <code>int</code> becomes a very large unsigned value, so it compares as larger than small positive numbers.
     <a href="https://en.cppreference.com/w/c/language/conversion">cppreference, usual arithmetic conversions</a>
   </p>
-  <pre><code><span class="k">int</span> n = -1;
-<span class="k">unsigned int</span> u = 1;
-<span class="k">if</span> (n &lt; u) { ... }   <span class="c">/* false: n becomes UINT_MAX, which is larger than 1 */</span></code></pre>
+
+  <h2>Worked example: 200 plus 100, in binary</h2>
   <p>
-    The same rule explains a common bug with <code>size_t</code> in a bounds check, where <code>sizeof(buf) - 1</code> is unsigned and a negative <code>int</code> index compares as huge. Keep the types of the two sides the same before you compare them.
+    Take the example from the figure and do the arithmetic bit by bit. Write 200 in binary: 200 is 128 + 64 + 8, so it is <code>1100 1000</code>. Write 100 as 64 + 32 + 4, so it is <code>0110 0100</code>.
+  </p>
+  <table>
+    <thead><tr><th>Step</th><th>Value</th><th>Note</th></tr></thead>
+    <tbody>
+      <tr><td>a, promoted to int</td><td><code>0000 0000 0000 0000 0000 0000 1100 1000</code> = 200</td><td>Zero-extended to 32 bits. The top 24 bits are zero.</td></tr>
+      <tr><td>b, promoted to int</td><td><code>0000 0000 0000 0000 0000 0000 0110 0100</code> = 100</td><td>Same extension.</td></tr>
+      <tr><td>a + b in int</td><td><code>0000 0000 0000 0000 0000 0001 0010 1100</code> = 300</td><td>Hexadecimal 0x12C. It fits in 32 bits, so no wrap happens here.</td></tr>
+      <tr><td>store to uint8_t c</td><td><code>0010 1100</code> = 44</td><td>Keep only the low 8 bits. That is 300 modulo 256.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The sum is 300, which is 1 0010 1100 in nine bits. Storing it in eight bits keeps the bottom eight, <code>0010 1100</code>, which is 44. The ninth bit is lost, and that is the entire overflow. The arithmetic was correct in <code>int</code>, and the loss happened at the store.
   </p>
 
-  <div class="note">This lesson is concept-only. The behaviour is in the language, not the board, so there is no Wokwi task. You check your understanding with the questions below. Lesson 46 shows what the compiler really emits for a loop, so you can see optimisation in the disassembly.</div>
+  <h2>The code, line by line</h2>
+  <p>
+    The following program tests the example, and its output is what a correct understanding predicts. Read it line by line.
+  </p>
+  <pre><code><span class="k">#include</span> <span class="s">&lt;stdint.h&gt;</span>
+<span class="k">#include</span> <span class="s">&lt;stdio.h&gt;</span>
+
+<span class="k">int</span> <span class="k">main</span>(<span class="k">void</span>) {
+    <span class="k">uint8_t</span> a = 200;
+    <span class="k">uint8_t</span> b = 100;
+    <span class="k">int</span> s = a + b;        <span class="c">/* a and b are promoted to int first: s is 300 */</span>
+    <span class="k">uint8_t</span> c = a + b;    <span class="c">/* 300 is converted to uint8_t, modulo 256: c is 44 */</span>
+    <span class="k">printf</span>(<span class="s">"s = %d, c = %u\n"</span>, s, c);
+    <span class="k">return</span> 0;
+}</code></pre>
+  <p>
+    <code>#include &lt;stdint.h&gt;</code> brings in the exact-width types. <code>#include &lt;stdio.h&gt;</code> brings in <code>printf</code>, which runs on the PC here. On the board you would print through the serial port instead. The two <code>uint8_t</code> variables hold values that fit in a byte, so the declarations are correct.
+  </p>
+  <p>
+    The line <code>int s = a + b;</code> is the one that surprises most readers. The operands are promoted to <code>int</code>, the addition gives 300, and the result is stored in an <code>int</code>, which holds it. <code>s</code> is 300. The line <code>uint8_t c = a + b;</code> performs the same addition, and the same promotion, and then stores 300 into an 8-bit variable. The store converts the value modulo 256, so <code>c</code> is 44. The two lines look identical, but they differ in the type of the variable that receives the result.
+  </p>
+  <p>
+    The <code>printf</code> line uses <code>%d</code> for the <code>int</code> and <code>%u</code> for <code>c</code>, which is an unsigned value. When <code>c</code> is passed to <code>printf</code>, it is promoted to <code>int</code> first, as every small argument is. For a positive value such as 44, the printed text is the same either way.
+  </p>
+  <p>
+    The second program shows the wrap of zero, and the signed and unsigned comparison:
+  </p>
+  <pre><code><span class="k">#include</span> <span class="s">&lt;stdint.h&gt;</span>
+<span class="k">#include</span> <span class="s">&lt;stdio.h&gt;</span>
+
+<span class="k">int</span> <span class="k">main</span>(<span class="k">void</span>) {
+    <span class="k">uint8_t</span> x = 0;
+    x--;                          <span class="c">/* 0 - 1 wraps modulo 256 to 255 */</span>
+    <span class="k">int</span> n = -1;
+    <span class="k">unsigned int</span> u = 1;
+    <span class="k">printf</span>(<span class="s">"x = %u, n &lt; u is %d\n"</span>, x, n &lt; u);   <span class="c">/* n becomes UINT_MAX first */</span>
+    <span class="k">return</span> 0;
+}</code></pre>
+  <p>
+    <code>x--</code> decrements an unsigned byte from 0. The result, −1, is stored in an 8-bit unsigned variable, and modulo 256 it becomes 255. The comparison <code>n &lt; u</code> converts <code>n</code> to <code>unsigned int</code> first. The value −1 becomes 4,294,967,295 on a 32-bit <code>int</code>, which is larger than 1, so the comparison is false. Compiling this with <code>-Wall -Wextra</code> produces a warning, <code>-Wsign-compare</code>, that points at the comparison. Treat that warning as a bug report, not as noise.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <ol>
+    <li><strong>A byte counter for a longer loop.</strong> The code <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> compares <code>i</code> with 300. The variable can only hold 0 to 255. After 255, <code>i++</code> stores 256 as 0, so <code>i</code> never reaches 300 and the loop never stops. The symptom is a program that stops printing, or a watchdog reset that happens at the same point each time. The compiler warns about it with <code>-Wextra</code> (<code>-Wtype-limits</code>). The fix is a counter wide enough for the bound: <code>uint16_t</code> here, or <code>int</code> if the range is not part of the design.</li>
+    <li><strong>A signed overflow check that the optimiser removes.</strong> A test such as <code>if (x + 1 &gt; x)</code> is meant to catch an overflow when <code>x</code> is <code>INT_MAX</code>. Because signed overflow is undefined, the compiler may assume the sum is always greater, and it may remove the check. We compiled <code>int plus_one_greater(int x) { return x + 1 &gt; x; }</code> with GCC at <code>-O2</code>, and the output was a function that returns 1 with no comparison in it. The symptom is a guard that never fires in an optimised build. The fix is to check before the addition: test <code>x &gt; INT_MAX - 1</code> first.</li>
+    <li><strong>A negative index that passes a size check.</strong> A check such as <code>if (index &lt; sizeof(buf))</code> compares an <code>int</code> with a <code>size_t</code>, which is unsigned. A negative index becomes a huge number and passes the check, and then the code reads far outside the buffer. The symptom is a corrupted value or a fault that depends on the input. The fix is to test the sign first, or to use the same type on both sides before you compare.</li>
+    <li><strong>Trusting the sum of two bytes.</strong> A sensor total built as <code>uint8_t total = a + b + c</code> loses the carry at each store, so the total is wrong by a multiple of 256. The symptom is a total that is always smaller than expected for large inputs. The fix is to sum in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c;</code>, and to convert to a byte only when you must.</li>
+  </ol>
+
+  <div class="warning"><strong>The loop that never ends.</strong> The byte counter in mistake 1 is the most common of these bugs in firmware. It works for the first test with a small bound, and it hangs when the bound is raised. Before you change a bound, check the type of every variable the loop touches.</div>
 
   <h2>Which type to use</h2>
   <ol class="steps">
-    <li><strong>A register or a wire byte:</strong> an exact-width unsigned type, such as <code>uint8_t</code> or <code>uint32_t</code>. The width is the contract.</li>
+    <li><strong>A register or a wire byte:</strong> an exact-width unsigned type, such as <code>uint8_t</code> or <code>uint32_t</code>. The width is the contract, so the code and the hardware or protocol must agree on it.</li>
     <li><strong>An ordinary loop counter:</strong> <code>int</code>, or a type wide enough for the bound. Never a type narrower than the bound.</li>
     <li><strong>A value compared with another:</strong> use the same signedness on both sides, and cast explicitly if you must mix them.</li>
+    <li><strong>A sum of many small values:</strong> add in a wide type, and narrow the result once at the end, after you have checked its range.</li>
   </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional embedded teams treat integer types as part of the interface. A structure that matches a register map uses exact-width fields, and a protocol decoder names the width of each field in the wire format. A code review asks, for every arithmetic line on a byte or a short, what type the intermediate value has and where it is narrowed. Teams enable the warnings <code>-Wall -Wextra</code> at least, because they catch the sign comparison and the type-limit loop. Some teams add stricter checks for implicit narrowing and run static analysis on the code, as lesson 83 describes.
+  </p>
+  <p>
+    Interviewers ask about this topic because it separates a programmer who knows the language from one who has debugged it. A question about the sum of two bytes tests whether you know promotion. A question about a loop that hangs tests whether you can find the wrap. The answer should name the rule, show the value at each step, and state the fix.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>An unsigned value of N bits holds 0 to 2<sup>N</sup> − 1, and unsigned arithmetic wraps modulo 2<sup>N</sup>, so 256 becomes 0 in a <code>uint8_t</code>.</li>
+    <li>Before an operator runs, small integer types are promoted to <code>int</code>, so <code>uint8_t a = 200</code> and <code>b = 100</code> give <code>a + b</code> = 300 in <code>int</code>.</li>
+    <li>The wrap happens at the store. <code>uint8_t c = a + b</code> keeps 300 modulo 256, which is 44.</li>
+    <li>Signed overflow is undefined behaviour, so the optimiser may remove a check such as <code>x + 1 &gt; x</code>. Test for the overflow before the addition.</li>
+    <li>When a signed operand meets an unsigned operand of the same size, the signed value is converted to unsigned first. So <code>int n = -1</code> compared with <code>unsigned int u = 1</code> gives <code>n &lt; u</code> as false.</li>
+    <li>A <code>uint8_t i</code> in <code>for (i = 0; i &lt; 300; i++)</code> never ends, because i wraps after 255. A <code>uint16_t</code> counter reaches 300.</li>
+    <li>Use exact-width types, such as <code>uint8_t</code> or <code>uint32_t</code>, where the width is the contract for a register or a wire byte.</li>
+    <li>Add a sum of many small values in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c</code>, and narrow the result to a byte only when you must.</li>
+  </ul>
+
+  <h2>Hands-on: run the two programs on your PC</h2>
+  <p>
+    This lesson has no Wokwi project, because the rules belong to the language and the compiler, not to a board. You can check every answer on your PC with the host compiler that the course's build tool uses. Run <code>python -I tools/build.py --check</code> from the workspace root to see where that compiler is.
+  </p>
+  <ol class="steps">
+    <li>Create a folder for the test files outside the course folders, for example <code>C:\Users\juhos\scratch\lesson45</code>. Save the first program as <code>sum.c</code> and the second as <code>wrap.c</code>, using the code from the previous section.</li>
+    <li>Compile the first program with <code>gcc -std=c11 -Wall -Wextra -o sum sum.c</code>, then run it with <code>./sum</code>. Expected output: <code>s = 300, c = 44</code>.</li>
+    <li>Compile and run the second program the same way. Expected output: <code>x = 255, n &lt; u is 0</code>, and a <code>-Wsign-compare</code> warning from the compiler.</li>
+    <li>Change <code>uint8_t c</code> to <code>uint16_t c</code> in <code>sum.c</code>, compile, and run. Expected output: <code>s = 300, c = 300</code>. The narrow store was the only cause of the 44.</li>
+    <li>Save this loop as <code>loop.c</code>, compile it with <code>-Wall -Wextra -c</code>, and read the warning. Expected: <code>comparison is always true due to limited range of data type</code> on the line with <code>i &lt; 300</code>. Then change <code>uint8_t i</code> to <code>uint16_t i</code> and confirm the warning goes away.</li>
+  </ol>
+  <details>
+    <summary>Hint for step 4</summary>
+    <p>The value 300 fits in a <code>uint16_t</code>, and the sum is computed in <code>int</code> in both versions. Only the store changed.</p>
+  </details>
 
   <div class="win">You can predict an 8-bit sum before running it: promote to int, add, then wrap only on the store. You can also name the loop that never ends, and the comparison that flips when a negative int meets an unsigned value.</div>
 
@@ -142,7 +246,15 @@ x = x + 1;        <span class="c">/* undefined behaviour: the result does not fi
       { "type": "number",
         "prompt": "<code>int n = -1; unsigned int u = 1;</code> What does <code>n &lt; u</code> evaluate to? Use 1 for true and 0 for false.",
         "answer": 0, "tolerance": 0,
-        "why": "n is converted to unsigned int, so it becomes UINT_MAX, which is larger than 1. The comparison is false, so the answer is 0. The tempting answer is 1, which is what you expect from the sign of n, but the conversion happens first." }
+        "why": "n is converted to unsigned int, so it becomes UINT_MAX, which is larger than 1. The comparison is false, so the answer is 0. The tempting answer is 1, which is what you expect from the sign of n, but the conversion happens first." },
+      { "type": "number",
+        "prompt": "<code>uint8_t a = 250; uint8_t b = 10; uint8_t c = a + b;</code> What is <code>c</code>?",
+        "answer": 4, "tolerance": 0,
+        "why": "The sum 260 is computed in int, then stored modulo 256: 260 − 256 = 4. The tempting answer is 260, which the sum is in int, but c is an 8-bit variable and cannot hold it." },
+      { "type": "number",
+        "prompt": "The loop <code>uint16_t i; for (i = 0; i &lt; 300; i++)</code> runs its body how many times?",
+        "answer": 300, "tolerance": 0,
+        "why": "A uint16_t holds up to 65,535, so i reaches 300 and the loop stops after 300 passes, from 0 to 299. The tempting answer is that it never ends, which is the byte version in the first question." }
     ] }
     </script>
   </div>
@@ -173,7 +285,7 @@ x = x + 1;        <span class="c">/* undefined behaviour: the result does not fi
 
   <div class="ask">
     Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Why does the compiler not wrap signed overflow the way it wraps unsigned, and what does it do with the check I wrote?"
-    Related: <a href="0002-first-blink-in-wokwi.html">Lesson 2: First blink in Wokwi</a>, <a href="../reference/glossary.html">Glossary</a>, and <a href="0046-volatile-const-and-static.html">lesson 46, which shows the compiler's real output</a>.
+    Related: <a href="0002-first-blink-in-wokwi.html">Lesson 2: First blink in Wokwi</a>, <a href="../reference/glossary.html#integer-promotion">Glossary: Integer promotion</a>, and <a href="0046-volatile-const-and-static.html">lesson 46, which shows the compiler's real output</a>.
   </div>
 </main>
 <script src="../assets/manifest.js"></script>

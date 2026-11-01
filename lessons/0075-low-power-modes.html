@@ -19,42 +19,138 @@
 
   <div class="note"><strong>Concept-only lesson.</strong> The Wokwi simulator does not model the PWR peripheral on the Blue Pill, and it does not implement the RTC or the low-power modes. So there is no Wokwi project here. The exercises are calculations. You can check the mode sequence on a real Blue Pill or an STM32 Nucleo board, with a meter or a power analyser.</div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    A Cortex-M core sleeps when it executes <code>WFI</code> (wait for interrupt) or <code>WFE</code> (wait for event). It stops fetching instructions, and its clocks are gated, until a wake-up condition arrives. The difference is what wakes it. <code>WFI</code> wakes on an enabled interrupt. <code>WFE</code> wakes on an event, which is an interrupt or an event signal from a peripheral, and the event flag must be cleared as well.
-    <span class="sidenote">The wake-up latency is not zero. The core must restart its clocks and the voltage regulator may need to settle, so a deeper sleep has a longer wake-up time. Measure it on your board before you put a deadline on it.</span>
+    Lesson <a href="0072-the-nvic.html">72</a> showed how an interrupt reaches the CPU: a peripheral raises a request, the NVIC checks its priority, and the core takes the exception. Lesson <a href="0070-usart-and-exti-interrupts-with.html">70</a> used EXTI lines, which turn a pin change into an interrupt. Lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> used SysTick to wake the loop every millisecond. Each of those lessons assumed the CPU was running. This lesson asks the next question: what should the CPU do when there is nothing to do?
+  </p>
+  <p>
+    The answer matters most in battery products. A soil-moisture probe, a door sensor or a car key fob measures something every few minutes, sends a short message, and sleeps. If the chip stays awake, the battery is empty in days. If the chip sleeps deeply and wakes only for work, a coin cell can last for a year. The difference is not one clever trick. It is a set of decisions about sleep modes, wake-up sources and the timing of each awake period. A company that ships a battery product is judged on how long its battery lasts, so this skill appears in product reviews and in interviews.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+
+  <h3>Current, and why sleep is not free</h3>
+  <p>
+    A chip draws current, measured in amperes (A), from its supply. A milliamp (mA) is one thousandth of an ampere, and a microamp (µA) is one millionth. A running Cortex-M3 may draw a few milliamps, depending on clock speed and on which peripherals are on. A chip in its deepest sleep may draw only microamps. The ratio between those two numbers is the reason low-power design exists. A device that spends 99 percent of its time asleep is dominated by the sleep current, and a device that wakes for a long time is dominated by the awake current.
+  </p>
+  <p>
+    The current does not come only from the core. Every peripheral that has its clock enabled uses some current, even when it is idle. A timer that runs with no work still toggles its counter. A GPIO pin that drives a load, or a pull-up resistor pulling against a pin held low, draws current through the pin. This is why a sleeping chip can draw far more than its datasheet sleep figure: the firmware left something switched on. Lesson 69 showed the clock-enable pattern for the peripherals. The same clock gating (<a href="../reference/glossary.html#clock-gating">clock gating</a>) is what low-power design uses to switch parts off.
+  </p>
+
+  <h3>WFI and WFE: the instructions that sleep</h3>
+  <p>
+    A Cortex-M core sleeps when it runs one of two instructions. <code>WFI</code>, wait for interrupt, stops the core until an interrupt is pending. <code>WFE</code>, wait for event, stops the core until an event arrives. An event is a wake-up signal that is not an interrupt, and an interrupt is also an event. The CMSIS header defines these as intrinsics, <code>__WFI()</code> and <code>__WFE()</code>, in <code>cmsis_gcc.h</code>. The header also defines <code>__SEV()</code>, which sets an event from software, so that a waiting <code>WFE</code> wakes.
+  </p>
+  <p>
+    The core does not fetch instructions while it sleeps. Its clock is gated, so the core stops switching, and only the wake-up logic stays powered. The core resumes at the instruction after <code>WFI</code> when the wake-up condition arrives. This explains why a sleep in the middle of a loop works: the loop pauses at the instruction, and continues from the same place.
+    <span class="sidenote">Waking is not instant. The clocks have to restart, and a regulator may need time to come up. A deeper sleep usually takes longer to wake from, so measure the wake-up time on your board before you set a deadline on it.</span>
+  </p>
+  <p>
+    Two mechanisms look alike, and beginners mix them up. A pending interrupt wakes <code>WFI</code> only if the interrupt is enabled in the NVIC (lesson 72). An event from <code>WFE</code> may be a peripheral event that does not enter an interrupt handler at all. In a typical sensor loop you use <code>WFI</code>, because the wake-up is an interrupt that runs a handler.
+  </p>
+
+  <h3>The core's sleep control register</h3>
+  <p>
+    The core has one register that changes what <code>WFI</code> and <code>WFE</code> do. It is the System Control Block register <code>SCB-&gt;SCR</code>, and it holds three bits that matter here, named in <code>core_cm3.h</code>:
+  </p>
+  <ul>
+    <li><code>SLEEPDEEP</code> (<code>SCB_SCR_SLEEPDEEP_Msk</code>) tells the chip to enter its deep sleep, which is Stop or Standby, instead of plain Sleep, when the core sleeps.</li>
+    <li><code>SLEEPONEXIT</code> (<code>SCB_SCR_SLEEPONEXIT_Msk</code>) makes the core go back to sleep as soon as an interrupt handler returns, with no main-loop code in between. It suits a device that does nothing except react to interrupts.</li>
+    <li><code>SEVONPEND</code> (<code>SCB_SCR_SEVONPEND_Msk</code>) makes a newly pending interrupt wake <code>WFE</code>, even if the interrupt is disabled. Use it only when you know why.</li>
+  </ul>
+  <p>
+    Note what <code>SLEEPDEEP</code> does not do. It does not sleep by itself. It only chooses the depth of the sleep that <code>WFI</code> or <code>WFE</code> will start. The sleep starts when the instruction runs.
   </p>
 
   <h2>Sleep, Stop and Standby</h2>
   <p>
-    The STM32F1 has three levels, described in the Power control chapter of RM0008. Sleep stops the CPU clock and keeps the rest of the chip running, so peripherals and their interrupts still work. Stop stops the main clocks and keeps the SRAM and registers, and it can be woken by an EXTI line. Standby is the deepest level: the SRAM content is lost, and the chip restarts from reset on wake-up.
+    The STM32F1 has three levels of sleep, described in the Power control chapter of RM0008. They trade wake-up speed for power. The deeper the level, the less current, and the more state you lose.
   </p>
+  <ul>
+    <li><strong>Sleep.</strong> The CPU clock stops, and the rest of the chip keeps running. Peripherals with their clocks on still work, and their interrupts wake the core. Sleep is the shallowest mode, and it is the easiest to use, because everything keeps its state.</li>
+    <li><strong>Stop.</strong> The main clocks stop, and the SRAM and the registers keep their contents. The core resumes where it stopped. Only some wake-up sources work, because most peripheral clocks are off. An EXTI line still works, because the EXTI logic runs on a clock that stays on.</li>
+    <li><strong>Standby.</strong> This is the deepest level. The SRAM contents are lost. When the chip wakes, it restarts from reset, so the program starts again at the reset handler, and any variable in SRAM is gone.</li>
+  </ul>
   <p>
-    The core's <code>SCB-&gt;SCR</code> register selects the deep form. <code>SLEEPDEEP</code> makes <code>WFI</code> and <code>WFE</code> enter Stop or Standby, and <code>SLEEPONEXIT</code> makes the core sleep again after each exception handler returns. The STM32 <code>PWR</code> registers choose between Stop and Standby (<code>PWR_CR</code> bits <code>PDDS</code> and <code>LPDS</code>), and <code>PWR_CSR</code> bit <code>WUF</code> reports a wake-up. The register names are in <code>stm32f103xb.h</code> and <code>core_cm3.h</code>.
-    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, chapter "Power control (PWR)" and its low-power mode table</a>
+    The bits that select between these modes are in the PWR (power control) peripheral, not in the core. The CMSIS header defines <code>PWR_CR_PDDS</code>, which selects Standby instead of Stop when the core enters deep sleep, and <code>PWR_CR_LPDS</code>, which puts the voltage regulator into its low-power state during Stop. The header comment marks <code>PWR_CR_LPDS</code> as the low-power regulator bit, not as the Stop-or-Standby selector. Those two bits are the ones you set most often, so read their descriptions in the PWR chapter of RM0008 before you use them. <code>PWR_CSR_WUF</code> reports that a wake-up happened, and <code>PWR_CR_CWUF</code> clears it. <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf">RM0008, chapter "Power control (PWR)" and its low-power mode table</a>
   </p>
   <div class="warning">Standby loses the SRAM, so anything you need after the wake-up must be in backup registers or flash. It also restarts the chip from reset, so the wake-up path is the reset path. Design the state you keep before you choose Standby.</div>
 
   <h2>Wake-up sources</h2>
   <p>
-    Each mode accepts only some wake-up sources. An EXTI line (lesson 70) works in Stop, because the EXTI logic keeps running on a low-speed clock. A timer or an ADC interrupt does not, because its clock stops in Stop. An RTC alarm is the usual way to wake from Standby on a timer. The RTC is not simulated in Wokwi, so you would check its wake-up path on hardware. The wake-up source table is in the PWR chapter of RM0008.
+    Each mode accepts only some wake-up sources, and the reason is clock gating. A wake-up source must keep working while the mode is active. In Stop, the clocks of most peripherals are off, so a timer that counts on a stopped clock cannot raise its interrupt. An EXTI line works in Stop, because it detects a pin change without a running peripheral clock (lesson 70). An ADC or a timer interrupt does not, because its clock stops.
+  </p>
+  <p>
+    Standby has fewer sources. The usual ones are the WKUP pin, which the PWR register <code>PWR_CSR_EWUP</code> enables, and a real-time clock alarm. The RTC keeps counting on its own low-power clock, so it is the standard way to wake from Standby on a timer. The RTC is not simulated in Wokwi, so you would check its wake-up path on hardware. The wake-up source table is in the PWR chapter of RM0008.
+  </p>
+  <p>
+    A quick way to choose: list the events the device must react to, then find the deepest mode that still has a source for each of them. A button in a sensor that must answer at once needs an EXTI source, so Stop is the deepest option. A sensor that measures every ten minutes needs the RTC, so Standby is possible if it can afford to lose RAM and restart from reset.
   </p>
 
-  <h2>The power budget</h2>
+  <h2>A worked example: the power budget</h2>
   <p>
-    The average current of a duty-cycled device is the time-weighted mean of its states. With an active current <em>I</em><sub>a</sub> for a fraction <em>d</em> of the time, and a sleep current <em>I</em><sub>s</sub> for the rest:
+    Suppose a sensor wakes once per second, works for 50 ms, and sleeps for the remaining 950 ms. While it is awake it draws an example current of 10 mA. While it sleeps it draws an example current of 0.005 mA (5 µA). These are example values for practice, not device figures. The question is the battery life from a 2000 mAh cell.
   </p>
-  <pre><code>I_avg = d × I_a + (1 − d) × I_s
-life (hours) = battery capacity (mAh) ÷ I_avg (mA)</code></pre>
   <p>
-    The formula assumes an ideal battery. Real cells lose capacity at high current, self-discharge, and fall below the regulator's dropout. The sensor's current figures come from its datasheets, not from this lesson. The course does not quote current figures for the STM32F103: read the electrical characteristics table of the datasheet for the mode you use, at the voltage and temperature you run at.
+    The average current of a duty-cycled device is the time-weighted mean of its states. The duty cycle <em>d</em> is the fraction of time spent awake, and it is the awake time divided by the period. Here the awake time is 50 ms, and the period is 1000 ms, so <em>d</em> is 0.05. The sleep fraction is 1 − <em>d</em>, which is 0.95. Write the formula with those values in place:
+  </p>
+  <pre><code>d        = 50 ms ÷ 1000 ms                 = 0.05
+I_avg    = d × I_a + (1 − d) × I_s
+         = 0.05 × 10 mA + 0.95 × 0.005 mA
+         = 0.500 mA + 0.00475 mA
+         = 0.50475 mA
+life (h) = 2000 mAh ÷ 0.50475 mA          = 3962.4 h
+life (d) = 3962.4 h ÷ 24                  = 165.1 days</code></pre>
+  <p>
+    Read each line. The first line is the duty cycle, the fraction of the second that the chip is awake. The second line is the formula. The third line multiplies each state by its share of time, and the awake term is 100 times larger than the sleep term, even though the sleep term is there for the whole second. The total is 0.50475 mA. The last two lines convert the battery capacity into hours and then days.
+  </p>
+  <p>
+    Now look at what the numbers say. The sleep term contributes only 0.00475 mA. The awake term contributes 0.5 mA, which is more than a hundred times as much. So a designer who wants a longer life should first shorten the 50 ms. If the awake time falls to 10 ms, <em>d</em> becomes 0.01, and the average falls to about 0.105 mA, which more than quadruples the battery life. Reducing the sleep current from 5 µA to 2 µA would help much less. This is why the advice in the course is to measure the awake time first.
+  </p>
+  <div class="note">The formula assumes an ideal battery. Real cells lose capacity at high current, self-discharge, and fall below the regulator's dropout (lesson 15). The sensor's current figures come from its datasheets, not from this lesson. The course does not quote current figures for the STM32F103: read the electrical characteristics table of the datasheet for the mode you use, at the voltage and temperature you run at.
     <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf">STM32F103x8/xB datasheet, electrical characteristics (supply current in each mode)</a>
-  </p>
-  <div class="note">The duty cycle is the time spent awake divided by the period. Shortening the awake time usually helps more than a small change in the sleep current, so measure the awake time first.</div>
+  </div>
 
-  <h2>Exercises</h2>
-  <p>The numbers below are example values for practice. They are not figures for any device.</p>
-  <div class="widget quiz" data-title="Power budget">
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    Low-power firmware fails in predictable ways. In each case the chip still works, which is why the mistake survives until someone measures the current.
+  </p>
+  <h3>Mistake 1: a peripheral left on</h3>
+  <p>
+    A developer enables the USART clock for debugging and forgets to disable it. <strong>Symptom:</strong> the sleep current measured with a meter is tens of microamps or more, not the few microamps in the datasheet, and it does not change when the firmware sleeps. <strong>Fix:</strong> before each sleep, turn off the clock of each peripheral you do not need, or power the peripheral down in its own register. Measure again, and compare with the expected figure.
+  </p>
+  <h3>Mistake 2: sleeping with a pending interrupt</h3>
+  <p>
+    If an interrupt is already pending when <code>WFI</code> runs, and the interrupt is enabled, the core wakes at once, and the loop may spin between sleep and wake without doing its work. <strong>Symptom:</strong> the average current is close to the active current, and a logic analyser shows the core waking every few microseconds. <strong>Fix:</strong> clear the peripheral's flag in the handler, so nothing stays pending, and check the flag before you sleep.
+  </p>
+  <h3>Mistake 3: choosing Standby without designing for it</h3>
+  <p>
+    A developer chooses Standby for its low current, then stores a counter in ordinary RAM. <strong>Symptom:</strong> the counter restarts from zero after every wake-up, the timing drifts, and the device sends a duplicate message. The bug appears only after the first real sleep, so bench tests with the debugger attached often miss it, because the debugger holds the chip awake. <strong>Fix:</strong> keep the state that survives a sleep in backup registers, or in flash, and treat every wake-up as a reset.
+  </p>
+  <h3>Mistake 4: expecting a timer to wake Stop</h3>
+  <p>
+    A developer sets a timer interrupt, puts the chip into Stop, and waits for the timer. <strong>Symptom:</strong> the chip sleeps and never wakes, or wakes only when a button is pressed. <strong>Fix:</strong> use a wake-up source that works in that mode. Stop wakes on EXTI, and a timer needs the RTC or another source that keeps its clock running.</p>
+
+  <h2>In real projects</h2>
+  <p>
+    Battery products start from the power budget, not from the code. A product manager asks for a battery life of one year, and the firmware engineer converts that into a current budget, then into a duty cycle and a wake-up plan. Measuring that plan on real hardware with a power analyser is part of every release. The datasheet figure is a typical or maximum value for one chip, and a real board has regulators, pull-ups and leakage that the datasheet does not count.
+  </p>
+  <p>
+    A common production pattern is a super-loop built around <code>WFI</code>. The main loop does its work, then sleeps. Each interrupt does a small job, sets a flag, and returns. For more complicated devices, an RTOS keeps the idle task in a sleep instruction, so the chip sleeps whenever no task is ready. Reviewers ask two questions about any sleep design: which wake-up source is used in each mode, and what state survives the wake-up. An answer that names both shows that the candidate has thought about the whole system.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A Cortex-M core sleeps when it executes <code>WFI</code> (wait for interrupt) or <code>WFE</code> (wait for event), and it wakes when the wake-up condition arrives.</li>
+    <li><code>SCB-&gt;SCR</code> bits <code>SLEEPDEEP</code> and <code>SLEEPONEXIT</code> change how the sleep behaves. They do not sleep by themselves.</li>
+    <li>Sleep keeps every peripheral running. Stop keeps SRAM and wakes on EXTI. Standby loses SRAM and restarts from reset.</li>
+    <li>A wake-up source must keep its clock running in the mode you choose. A timer does not wake Stop; an RTC or an EXTI line does.</li>
+    <li>The average current is <em>d</em> × I<sub>a</sub> + (1 − <em>d</em>) × I<sub>s</sub>, and the battery life is the capacity divided by that average.</li>
+    <li>Shortening the awake time usually saves more than a small change in the sleep current.</li>
+    <li>Measure the real sleep current. A stray peripheral clock can cost more than the whole sleep budget.</li>
+  </ul>
+
+  <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
       { "type": "number",
@@ -65,6 +161,10 @@ life (hours) = battery capacity (mAh) ÷ I_avg (mA)</code></pre>
         "prompt": "The same sensor runs from a 2000 mAh cell with the average current from the last question. How many days does it last? Use the ideal formula, and give 1 decimal place.",
         "answer": 165.1, "tolerance": 0.01, "unit": "days",
         "why": "2000 ÷ 0.50475 = 3962.4 h, and 3962.4 ÷ 24 = 165.1 days. The tempting answer, 3962, is in hours, not days." },
+      { "type": "number",
+        "prompt": "The awake time of that sensor falls from 50 ms to 10 ms per second, at the same currents. What is its average current, in mA? Give 5 decimal places.",
+        "answer": 0.10495, "tolerance": 0.0005, "unit": "mA",
+        "why": "d = 0.01, so I_avg = 0.01 × 10 + 0.99 × 0.005 = 0.1 + 0.00495 = 0.10495 mA. The tempting answer, 0.1 mA, leaves out the sleep term, which is now a larger share of the total." },
       { "type": "mc",
         "prompt": "Which instruction makes the core sleep until an interrupt is pending?",
         "options": [
@@ -88,7 +188,21 @@ life (hours) = battery capacity (mAh) ÷ I_avg (mA)</code></pre>
       { "type": "text",
         "prompt": "Which SCB register bit selects the deep form (Stop or Standby) when WFI or WFE runs? Write the CMSIS name.",
         "accept": ["SLEEPDEEP", "SCB_SCR_SLEEPDEEP_Msk", "SCB->SCR SLEEPDEEP"],
-        "why": "SLEEPDEEP in SCB->SCR (core_cm3.h). The tempting answer, SLEEPONEXIT, only makes the core sleep again after an interrupt handler returns." }
+        "why": "SLEEPDEEP in SCB->SCR (core_cm3.h). The tempting answer, SLEEPONEXIT, only makes the core sleep again after an interrupt handler returns." },
+      { "type": "mc",
+        "prompt": "Which wake-up source still works while the chip is in Stop mode?",
+        "options": [
+          "An EXTI line from a button",
+          "A timer update interrupt flag set",
+          "An ADC end of conversion flag",
+          "A UART byte received flag set"
+        ],
+        "answer": 0,
+        "why": "EXTI detects a pin change without a running peripheral clock, so it wakes Stop. The timer, the ADC and the UART need their clocks, which Stop switches off. The tempting answer, the timer, is the one most beginners pick first." },
+      { "type": "text",
+        "prompt": "Which PWR_CR bit selects Standby instead of Stop when the core enters deep sleep? Write the CMSIS name.",
+        "accept": ["PWR_CR_PDDS", "PDDS"],
+        "why": "PDDS is the power-down-deepsleep bit that selects Standby. The tempting answer, PWR_CR_LPDS, is the low-power regulator bit for Stop, which is a different function." }
     ] }
     </script>
   </div>

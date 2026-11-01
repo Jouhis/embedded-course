@@ -11,16 +11,29 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>An I2C OLED display and a small UI framework</h1>
-  <p class="subtitle">A 128 by 64 OLED panel has 1024 pixels, and the controller takes them as bytes over I2C. You will write the driver in about a hundred lines, then build a menu on top of it that two buttons can drive.</p>
+  <p class="subtitle">A 128 by 64 OLED has 8,192 pixels, and its controller takes them as 1,024 bytes over I2C. You will write the display driver in about a hundred lines, then build a menu on top of it that two buttons can drive.</p>
 
   <div class="goal">
     By the end of this lesson you can explain the SSD1306's control byte and page addressing, write pixels into a framebuffer and flush it page by page over I2C, and drive a cursor-based menu from two buttons using callbacks.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The SSD1306 is a monochrome OLED controller. It has its own display RAM, 128 columns by 8 pages, and each RAM byte holds the state of eight vertical pixels in one column <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.7</a>. Your code keeps a copy of that RAM in the Pico's memory, called the framebuffer, and sends it over I2C each time the picture changes. The panel's address is 0x3C, which is 0111100 with the SA0 bit low <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5</a>.
-    <span class="sidenote">The framebuffer is 128 × 8 = 1024 bytes. On an RP2040 with 264 KB of RAM, that is a small fraction, and the cost is paid once.</span>
+    Lesson <a href="0060-the-i2c-protocol.html">60</a> decoded one <a href="../reference/glossary.html#i2c">I2C</a> register read in a logic-analyzer capture. You saw a device answer at a 7-bit address, a master send a register pointer and then read, and pull-up resistors hold both lines high when nobody drives them. This lesson uses the same two wires for something a user can see: a picture on a small screen.
+  </p>
+  <p>
+    Small status screens are everywhere in products. A bench meter, a heater controller or a 3D printer's front panel each shows a few lines of text and lets the user step through a menu with two or three buttons. The usual job is to write a small display driver in plain C, keep it separate from the menu logic, and test the parts on their own. The menu uses function pointers, the callback mechanism from lesson <a href="0049-function-pointers-and-callbacks.html">49</a>.
+  </p>
+
+  <h2>Concept 1: a panel is a grid of pixels, and a controller holds its memory</h2>
+  <p>
+    An OLED (organic light-emitting diode) panel is a sheet of tiny light sources, one per pixel. Each pixel lights when current flows through it, so the panel needs no backlight. The glass is not a computer. It needs a controller chip that turns bytes from the microcontroller into the voltages that switch each row and column on and off. This panel's controller is the SSD1306, made by Solomon Systech.
+  </p>
+  <p>
+    The SSD1306 has its own memory, called display RAM or GDDRAM. The datasheet says it is a bit-mapped static RAM of 128 × 64 bits, split into eight pages of 128 columns each <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.7</a>. Each byte is one column of one page, and its eight bits are eight vertical pixels. The controller reads this RAM to drive the panel, so the picture stays on the glass without help from the microcontroller. The microcontroller only has to change the RAM when the picture changes.
+  </p>
+  <p>
+    Your code keeps a copy of that RAM in the Pico's own memory. That copy is called the <a href="../reference/glossary.html#framebuffer">framebuffer</a>. For 128 columns and 8 pages it is 8 × 128 = 1,024 bytes. Drawing happens in the framebuffer, which is ordinary RAM and is fast to write, and a separate step copies it to the panel. This split between "draw" and "flush" is the main idea of the driver.
   </p>
 
   <figure>
@@ -89,59 +102,218 @@
     <figcaption>Figure 1. The panel's RAM is eight pages of 128 bytes. Each byte is one column of one page, so the picture is 8 rows of 8 pixels.</figcaption>
   </figure>
 
-  <h2>The control byte</h2>
+  <h2>Concept 2: the address, and the control byte that says what follows</h2>
   <p>
-    Every I2C write to the SSD1306 starts with a control byte. Its top bit, Co, says whether more control bytes follow. Its next bit, D/C#, says whether the bytes that follow are commands or display data <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5.1</a>. So a single command is sent as <code>0x80</code> followed by the command byte, and a stream of pixels is sent as <code>0x40</code> followed by the bytes.
-  </p>
-  <pre><code><span class="c">/* one command: control 0x80 (Co = 1, D/C# = 0), then the command */</span>
-<span class="k">uint8_t</span> buf[2] = {0x80, cmd};
-i2c_write_blocking(bus, 0x3C, buf, 2, <span class="k">false</span>);
-
-<span class="c">/* a page of pixels: control 0x40 (Co = 0, D/C# = 1), then 128 data bytes */</span>
-frame[0] = 0x40;
-i2c_write_blocking(bus, 0x3C, frame, 129, <span class="k">false</span>);</code></pre>
-
-  <h2>Page addressing</h2>
-  <p>
-    The controller can move its write pointer three ways. Page addressing, selected by the command <code>0x20 0x02</code>, writes one page of 128 columns, then the pointer wraps back to the start column of the same page. You set the page and the column for each page with three commands: page start <code>0xB0</code> to <code>0xB7</code>, and the column's low nibble (<code>0x00</code> to <code>0x0F</code>) and high nibble (<code>0x10</code> to <code>0x1F</code>) <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, sections 10.1.3, 10.1.13, 10.1.1 and 10.1.2</a>.
+    The SSD1306 answers on I2C at the 7-bit address <code>0x3C</code>, which is the bit pattern 0111100 with the SA0 pin low <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5</a>. Lesson 60 showed that the master sends the 7 address bits followed by one read/write bit. For a write, that byte is 0111100 followed by 0, which is <code>0x78</code> on the wire. The SDK takes the 7-bit address and adds the bit for you, so your code passes <code>0x3C</code>.
   </p>
   <p>
-    The driver below sends 129 bytes per page, eight times. That is about 1 KB over I2C per frame. At 400 kbit/s, the wire time is roughly 25 ms, so the menu redraws only when a button changes something.
+    The SSD1306 is not a register device like the sensors in lesson 60. Instead, each write starts with a <strong><a href="../reference/glossary.html#control-byte">control byte</a></strong>, and the control byte tells the chip how to read the bytes that follow. Its top bit, Co, is the continuation bit. Co = 0 means the rest of the transfer is data only. Co = 1 means another control byte follows. The next bit, D/C#, says whether the byte after the control byte is a command (0) or a byte of display data (1). Data bytes go into the display RAM, and the column pointer moves on by one after each one <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 8.1.5.1</a>.
+  </p>
+  <p>
+    That gives two control bytes you will use. A single command is sent as <code>0x80</code> (Co = 1, D/C# = 0) followed by the command. A stream of pixels is sent as <code>0x40</code> (Co = 0, D/C# = 1) followed by the bytes. The driver below never mixes the two in one transfer, which keeps each frame easy to read on a logic analyzer.
   </p>
 
-  <div class="note">The init sequence is the one in the pico-examples <code>i2c/ssd1306_i2c</code> driver, published under the BSD-3-Clause licence by Raspberry Pi. It is checked against the SSD1306 datasheet. The example uses 128 by 32 settings in some places, so the 128 by 64 values here use the multiplex ratio 0x3F and the COM pin layout 0x12.</div>
-
-  <h2>A 5 by 7 font</h2>
+  <h2>Concept 3: page addressing, and how the pointer moves</h2>
   <p>
-    A character is a 5 by 7 bitmap, stored as five column bytes. Bit 0 of each column is the top row, and bit 6 is the bottom row. The capital L is <code>{0x7F, 0x40, 0x40, 0x40, 0x40}</code>: the first column is the full stem, and the bottom bar is bit 6 in each of the last four columns. A blank column between characters makes a six-pixel advance per character.
+    The controller has three ways to move its write pointer through the RAM: horizontal, vertical and <a href="../reference/glossary.html#page-addressing">page addressing</a>. The mode is set by the command <code>0x20</code> followed by a byte whose two low bits, A[1:0], choose the mode. The value <code>10b</code> selects page addressing, and the datasheet lists it as the reset default <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet, section 10.1.3</a>. The driver sends <code>0x20 0x02</code> anyway, so the code does not depend on the reset value.
   </p>
-  <div class="note">A complete font for 95 characters is too big for a lesson. The font here defines only the characters the menu uses: digits, a few capitals, a space, <code>:</code> and <code>&gt;</code>. Adding a letter means adding one 5-byte entry.</div>
-
-  <h2>A menu with a cursor and callbacks</h2>
   <p>
-    A menu is an array of items, each with a label and an action, plus a cursor index. The action is a function pointer, the same callback mechanism as lesson 49. The menu does not know what an item does: it calls the pointer. Two buttons drive it. One moves the cursor down with wrap-around, and one runs the selected action. The buttons are read by polling for the falling edge, so one press is one step, however long the button is held.
+    In page addressing, the column pointer goes up by one after each data byte. When it reaches the last column, it returns to the start column of the same page, and the page pointer does not change. The datasheet states this rule in section 10.1.3. To move to the next page, you must set the page and the column again. That is why the flush code below sends three positioning commands before each row of data.
+  </p>
+  <p>
+    The three positioning commands are these. Page start <code>0xB0</code> to <code>0xB7</code> selects the page (section 10.1.13). The low nibble of the column, <code>0x00</code> to <code>0x0F</code>, is one command (section 10.1.1). The high nibble, <code>0x10</code> to <code>0x1F</code>, is the other (section 10.1.2). Column 0 is therefore <code>0x00</code> and <code>0x10</code>. Each command is one control byte plus one command byte, so each positioning step costs two bytes.
+  </p>
+
+  <h3>Worked example: how long a frame takes on the wire</h3>
+  <p>
+    Suppose you want to know whether a full redraw is affordable at 400 kbit/s, the fast mode the SSD1306 accepts. Count the bytes for one frame. For each page there are three commands. Each command is an address byte, a control byte and a command byte, so it costs three bytes, and three commands cost nine. The data for the page is an address byte, a 0x40 control byte and 128 pixel bytes, which is 130 bytes. One page is therefore 9 + 130 = 139 bytes.
+  </p>
+  <p>
+    For eight pages the total is 8 × 139 = 1,112 bytes. Each byte on I2C takes nine clock pulses, eight for the data bits and one for the acknowledge bit (lesson 60). So the frame needs 1,112 × 9 = 10,008 clock pulses. At 400,000 pulses per second, that takes 10,008 ÷ 400,000 = 0.025 s, or about 25 ms. That is about 40 frames per second if you sent them back to back, which is far more than a menu needs. The sensible rule is to redraw only when a button changes something.
+  </p>
+  <div class="note">The init sequence is the one in the pico-examples <code>i2c/ssd1306_i2c</code> driver, published under the BSD-3-Clause licence by Raspberry Pi. That example defaults to a 128 by 32 panel, so its multiplex and COM pin values are the 32-row ones. For a 128 by 64 panel the mux ratio is 0x3F (64 rows minus one), and the COM pin layout is 0x12. The example also uses horizontal addressing (<code>0x20 0x00</code>) and sends the whole buffer in one go. This driver uses page addressing so that each row can be sent on its own.</div>
+
+  <h2>Concept 4: a 5 by 7 font is five column bytes</h2>
+  <p>
+    A character on this display is a <a href="../reference/glossary.html#glyph">glyph</a>, a bitmap. The menu uses a 5 by 7 font: seven rows high and five columns wide. Each column is one byte, and bit 0 of each column is the top row. The capital L is therefore <code>{0x7F, 0x40, 0x40, 0x40, 0x40}</code>. In binary, 0x7F is 0111 1111, so the first column has all seven rows lit, which is the vertical stem. 0x40 is 0100 0000, which lights only bit 6, the bottom row. Each of the last four columns lights that bottom row, which makes the foot of the L.
+  </p>
+  <p>
+    Characters are drawn left to right with one blank column between them. Five columns plus the blank make a six-column advance, so the text "PRESSES" takes 7 × 6 = 42 columns. The font in this project defines only the characters the menu needs: the digits, the capitals in the menu words, a space, <code>:</code>, <code>.</code> and <code>&gt;</code>. A character it does not know is drawn as a space. That is a deliberate choice, because it never reads past the table, but it also means a missing letter shows as a gap rather than an error.
+  </p>
+
+  <h2>Concept 5: buttons, edges and a menu with callbacks</h2>
+  <p>
+    Each button is wired between a GPIO pin and ground, and the pin has its internal pull-up enabled <a href="../reference/glossary.html#pull-up-resistor">pull-up resistor</a>. The pin reads 1 when the button is released and 0 when it is pressed. The helper <code>pressed()</code> returns the inverse of the pin, so it is true while the button is held down.
+  </p>
+  <p>
+    A button stays down for a long time, but a menu should move one step per press. The code therefore reacts to the <em>edge</em>, the moment the state changes from released to pressed. It keeps the previous sample of each button and acts only when the current sample is pressed and the previous one was not. A held button then causes one step, however long it is held. Real switches also bounce for a few milliseconds when they close, which needs its own handling, covered in lesson <a href="0052-gpio-input-and-debouncing.html">52</a>. The buttons in this project have bounce set to 0.
+  </p>
+  <p>
+    The menu itself is a plain struct. It holds an array of items, the number of items, and a cursor index. Each item has a label and a <a href="../reference/glossary.html#callback">callback</a>, which is a function pointer of type <code>menu_action_t</code>. When the user selects an item, the menu calls the pointer. The menu does not know what the action does, and that separation is the point. Adding an item means adding one line to the array and one function. Lesson <a href="0049-function-pointers-and-callbacks.html">49</a> covers how the call works.
+  </p>
+  <p>
+    The cursor must stay inside the array. Moving it down by one step is <code>(cursor + 1) % count</code>, which goes from 0 to 1 to 2 and then back to 0 for three items. A plain increment would reach 3, one past the end, and selecting that item would call a pointer read from memory outside the array. The starter project contains exactly that bug on purpose.
+  </p>
+
+  <h2>Worked example: one press of DOWN, step by step</h2>
+  <p>
+    Start with three items and the cursor at 0, which is BLINK. The main loop samples the buttons every 20 ms. The table shows what the code does on each sample, with <code>down_prev</code> as the value from the previous sample.
+  </p>
+  <table>
+    <thead><tr><th>Sample</th><th>DOWN pin</th><th>down_prev</th><th>Action</th><th>Cursor</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>released</td><td>0</td><td>none</td><td>0 (BLINK)</td></tr>
+      <tr><td>2</td><td>pressed</td><td>0</td><td>falling edge: menu_next, dirty = true</td><td>1 (SOLID)</td></tr>
+      <tr><td>3</td><td>pressed</td><td>1</td><td>none: the button is still held</td><td>1 (SOLID)</td></tr>
+      <tr><td>4</td><td>released</td><td>1</td><td>none</td><td>1 (SOLID)</td></tr>
+      <tr><td>5</td><td>pressed again</td><td>0</td><td>falling edge: menu_next</td><td>2 (RESET)</td></tr>
+      <tr><td>6</td><td>pressed again</td><td>1</td><td>none</td><td>2 (RESET)</td></tr>
+    </tbody>
+  </table>
+  <p>
+    On sample 2, the cursor moves to 1. The <code>dirty</code> flag is now true, so the same loop iteration calls <code>menu_draw()</code>, which clears the framebuffer and draws the title and the three items. Then <code>ssd1306_flush()</code> sends the 1,024 bytes to the panel. The screen updates within about 45 ms of the press: up to 20 ms of polling, then the 25 ms transfer. If you press DOWN again on sample 5, the cursor moves to 2, and one more press gives <code>(2 + 1) % 3 = 0</code>, so the cursor wraps back to BLINK.
+  </p>
+
+  <h2>The code, explained line by line</h2>
+  <p>
+    The driver is three small files: <code>ssd1306.c</code> for the display, <code>menu.c</code> for the menu, and <code>main.c</code> for the buttons and the loop. The excerpts below are from the reference solution. Start with the one-command helper, which is the smallest unit of the protocol.
+  </p>
+  <pre><code><span class="k">static void</span> send_cmd(<span class="k">uint8_t</span> cmd) {
+    <span class="k">uint8_t</span> buf[2] = {CTRL_CMD, cmd};          <span class="c">/* 0x80: Co = 1, D/C# = 0 */</span>
+    i2c_write_blocking(s_bus, SSD1306_ADDR, buf, 2, <span class="k">false</span>);
+}</code></pre>
+  <p>
+    <code>CTRL_CMD</code> is <code>0x80</code>, the control byte for one command. The buffer holds the control byte and the command, and <code>i2c_write_blocking()</code> sends them as one write. The last argument, <code>false</code>, means "send a STOP at the end". Each command is therefore its own complete transfer, which is simple and easy to see on a logic analyzer. The helper is <code>static</code> because nothing outside this file should send raw commands.
+  </p>
+  <pre><code><span class="k">static const uint8_t</span> init[] = {
+    0xAE,              <span class="c">/* display off while configuring */</span>
+    0xD5, 0x80,        <span class="c">/* clock divide ratio 1, default oscillator */</span>
+    0xA8, 0x3F,        <span class="c">/* multiplex ratio 64 (rows - 1) */</span>
+    0x20, 0x02,        <span class="c">/* memory addressing mode: page */</span>
+    0xA1,              <span class="c">/* segment remap: column 127 on SEG0 */</span>
+    0xC8,              <span class="c">/* COM scan from COM[N-1] down to COM0 */</span>
+    0xDA, 0x12,        <span class="c">/* COM pin layout for 128x64 */</span>
+    0xAF,              <span class="c">/* display on */</span>
+};</code></pre>
+  <p>
+    The init table is a list of command bytes, and each pair in it is a command with its argument. <code>0xAE</code> turns the panel off while it is configured, and <code>0xAF</code> turns it on at the end. <code>0xD5 0x80</code> sets the clock divide ratio to one. <code>0xA8 0x3F</code> sets the multiplex ratio: the controller scans 64 rows, and the datasheet stores that as 63, which is 0x3F. <code>0x20 0x02</code> chooses page addressing, as described above. <code>0xA1</code> maps column 127 to segment 0, so that the picture is not mirrored on the panel. <code>0xC8</code> sets the scan direction, and <code>0xDA 0x12</code> selects the COM pin layout for this 128 by 64 panel (datasheet section 10.1.18). The table omits a few values that set contrast and timing, which the full file in the project includes. Each value is the one the reference driver uses, and the project's comments name the matching sections.
+  </p>
+  <pre><code><span class="k">void</span> ssd1306_draw_char(<span class="k">uint8_t</span> page, <span class="k">uint8_t</span> x, <span class="k">char</span> c) {
+    <span class="k">if</span> (page &gt;= SSD1306_PAGES || x + CHAR_ADVANCE &gt; SSD1306_WIDTH) {
+        <span class="k">return</span>;                       <span class="c">/* off the panel: drop it */</span>
+    }
+    <span class="k">const uint8_t</span> *cols = font_glyph(c);
+    <span class="k">for</span> (<span class="k">uint8_t</span> i = 0; i &lt; GLYPH_WIDTH; i++) {
+        s_fb[page][x + i] = cols[i];        <span class="c">/* one column byte per RAM byte */</span>
+    }
+    s_fb[page][x + GLYPH_WIDTH] = 0x00;     <span class="c">/* the blank column after the glyph */</span>
+}</code></pre>
+  <p>
+    The first <code>if</code> is the bounds check, and it matters more than it looks. <code>s_fb</code> is a fixed array of 8 pages by 128 columns, so a page or column outside it would write into some other variable's memory. The check uses <code>CHAR_ADVANCE</code>, which is six, so a character that would end past the right edge is dropped as a whole. The line <code>font_glyph(c)</code> returns a pointer to the five column bytes of the character. The loop copies them into the framebuffer, one byte per column. Each column byte goes to one RAM byte, which is why a glyph's bit 0 becomes the top pixel of the page. The last line writes the blank column that separates this character from the next one.
+  </p>
+  <pre><code><span class="k">void</span> ssd1306_flush(<span class="k">void</span>) {
+    <span class="k">static uint8_t</span> frame[1 + SSD1306_WIDTH];   <span class="c">/* the control byte, then one page */</span>
+    <span class="k">for</span> (<span class="k">uint8_t</span> page = 0; page &lt; SSD1306_PAGES; page++) {
+        send_cmd(CMD_PAGE_START | page);     <span class="c">/* 0xB0 | page */</span>
+        send_cmd(CMD_COL_LOW);               <span class="c">/* column 0, low nibble */</span>
+        send_cmd(CMD_COL_HIGH);              <span class="c">/* column 0, high nibble */</span>
+        frame[0] = CTRL_DATA;                <span class="c">/* 0x40: Co = 0, D/C# = 1 */</span>
+        memcpy(&amp;frame[1], s_fb[page], SSD1306_WIDTH);
+        i2c_write_blocking(s_bus, SSD1306_ADDR, frame, <span class="k">sizeof</span> frame, <span class="k">false</span>);
+    }
+}</code></pre>
+  <p>
+    Flush is the only function that moves pixels to the panel. For each of the eight pages it sends the three positioning commands, then one write holding the control byte and the 128 bytes of that page. The <code>frame</code> array is <code>static</code> so that the 129-byte buffer is not rebuilt on the stack each call. The <code>memcpy()</code> copies one page of the framebuffer into the frame, after the control byte. Because the control byte is <code>0x40</code>, the panel reads every byte after it as pixels. Without that byte, the first pixel value would be read as a command.
+  </p>
+  <pre><code><span class="k">void</span> menu_next(menu_t *m) {
+    m-&gt;cursor = (<span class="k">uint8_t</span>)((m-&gt;cursor + 1) % m-&gt;count);
+}</code></pre>
+  <p>
+    This is the whole cursor logic. The modulo by <code>count</code> keeps the result between 0 and <code>count - 1</code>. The cast back to <code>uint8_t</code> keeps the type the struct uses. The menu does not check which item is selected. The action table is the only thing that decides what a selection does.
+  </p>
+  <pre><code><span class="k">bool</span> down_now = pressed(BTN_DOWN);
+<span class="k">if</span> (down_now &amp;&amp; !down_prev) {        <span class="c">/* falling edge: a new press only */</span>
+    menu_next(&amp;s_menu);
+    dirty = <span class="k">true</span>;                  <span class="c">/* redraw after this iteration */</span>
+}
+down_prev = down_now;</code></pre>
+  <p>
+    The loop copies the current sample into <code>down_prev</code> at the end of each pass, so the next pass can compare. The condition runs the step only on the pass where the button goes from released to pressed. The <code>dirty</code> flag separates input from output: the buttons set it, and the drawing code runs once per pass if it is set. That keeps the I2C bus idle when nothing has changed.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0061-an-i2c-oled-display-and</code> wires a <code>board-ssd1306</code> display to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups as in lesson 60, and two pushbuttons: DOWN on GP14 and SELECT on GP15. Wokwi's SSD1306 board part is the one to use, because the older <code>wokwi-ssd1306</code> part is deprecated <a href="https://docs.wokwi.com/parts/board-ssd1306">Wokwi, board-ssd1306 part</a>. The display's address is 0x3C.
+    The project <code>projects/0061-an-i2c-oled-display-and</code> wires a <code>board-ssd1306</code> display to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups as in lesson 60, and two pushbuttons: DOWN on GP14 and SELECT on GP15. Use Wokwi's SSD1306 board part, because the older <code>wokwi-ssd1306</code> part is deprecated <a href="https://docs.wokwi.com/parts/board-ssd1306">Wokwi, board-ssd1306 part</a>. The display's address is 0x3C.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0061-an-i2c-oled-display-and/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The init and flush code is given. The screen stays blank until you finish the drawing code.</li>
-    <li>Your task: write <code>ssd1306_draw_char()</code> (copy the five column bytes from <code>font_glyph()</code>, and leave one blank column), and <code>ssd1306_draw_text()</code> (advance by six). Then fix the cursor in <code>menu_next()</code>: the starter does a plain increment, which runs off the end of the item list. Finally draw the status line, print <code>MENU OK</code> once, and check that DOWN moves the cursor and SELECT counts a press.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The init and flush code is given, so the panel is powered and configured, but it stays blank: nothing has been drawn into the framebuffer yet.</li>
+    <li>Write <code>ssd1306_draw_char()</code> in <code>ssd1306.c</code>. Copy the five column bytes from <code>font_glyph(c)</code> into <code>s_fb[page][x + i]</code>, and set column <code>x + 5</code> to zero. Keep the bounds check at the top, so an off-screen character is dropped.</li>
+    <li>Write <code>ssd1306_draw_text()</code>. It calls <code>ssd1306_draw_char()</code> for each character and advances x by six. Stop at the end of the string or when the next character would not fit.</li>
+    <li>Fix <code>menu_next()</code> in <code>menu.c</code>. The starter does a plain <code>m-&gt;cursor++</code>. Replace it with a modulo by <code>m-&gt;count</code>, and write a comment that says why the modulo keeps the cursor in range.</li>
+    <li>Expected result: the serial monitor prints <code>MENU OK</code> once, and the screen shows the title <code>MENU</code> with three items and a <code>&gt;</code> cursor. Press DOWN and the cursor moves to the next item. Press DOWN after the last item and it wraps to the first. Press SELECT and the status line counts the press, as <code>PRESSES:1</code>.</li>
   </ol>
   <details>
     <summary>Hint for the glyph copy</summary>
-    <p>The glyph has five columns. Copy them into <code>s_fb[page][x + i]</code>, and leave <code>x + 5</code> at zero. Check the page and x against the framebuffer's size first.</p>
+    <p>The glyph has five columns. Copy them into <code>s_fb[page][x + i]</code>, and leave <code>x + 5</code> at zero. Check the page and x against the framebuffer's size first. The function already has a bounds check at the top, so you only need the copy.</p>
   </details>
   <details>
     <summary>Hint for the cursor</summary>
-    <p>A modulo by the item count keeps the cursor in range, and it wraps by itself after the last item.</p>
+    <p>A modulo by the item count keeps the cursor in range, and it wraps by itself after the last item. Write <code>m-&gt;cursor = (m-&gt;cursor + 1) % m-&gt;count;</code> and check that the cast to <code>uint8_t</code> still fits.</p>
   </details>
-  <p>The reference solution is in <code>projects/0061-an-i2c-oled-display-and/solution</code>. Try first, compare after. The serial monitor prints <code>MENU OK</code>, and the screen shows the menu.</p>
+  <p>The reference solution is in <code>projects/0061-an-i2c-oled-display-and/solution</code>. Try first, compare after.</p>
 
-  <div class="win">You drew text on an OLED you wrote the driver for, with the control byte, page addressing and a framebuffer, and you drove a menu from two buttons with callbacks. The same framebuffer and flush pattern works for the other SSD1306 and SH1106 panels.</div>
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    Most display bugs look like a blank or wrong screen, which tells you little on its own. The fastest route is to match the symptom to one of the cases below, then check the bus on a logic analyzer if the code does not explain it.
+  </p>
+  <h3>Mistake 1: sending pixels without the 0x40 control byte</h3>
+  <p>
+    <strong>Symptom:</strong> the screen stays blank, or it shows a scrambled pattern while the serial monitor says everything is fine. <strong>Cause:</strong> the first pixel byte is read as a command, because the panel expects a control byte before every write. <strong>Fix:</strong> keep <code>frame[0] = CTRL_DATA</code> in the flush loop, and check on the analyzer that every data write starts with 0x40.
+  </p>
+  <h3>Mistake 2: drawing into the framebuffer and never flushing</h3>
+  <p>
+    <strong>Symptom:</strong> the text exists in the framebuffer, but the screen shows the old picture or nothing. The logic analyzer shows the init commands and then no transfers at all. <strong>Cause:</strong> <code>ssd1306_flush()</code> was never called, or it was called only when <code>dirty</code> is set, and nothing set it. <strong>Fix:</strong> flush once per pass after the drawing, and set <code>dirty = true</code> in every branch that changes the menu.
+  </p>
+  <h3>Mistake 3: the segment remap is missing</h3>
+  <p>
+    <strong>Symptom:</strong> the picture comes out mirrored left to right, so text reads backwards. <strong>Cause:</strong> without <code>0xA1</code> the datasheet maps column 0 to SEG0, and the reference picture expects column 127 there (section 10.1.8). <strong>Fix:</strong> keep the remap in the init table, and do not change it without a reason. If you change the scan direction with <code>0xC8</code>, check the remap as well.
+  </p>
+  <h3>Mistake 4: the cursor is incremented without a wrap</h3>
+  <p>
+    <strong>Symptom:</strong> after the last item, no row shows the <code>&gt;</code> cursor, because <code>menu_draw()</code> only draws it on the row whose index equals the cursor, and the cursor is now past the last row. Pressing SELECT then calls whatever pointer sits past the array. <strong>Cause:</strong> the plain <code>m-&gt;cursor++</code> from the starter. <strong>Fix:</strong> wrap with the item count, as in <code>menu_next()</code> above.
+  </p>
+  <h3>Mistake 5: reacting to the held level instead of the edge</h3>
+  <p>
+    <strong>Symptom:</strong> one press moves the cursor two or three items. <strong>Cause:</strong> the code tests <code>if (down_now)</code>, which is true on every poll while the button is held. The poll runs every 20 ms, so a 100 ms press counts five times. <strong>Fix:</strong> keep the previous sample and act only when the current one is pressed and the previous one was not.
+  </p>
+  <h3>Mistake 6: a character missing from the font</h3>
+  <p>
+    <strong>Symptom:</strong> a letter does not appear, and the gap is exactly one character wide. <strong>Cause:</strong> <code>font_glyph()</code> returns the space glyph for any character it does not have, so nothing is drawn and nothing fails. <strong>Fix:</strong> add one five-byte entry to <code>GLYPHS</code> for the character, and check the bitmap bit by bit before you trust it.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional display code has three layers. The controller driver does the init table, the flush and the primitives that write into the framebuffer. A graphics layer draws text, lines and fonts on top of it. The application layer holds the screens and the menu state. The menu in this lesson is in the third layer, and it never calls the I2C functions. That separation is what lets a reviewer test the cursor logic on a PC, with no display attached. From lesson <a href="0080-unit-testing-on-the-host.html">80</a> onward the course does exactly that with Unity and FFF.
+  </p>
+  <p>
+    A code reviewer of a display driver usually checks four things. Every write into the framebuffer has a bounds check, and the check is at the top of the function. Drawing never touches I2C directly, so the flush is the only place the bus is used. The init table matches the panel's datasheet and the module's COM layout, because many inexpensive modules differ in that one value. The redraw is driven by a dirty flag, so an idle screen costs no bus time. Those four points show up in interview questions too, often as "what would you check first when the screen is blank?"
+  </p>
+  <p>
+    The framebuffer costs 1 KB here, which is small against the RP2040's 264 kB of SRAM. A smaller microcontroller may not have that room, and then the driver must draw each page directly from a smaller buffer, or send one row at a time. The same datasheet also describes 4-wire SPI for the same controller (section 8.1.3). Lesson <a href="0062-spi.html">62</a> covers that bus, and the framebuffer and flush pattern you wrote here carries over unchanged.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The SSD1306 keeps the picture in display RAM: 8 pages of 128 columns, one byte per column per page, with bit 0 at the top of each page.</li>
+    <li>The address is 0x3C, which is 0x78 on the wire for a write. The control byte is 0x80 before a command and 0x40 before pixel data.</li>
+    <li>Page addressing (0x20 0x02) needs a page start (0xB0 plus the page), and a column low and high nibble, for each page. The column pointer wraps within the page.</li>
+    <li>Draw into a 1 KB framebuffer, then flush page by page. A full flush is about 1,112 bytes on the wire, about 25 ms at 400 kbit/s.</li>
+    <li>A 5 by 7 glyph is five column bytes, with bit 0 at the top. A character missing from the font draws as a space.</li>
+    <li>A menu holds items with function-pointer actions. Wrap the cursor with a modulo by the item count, and act on the falling edge of a button.</li>
+  </ul>
+
+  <div class="win">You drew text on an OLED you wrote the driver for, with the control byte, page addressing and a framebuffer, and you drove a menu from two buttons with callbacks. The same framebuffer and flush pattern works for other SSD1306 and SH1106 panels, with the init table adjusted to the panel.</div>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -167,7 +339,19 @@ i2c_write_blocking(bus, 0x3C, frame, 129, <span class="k">false</span>);</code><
       { "type": "number",
         "prompt": "How many 8-pixel pages are there on a 64-row panel?",
         "answer": 8, "tolerance": 0, "unit": "pages",
-        "why": "64 rows ÷ 8 rows per page = 8 pages. The tempting answer, 64, counts rows instead of pages." }
+        "why": "64 rows ÷ 8 rows per page = 8 pages. The tempting answer, 64, counts rows instead of pages." },
+      { "type": "text",
+        "prompt": "What is the first column byte of the capital L in the font? Give it in hex.",
+        "accept": ["0x7F", "7F"],
+        "why": "The L is {0x7F, 0x40, 0x40, 0x40, 0x40}, and the first column is the full stem, with all seven rows lit. The tempting answer, 0x40, is the bottom bar, which is the value of the other four columns." },
+      { "type": "number",
+        "prompt": "The menu has 3 items and the cursor is on item 2 (counting from 0). After one DOWN press, where is the cursor?",
+        "answer": 0, "tolerance": 0, "unit": "item index",
+        "why": "(2 + 1) % 3 = 0, so the cursor wraps to the first item. The tempting answer, 3, is what a plain increment gives, and it points one past the end of the item array." },
+      { "type": "number",
+        "prompt": "On I2C, each data byte takes 9 clock pulses (8 data bits and one ACK). How many clock pulses do the 1,024 framebuffer bytes take, counting only those bytes?",
+        "answer": 9216, "tolerance": 0, "unit": "pulses",
+        "why": "1,024 × 9 = 9,216 pulses. The tempting answer, 8,192, forgets the ACK bit on each byte, which is part of every byte on the bus." }
     ] }
     </script>
   </div>
@@ -189,11 +373,11 @@ i2c_write_blocking(bus, 0x3C, frame, 129, <span class="k">false</span>);</code><
 
   <div class="interview">
     <p><strong>"How would you drive a 128 by 64 OLED over I2C, and why is the framebuffer usually kept in RAM?"</strong> Answer out loud in 60 seconds, then compare.</p>
-    <details><summary>Model answer</summary><p>Keep a 1 KB framebuffer in RAM, draw into it, and send it to the panel with page addressing: set the page and column for each of the eight pages, then burst 128 data bytes after a 0x40 control byte. The RAM copy lets you draw in any order and makes partial updates cheap. The I2C wire time, about 25 ms at 400 kbit/s, limits the frame rate, so redraw only when the picture changes.</p></details>
+    <details><summary>Model answer</summary><p>Keep a 1 KB framebuffer in RAM, draw into it, and send it to the panel with page addressing: set the page and column for each of the eight pages, then send 128 data bytes after a 0x40 control byte. The RAM copy lets you draw in any order and makes partial updates cheap. The I2C wire time, about 25 ms at 400 kbit/s, limits the frame rate, so redraw only when the picture changes.</p></details>
   </div>
 
   <div class="source">
-    <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet (Solomon Systech)</a>: read section 8.1.5 for the I2C address and the control byte, 8.7 for the display RAM, and 10.1.3 for addressing modes. Then compare with the <a href="https://github.com/raspberrypi/pico-examples/blob/master/i2c/ssd1306_i2c/ssd1306_i2c.c">pico-examples SSD1306 driver</a>, which is BSD-3-Clause.
+    <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">SSD1306 datasheet (Solomon Systech)</a>: read section 8.1.5 for the I2C address, 8.1.5.1 for the control byte, 8.7 for the display RAM, and 10.1.3 for the addressing modes. Then compare with the <a href="https://github.com/raspberrypi/pico-examples/blob/master/i2c/ssd1306_i2c/ssd1306_i2c.c">pico-examples SSD1306 driver</a>, which is BSD-3-Clause.
   </div>
 
   <div class="ask">

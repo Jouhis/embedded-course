@@ -17,20 +17,39 @@
     By the end of this lesson you can stop the Pico simulator on a memory write with a watchpoint, examine memory with <code>x</code>, and find the statement that corrupts a neighbouring variable.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    GDB runs on your PC and talks to a GDB server. In Wokwi, the server is inside the simulator, and <code>gdbServerPort = 3333</code> in <code>wokwi.toml</code> is the port it listens on <a href="https://docs.wokwi.com/vscode/debugging">(Wokwi debugging docs)</a>. The debugger reads and writes registers and memory through that port. The chip does not know it is being debugged: a breakpoint is the core running a <code>BKPT</code> instruction or a hardware comparator, and a watchpoint is the core's own comparator on a data address.
-    <span class="sidenote">This is the same protocol a probe such as an SWD debugger uses on a real board. Lesson 32 used GDB to step through compiled C, and this lesson uses it to find a bug.</span>
+    Lesson 32 showed you how the compiler turns C into Arm instructions, and how to step through them in GDB. Lesson 31 explained the registers that a stopped program exposes. Lesson 46 introduced <code>volatile</code>, which tells the compiler that a memory location can change behind its back. Lesson 47 turned a struct into a view of memory with fixed offsets. This lesson uses all of that to answer one question: when a value in memory is wrong, which instruction wrote it?
   </p>
   <p>
-    The Cortex-M0+ in the RP2040 has four hardware breakpoint comparators and two watchpoint comparators. Software breakpoints (the <code>BKPT</code> instruction) are not limited <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.4.2.4)</a>. Two watchpoints are enough for one bug at a time, but they are a hard limit: a third watch needs you to delete one.
+    Memory corruption is one of the hardest bugs in firmware. A variable changes, nothing in the file you are reading obviously changes it, and the symptom appears far away, often as a crash or a sensor value that is simply wrong. In a product, the same bug can appear once a week on one unit in a thousand. A print in the suspicious function can show you the wrong value, but it cannot show you the write that caused it, and adding prints can move the timing enough to hide the bug. A debugger with a watchpoint answers the question directly, and it does not change the program's code to do it.
+  </p>
+
+  <h2>What a debugger does</h2>
+  <p>
+    The GNU Debugger, GDB, is a program that runs on your PC. It controls the target chip through a link. On a real board, the link is a probe that speaks the Serial Wire Debug protocol. In Wokwi, the link is a GDB server that runs inside the simulator, and <code>gdbServerPort = 3333</code> in <code>wokwi.toml</code> is the TCP port it listens on <a href="https://docs.wokwi.com/vscode/debugging">(Wokwi debugging docs)</a>. The debugger reads and writes registers and memory through that port, and it can stop and resume the core. The program itself does not know it is being debugged.
+  </p>
+  <p>
+    GDB needs one more thing: the ELF file. The build produces an ELF file, which is a container for the machine code, and it also stores symbols and debug information. The debug information, which the compiler writes when you pass <code>-g</code>, records which address holds each variable, which line each instruction came from, and what the types look like. That is how GDB can print <code>frame.sentinel</code> by name and not by address. The course builds in Debug mode with <code>-Og -g</code>, so the symbols are there and the stepping order is close to your source.
+  </p>
+  <span class="sidenote">The GDB server does not reach into your C source. It sees only memory and registers, and GDB turns those into names by reading the ELF debug information. A release build without <code>-g</code> still runs, but GDB can only show raw addresses.</span>
+
+  <h2>Breakpoints and watchpoints in hardware</h2>
+  <p>
+    A breakpoint stops the core at a code address. A watchpoint stops it when a data address is accessed or, in GDB's default form, when the value there changes. The core has hardware support for both. The Cortex-M0+ in the RP2040 has a breakpoint unit with four hardware breakpoints and a watchpoint unit with two watchpoints. The Cortex-M0+ has unlimited software breakpoints, which use the <code>BKPT</code> instruction, so the limit of four applies only to breakpoints placed in hardware <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">(§2.4.2.4)</a>.
+  </p>
+  <p>
+    The watchpoint limit is the one that matters for this lesson, and it is a hard limit. Each hardware watchpoint is a comparator that watches one address range. When a store hits that range, the core halts. Two watchpoints are enough for one bug at a time. A third watch needs you to delete one first. If you set more than two, expect GDB to report an error when it tries to arm the third one.
+  </p>
+  <p>
+    A watch on a value is more than a watch on an address. GDB reads the old value, arms the comparator on the address, and when the core halts, GDB compares the old and new values. If they are equal, GDB resumes silently. So a store that writes the same value as before does not stop the program, which is exactly what you want for a value that should never change.
   </p>
 
   <h2>Start a session</h2>
   <ol class="steps">
     <li>Build the project with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The course builds in Debug mode: debug symbols (<code>-g</code>) and light optimisation (<code>-Og</code>), so stepping follows your source closely. A release build (<code>python tools/build.py &lt;project&gt; --release</code>) optimises harder, and the stepping order can then jump around.</li>
-    <li>Start the simulator first: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Starting the debugger first makes it fail to connect. The Wokwi docs also offer <em>Wokwi: Start Simulator and Wait for Debugger</em>, which pauses before the first instruction until GDB attaches.</li>
-    <li>Press <kbd>F5</kbd>. The project's <code>.vscode/launch.json</code> connects to <code>localhost:3333</code>, and the debugger stops at the start of the program.</li>
+    <li>Start the simulator first: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The Wokwi docs say to start the simulator before the debugger, because the debugger connects to the server the simulator runs. They also offer <em>Wokwi: Start Simulator and Wait for Debugger</em>, which waits for the debugger to attach before the program runs.</li>
+    <li>Press <kbd>F5</kbd>. The project's <code>.vscode/launch.json</code> connects to <code>localhost:3333</code>, and <code>stopAtConnect</code> is set, so the debugger stops at the start of the program.</li>
   </ol>
 
   <h2>The commands you need</h2>
@@ -50,7 +69,7 @@
       <tr><td><code>info registers</code></td><td>Show <code>r0</code> to <code>r12</code>, <code>sp</code>, <code>lr</code>, <code>pc</code> and <code>xPSR</code>. Lesson 31 explains each one.</td></tr>
       <tr><td><code>print frame</code>, <code>print/x frame.sentinel</code></td><td>Show a variable, optionally in hex.</td></tr>
       <tr><td><code>x/8xb &amp;frame</code></td><td>Examine memory: eight bytes in hex, starting at the address of <code>frame</code>.</td></tr>
-      <tr><td><code>set var seed = 0x20</code></td><td>Change a variable while the program is stopped.</td></tr>
+      <tr><td><code>set var</code> (for example <code>set var seed = 0x20</code>)</td><td>Change a variable while the program is stopped. <code>seed</code> is a parameter of <code>build_frame()</code>, so set it while the stop is inside that function.</td></tr>
       <tr><td><code>watch frame.sentinel</code></td><td>Stop when the value of that object changes.</td></tr>
       <tr><td><code>info breakpoints</code>, <code>delete 2</code></td><td>List the breakpoints and watchpoints, or remove one.</td></tr>
     </tbody>
@@ -60,9 +79,12 @@
   </p>
   <div class="note">A watchpoint on a variable stops the program when the variable's bytes change. It does not stop on the line that assigns it, but on the store that changed the bytes. That is the line you want: it is the one that corrupted the value, even when the name in the statement is a different variable.</div>
 
-  <h2>A watchpoint on a neighbour</h2>
+  <h2>A struct, byte by byte</h2>
   <p>
-    Here is the shape of the bug in the task. A struct holds a fixed-length array, and a byte right after the array is a sentinel. An off-by-one loop writes one element past the end. The write lands on the sentinel, which is adjacent in memory. From the struct's point of view it is a valid assignment, so the compiler does not complain.
+    Before you can find a corrupted byte, you need to know where each byte lives. The struct in this lesson has an array of eight <code>uint8_t</code> values and one more <code>uint8_t</code> after it. C lays struct members out in memory in declaration order, each at an offset from the start of the struct. Each <code>uint8_t</code> takes one byte and needs no alignment, so there is no padding between the array and the sentinel. <code>data[0]</code> is at offset 0, <code>data[7]</code> is at offset 7, and <code>sentinel</code> is at offset 8. The whole struct is nine bytes long, and <code>sizeof(frame_t)</code> is 9.
+  </p>
+  <p>
+    That layout is what makes the bug possible. The array has no guard. Writing <code>data[8]</code> does not fail, because the compiler sees an index of type <code>uint32_t</code>, and it has no bounds check to make. The store lands at offset 8, which is the sentinel. C does not stop you from writing past the end of an array, and in a struct the byte after the array is simply another member.
   </p>
   <pre><code><span class="k">typedef struct</span> {
     <span class="k">uint8_t</span> data[FRAME_LEN];   <span class="c">/* bytes 0 to 7 */</span>
@@ -73,9 +95,25 @@
     f-&gt;data[i] = (<span class="k">uint8_t</span>)(seed + i);   <span class="c">/* i == 8 writes the sentinel */</span>
 }</code></pre>
   <p>
-    The debugging method is the one to remember. Confirm the symptom with a print, then set a watchpoint on the value that should not change. <code>continue</code> runs until the watchpoint fires, and GDB prints the old value, the new value, and the line where the store happened. Then <code>bt</code> shows how you got there, and <code>x</code> shows the memory around the address.
+    Read the struct line by line. The first member is <code>uint8_t data[FRAME_LEN]</code>. It is an array of eight bytes, and <code>FRAME_LEN</code> is the named constant 8. The second member is <code>uint8_t sentinel</code>, one byte that the program uses as a marker that the frame is intact. The <code>typedef</code> gives the struct the name <code>frame_t</code> so that the rest of the code can write <code>frame_t frame;</code>.
   </p>
-  <div class="warning">Watchpoints are a feature of the core's debug unit, and the simulator must implement them. The Wokwi docs do not list watchpoints, so confirm that the watch stops in the simulator before you rely on it. If it does not, use the fallback below, which uses only breakpoints.</div>
+  <p>
+    The loop is the bug. The condition <code>i &lt;= FRAME_LEN</code> runs the body for <code>i</code> equal to 0, 1, up to 8 inclusive. The body writes <code>f-&gt;data[i]</code>, so the last write is <code>data[8]</code>, which is outside the array. The value written is <code>seed + i</code>, and the cast to <code>uint8_t</code> keeps only the low eight bits.
+  </p>
+
+  <h2>A worked example: watching the sentinel</h2>
+  <p>
+    Take the starter's numbers. The sentinel is set to <code>0xA5</code> by the main loop. The seed is <code>0x10</code>, so the buggy loop writes these values: for <code>i</code> equal to 0 it writes <code>0x10</code> into <code>data[0]</code>, for 1 it writes <code>0x11</code> into <code>data[1]</code>, and so on. The pattern is one more than the previous value, so the last ordinary write, at <code>i</code> equal to 7, puts <code>0x17</code> into <code>data[7]</code>.
+  </p>
+  <p>
+    Now the bad iteration. When <code>i</code> is 8, the expression <code>seed + i</code> is <code>0x10 + 8</code>, which is <code>0x18</code>. The store goes to <code>data[8]</code>, the sentinel byte, and the sentinel changes from <code>0xA5</code> to <code>0x18</code>. The main loop then compares the sentinel with <code>0xA5</code>, finds a mismatch, and prints the corruption message.
+  </p>
+  <p>
+    So the trace is: sentinel <code>0xA5</code>, then writes <code>0x10</code> through <code>0x17</code> into the array with the sentinel untouched, then the write <code>0x18</code> that replaces the sentinel. The memory dump with <code>x/9xb &amp;frame</code> just before the bad write shows <code>0x10</code> through <code>0x17</code> and <code>0xa5</code> in the last position. Right after it, the last byte reads <code>0x18</code>. The addresses on the left of the dump depend on your build, so read the first address the command prints and count from there. The byte at that address plus 8 is the sentinel.
+  </p>
+  <p>
+    The watchpoint makes this trace automatic. Set <code>watch frame.sentinel</code> while the program is stopped. The next store that changes the sentinel halts the core, and GDB prints the old value <code>0xa5</code> and the new value <code>0x18</code>. The stopped line is the store inside <code>build_frame()</code>, with <code>i</code> equal to 8. You did not have to guess where to look.
+  </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
@@ -83,7 +121,7 @@
   </p>
   <ol class="steps">
     <li>Open <code>projects/0054-gdb-watchpoint/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build, start the simulator, then press <kbd>F5</kbd>.</li>
-    <li>Your task: set a watchpoint on <code>frame.sentinel</code>, with <code>watch frame.sentinel</code> in the debug console. Continue with <code>c</code> until GDB stops. Read the old and new values. Use <code>bt</code> to see the call, and <code>x/9xb &amp;frame</code> to see the eight data bytes and the sentinel together.</li>
+    <li>Your task: set a watchpoint on <code>frame.sentinel</code>, with <code>watch frame.sentinel</code> in the debug console. Continue with <code>c</code> until GDB stops. Read the old and new values. Use <code>bt</code> to see the call, and <code>x/9xb &amp;frame</code> to see the eight data bytes and the sentinel together. You should see the old value 0xa5 and a new value 0x18.</li>
     <li>The stop shows the line that wrote the byte. Fix that line so the loop does not write past <code>data[]</code>. Stop the debugger, rebuild, start the simulator again, and press <kbd>F5</kbd>.</li>
     <li>You will know it works when the serial monitor prints <code>GDB WATCH OK</code> every second, with the sentinel intact at <code>0xa5</code>.</li>
   </ol>
@@ -97,7 +135,45 @@
   </details>
   <p>The reference solution is in <code>projects/0054-gdb-watchpoint/solution</code>. Try first, compare after. Its comment on <code>build_frame()</code> names the bug and the fix.</p>
 
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: a watchpoint on a local variable.</strong> You watch a local in a function, the function returns, and the watch is cleared or stops firing. Symptom: GDB reports that the watchpoint's scope has ended, or it never stops again. A local lives in the stack frame, and the frame is gone after the return. Fix: watch a global, or a field of a struct that lives longer than the function. The sentinel is a global for that reason.
+  </p>
+  <p>
+    <strong>Mistake 2: starting the debugger before the simulator.</strong> You press <kbd>F5</kbd> with no simulator running. Symptom: the debugger reports that it cannot connect to <code>localhost:3333</code>. Fix: start the simulator with <kbd>F1</kbd>, then press <kbd>F5</kbd>.
+  </p>
+  <p>
+    <strong>Mistake 3: debugging a release build.</strong> You build with <code>--release</code>, and your breakpoint on a line is never hit, because the compiler moved or removed the code. Symptom: the program runs past the line with no stop, or a variable prints as <code>&lt;optimized out&gt;</code>. Fix: rebuild in Debug mode, which the course's default build uses, and set the breakpoint again.
+  </p>
+  <p>
+    <strong>Mistake 4: a watchpoint that stops too often.</strong> You watch a counter that changes every millisecond, and the debugger stops on each change, so the program seems to crawl. Symptom: continue returns to the prompt again and again. Fix: add a condition with <code>watch frame.sentinel if frame.sentinel != 0xa5</code>, or use a breakpoint on the function that makes the change.
+  </p>
+  <p>
+    <strong>Mistake 5: fixing the symptom, not the write.</strong> You see the sentinel is wrong and reset it after each frame. Symptom: the message changes to OK, and the array still writes past its end. The next field placed after the sentinel is then corrupted. Fix: find the store with the watchpoint and correct the bound, as the task asks.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Engineers use a debugger on real boards every day, but they also use the same ideas without one. On a microcontroller, the memory protection unit (MPU) can make a guard region fault on a bad write, and the fault handler can then report the address of the store. Lesson 39 covers the MPU and faults. A watchpoint is still the fastest tool once you know which variable is wrong.
+  </p>
+  <p>
+    A code reviewer looks for bounded loops. Any loop that writes into an array should compare the index with the array length, using <code>&lt;</code> and not <code>&lt;=</code>, and the length should come from one named constant. A senior engineer will also ask whether the struct has anything after an array, because a byte that follows the array is always a candidate for a corruption bug. Some teams place a canary, a known pattern, in a guard field to catch exactly this, and they check it in the main loop.
+  </p>
+  <p>
+    Debugging questions come up in interviews because they test a method. The interviewer wants to hear that you confirm the symptom, find the address, watch the value, and read the backtrace. A good answer names the tool and the sequence, and it does not depend on guessing the cause.
+  </p>
+
   <div class="win">You stopped the simulated Pico on the instruction that wrote a byte it should not, read the value with <code>x</code>, and fixed the bound. That is the method for any memory corruption: a watchpoint on the value, then the backtrace of the write.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>GDB talks to the target through a link: a probe on hardware, or the GDB server on port 3333 in Wokwi.</li>
+    <li>The ELF file's debug information turns addresses into names, so the build must include <code>-g</code>.</li>
+    <li>The Cortex-M0+ has 4 hardware breakpoints and 2 hardware watchpoints. A third watchpoint needs one deleted first.</li>
+    <li>A watchpoint halts the core on the store that changes the value, so the stop shows the line that corrupted it.</li>
+    <li>A struct lays out members in order, and a <code>uint8_t</code> array of 8 followed by a <code>uint8_t</code> has the marker at offset 8.</li>
+    <li>C does not bounds-check array writes. A loop that uses <code>&lt;=</code> writes one element past the end.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -131,7 +207,7 @@
           "Ten"
         ],
         "answer": 0,
-        "why": "The core has two watchpoint comparators, which the datasheet lists in its debug features. The tempting answer, four, is the number of hardware breakpoints. Software breakpoints are not limited by that count, since they use the BKPT instruction." },
+        "why": "The core has two watchpoint comparators, which the datasheet lists in its debug features (§2.4.2.4). The tempting answer, four, is the number of hardware breakpoints. Software breakpoints are not limited by that count, since they use the BKPT instruction." },
       { "type": "mc",
         "prompt": "Why should you start the Wokwi simulator before pressing F5?",
         "options": [
@@ -145,7 +221,21 @@
       { "type": "text",
         "prompt": "Which GDB command changes a variable while the program is stopped? Write the command word only.",
         "accept": ["set", "set var", "setvar"],
-        "why": "set var changes a value in memory while the program is stopped. The tempting answer, print, shows a value, and in GDB print can also assign with print x = 5, but set var is the command for assignment." }
+        "why": "set var changes a value in memory while the program is stopped. The tempting answer, print, shows a value, and in GDB print can also assign with print x = 5, but set var is the command for assignment." },
+      { "type": "mc",
+        "prompt": "Which command halts the core on any change to frame.sentinel?",
+        "options": [
+          "watch frame.sentinel",
+          "break frame.sentinel",
+          "print frame.sentinel",
+          "list frame.sentinel"
+        ],
+        "answer": 0,
+        "why": "watch arms a hardware comparator on the data address and stops when the value changes. break needs a code address, so it cannot name a data object. print shows the value once, and list shows source lines." },
+      { "type": "number",
+        "prompt": "The struct has an 8-byte uint8_t array and one uint8_t sentinel. How many bytes is sizeof(frame_t)?",
+        "answer": 9, "tolerance": 0, "unit": "bytes",
+        "why": "Byte members need no alignment, so there is no padding, and 8 + 1 = 9. The tempting answer, 16, assumes the compiler pads the struct to a word, which it does only when the members need that alignment." }
     ] }
     </script>
   </div>
@@ -177,7 +267,7 @@
   </div>
 
   <div class="source">
-    <a href="https://docs.wokwi.com/vscode/debugging">Wokwi: debugging in VS Code</a>: read the Setup and Starting a session sections, and the note about starting the simulator before the debugger. For the GDB commands, use the GDB manual's sections on breakpoints and watchpoints, and the <code>x</code> command, which the reference sheet summarises.
+    <a href="https://docs.wokwi.com/vscode/debugging">Wokwi: debugging in VS Code</a>: read the Setup and Starting a session sections, and the note that the simulator must be started before the debugger. For the GDB commands, use the GDB manual's sections on breakpoints and watchpoints, and the <code>x</code> command, which the reference sheet summarises. The watchpoint count is in the RP2040 datasheet, section 2.4.2.4.
   </div>
 
   <div class="ask">

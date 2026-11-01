@@ -16,8 +16,8 @@
 #define PATTERN_BASE_PIN   10u   /* GP10 .. GP13 drive four LEDs */
 #define PATTERN_PIN_COUNT  4u
 
-/* PIO clock = 125 MHz / 60000, about 2.08 kHz. One step takes 32 PIO cycles
- * (the delay of 31 plus the instruction), so one step is about 15 ms. */
+/* PIO clock = 125 MHz / 60000, about 2.08 kHz. One step takes 33 PIO cycles
+ * (pull: 1, then out with a delay of 31: 32), so one step is 33 x 0.48 ms = 15.84 ms. */
 #define PATTERN_CLKDIV_INT 60000u
 
 /* PIO program, from RP2040 datasheet section 3.4 (Table 366).

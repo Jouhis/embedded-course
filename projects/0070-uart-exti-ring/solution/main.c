@@ -103,7 +103,8 @@ static void uart_init(void) {
     USART1->BRR = SystemCoreClock / 115200U;
     /* RXNEIE: interrupt when a byte arrives in DR. Without it the ring never fills. */
     USART1->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_UE;
-    NVIC_SetPriority(USART1_IRQn, 2U);  /* the byte handler is short; keep it above the button */
+    NVIC_SetPriority(USART1_IRQn, 2U);  /* 2 is less urgent than 0: EXTI0 (the button) keeps the reset
+                                         * default 0, so it can preempt this handler */
     NVIC_EnableIRQ(USART1_IRQn);
 }
 

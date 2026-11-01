@@ -218,6 +218,182 @@ _Avoid_: Power symbol (a different, connecting symbol)
 The letter and number that identify a part on a schematic and board, such as R1, C3 or U1.
 _Avoid_: Part number (that is the manufacturer's code), ref des (informal)
 
+**Pull-down resistor**:
+A resistor connecting a signal line to ground, so the line reads logic low when nothing actively drives it high. Its current flows from the driving pin through any series resistor.
+_Avoid_: Bias resistor
+
+**Schmitt trigger**:
+An input circuit with two thresholds, one for rising and one for falling edges. The gap between them, the hysteresis, stops a slow or noisy edge from making the input flip back and forth.
+_Avoid_: Hysteresis input (say Schmitt trigger for the circuit and hysteresis for the gap)
+
+**Thermal resistance**:
+The temperature rise per watt of power on a heat path, written R<sub>θ</sub> in °C/W. A datasheet gives junction to case (for sizing a heatsink) and junction to ambient (the part on its own).
+_Avoid_: Heat resistance (informal)
+
+**Gate charge**:
+The total charge, Q<sub>g</sub> in nanocoulombs, that the gate driver must move to switch a MOSFET. A driver's current sets how long the switch takes: t = Q<sub>g</sub> ÷ I.
+_Avoid_: Gate capacitance (a different, smaller quantity, C<sub>iss</sub>)
+
+**Buck-boost converter**:
+A switching regulator that steps the voltage down or up, depending on its input, while holding a fixed output. The Pico's 3.3 V regulator is one.
+_Avoid_: Buck-boost SMPS (say buck-boost converter)
+
+**Overdrive voltage**:
+The gate-source voltage above a MOSFET's threshold, written V<sub>ov</sub> = V<sub>GS</sub> − V<sub>GS(th)</sub>. The channel's current and on-resistance depend on it, not on the gate voltage alone.
+_Avoid_: Gate drive (which is the gate voltage itself)
+
+**Local label**:
+A net label in a KiCad schematic that connects points only within the sheet it is drawn on.
+_Avoid_: Wire label (informal)
+
+**Global label**:
+A net label in a KiCad schematic that connects points with the same name anywhere in the schematic, across sheets.
+_Avoid_: Global net (say global label)
+
+**Conductance (G)**:
+The reciprocal of resistance, measured in siemens (S). Conductances add in parallel, so 1/R<sub>total</sub> = 1/R1 + 1/R2 is the sum of the two conductances.
+_Avoid_: Conductivity (a material property, not a component property)
+
+**Steady state**:
+The condition in which a component's temperature has stopped rising because the heat leaving it equals the power going in.
+_Avoid_: Equilibrium (too broad in this course)
+
+**Band gap**:
+The energy step a semiconductor's electron drops through when it recombines. A larger band gap gives a shorter wavelength of light, so it sets an LED's colour and its forward voltage.
+_Avoid_: Bandgap (acceptable spelling in other sources)
+
+**Drive strength**:
+The output current a GPIO pad is set to supply, chosen from 2, 4, 8 or 12 mA on the RP2040. The default is 4 mA. It is a nominal setting, not a hard limit.
+_Avoid_: Output current (the pin may supply less or more depending on the load)
+
+**Loop**:
+Any closed path through a circuit that starts and ends at the same node. Kirchhoff's voltage law says the voltage rises and drops around every loop sum to zero.
+_Avoid_: Mesh (acceptable only in network-analysis texts)
+
+**Inductor**:
+A coil of wire that opposes a change in its current. Its voltage is V = L × di/dt, and it stores energy as ½ × L × I².
+_Avoid_: Choke (a specific use of an inductor, acceptable only for a choke's role in a filter), coil (informal, acceptable for a relay or motor winding)
+
+**Inductance (L)**:
+The property of an inductor that sets how much voltage a given rate of current change produces, measured in henries (H).
+_Avoid_: Inductor (the part, not the property)
+
+**Capacitor**:
+Two conductors separated by an insulator, which store charge Q = C × V. Its current is i = C × dV/dt, so its voltage cannot change in zero time.
+_Avoid_: Condenser (old term), cap (informal)
+
+**Capacitance (C)**:
+The ratio of charge to voltage for a capacitor, measured in farads (F). Practical values are µF, nF and pF.
+_Avoid_: Capacity (ambiguous)
+
+**Relay**:
+An electromechanical switch in which a coil, when energised, pulls a contact closed or open. The coil is an inductive load, so it needs a flyback diode or a snubber.
+_Avoid_: Contactor (a relay for higher currents, acceptable in industrial contexts)
+
+**Back-EMF**:
+The voltage a motor generates while it spins, which opposes the supply and reduces the running current below the stall current.
+_Avoid_: Inductive kickback (a different effect, from the coil's own inductance)
+
+**Loading**:
+The reduction of a circuit's voltage or change of its current caused by a meter or the next stage drawing current from it. A meter with a low input resistance in parallel with a divider's lower resistor pulls its reading down.
+_Avoid_: Burden (which is the ammeter's own voltage drop)
+
+**Burden voltage**:
+The small voltage an ammeter drops across its own internal resistance, which slightly reduces the current in the circuit it measures.
+_Avoid_: Loading (which describes a voltmeter or a load drawing current from a node)
+
+**Overdrive**:
+The gate-source voltage above a MOSFET's threshold, V_GS − V_GS(th). The drain current in saturation rises with the square of the overdrive.
+_Avoid_: Gate voltage (which is the full V_GS, not the amount above threshold)
+
+**Gate charge (Q_G)**:
+The charge a MOSFET gate must receive to take it to a stated gate voltage, given on the datasheet in nanocoulombs. Switching time is about Q_G ÷ the drive current.
+_Avoid_: Gate capacitance (a different measure, given as Ciss in picofarads)
+
+**Thermal resistance (R_θJA)**:
+The temperature rise of a device's junction above the ambient air per watt dissipated, in °C/W, with no heatsink. The junction-to-case value, R_θJC, applies when the case is held by a heatsink.
+_Avoid_: Heat sink resistance (the heatsink has its own value)
+
+**Forced gain**:
+The ratio I_C ÷ I_B that a base current is designed to give, usually about 10 for a switch. It is below the transistor's real gain, so the switch stays saturated when the gain varies.
+_Avoid_: Current gain (which is the real β, not the design ratio)
+
+**Active region**:
+The operating region of a BJT in which the collector current follows the base current in proportion. A switch should not stay here, because the transistor dissipates heavy power.
+_Avoid_: Linear region (acceptable for amplifiers)
+
+**Crystal oscillator (XOSC)**:
+A quartz crystal and its driver circuit, which give an accurate reference clock. Software must start it and wait for it to settle before the clock is used.
+_Avoid_: Crystal (alone, when a clock source is meant)
+
+**Ring oscillator (ROSC)**:
+An on-chip oscillator made from a loop of logic gates. It needs no external part and runs from power-up, but its frequency moves with voltage and temperature, so it is only approximately known.
+_Avoid_: RC oscillator (the STM32 HSI is also an RC design, so the name does not tell the two apart)
+
+**HSI (high-speed internal oscillator)**:
+The STM32F1's internal 8 MHz oscillator. The system clock uses it straight after reset.
+_Avoid_: Internal clock (too broad: the RP2040 also has internal oscillators)
+
+**HSE (high-speed external oscillator)**:
+The STM32F1's external crystal input. The header limits it to 4 to 16 MHz. The Blue Pill uses an 8 MHz crystal.
+_Avoid_: External clock (also used for a clock signal driven from outside the chip)
+
+**VCO (voltage-controlled oscillator)**:
+The high-frequency oscillator inside a PLL. The feedback divider sets its frequency, and it must stay in its legal range (750 to 1600 MHz on the RP2040). It is not the clock the core runs from.
+_Avoid_: System clock (the output after the post-dividers is the system clock)
+
+**Post-divider**:
+A divider after the VCO in a PLL. It sets the output frequency that the clock tree uses, and on the RP2040 there are two of them, POSTDIV1 and POSTDIV2.
+_Avoid_: Output divider (acceptable, but this course uses post-divider)
+
+**SystemCoreClock**:
+The CMSIS variable that holds the core clock frequency in hertz. Call SystemCoreClockUpdate() after any clock change, so the variable matches the registers.
+_Avoid_: HCLK (the same frequency under ST's name, but the variable is the one code reads)
+
+**SWS (system clock switch status)**:
+The RCC_CFGR field, bits 3 and 2 on the STM32F1, that reports which source drives the system clock: 0 for HSI, 4 for HSE and 8 for the PLL.
+_Avoid_: Clock source select (that is SW, the request, which is a different field)
+
+**Falling edge**:
+The change of a signal from 1 to 0. A negative-edge flip-flop copies its input on this edge, and an SPI device sampling on the second edge of an idle-low clock uses it.
+_Avoid_: Trailing edge (acceptable in timing diagrams)
+
+**Differential pair**:
+Two wires that carry one signal as the voltage difference between them, such as CANH and CANL or A and B. Noise that reaches both wires equally cancels in the difference.
+_Avoid_: Differential line (acceptable in conversation), balanced pair (acceptable in TI text)
+
+**Common-mode voltage**:
+The voltage that two wires of a differential pair share, or the difference between the grounds of two nodes that a bus must tolerate. A differential receiver ignores it.
+_Avoid_: Common mode (without "voltage" in formal text)
+
+**Termination (bus)**:
+A resistor at each end of a cable, matched to the cable's characteristic impedance, so that signals do not reflect back along it. CAN and RS-485 buses use 120 Ω at each end.
+_Avoid_: Pull resistor (a pull sets a default level, it does not stop reflections)
+
+**Half-duplex**:
+A link in which one pair of wires carries traffic in both directions, but only one end may drive it at a time.
+_Avoid_: Simplex (one direction only), full-duplex (both directions at once)
+
+**Schematic**:
+The drawing of a circuit as symbols for its parts, joined by wires and labelled nets. It defines the connections that the board must match.
+_Avoid_: Circuit diagram (acceptable informally), netlist (the list of connections, not the drawing)
+
+**Footprint**:
+The copper pads and outline on a board that a part is soldered onto, taken from the package drawing in its datasheet. Each schematic symbol is linked to one footprint.
+_Avoid_: Package (the part's case, not the board's pattern)
+
+**Trace**:
+A strip of copper on a board that carries a signal or a supply between pads.
+_Avoid_: Track (acceptable in KiCad's own menus), wire (the schematic's line, not the copper)
+
+**Ground pour**:
+A large area of copper on a board, filled with the ground net, that gives every signal a low-impedance return path beneath it.
+_Avoid_: Ground plane (the same idea on an inner layer of a multilayer board), copper fill (too general)
+
+**PCB (printed circuit board)**:
+The physical board: insulating core with copper layers, drilled and coated, with the parts soldered to it.
+_Avoid_: PCB file (in KiCad, the board layout file, which is a different thing from the board itself)
+
 ## Computer architecture
 
 **Microcontroller (MCU)**:
@@ -604,6 +780,194 @@ _Avoid_: Sleep (WFI is also a sleep)
 The STM32F1 low-power levels. Sleep stops the CPU clock. Stop keeps the SRAM and wakes on an EXTI line. Standby loses the SRAM and restarts from reset.
 _Avoid_: Deep sleep (say Stop or Standby)
 
+**Immediate**:
+A constant written into an instruction's encoding, such as the 5 in `MOVS R0, #5`. Its field width limits the values it can hold.
+_Avoid_: Literal (a literal pool is a separate thing, a word in flash that holds a constant too large for an immediate)
+
+**Halfword**:
+Sixteen bits, two bytes. A 16-bit Thumb instruction is one halfword, and the Cortex-M reads instructions a halfword at a time.
+_Avoid_: Short (a C type name, not the unit of an instruction)
+
+**Speculative fetch**:
+The fetch of instructions after a conditional branch before its outcome is known. The core keeps the fetches if the branch falls through and flushes them if it is taken.
+_Avoid_: Prediction (a broader term that also covers branch predictors)
+
+**Throughput**:
+The number of instructions a pipeline completes per cycle in steady state. Pipelining raises throughput while leaving the latency of one instruction about the same.
+_Avoid_: Speed (too vague)
+
+**Latency (instruction)**:
+The number of cycles one instruction takes from fetch to completion in a pipeline. It is larger than one in a pipelined core even though throughput is one per cycle.
+_Avoid_: Delay (informal)
+
+**Caller and callee**:
+The caller is the function that makes a call, and the callee is the function that is called. The calling convention divides the duties between them.
+_Avoid_: Client and server (a different pair of roles)
+
+**Preserved register**:
+A register that the AAPCS requires a callee to restore before it returns: R4 to R8, R10, R11 and SP. A caller can rely on its value after the call.
+_Avoid_: Callee-saved (acceptable in other calling conventions, but say preserved under the AAPCS)
+
+**Scratch register**:
+A register a function may change without saving it. Under the AAPCS these are R0 to R3 and R12, and the argument and result registers are scratch.
+_Avoid_: Temporary register (informal)
+
+**Disassembly**:
+The listing of machine code printed from an ELF file, where each line has an address, the raw bytes and the instruction they decode to. `arm-none-eabi-objdump -d` produces it.
+_Avoid_: Decompilation (rebuilds C-like source from machine code, which the course does not do)
+
+**INVSTATE**:
+The fault raised when the core runs an instruction while the T bit in xPSR is clear, which happens after a branch to an address whose bit 0 is 0.
+_Avoid_: Thumb fault (informal)
+
+**Thumb state bit (T bit)**:
+Bit 24 of xPSR, which must be set for the core to run Thumb code. An interworking branch sets or clears it from bit 0 of the target address.
+_Avoid_: Thumb flag (it is a state bit, not a condition flag)
+
+**STKALIGN**:
+The bit in the Cortex-M3 Configuration Control Register that makes exception stack frames 8-byte aligned, so that the stack meets the AAPCS rule SP mod 8 = 0 at a public interface.
+_Avoid_: Stack alignment bit (say STKALIGN, the register bit's name)
+
+**Cross-compiler**:
+A compiler that runs on one kind of processor (the host) and produces machine code for another (the target), such as `arm-none-eabi-gcc` on a Windows PC.
+_Avoid_: Cross toolchain (acceptable in conversation)
+
+**Object file**:
+The output of the compiler for one source file: machine code and a symbol table, with calls to other files left unresolved. It cannot run until the linker joins it into an ELF file. Usually named `.o`.
+_Avoid_: Binary (too vague)
+
+**Symbol table**:
+The list in an object or ELF file of the names it defines and the names it needs, with their addresses once the linker has placed them.
+_Avoid_: Symbols (acceptable in informal use)
+
+**Driver**:
+Code that talks to one piece of hardware, such as a display or a sensor, and hides its register details behind a few functions.
+_Avoid_: Library (a driver is one kind of library)
+
+**Sensor**:
+A component that turns a physical quantity into an electrical signal, such as a thermistor whose resistance changes with temperature.
+_Avoid_: Probe (informal)
+
+**Actuator**:
+A component that turns an electrical signal into motion, heat or another physical effect, such as a motor, heater or relay.
+_Avoid_: Output device (too vague)
+
+**Hard real-time**:
+A deadline where a late result is wrong, such as a motor step pulse that must fire at its scheduled time.
+_Avoid_: Real-time (alone, when the deadline type matters)
+
+**Soft real-time**:
+A deadline where a late result is worse but still usable, such as a web page that loads late.
+_Avoid_: Best effort (a different idea with no deadline)
+
+**Bring-up**:
+The first power-on and check of a new board, done pin by pin with a meter, scope or logic analyzer, and with simple test code.
+_Avoid_: Commissioning (acceptable in industry)
+
+**Period**:
+The time for one complete cycle of a repeating signal, in seconds. Frequency is 1 ÷ period.
+_Avoid_: Cycle time (ambiguous)
+
+**Frequency**:
+The number of complete cycles per second, in hertz (Hz). It is the inverse of the period.
+_Avoid_: Rate (too vague)
+
+**Metastability**:
+A flip-flop state, between 0 and 1, that can follow a setup or hold violation and lasts for a while before the output settles to a valid level.
+_Avoid_: Glitch (a short wrong pulse on a signal, which is a different effect)
+
+**Synchroniser**:
+Two flip-flops in series on the receiving clock, used to bring an asynchronous input into a clock domain. The first may go metastable, and the second gives it a full clock period to settle.
+_Avoid_: Debouncer (which removes contact bounce from a switch, a different problem)
+
+**Master-slave flip-flop**:
+The usual construction of an edge-triggered flip-flop: a master latch that is transparent while the clock is low, and a slave latch that is transparent while it is high.
+_Avoid_: Two-stage latch (too vague, since a synchroniser is also two stages)
+
+**Enable (register)**:
+A control input that makes a register load on a clock edge only when it is high. It is built from a multiplexer that feeds the flip-flop's own output back to its input when the enable is low.
+_Avoid_: Write enable (used for memory and peripheral writes, which add an address decode)
+
+**Bus transfer**:
+One use of a bus: the CPU drives an address, the target responds, and one word of data moves. Every instruction needs at least one transfer, the fetch.
+_Avoid_: Bus cycle (acceptable, but a transfer can take several clock cycles through wait states)
+
+**Prefetch unit (PFU)**:
+The Cortex-M3 block that fetches instructions ahead of the one being executed. It buffers up to three word fetches and forwards PC-relative branches early.
+_Avoid_: Prefetch buffer (only the storage part of the unit)
+
+**ICode bus**:
+The Cortex-M3 AHB-Lite bus for instruction and vector fetches from the code space, 0x00000000 to 0x1FFFFFFF.
+_Avoid_: Instruction bus (too general, since the System bus also fetches instructions)
+
+**DCode bus**:
+The Cortex-M3 AHB-Lite bus for data and debug accesses to the code space, 0x00000000 to 0x1FFFFFFF, which is where literal pools sit.
+_Avoid_: Data bus (too general, since the System bus also carries data)
+
+**System bus**:
+The Cortex-M3 AHB-Lite bus for SRAM, peripherals and the other system space, 0x20000000 to 0xDFFFFFFF and 0xE0100000 to 0xFFFFFFFF. Instruction fetches from it are registered, so they are slower.
+_Avoid_: Memory bus (too vague)
+
+**IOPORT**:
+The single-cycle port on each RP2040 Cortex-M0+ core, used by the SIO block for GPIO. It is a separate bus from the core's AHB-Lite port and is not connected to the main bus.
+_Avoid_: GPIO bus (the SIO is more than GPIO)
+
+**Bus**:
+A set of wires and a protocol that carry an address, data and a control signal from a master to a slave.
+_Avoid_: Interconnect (acceptable in fabric descriptions, but this course says bus)
+
+**Bus master**:
+A device that starts a bus transfer, such as the core or a DMA controller.
+_Avoid_: Initiator (the same idea in some specifications)
+
+**Bus slave**:
+A device that answers a bus transfer, such as a memory or a peripheral register block.
+_Avoid_: Target (acceptable in some specifications)
+
+**AHB-Lite**:
+The high-speed bus protocol that the RP2040 datasheet uses for its main crossbar. The fabric adds no wait states to an AHB-Lite slave access.
+_Avoid_: AHB (the course uses the name the RP2040 datasheet uses)
+
+**Cache**:
+A small, fast copy of recently used memory, placed between the core and a slower memory. A read either hits the copy or misses and goes to the slower memory.
+_Avoid_: Buffer (a buffer holds data in transit, not data kept for reuse)
+
+**Cache hit**:
+A read whose data is already in the cache. The RP2040 XIP cache hit costs one cycle.
+_Avoid_: Cache read (too vague)
+
+**Cache miss**:
+A read whose data is not in the cache, so it goes to the slower memory, and the cache keeps a copy.
+_Avoid_: Cache fail (a miss is normal, not a failure)
+
+**Set-associative cache**:
+A cache in which each address maps to one set of entries, and the address may sit in any entry of that set. A two-way set-associative cache has two entries per set.
+_Avoid_: Direct-mapped (the one-entry-per-set case)
+
+**CONTROL register**:
+The Cortex-M register that holds the privilege bit (bit 0, nPRIV) and the stack-select bit (bit 1, SPSEL) for thread mode. Only a handler can make thread mode privileged again.
+_Avoid_: Mode register (the mode is not stored in CONTROL)
+
+**SVC (supervisor call)**:
+The instruction that raises the SVCall exception, which is number 11. Unprivileged code uses it to ask a privileged handler for a service.
+_Avoid_: Syscall (acceptable in other texts, but this course says SVC)
+
+**Bootrom**:
+Read-only memory on the chip, fixed at manufacture, that runs first after reset. On the RP2040 it is 16 kB at 0x00000000.
+_Avoid_: Bootloader (the bootrom loads a program, which may or may not be a bootloader)
+
+**Section (linker)**:
+A named group of bytes in the output file, such as .text, .rodata, .data or .bss, that the linker script places in a memory region.
+_Avoid_: Segment (a loader term that can group several sections)
+
+**Thumb bit**:
+Bit 0 of a function address in C, set to mark Thumb code. The code itself starts at the even address, so a printed function address ends in 1.
+_Avoid_: Odd address (the bit is a marker, not the location)
+
+**Deadline**:
+A stored time at which an action must happen next. The loop compares the current time with it, and after the action it advances the stored value from its old value, not from the current time.
+_Avoid_: Timeout (when the check repeats)
+
 ## Firmware and tools
 
 **Firmware**:
@@ -910,6 +1274,326 @@ _Avoid_: Programmer (a programmer only writes flash; a probe also debugs)
 A board sold as a Blue Pill (STM32F103C8) whose chip is a different part, such as a CS32F103. Clones can report the wrong flash size and may not debug as the genuine part does.
 _Avoid_: Fake STM32 (vague; the chip may be a licensed-looking clone rather than a counterfeit)
 
+**Propagation delay**:
+The time a gate or pin takes to change its output after an input changes. A datasheet gives it in nanoseconds, and it grows as the supply voltage falls. A test bench must wait for it before it reads an output.
+_Avoid_: Delay (too vague: it could mean any wait), latency (a term for whole pipelines and buses)
+
+**Ripple-carry adder**:
+A row of full adders in which the carry out of each stage feeds the carry in of the next. Its delay grows with the width, because the carry must cross every stage.
+_Avoid_: Carry chain (informal), serial adder (a different circuit that adds one bit per clock)
+
+**One-hot**:
+A code in which exactly one bit is 1. A decoder's outputs are one-hot, so each output can select one device.
+_Avoid_: Enable line (an enable is an input that switches a block on or off)
+
+**Sign extension**:
+Copying a signed value to a wider type by filling the new upper bits with the value of the old sign bit, so the number does not change. Copying an unsigned value fills the upper bits with zeros instead.
+_Avoid_: Widening (which is the general term for any wider copy)
+
+**Binary point**:
+The position that separates the integer bits from the fraction bits in a fixed-point number. In fixed point it stays in one place, and the programmer keeps track of it.
+_Avoid_: Decimal point (correct only for decimal numbers)
+
+**Saturating arithmetic**:
+Arithmetic that clamps a result to the largest or smallest value the type holds, instead of wrapping around. It is the usual choice for control loops and filters.
+_Avoid_: Clipping (informal), overflow protection (too vague)
+
+**CMake**:
+A build-description tool. A `CMakeLists.txt` file names the sources, programs and libraries, and CMake writes the commands that the build tool runs.
+_Avoid_: Make (a different build tool)
+
+**Ninja**:
+A fast build tool that runs the compile and link commands CMake writes into `build.ninja`, rebuilding only what has changed.
+_Avoid_: Make (a different build tool)
+
+**Pico SDK**:
+Raspberry Pi's C library and build support for the RP2040 and RP2350 chips. Version 2.3.1 is used in this course. It provides functions such as `gpio_put`, `sleep_ms` and `stdio_init_all`.
+_Avoid_: Pico library (informal)
+
+**Environment variable**:
+A named text value that the operating system passes to each program it starts, such as `PICO_SDK_PATH`.
+_Avoid_: Config (too vague)
+
+**Git submodule**:
+A separate git repository stored inside another at a fixed commit. A plain clone does not download it; `git submodule update --init` does.
+_Avoid_: Subrepo
+
+**PATH**:
+The environment variable listing the folders a terminal searches when you type a program name. An installer changes it only for terminals opened afterwards.
+_Avoid_: Path (ambiguous with file paths)
+
+**Package manager**:
+A tool, such as winget, Homebrew or apt, that installs software from a central list by exact package ID.
+_Avoid_: Installer (an installer is one package; the package manager is the tool that runs them)
+
+**.data section**:
+The section for initialised writable globals. Its run address is in RAM, and its starting bytes are stored in flash at the load address, from which startup code copies them.
+_Avoid_: Initialised data (acceptable in prose, but use .data for the section)
+
+**.bss section**:
+The section for zero-initialised globals. Startup code clears it, and no bytes for it are stored in flash.
+_Avoid_: Zero-initialised data (acceptable in prose, but use .bss for the section)
+
+**Preprocessor**:
+The first build stage. It expands #include lines and macros as text, before the compiler runs, and it knows nothing about types or registers.
+_Avoid_: Compiler (the compiler is the next stage)
+
+**Object file (.o)**:
+The assembler's output: machine code and data for one source file, with symbols whose final addresses the linker has not yet set.
+_Avoid_: Binary (an object file is not a runnable image)
+
+**Map file**:
+The text file the linker writes, which lists each section and symbol with its address and load address. The STM32 template writes it as blink.map.
+_Avoid_: Symbol table (the ELF file holds the symbol table; the map file is a report)
+
+**Intel HEX**:
+A text format that records each byte with its address, so a programmer can write a chip from it. The STM32 template makes one with objcopy.
+_Avoid_: Hex file (ambiguous with a hexadecimal number)
+
+**Startup code**:
+The assembly that runs from reset, before main(). It sets the stack, calls the clock setup, copies .data from flash to RAM, clears .bss, and calls the C library's initialisers and then main.
+_Avoid_: Boot code (which often means the bootrom or boot2)
+
+**Default_Handler**:
+The infinite loop that every unused vector table entry points at. A debugger that stops there usually means an interrupt or fault had no handler of its own.
+_Avoid_: Hard fault (a different handler)
+
+**Second-stage bootloader (boot2)**:
+The RP2040 code that configures the external flash interface. The bootrom copies it into SRAM and runs it, and it is the only job of that stage.
+_Avoid_: Bootloader (too broad: the UF2 bootloader is also in the bootrom)
+
+**Reset value**:
+The value a register holds after reset, given in the register's table in the reference manual. Header files do not carry reset values.
+_Avoid_: Default value (a software default is set by code, not by the chip)
+
+**Reference manual**:
+The vendor document that specifies each peripheral's registers, bit fields and reset values. It has priority over the device header, and the errata sheet lists where the chip differs from it.
+_Avoid_: Datasheet (the datasheet covers electrical limits and pinout, the reference manual covers registers)
+
+**System Control Block (SCB)**:
+The block of Cortex-M core registers, at 0xE000ED00 on the Cortex-M3, that holds the fault status registers, the vector table offset register and system control bits.
+_Avoid_: System control register (the SCB is a block of several registers)
+
+**Configurable fault status register (CFSR)**:
+The SCB register at offset 0x28 that packs the MemManage, BusFault and UsageFault status bits into three byte-wide groups.
+_Avoid_: Fault register (ambiguous: there is also HFSR)
+
+**MemManage fault**:
+The Cortex-M3 fault for memory protection violations, raised by the MPU. The M3 MPU is optional, and the STM32F103 has none.
+_Avoid_: MPU fault (the MPU is the unit, MemManage is the exception)
+
+**BusFault**:
+The Cortex-M3 fault for errors the bus reports back to the core, such as an access to an address with no device behind it.
+_Avoid_: Bus error (acceptable in prose, but BusFault is the exception name)
+
+**UsageFault**:
+The Cortex-M3 fault for instruction-level problems, such as an undefined instruction or an unaligned access, when that fault is enabled.
+_Avoid_: Software fault (too vague)
+
+**Application note**:
+A short vendor document that shows one correct way to use a block, such as a recommended circuit, a power-up sequence or a peripheral setup. It is not a specification, so check its register values against the datasheet.
+_Avoid_: Reference design (the circuit itself, which an application note may describe)
+
+**Datasheet**:
+The vendor's description of a chip: pins, electrical limits, clocks and the registers of each peripheral. Where a reference manual exists, it holds the longer register descriptions.
+_Avoid_: Spec sheet (informal)
+
+**Silicon revision**:
+A version of the physical chip, marked by a letter or number such as B0, B1 or B2, which the vendor uses when it fixes a bug. Two parts with the same name can differ in revision.
+_Avoid_: Chip version (too vague, since a bootrom version is a different number)
+
+**Density (STM32F1)**:
+The flash size class of an STM32F1 part: medium density (8 and B suffixes) or high density (C, D and E). Errata sheets and some features differ between densities.
+_Avoid_: Size (too vague, since it also means package size)
+
+**Switch-based state machine**:
+A state machine written as a switch on the state, with an if or nested switch on the event inside each case. The rules read like the diagram, but a missing event for a state is easy to overlook.
+_Avoid_: Nested-if machine (too vague)
+
+**Table-driven state machine**:
+A state machine whose rules are a static const two-dimensional array indexed by state and event, with one dispatch function that applies them. A missing cell is visible from the table's shape.
+_Avoid_: Lookup-table machine (the table is a transition table; see Transition table)
+
+**Dispatch (state machine)**:
+The function that takes the current state and one event, looks up the next state, and applies the change: it prints the transition, updates the outputs and restarts the timer. It runs once per event.
+_Avoid_: Dispatcher (in the RTOS sense, which is the scheduler; see Scheduler)
+
+**Run address**:
+The address where a section's variables are read and written while the program runs. For .data on Cortex-M it is in RAM, and the startup code copies the initial values there from the load address in flash.
+_Avoid_: Virtual address (informal), destination address
+
+**Write-1-to-clear (W1C)**:
+A status bit that reads 1 while its event is pending, and that is cleared by writing a 1 to it. Writing a 0 leaves the bit unchanged, so a read-modify-write is not needed to clear it.
+_Avoid_: Write-to-clear (does not say which value clears the bit)
+
+**Free-running counter**:
+A counter that increases on every tick and wraps at its maximum value, and that is used as an index only after masking. Differences of two such counters are correct across the wrap when they are computed in the counter's own width.
+_Avoid_: Wrapping index (a masked counter is an index, the counter itself is not)
+
+**Overrun error (ORE)**:
+A USART status flag set when a new byte arrives before the previous one has been read, so the older byte is lost. Clearing it needs a read of the status register followed by a read of the data register.
+_Avoid_: Buffer overflow (that is a software ring buffer condition, which is a different event)
+
+**Active low**:
+A signal or LED that is asserted, or lit, when its pin is at logic 0. An LED on the Blue Pill's PC13 is active low, because it lights when the pin is driven low.
+_Avoid_: Inverted (ambiguous: says the logic is flipped, not which level is the active one)
+
+**Active high**:
+A signal or LED that is asserted, or lit, when its pin is at logic 1. The external LED on PB0 in lesson 67 is active high.
+_Avoid_: Non-inverted (says what the level is not)
+
+**HAL MSP function**:
+A HAL hook, named with the MspInit suffix, that the HAL calls from a peripheral's init to do chip-specific setup: the clock enable and the alternate-function pin configuration. It is weak, so a project can define it in its own file. The HAL's name for it is MSP, for MCU support package.
+_Avoid_: MSP alone (the glossary's MSP is the main stack pointer)
+
+**Symbol (linker)**:
+A global name, such as a function or a global variable, as the linker sees it. The linker binds each use of a symbol to one definition, and reports an error when two definitions share a name.
+_Avoid_: Identifier (the C-language term, which is broader)
+
+**Fragmentation (heap)**:
+The state in which free memory is split into blocks, none of them large enough for a request, even though the total free space is large. Caused by allocating and freeing blocks of different sizes.
+_Avoid_: Heap damage (a different fault: a write outside a block)
+
+**Dispatcher**:
+The loop that takes events from queues and calls the handler of the object that owns each queue, one event at a time.
+_Avoid_: Scheduler (which decides when threads run; see RTOS)
+
+**Subscription mask**:
+A bit mask in which bit n is set when an active object wants signal n. The publisher compares the mask with each event's bit.
+_Avoid_: Filter (informal)
+
+**Fixture (test)**:
+The state a unit test needs before it runs, set up in setUp() and cleared in tearDown(), so that each test starts from the same state.
+_Avoid_: Setup state (informal)
+
+**Assert (test)**:
+A check in a unit test that stops the test with a message when a value is wrong. Unity's assert macros are typed, such as TEST_ASSERT_EQUAL_UINT8.
+_Avoid_: Assertion (firmware) (that is a runtime check in the product, a different use)
+
+**Red, green, refactor**:
+The three steps of test-driven development: write a test and see it fail, write the simplest code that passes, then clean the code with the tests still passing.
+_Avoid_: Red-green (omits the refactor step)
+
+**Commit (git)**:
+A named snapshot of the tracked files, with its message and a link to its parent commits. Each commit is identified by a hash of its contents.
+_Avoid_: Save (informal)
+
+**Branch (git)**:
+A name that points at one commit. A commit on the branch moves the name forward.
+_Avoid_: Copy of the code (a branch shares its history until it diverges)
+
+**Fast-forward merge**:
+A merge in which the target branch is simply behind the source, so Git moves the target's name and creates no merge commit. `--no-ff` forces a merge commit.
+_Avoid_: Rebase (a different operation that rewrites commits)
+
+**Revert (git)**:
+A new commit that undoes the changes of an earlier commit, without rewriting history.
+_Avoid_: Reset (which moves the branch name, and can discard work)
+
+**Code review**:
+A second person reads a proposed change before it reaches the main line, and comments on the lines that need work.
+_Avoid_: Pull request (the hosted-tool name for the same step)
+
+**Pull request**:
+A hosted-tool request to merge a branch, which carries the diff, the discussion and the review. GitHub's term; GitLab calls it a merge request.
+_Avoid_: Merge request (acceptable in GitLab contexts)
+
+**Unit under test**:
+The module that one unit test exercises. Everything it depends on is either replaced by a test double or left out of the run.
+_Avoid_: System under test (a larger scope, used when several modules run together)
+
+**Dependency (unit test)**:
+Something the unit under test calls that is not the subject of the test, such as a bus function or a timer. A test replaces it with a test double.
+_Avoid_: Collaborator (a general object-oriented term)
+
+**Runner (CI)**:
+The machine that runs a CI job. A hosted runner starts clean for each job, so nothing from a developer's laptop is present.
+_Avoid_: Agent (a different CI vendor's word), server (too vague)
+
+**Workflow (CI)**:
+A YAML file that tells the CI server when to run, and which jobs and steps to run. GitHub reads workflows only from the repository's .github/workflows folder.
+_Avoid_: Pipeline (the whole run is the pipeline; the file is the workflow)
+
+**Job (CI)**:
+A list of steps that run together on one runner. Jobs run in parallel unless one lists another in needs.
+_Avoid_: Step (a step is one action or command inside a job)
+
+**Exit code**:
+The number a program returns when it stops. Zero means success, and any other value means failure. A CI job passes or fails from exit codes, not from what the program printed.
+_Avoid_: Return code (the same idea in some tools; the course says exit code)
+
+**Log level**:
+A rank of how important a log line is: error, warning, info, debug or trace. A build keeps the levels at or above its threshold and drops the rest.
+_Avoid_: Severity (the word cppcheck uses for its finding categories)
+
+**Deferred logging**:
+Recording an entry in a buffer in the time-critical code, and printing the buffer later from the main loop. The slow output then runs where its delay does not matter.
+_Avoid_: Asynchronous logging (a general term that often means threads)
+
+**Precise fault**:
+A fault whose stacked PC is the address of the instruction that caused it. The fault is reported before any later instruction runs.
+_Avoid_: Imprecise fault (the stacked PC is then a later instruction)
+
+**Orphan section**:
+A section that the linker script does not name. The linker places it by its own rules, after the sections it knows. A production script names every section it needs.
+_Avoid_: Unplaced section (the linker does place it)
+
+**Stack overflow hook**:
+The function `vApplicationStackOverflowHook(TaskHandle_t, char *)` that FreeRTOS calls when `configCHECK_FOR_STACK_OVERFLOW` finds a stack past its limit or with a corrupted bottom pattern. The course's version loops forever, so a debugger stops at the bug.
+_Avoid_: Stack guard (a guard is an MPU region that faults on the first write, not a check at task switches)
+
+**Tick hook**:
+The function `vApplicationTickHook()` that FreeRTOS calls once per tick when `configUSE_TICK_HOOK` is 1. The course uses it to call `HAL_IncTick()`, so the HAL's timeouts keep counting while FreeRTOS owns SysTick.
+_Avoid_: Tick interrupt (the tick is the periodic interrupt; the hook is code the kernel calls from it)
+
+**Devicetree alias**:
+A second name for a devicetree node, defined under `aliases` and read in C with `DT_ALIAS(name)`. The C code uses an alias so that moving the node changes only the devicetree.
+_Avoid_: Label (a label is the name used in the devicetree source for `&label` references, not for C)
+
+**Devicetree label**:
+The short name written before a node, such as `user_button: button_0`, that other devicetree text refers to with an ampersand (`&user_button`).
+_Avoid_: Alias (an alias is a separate name defined under `aliases`)
+
+**Devicetree phandle**:
+A reference from one node to another, written with an ampersand and a label, such as `&gpio0`. A `gpios` property is a list of phandles, each followed by its cells.
+_Avoid_: Pointer (in devicetree text, a phandle is a reference the build resolves, not a memory address)
+
+**Board defconfig**:
+The file in a board's folder that sets the Kconfig symbols that board needs. An application's `prj.conf` overrides it for the symbols both set.
+_Avoid_: Default config (a Kconfig default is the value in a symbol's declaration, not a file)
+
+**prj.conf**:
+The application's Kconfig fragment, with `CONFIG_` assignments that override the board defconfig for this project only.
+_Avoid_: Config file (too general; say prj.conf)
+
+**gnuarmemb**:
+The Zephyr toolchain variant that uses an Arm GNU Embedded toolchain already on the machine. Selected with `ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb` and `GNUARMEMB_TOOLCHAIN_PATH`.
+_Avoid_: Zephyr SDK (the SDK bundles its own toolchains; gnuarmemb does not)
+
+**Project filter**:
+The `manifest.project-filter` setting in `.west/config`, a list of `-` and `+` patterns read left to right that decides which projects of the west manifest are fetched.
+_Avoid_: Manifest (the manifest lists all projects; the filter selects some)
+
+**Logging**:
+Emitting text lines on purpose, each with a level and a module name, so a running device reports what it did. Zephyr filters by level per module and sends the output to a backend such as UART or the shell.
+_Avoid_: printf debugging (for the disciplined form with levels), trace (which records events, not text)
+
+**Shell (Zephyr)**:
+A command line inside the firmware that reads text from a serial port, splits it into a command and arguments, and calls a handler written for that command. It runs in its own thread.
+_Avoid_: Console (which is the output device), REPL (a general term for an interpreter prompt)
+
+**Magic value**:
+A constant that a valid image stores at a known place, so a bootloader can tell an image from erased or old flash. Erased flash reads as all ones. A magic value says the data looks like an image; it does not prove the image is intact.
+_Avoid_: Signature (a signature is a keyed proof of origin, which a magic value is not)
+
+**MAC (message authentication code)**:
+A short tag computed from a message and a secret key, so that only holders of the key can produce a valid tag. Unlike a CRC, a forger without the key cannot recompute it.
+_Avoid_: Checksum, hash (a plain hash has no key, so anyone can recompute it)
+
+**Authenticity**:
+The property that data came from a holder of a secret key. A MAC or a signature provides it. Integrity (the bytes did not change) and secrecy (nobody can read them) are separate properties.
+_Avoid_: Security (too broad to test for)
+
 ## Embedded C
 
 **Integer promotion**:
@@ -1064,6 +1748,70 @@ _Avoid_: Crash cause (a reset reason is the kind of reset; the crash cause is th
 A ring of the last few log lines kept in no-init RAM, so the reason for a reset can be read after the reset.
 _Avoid_: Log file (a crash log lives in RAM, not on disk)
 
+**Fixed-width integer type**:
+An integer type from `<stdint.h>` with an exact width, such as uint8_t (8 bits) or uint32_t (32 bits). Its width is part of the contract with a register or a wire format.
+_Avoid_: int (which is at least 16 bits and has no fixed width)
+
+**Modulo arithmetic**:
+Unsigned arithmetic in which a result above the type's largest value wraps: the value is taken modulo 2 to the power N, where N is the width. For uint8_t, 300 becomes 44.
+_Avoid_: Overflow (for unsigned types, which wrap by definition; reserve overflow for the undefined signed case)
+
+**Static storage duration**:
+The lifetime of an object that exists for the whole run of the program and is initialised once before main. A static local keeps its value between calls.
+_Avoid_: Global (which is about scope, not lifetime)
+
+**Internal linkage**:
+The property of a file-scope object or function declared static, so that other translation units cannot refer to its name.
+_Avoid_: Private (informal; C has no private)
+
+**Macro**:
+A name that the preprocessor replaces with text. A macro such as GPIO_BSRR_BR13 is expanded before the compiler sees the code.
+_Avoid_: Function (a macro is substitution, with no call and no type checking)
+
+**Literal pool**:
+A small table of constants, such as 32-bit addresses, placed in flash near the code that uses it. A PC-relative ldr reads an entry, because Thumb-2 cannot hold a 32-bit constant in one instruction.
+_Avoid_: Constant table (which is a program's own data table, not compiler-generated)
+
+**Read-only data (.rodata)**:
+The linker section that holds const objects and string literals. On the course's STM32 linker script it is placed in FLASH.
+_Avoid_: Constant data (which also describes .data after its initial values are copied)
+
+**Alignment**:
+The rule that a value of a given size starts at an address that is a multiple of that size, so a 32-bit value sits at a multiple of 4. An aligned access can be done in one bus transfer, and an unaligned one may be slower or refused by the core.
+_Avoid_: Byte boundary (informal, and it misses the size rule)
+
+**Padding**:
+Unused bytes that the compiler inserts between struct members so that each member meets its alignment. A packed struct removes it.
+_Avoid_: Gap (informal)
+
+**Union**:
+A type whose members all start at the same address, so its size is that of its largest member. Reading a member other than the one last written is subtle in C.
+_Avoid_: Variant (a different concept in other languages)
+
+**Byte**:
+Eight bits, the unit that the memory system reads and writes. Its bits are numbered 0 (least significant) to 7.
+_Avoid_: Octet (acceptable in protocol specifications)
+
+**Null pointer**:
+A pointer value that points to nothing, written `NULL`. A static object of pointer type starts as null, and calling through a null function pointer is undefined behaviour.
+_Avoid_: Zero pointer (informal)
+
+**Indirect call**:
+A call whose target address is read from a variable at run time, such as a function pointer, rather than named in the code. On Cortex-M the core loads the address into a register and branches through it.
+_Avoid_: Function pointer call (the pointer is the mechanism; the call is the act)
+
+**Translation unit**:
+One source file after the preprocessor has pasted in its includes and expanded its macros. The compiler compiles each translation unit separately.
+_Avoid_: Compilation unit (acceptable in conversation)
+
+**Token pasting**:
+The `##` operator in a macro, which joins two tokens into one identifier, as in `EV_##name`.
+_Avoid_: Concatenation (informal)
+
+**Stringizing**:
+The `#` operator in a function-like macro, which turns its argument into a string literal, as in `#name`.
+_Avoid_: Stringify (informal verb)
+
 ## Peripherals
 
 **Critical section**:
@@ -1130,6 +1878,94 @@ _Avoid_: Slave select (acceptable in old texts, but the course uses chip select)
 A copy of a display's pixel memory in the MCU's RAM, drawn into and sent to the display in one update.
 _Avoid_: Screen buffer (informal)
 
+**Striped SRAM**:
+The first 256 kB of RP2040 SRAM, where consecutive words go to four different 64 kB banks, so parallel accesses rarely collide.
+_Avoid_: Interleaved (a near synonym, but the datasheet says striped)
+
+**Single-cycle IO (SIO)**:
+The RP2040 block that holds the GPIO output, output-enable and input registers. Each core reaches it through its IOPORT, so every access takes one cycle, unlike the two-cycle system bus. Its set, clear and XOR aliases change only the bits named in a write.
+_Avoid_: GPIO registers (too vague)
+
+**Pad**:
+The electrical interface between a chip's internal logic and a package pin. It sets drive strength, pull-up or pull-down, input enable and schmitt trigger.
+_Avoid_: Pin (for the electrical circuit only)
+
+**Function select**:
+The field in a GPIO's control register that routes the pin to the SIO or to a peripheral such as a UART or PWM. Function 5 is SIO on the RP2040.
+_Avoid_: Mux (informal)
+
+**UART**:
+A universal asynchronous receiver/transmitter: a peripheral that sends and receives bytes as serial frames, with a start bit, data bits and a stop bit, over a pair of wires at an agreed baud rate.
+_Avoid_: Serial port (acceptable for the PC side)
+
+**FIFO**:
+A first-in, first-out hardware buffer between the CPU and a peripheral, such as the UART's 32-entry transmit and receive queues.
+_Avoid_: Queue (in hardware contexts)
+
+**GPIO bank**:
+A group of GPIO pins that share one interrupt line to the NVIC. On the RP2040, bank 0 holds GPIO 0 to 29 and raises IRQ 13 (IO_IRQ_BANK0), so one handler serves every pin in the bank.
+_Avoid_: Port (the STM32 and other vendors use port for the same grouping, with different widths)
+
+**GPIO callback (SDK)**:
+A function registered with the Pico SDK through gpio_set_irq_enabled_with_callback(). The SDK's shared bank handler finds the pin with the event, acknowledges it, and calls the callback with the pin number and the event mask.
+_Avoid_: Interrupt handler (the callback runs inside the ISR context that the SDK owns)
+
+**Free-running sampling (ADC)**:
+An ADC mode in which the converter starts a new conversion on its own at a fixed rate, set by a pacing timer, and the results go to a FIFO or the result register. The CPU reads the latest value or drains the FIFO, instead of starting each conversion.
+_Avoid_: Continuous mode (vendor-specific)
+
+**Effective number of bits (ENOB)**:
+The number of bits of a real converter's output that are useful once noise and distortion are counted. It is measured with a test tone and is lower than the nominal resolution. The RP2040 ADC has 12 bits and a typical ENOB of 8.7.
+_Avoid_: Resolution (which is the nominal number of codes)
+
+**Glyph**:
+One character's bitmap in a font, such as the five column bytes of a 5 by 7 capital L. Drawing a character means copying its glyph into the display memory.
+_Avoid_: Character (which is the code point, not its picture), symbol
+
+**Display RAM (GDDRAM)**:
+The memory inside a display controller that holds the picture, one bit per pixel. The controller reads it to drive the panel, so the microcontroller writes only when the picture changes.
+_Avoid_: Framebuffer (which is the microcontroller's copy, not the controller's memory)
+
+**Control byte**:
+The first byte of an SSD1306 I2C write. Its top bit, Co, says whether more control bytes follow, and bit 6, D/C#, says whether the bytes after it are commands (0) or display data (1).
+_Avoid_: Command byte (which is the byte that follows the control byte, not the control byte itself)
+
+**Page addressing**:
+The SSD1306 memory mode in which the column pointer wraps to the start of the same page at the end of a row, and the page pointer does not change. The mode is selected by 0x20 0x02, and the reset default is page addressing.
+_Avoid_: Row mode (the datasheet does not use it)
+
+**Full duplex**:
+A serial link in which data moves in both directions at once. SPI is full duplex: each clock pulse shifts one bit out of the master and one bit into it.
+_Avoid_: Two-way (too vague, since I2C is also two-way but takes turns)
+
+**MOSI and MISO**:
+The two SPI data lines. MOSI (master out, slave in) carries data from the master to the device, and MISO (master in, slave out) carries it back. A device that only receives can leave MISO unconnected.
+_Avoid_: SDI and SDO (other names for the same lines, used by some device datasheets)
+
+**Transmit FIFO**:
+A small hardware queue in a serial peripheral that holds bytes waiting to be shifted out. The RP2040's SPI has an 8-entry transmit FIFO, so the CPU can queue several bytes before the peripheral sends them.
+_Avoid_: Buffer (which is software, in RAM)
+
+**Busy flag**:
+A status bit that a peripheral sets while it is still shifting a byte. Waiting for it to clear before a chip select or latch changes is the rule that keeps the last bit from being cut short.
+_Avoid_: Ready flag (which often means the reverse, that the peripheral can accept more data)
+
+**Bit-bang**:
+Driving a serial protocol by setting and clearing GPIO pins in software, one bit at a time. It works on any pins, but the clock is only as steady as the code, and every edge costs CPU time.
+_Avoid_: Software SPI (acceptable, but bit-bang is also used for I2C and UART)
+
+**DMA request**:
+The signal a peripheral raises to ask the DMA controller for one transfer, such as a UART that has received a byte. Each request is wired to one DMA channel, and the mapping is in the DMA chapter of the reference manual.
+_Avoid_: DMA trigger (informal)
+
+**Polling**:
+Checking a device's status or a pin's level in a loop, instead of waiting for an interrupt. Simple and deterministic, but the check costs CPU time on every pass, and a short event can be missed between passes.
+_Avoid_: Busy-wait (a polling loop that waits for a condition with nothing else to do)
+
+**Overrun error (UART)**:
+The receiver's error when a new byte arrives before the previous one was read. The overrun flag must be cleared, here by reading the status register and then the data register, before the receiver accepts more bytes.
+_Avoid_: Buffer overflow (the hardware has no software buffer in this sense)
+
 ## STM32 and CMSIS
 
 **CMSIS (Cortex Microcontroller Software Interface Standard)**:
@@ -1179,6 +2015,22 @@ _Avoid_: STM32CubeIDE (the IDE that bundles it; a different product)
 **Low-layer (LL) driver**:
 The STM32 layer of thin inline functions named `LL_*`, between the HAL and raw registers. It keeps the register sequence visible, with less code than the HAL.
 _Avoid_: Register access (LL still calls functions; registers are the layer below it)
+
+**Update event**:
+The moment a timer's counter wraps at its limit, or is forced by software, when it reloads the preloaded PSC and ARR values and raises the update interrupt flag. A new prescaler or reload takes effect at the next update event.
+_Avoid_: Overflow (the counter does not overflow, it wraps by design), period tick (informal)
+
+**Output compare**:
+A timer mode in which a channel changes its output pin when the counter reaches the channel's compare register. PWM is one output compare mode.
+_Avoid_: Compare match (informal, and the term for the event rather than the mode)
+
+**Capture/compare register (CCR)**:
+The per-channel register that holds the compare value in output mode, and the copied counter value in input capture mode. The name is CCRx for channel x.
+_Avoid_: Compare register (drops the capture half of the name)
+
+**Reload value (LOAD)**:
+The SysTick register that holds the count the counter reloads from. The period is LOAD + 1 cycles, so LOAD is one less than the number of ticks per period.
+_Avoid_: Period (the register holds a count, not a time)
 
 ## RTOS
 
@@ -1249,6 +2101,46 @@ _Avoid_: Priority by importance (importance is not the rule; the period is)
 **Utilisation bound**:
 For n periodic tasks under rate-monotonic scheduling, the sum of work over period is schedulable if it is at most n(2^(1/n) − 1). It is sufficient, not necessary.
 _Avoid_: CPU load (load is a measurement; the bound is a test on the design)
+
+**Deadlock**:
+A cycle of waiting in which each task holds a resource that another task in the cycle needs, so none of them can proceed. A timeout does not break it; a lock order prevents it.
+_Avoid_: Hang (a hang can have other causes, such as a stuck peripheral)
+
+**Priority inheritance**:
+The rule that while a high-priority task waits on a mutex, the owner runs at the waiter's priority, and gets its own priority back when it gives the mutex. FreeRTOS does this for mutexes, not for binary semaphores.
+_Avoid_: Priority boost (informal)
+
+**Lock ordering**:
+A rule that every task takes a set of locks in one fixed global order, so that no cycle of waiting can form.
+_Avoid_: Lock hierarchy (acceptable in some texts)
+
+**Recursive mutex**:
+A mutex that its owner may take again without blocking, and that is released after the same number of gives. A plain FreeRTOS mutex is not recursive.
+_Avoid_: Reentrant lock (acceptable synonym)
+
+**Ready list**:
+The kernel's list of ready tasks, one list for each priority level. The scheduler takes the next task from the highest-priority list that is not empty.
+_Avoid_: Run queue (informal)
+
+**Time slicing**:
+With `configUSE_TIME_SLICING` set to 1, tasks of equal priority take turns at each tick. Tasks of different priorities never share the core this way.
+_Avoid_: Round robin (acceptable in conversation)
+
+**Cooperative thread**:
+A Zephyr thread with a negative priority. Once it runs, a preemptible thread cannot take the CPU from it, and it keeps the CPU until it blocks or yields.
+_Avoid_: Non-preemptive task (FreeRTOS has no equivalent priority class)
+
+**Preemptible thread**:
+A Zephyr thread with a non-negative priority. A ready thread of higher or equal urgency can interrupt it at any time.
+_Avoid_: Preemptive task (the Zephyr term is about the priority class, not the task)
+
+**Interrupt context**:
+The state of the CPU while an interrupt handler or a timer expiry function runs. Code there may not block, wait on a mutex or sleep, and must finish quickly.
+_Avoid_: ISR context (which names only the hardware handler, not the expiry function)
+
+**System workqueue**:
+Zephyr's built-in thread that runs work items submitted from interrupts or threads, in order. A work item is a small structure with a handler function.
+_Avoid_: Deferred task (a general pattern, not the Zephyr object)
 
 ## Communication
 
@@ -1352,6 +2244,106 @@ _Avoid_: Threat list (STRIDE is a set of categories, not a list of threats)
 A chip setting that stops a debugger or a bootloader from reading the flash contents back. On the STM32F1 it is the read-protection level in the option bytes, reported by FLASH_OBR_RDPRT.
 _Avoid_: Encryption (readout protection does not encrypt the flash)
 
+**Master (I2C)**:
+The device that starts every I2C transaction and generates the clock. The NXP specification (UM10204 rev. 7) calls it the controller, and the RP2040 datasheet calls it the master.
+_Avoid_: Host (that is a computer, not a bus role)
+
+**Clock stretching**:
+A target holds SCL low to pause a transfer until it is ready. The master must wait until the line is released. Most simple sensors cannot stretch the clock because they have no SCL driver.
+_Avoid_: Wait state (a general term for a processor pausing)
+
+**Transceiver**:
+The analogue chip between a controller's logic-level TX and RX pins and a differential bus. It drives the bus levels and limits fault current.
+_Avoid_: Driver (a driver is software or a bus-driver stage inside the transceiver), PHY (acceptable in networking texts)
+
+**RS-485**:
+A TIA/EIA-485 differential, half-duplex serial standard for multi-node buses. It defines the electrical levels and not the message format, which is the job of a protocol such as Modbus RTU.
+_Avoid_: RS485 (no hyphen), RS-232 (a different, single-ended standard)
+
+**Driver enable (DE)**:
+The transceiver pin that switches its bus driver on (high) or puts its outputs in high impedance (low). A node must raise it only for its own reply.
+_Avoid_: TX enable (informal)
+
+**Receiver enable (RE)**:
+The transceiver pin that enables the receiver when low. When high, the receiver output is high impedance.
+_Avoid_: RX enable (informal)
+
+**Error frame**:
+A CAN frame that a node sends to break a corrupt frame on purpose. An active error frame is six dominant bits in a row, which violates the stuffing rule, so every node sees the error.
+_Avoid_: Error packet (not the CAN term)
+
+**Bit error**:
+A CAN error in which a transmitter reads back a level different from the one it sent. Arbitration and the ACK slot are the exceptions, where a recessive bit overwritten by a dominant one is normal.
+_Avoid_: Bit flip (a physical event, not the protocol error)
+
+**Stuff error**:
+A CAN error in which six identical bits follow each other where a stuff bit should be.
+_Avoid_: Stuffing error (acceptable in conversation)
+
+**Form error**:
+A CAN error in which a fixed-form field, such as the CRC delimiter, the ACK delimiter or the end of frame, carries an illegal dominant bit.
+_Avoid_: Frame error (too vague)
+
+**ACK error**:
+A CAN error in which the transmitter finds the ACK slot still recessive, so no node accepted the frame.
+_Avoid_: No-ack (informal)
+
+**Transmit error counter (TEC)**:
+The CAN counter that rises by 8 each time a node sends an error flag, and falls by 1 after each good frame it sends. A value of 128 or more makes the node error-passive, and 256 or more makes it bus-off.
+_Avoid_: TX error count (acceptable in Bosch text)
+
+**Receive error counter (REC)**:
+The CAN counter that rises by 1 on each receive error, and falls by 1 after each good frame received. A value of 128 or more makes the node error-passive.
+_Avoid_: RX error count (acceptable in Bosch text)
+
+**Control transfer**:
+The USB transfer type used for setup and requests, with a setup stage, an optional data stage and a status stage. Endpoint 0 is always a control endpoint.
+_Avoid_: Control packet
+
+**Interrupt transfer**:
+A USB transfer type for small, time-bounded messages. The host polls the endpoint at the interval in its endpoint descriptor, and a corrupt packet is retried in the next period.
+_Avoid_: Hardware interrupt (a CPU exception, a different thing)
+
+**Bulk transfer**:
+A USB transfer type for large blocks of data, with error correction and retransmission, using the bandwidth left after the other transfers. It has no latency guarantee.
+_Avoid_: Block transfer (informal)
+
+**Isochronous transfer**:
+A USB transfer type with guaranteed bandwidth and bounded latency, for streams. Errors are detected by CRC but bad data is not retried.
+_Avoid_: Streaming (acceptable in conversation)
+
+**SET_ADDRESS**:
+The standard USB control request, code 0x05, that gives a device its unique address after it has answered at address 0.
+_Avoid_: Assign address (the request name)
+
+**SET_CONFIGURATION**:
+The standard USB control request, code 0x09, that selects a device configuration and activates its endpoints.
+_Avoid_: Select config (informal)
+
+**GET_DESCRIPTOR**:
+The standard USB control request, code 0x06, that returns a descriptor. A configuration request returns the configuration, interface and endpoint descriptors together.
+_Avoid_: Read descriptor (informal)
+
+**CRC residue**:
+The value a CRC takes over a frame that has its own CRC appended big-endian. For CRC-16/CCITT-FALSE, which has no final XOR and no reflection, it is zero for every intact frame.
+_Avoid_: Checksum (a CRC residue is a property of a CRC, not an addition)
+
+**Master (Modbus)**:
+The device that starts every Modbus conversation. It sends a request and waits for a reply, and a slave never transmits unless a master asks.
+_Avoid_: Client (the usual name in networking, but not in Modbus documents), host (use it only for the PC side of a course project)
+
+**Slave (Modbus)**:
+A device that answers requests from a master, identified by its address (1 to 247). It replies only to its own address, and it stays silent after a frame that it cannot process.
+_Avoid_: Server (in Modbus documents), follower
+
+**Exception code (Modbus)**:
+The one-byte reason in an exception reply, sent with the function code's top bit set (0x80). Code 02 is an illegal data address and code 03 is an illegal data value.
+_Avoid_: Error code (too general; a CRC failure gets no reply at all)
+
+**One's complement**:
+The bitwise inverse of a number, in which every 0 becomes 1 and every 1 becomes 0. Adding 1 to it gives the two's complement of the original value.
+_Avoid_: Negation (negation is the arithmetic operation, which two's complement implements with the one's complement plus one)
+
 ## Embedded Rust
 
 **no_std**:
@@ -1369,6 +2361,40 @@ _Avoid_: Global peripheral (a singleton is taken once, not shared)
 **Type-state**:
 Encoding a value's state in its type, so that an operation invalid in that state does not compile. A GPIO pin configured as an input has a type that has no set_high method.
 _Avoid_: State machine (a runtime structure, not a compile-time check)
+
+## Low power
+
+**Stop (STM32F1)**:
+A low-power mode in which the main clocks stop, and the SRAM and registers keep their contents. The core resumes after the instruction that entered Stop. An EXTI line can wake it; a timer or ADC interrupt cannot, because their clocks are off.
+_Avoid_: Deep sleep (informal; Standby is the deepest mode)
+
+**Standby (STM32F1)**:
+The deepest STM32F1 low-power mode. The SRAM contents are lost, and the chip restarts from reset on wake-up, so state must be kept in backup registers or flash.
+_Avoid_: Power off (the chip still runs its wake-up logic)
+
+## Signal processing
+
+**FIR filter (finite impulse response)**:
+A filter whose output depends only on a finite window of past inputs, so an input has no effect once it leaves the window. The moving average is the simplest case.
+_Avoid_: Windowed filter (a design method, not the filter class)
+
+## Embedded Linux
+
+**Kernel**:
+The part of an operating system that runs with full hardware access. It schedules processes, handles interrupts, manages memory and drives devices through drivers.
+_Avoid_: Core (the processor core is a different thing)
+
+**Root filesystem**:
+The file system that the kernel mounts at boot, holding the programs, libraries and configuration that user space runs from.
+_Avoid_: Rootfs (informal, acceptable in build tool output only)
+
+**MMU (memory management unit)**:
+Hardware on an application processor that translates each virtual address a program uses into a physical address, using tables that the kernel maintains.
+_Avoid_: MPU (the Cortex-M unit that checks accesses against regions without translating them)
+
+**Virtual memory**:
+The mechanism in which each process sees its own address space, translated to physical memory by the MMU, so processes cannot read or overwrite one another's memory by accident.
+_Avoid_: Virtual address (a single address; virtual memory is the whole system)
 
 ## Course method
 
@@ -1587,3 +2613,7 @@ _Avoid_: Serial over IP (the general idea, not the protocol)
 **STAR method**:
 A four-part answer to a behavioural question: Situation, Task, Action and Result. The Action should say what you did, and the Result should be measured.
 _Avoid_: Storytelling (too loose; STAR is a checklist for the answer)
+
+**Metacognition**:
+Thinking about your own thinking: noticing whether you actually know something before you assume you do.
+_Avoid_: Self-awareness (broader)

@@ -17,23 +17,59 @@
     By the end of this lesson you can read a task's stack high-water mark, enable the stack-overflow hook, time a code section with a hardware timer, assign rate-monotonic priorities, and check a task set against the Liu and Layland utilisation bound n(2^(1/n) − 1).
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    Lesson 78 introduced the stack and stack overflow. An RTOS task has a fixed stack, chosen when the task is created, and overflow of that stack writes over another task's data without any error from the CPU. So the question is how much of the stack a task really uses. FreeRTOS answers it with a <strong>high-water mark</strong>: at creation the kernel fills the stack with a known pattern, and <code>uxTaskGetStackHighWaterMark()</code> returns the fewest words that were ever still unused. The function's definition is in <code>tasks.c</code> near line 6362, enabled by <code>INCLUDE_uxTaskGetStackHighWaterMark</code>.
+    Lesson 87 set up FreeRTOS and showed tasks being created and scheduled. Lesson 89 added queues and semaphores, and lesson 90 added mutexes and the problems they bring. In all of those lessons the code worked on the first try in the simulator, and that is the trap: a demo that runs once tells you nothing about whether the design survives a bad minute. A product has to meet its timing every time, with the worst input and the worst interrupt timing, and it has to do that in the RAM the chip actually has.
   </p>
   <p>
-    The high-water mark is a lower bound on the free space, and it covers only the paths that ran. A rarely taken branch that uses a deep call chain can still overflow after the test passed. Size the stack for the worst path you can reason about, then check it with the mark.
+    Two questions decide that. The first is whether each task has enough stack, the memory where its local variables and return addresses live (lesson 78 covered the stack and what overflow does). The second is whether each task finishes its work before its deadline, which is the time by which the work must be done or the system is wrong. A motor controller that runs its current loop 2 ms late can overheat a winding. A fitness tracker whose display update is late by 200 ms is only annoying. Real jobs in motor control, medical devices and automotive ECUs are judged on both questions, and a senior engineer will ask for the numbers. This lesson gives you the tools to produce them.
   </p>
 
-  <h2>Catching an overflow</h2>
+  <h2>The stack of each task</h2>
   <p>
-    Set <code>configCHECK_FOR_STACK_OVERFLOW</code> to 2 (the template does) and FreeRTOS checks, at each switch, whether the stack pointer has gone below the stack's start. It also checks a pattern near the bottom. If the check fails, the kernel calls <code>vApplicationStackOverflowHook(TaskHandle_t, char *)</code>. The template defines that hook, and it stops in an infinite loop, so a debugger can show which task failed. A hook that does nothing hides the bug.
+    In FreeRTOS, every task has its own stack, and you choose its size when you create the task. The size is the last argument we would expect to be a guess, and the first thing to replace with a measurement. The call looks like this in the project (<code>projects/0091-stack-and-timing/solution/main.c</code>):
   </p>
-  <div class="warning">The check runs at task switches. A task that overflows and then blocks in a way that does not switch can still corrupt memory before the hook runs. The high-water mark and the hook catch most overflows, not every one.</div>
+<pre><code>xTaskCreate(fast_task, "fast", FAST_STACK_WORDS, NULL, 3U, &amp;fast_handle);</code></pre>
+  <p>
+    The third argument is the stack depth, and the FreeRTOS header says it is "the number of variables the stack can hold - not the number of bytes" (<code>third_party/FreeRTOS-Kernel/include/task.h</code>, the <code>xTaskCreate</code> documentation). On the Cortex-M3 a stack variable is a 32-bit word, so a depth of 128 is 512 bytes. Forgetting that factor of four is one of the most common sizing errors, and it is covered in the mistakes section below.
+  </p>
+  <p>
+    A stack grows downward in memory on the Cortex-M3. Each function call pushes a return address and its local variables, and the stack pointer moves toward the bottom of the task's block. The bottom is the dangerous end. If a deep call chain or a large local array pushes past it, the write lands in whatever memory sits below, which may be another task's stack or a global variable. The CPU does not stop that write. Nothing in the hardware knows where one task's stack ends and the next begins.
+  </p>
+
+  <h2>Painting the stack: the high-water mark</h2>
+  <p>
+    The kernel gives you a way to see how much of the stack was really used. When it creates a task, it fills the whole stack with a known byte pattern. The fill byte is defined in <code>tasks.c</code> as <code>tskSTACK_FILL_BYTE</code>, which is <code>0xa5</code> (line 120). The stacks are filled only if the kernel is configured to need the information (the condition is at line 130 of <code>tasks.c</code>, which is true when the high-water mark function is enabled). When the task runs, its stack pointer moves down and overwrites some of the pattern. Words that still hold the pattern were never touched.
+  </p>
+  <p>
+    Later, <code>uxTaskGetStackHighWaterMark()</code> scans from the bottom of the stack upward, counting words that still hold the fill pattern. The function is defined at <code>tasks.c</code> line 6429, and it is enabled by <code>INCLUDE_uxTaskGetStackHighWaterMark</code>, which the project sets to 1. The return value is the fewest free words ever seen, in words, and the header says so: "the minimum amount of stack space that has remained for the task since the task was created" (<code>include/task.h</code>). The smaller the number, the closer the task came to overflowing.
+  </p>
+  <p>
+    The most important property of the high-water mark is that it is a record of the past. It is correct for the paths that actually ran. A rarely taken branch that makes a deep call can still overflow after your test passed, and the high-water mark will not warn you, because the mark only records what happened. So the procedure is: size the stack for the worst path you can reason about, run the system through its busiest scenario for long enough, read the mark, and keep a margin. The project uses 16 words as the margin, which is 64 bytes.
+  </p>
+
+  <h2>Catching an overflow before it spreads</h2>
+  <p>
+    A high-water mark tells you about the past. A stack overflow check tells you the moment one happens. The option <code>configCHECK_FOR_STACK_OVERFLOW</code> controls it, and the project sets it to 2. With level 2, at every task switch the kernel checks two things: whether the saved stack pointer has gone below the stack's limit, and whether the fill pattern is still present at the bottom of the stack (the four words checked are the <code>0xa5a5a5a5</code> pattern, in the macro in <code>include/stack_macros.h</code>). If either check fails, the kernel calls <code>vApplicationStackOverflowHook()</code>.
+  </p>
+  <p>
+    The hook is a function you write, with the signature <code>void vApplicationStackOverflowHook(TaskHandle_t t, char *name)</code>. The project's version does nothing except loop forever, which is deliberate. It stops the system at the moment of the bug, so a debugger shows which task overflowed and where. A hook that returns quietly hides the bug, and the corrupted memory keeps spreading. Real systems often log the task name to non-volatile memory and reset, but the principle is the same: a stack overflow is a bug, and the system must not continue as if it were not.
+  </p>
+  <div class="warning">The check runs at task switches. A task that overflows and then blocks in a way that does not switch can corrupt memory before the hook runs. The high-water mark and the hook catch most overflows, not every one. This is one reason for the margin.</div>
 
   <h2>Measuring execution time</h2>
   <p>
-    The most accurate local timer is a hardware counter. The Cortex-M3 has the DWT cycle counter (<code>DWT-&gt;CYCCNT</code>), and Wokwi's documentation lists DWT as implemented for the Blue Pill; we have not verified its counts against silicon, so this lesson uses <strong>TIM2</strong> instead. TIM2 is a 16-bit counter on the APB1 clock, and the project sets its prescaler so that one count is one microsecond. Take the counter before and after the work, and subtract. The subtraction in 16-bit unsigned arithmetic is correct across one wrap, as long as one measurement is shorter than 65 ms.
+    Stack size answers the memory question. The timing question needs a clock that counts finer than a tick. The FreeRTOS tick in this project is 1 kHz (<code>configTICK_RATE_HZ 1000</code>), so one tick is 1 ms. That is too coarse for a 1 ms task, so the project times its work with a hardware timer, TIM2.
+  </p>
+  <p>
+    TIM2 is a 16-bit counter that counts clock pulses. Its prescaler (the <code>PSC</code> register) divides the input clock before it reaches the counter. The project divides the clock so that one count is one microsecond. The system clock is <code>SystemCoreClock</code>, and the project does not configure the phase-locked loop (PLL) that would raise it, so the value stays at the reset default of 8 MHz (the variable is initialised to 8000000 in <code>system_stm32f1xx.c</code>). The prescaler is therefore 8 minus one, which the code computes rather than hard-codes:
+  </p>
+<pre><code>TIM2-&gt;PSC = (SystemCoreClock / 1000000U) * TIMER_TICKS_PER_US - 1U;</code></pre>
+  <p>
+    The project computes the value from <code>SystemCoreClock</code> so that the one-microsecond count stays true if someone later changes the clock setup. A hard-coded <code>7</code> would silently make every measurement wrong after such a change.
+  </p>
+  <p>
+    The timing pattern is simple: read the counter, do the work, read the counter again, and subtract. The subtraction must use unsigned arithmetic, and the cast to <code>uint16_t</code> does the work. When the 16-bit counter wraps from 65535 back to 0 during the work, the difference still comes out right, as long as the work is shorter than the wrap time. At one microsecond per count, the wrap time is 65.536 ms, so one measurement must finish within that window. This is the wrap-safe timeout idea from the timing chapter of the course glossary.
   </p>
 <pre><code><span class="k">static void</span> timed_work(uint32_t loops, <span class="k">volatile</span> uint32_t *max_us) {
     uint16_t start = (uint16_t)TIM2-&gt;CNT;
@@ -42,43 +78,122 @@
     <span class="k">if</span> (elapsed &gt; *max_us) *max_us = elapsed;                    <span class="c">/* keep the worst case */</span>
 }</code></pre>
   <p>
-    Keep the worst case, not the average. The deadline is about the worst case, and an average hides exactly the bursts that miss a deadline.
+    Keep the worst case, not the average. A deadline is about the worst case: one slow run that is 2 ms late is a failure even if the average is fine. An average hides exactly the bursts that miss a deadline, which is why the report prints the worst value.
   </p>
 
-  <h2>Rate-monotonic priorities</h2>
+  <h2>Deadlines, periods and rate-monotonic priorities</h2>
   <p>
-    For periodic tasks with fixed priorities, the standard assignment is <strong>rate-monotonic</strong>: the shorter the period, the higher the priority. Liu and Layland proved in 1973 that for independent periodic tasks with deadlines equal to periods, this order is optimal among fixed-priority schemes, and that a set of <code>n</code> tasks is schedulable if its total utilisation <code>U</code> (the sum of execution time over period) satisfies</p>
+    A periodic task runs at a fixed rate. Its <strong>period</strong> T is the time between starts, and its <strong>work</strong> C (also called execution time) is the CPU time it needs per run. Its <strong>deadline</strong> is the time by which each run must finish. The usual simple case sets the deadline equal to the period, so the task must finish before its next start.
+  </p>
+  <p>
+    The fixed priorities of FreeRTOS decide which task runs when two are ready. For periodic tasks the standard choice is <strong>rate-monotonic</strong> assignment: the shorter the period, the higher the priority. The reason is intuitive once you picture it. A task that must run every 10 ms cannot wait behind a task that runs every second, because it would miss its window. A task that runs every second can always wait a few milliseconds. In FreeRTOS, a larger number means a higher priority (the port's <code>configMAX_PRIORITIES</code> sets the range), so the 10 ms task gets priority 3, the 100 ms task gets 2, and the 1000 ms report gets 1.
+  </p>
+  <p>
+    Liu and Layland published the key result in 1973. For independent periodic tasks whose deadlines equal their periods, rate-monotonic priorities are optimal among fixed-priority schemes. They also gave a test. Add up the utilisation of every task, where each task's utilisation is its work divided by its period, U = Σ C<sub>i</sub>/T<sub>i</sub>. If U is at most n(2<sup>1/n</sup> − 1) for n tasks, every task meets its deadline. The right-hand side decreases as n grows, and it approaches ln 2, about 0.693, as n becomes large.
+  </p>
 <pre><code>U = Σ (C<sub>i</sub> / T<sub>i</sub>)  ≤  n · (2<sup>1/n</sup> − 1)
 
 n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</code></pre>
   <p>
-    The bound is sufficient, not necessary: a set above it may still be schedulable, and you need an exact response-time analysis to decide. But a set below it is always schedulable under rate-monotonic priorities, so it is the check you do first. The project's three tasks use periods of 10 ms, 100 ms and 1000 ms, and the bound applies to them.
+    The bound is sufficient, not necessary. A task set above the bound may still be schedulable, and then you need an exact response-time analysis to decide. But a set below the bound is always schedulable under rate-monotonic priorities, so the bound is the first check you run, and it costs one line of arithmetic.
+  </p>
+
+  <h2>A worked example with numbers</h2>
+  <p>
+    Take the three tasks of the project. The fast task runs every 10 ms, the slow task every 100 ms, and the report task every 1000 ms. Suppose the design targets are the work times in the table below. These are design targets, not measurements. Your report shows the real numbers, and you replace these with them.
   </p>
   <table>
     <thead>
-      <tr><th>Task</th><th>Period T</th><th>Work C</th><th>C / T</th></tr>
+      <tr><th>Task</th><th>Priority</th><th>Period T</th><th>Work C (target)</th><th>C / T</th></tr>
     </thead>
     <tbody>
-      <tr><td>fast (priority 3)</td><td>10 ms</td><td>about 1 ms</td><td>0.10</td></tr>
-      <tr><td>slow (priority 2)</td><td>100 ms</td><td>about 5 ms</td><td>0.05</td></tr>
-      <tr><td>report (priority 1)</td><td>1000 ms</td><td>about 1 ms</td><td>0.001</td></tr>
+      <tr><td>fast</td><td>3</td><td>10 ms</td><td>0.3 ms</td><td>0.030</td></tr>
+      <tr><td>slow</td><td>2</td><td>100 ms</td><td>3 ms</td><td>0.030</td></tr>
+      <tr><td>report</td><td>1</td><td>1000 ms</td><td>0.5 ms</td><td>0.0005</td></tr>
     </tbody>
   </table>
-  <p>The total is about 0.15, well below the three-task bound of 0.780, so the set is schedulable by construction. The measurement in the project confirms the work times.</p>
+  <p>
+    Step by step: the fast task uses 0.3 ms out of every 10 ms, so its share is 0.3 divided by 10, which is 0.030. The slow task uses 3 ms out of 100 ms, which is 0.030 again. The report task uses 0.5 ms out of 1000 ms, which is 0.0005. The total is 0.0605. The bound for three tasks is 0.780, so the set passes the test with a wide margin. Even if the real work were ten times longer than the targets, the total would be 0.605 and still under the bound.
+  </p>
+  <p>
+    The margin is the point of the exercise. The bound says nothing about the stack, the shared bus or the interrupts, so a passing result is a necessary first step, not a proof of the whole system. Lesson 90 showed that a mutex can make a high-priority task wait for a low-priority one, and that wait is extra time the bound does not include. A review should ask for the blocking time as well.
+  </p>
+
+  <h2>Reading the code, line by line</h2>
+  <p>
+    The periodic task in the project is the piece that ties the timing together. Here is the fast task from the solution, with the important lines explained:
+  </p>
+<pre><code><span class="k">static void</span> fast_task(<span class="k">void</span> *arg) {
+    (<span class="k">void</span>)arg;
+    TickType_t last_wake = xTaskGetTickCount();
+    <span class="k">for</span> (;;) {
+        timed_work(FAST_WORK_LOOPS, &amp;fast_max_us);
+        vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(FAST_PERIOD_MS));
+    }
+}</code></pre>
+  <p>
+    <code>last_wake</code> holds the tick at which the task last started. It is set once, before the loop. <code>(void)arg</code> tells the compiler that the parameter is unused, which keeps the warning list clean. Inside the loop, <code>timed_work()</code> runs the work and records its worst time into <code>fast_max_us</code>. The last line is the important one. <code>vTaskDelayUntil()</code> sleeps until <code>last_wake</code> plus the period, and it then moves <code>last_wake</code> forward by exactly one period. A plain <code>vTaskDelay(10)</code> would instead sleep 10 ms after the work finished, so the period would drift by the work time on every cycle. Over a long run the drift adds up, and the measured rate is wrong. <code>pdMS_TO_TICKS()</code> converts milliseconds to ticks, and with a 1 kHz tick the conversion is the identity, so 10 ms is 10 ticks.
+  </p>
+  <p>
+    The report function reads the mark for one task:
+  </p>
+<pre><code>UBaseType_t free_words = uxTaskGetStackHighWaterMark(h);
+uint32_t used_words = depth_words - free_words;</code></pre>
+  <p>
+    The first line asks the kernel for the fewest free words the task has ever had. The second line subtracts it from the depth that was requested at creation, which gives the peak use in words. Both values are in words, so the report multiplies by four to print bytes. The starter's version of this function is the one you change in the hands-on task.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: leaving the placeholder in the report.</strong> The starter's <code>report_one()</code> sets the free words to 0 until you call the kernel function. The symptom on the serial monitor is clear: every task shows <code>free=0 B</code> and the verdict says <code>STACK LOW</code>, even for a stack that has plenty of room. The fix is to call <code>uxTaskGetStackHighWaterMark(h)</code> and remove the placeholder. The lesson here is that a report which always prints the same value is not a measurement.
+  </p>
+  <p>
+    <strong>Mistake 2: confusing words with bytes.</strong> A stack depth of 128 is 128 words, which is 512 bytes on the Cortex-M3. If you size a stack in bytes by mistake and pass 512, the task gets 2048 bytes and the memory use is four times what you planned. The symptom is the opposite one: the heap runs out sooner than you expect, because each task reserves four times the memory. The fix is to read the header comment of <code>xTaskCreate</code> and keep one unit throughout the code, with the conversion in one place, as the report does.
+  </p>
+  <p>
+    <strong>Mistake 3: reading the high-water mark too early.</strong> The mark records only what has run. If you read it a few milliseconds after startup, the deepest path may not have run yet. The symptom is a comfortable margin in the first report and an overflow in the field, when a rare command arrives. The fix is to read the mark after the system has run its busiest scenario, and to keep a margin on top. The project's report task reads the marks every second, which is a practical habit: the worst value is kept by the kernel, so the last reading is the peak so far.
+  </p>
+  <p>
+    <strong>Mistake 4: using a plain delay for a periodic task.</strong> A task written with <code>vTaskDelay()</code> runs at a period of work time plus delay time, not at the period you wrote. The symptom appears only over time: the measured rate drifts, and a task that should run 100 times in 10 seconds runs 98 times. The fix is <code>vTaskDelayUntil()</code>, as the solution uses, with the previous wake time kept between cycles.
+  </p>
+  <p>
+    <strong>Mistake 5: an empty overflow hook.</strong> A hook that returns, or a missing <code>configCHECK_FOR_STACK_OVERFLOW</code>, means an overflow is silent. The symptom is a task that behaves strangely a long time later, with no error message. The fix is a hook that stops the system, as in the project, and a debugger session that reads the task name. The hook is the cheapest insurance in the whole lesson.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that ship RTOS products run stack and timing analysis as a routine part of each release. A common practice is to record the high-water mark of every task after a long soak test and keep it in the test report, so that a change which eats stack shows up as a number in code review rather than as a crash in the field. Another common practice is to measure the worst-case execution time of each interrupt and each task on the real board, with a timer such as the one in this lesson, and to compare the sum against the deadlines. Some teams add a runtime statistics feature that reports the CPU share of each task, which the FreeRTOS configuration can enable.
+  </p>
+  <p>
+    In a code review, a senior engineer looks for three things. The stack size should be justified by a number, not left at a default. Each periodic task should use a delay until a fixed time, not a delay after the work. And the worst case should be the value that is checked, not the average. In interviews the same three points come up in the form of the question at the end of this lesson. Be ready to say that the utilisation bound is a sufficient test, that it assumes independent tasks and deadlines equal to periods, and that a mutex or a blocking call adds time the bound does not count.
+  </p>
 
   <h2>Try it: measure and check the stacks</h2>
   <p>
-    The project <code>projects/0091-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms, and a report task every second. The report prints each task's stack use, the free words and the worst measured time in microseconds, then <code>STACK OK</code> if every free margin is at least 16 words.
+    The project <code>projects/0091-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms, and a report task every second. The report prints each task's stack use, its free words, and its worst measured time in microseconds. It prints <code>STACK OK</code> if every free margin is at least 16 words.
   </p>
+  <div class="warning">
+    <strong>Known issue: the simulator may print nothing.</strong> In Wokwi, FreeRTOS on the STM32 does not run its first task (see the open issue in <code>CHANGELOG.md</code> at the workspace root). The code before <code>vTaskStartScheduler()</code> runs, but the tasks never start, so the report may never appear. The steps below are still how you check the work. Build and read the code, and if the serial monitor stays silent, that is the known issue and not your mistake. Compare your report with the solution's output once the issue is fixed.
+  </div>
   <ol class="steps">
-    <li>Open <code>projects/0091-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>In <code>report_one()</code>, find the <code>TODO(learner)</code>. Replace the placeholder with the call that returns the high-water mark for the task handle, and remove the placeholder value.</li>
-    <li>In <code>main()</code>, set the priorities by rate-monotonic order: fast 3, slow 2, report 1. The starter sets them all to 2 on purpose.</li>
-    <li>Simulate again and check the report. The line should read <code>STACK OK</code>, and the worst time for <code>fast</code> should be about a millisecond. Compare with <code>projects/0091-stack-and-timing/solution/main.c</code>.</li>
+    <li>Open <code>projects/0091-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The build should finish with no errors.</li>
+    <li>In <code>report_one()</code>, find the <code>TODO(learner)</code>. Replace the placeholder value of <code>free_words</code> with the call <code>uxTaskGetStackHighWaterMark(h)</code>, and delete the <code>(void)h;</code> line, since the handle is now used.</li>
+    <li>In <code>main()</code>, set the priorities by rate-monotonic order. The fast task must be 3, the slow task 2 and the report task 1. The starter has fast and slow both at 2 on purpose, so the shorter-period task does not yet win.</li>
+    <li>Build again and simulate. If the simulator runs, the report should show a stack line for each task, a worst time for <code>fast</code> and <code>slow</code>, and the line <code>STACK OK: every task keeps a margin</code>. The worst-time numbers depend on the simulated clock, so compare their size with the solution's output in <code>projects/0091-stack-and-timing/solution/main.c</code> rather than the exact digits.</li>
   </ol>
-  <div class="note">The report task measures nothing and runs at the lowest priority, so it cannot delay the other two. Its own stack is still reported, because a stack overflow in the report task would also corrupt memory.</div>
+  <div class="note">The report task measures nothing and runs at the lowest priority, so it cannot delay the other two. Its own stack is still reported, because an overflow in the report task would also corrupt memory.</div>
 
   <div class="win">You read the stack high-water mark of each task, timed a code section with TIM2 in microseconds, assigned rate-monotonic priorities, and checked the task set against the utilisation bound.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Each FreeRTOS task has its own stack. The depth in <code>xTaskCreate()</code> is in words, which are 4 bytes on the Cortex-M3.</li>
+    <li>The kernel paints each new stack with <code>0xa5</code>. <code>uxTaskGetStackHighWaterMark()</code> returns the fewest free words the task has had, which is a record of the paths that ran.</li>
+    <li><code>configCHECK_FOR_STACK_OVERFLOW</code> set to 2 checks at each task switch, and calls <code>vApplicationStackOverflowHook()</code> when the stack limit or the bottom pattern fails.</li>
+    <li>Time a section by subtracting two counter reads in unsigned arithmetic. Keep the worst case, because a deadline is about the worst case.</li>
+    <li>Use <code>vTaskDelayUntil()</code> for periodic tasks, so the period does not drift with the work time.</li>
+    <li>Rate-monotonic priorities give the shortest period the highest priority. For n tasks, a total utilisation at or below n(2<sup>1/n</sup> − 1) guarantees the deadlines. The bound is sufficient, not necessary.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -104,7 +219,16 @@ n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</co
       { "type": "text",
         "prompt": "Which configuration option makes FreeRTOS call the stack-overflow hook? Give the name.",
         "accept": ["configCHECK_FOR_STACK_OVERFLOW", "configCHECK_FOR_STACK_OVERFLOW=2"],
-        "why": "configCHECK_FOR_STACK_OVERFLOW enables the check, and the hook is the function you define. The tempting answer is configUSE_MALLOC_FAILED_HOOK, which is a different hook for failed allocations." }
+        "why": "configCHECK_FOR_STACK_OVERFLOW enables the check, and the hook is the function you define. The tempting answer is configUSE_MALLOC_FAILED_HOOK, which is a different hook for failed allocations." },
+      { "type": "mc",
+        "prompt": "A task is created with stack depth 128 on a Cortex-M3. How many bytes of stack is that?",
+        "options": ["128 bytes", "512 bytes", "1024 bytes"],
+        "answer": 1,
+        "why": "The depth counts 32-bit words, so 128 words times 4 bytes is 512 bytes. The tempting answer, 128 bytes, forgets that the depth is in words." },
+      { "type": "text",
+        "prompt": "Which byte value does FreeRTOS write into a new stack to mark it as unused? Give it in hex.",
+        "accept": ["0xA5", "0xa5", "A5", "a5"],
+        "why": "tskSTACK_FILL_BYTE is 0xa5 in tasks.c (line 120). The tempting answer, 0x00, is what a zeroed stack would show, but the kernel does not zero the stack; it fills it with a pattern it can recognise." }
     ] }
     </script>
   </div>
@@ -130,7 +254,7 @@ n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</co
   </div>
 
   <div class="source">
-    <a href="https://doi.org/10.1145/321738.321743">Liu and Layland, "Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment", <em>Journal of the ACM</em> 20(1), 1973</a>: the utilisation bound. Read the FreeRTOS kernel book's chapter on stack overflow and run-time statistics, and the kernel source: <code>tasks.c</code> line 130 (the stack-check conditions) and line 6362 (<code>uxTaskGetStackHighWaterMark</code>). The bound is the Liu and Layland result; check the paper's theorem before you rely on it in a review.
+    <a href="https://doi.org/10.1145/321738.321743">Liu and Layland, "Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment", <em>Journal of the ACM</em> 20(1), 1973</a>: the utilisation bound. The ACM copy refused access when this lesson was checked, so read the theorem there yourself before you rely on it in a review. For the kernel behaviour, read the FreeRTOS kernel book, <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>, on stack overflow and run-time statistics, and the kernel source: <code>third_party/FreeRTOS-Kernel/tasks.c</code> line 120 (the fill byte), line 130 (when new stacks are filled), and line 6429 (<code>uxTaskGetStackHighWaterMark</code>); <code>include/stack_macros.h</code> for the overflow check.
   </div>
 
   <div class="ask">

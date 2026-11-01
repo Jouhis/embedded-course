@@ -17,14 +17,65 @@
     By the end of this lesson you can set, clear, toggle and test one bit, and read or write a multi-bit field, using <code>|</code>, <code>&amp;</code>, <code>^</code>, <code>~</code>, <code>&lt;&lt;</code> and <code>&gt;&gt;</code>, and you can predict the result of each line before you run it.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The C bitwise operators act on every bit position at once, with no carry between positions. <code>&amp;</code> keeps a bit only where both inputs have it. <code>|</code> sets a bit where either input has it. <code>^</code> flips a bit where the inputs differ. <code>~</code> flips every bit. <code>&lt;&lt;</code> and <code>&gt;&gt;</code> move bits left and right, and fill with zeros.
+    Lesson 19 taught you to read a register as bits, in binary, hex and decimal. This lesson teaches you to change those bits without disturbing the rest. A peripheral register such as a GPIO output register has one bit per pin, and every bit belongs to a different wire. When you turn on the LED on GP25, you must not turn off the pin next to it. The operators in this lesson are how C lets you change one bit and leave the others alone.
+  </p>
+  <p>
+    The skill appears in every driver you will write. The Pico SDK, the STM32 HAL and the Zephyr drivers all use the same few patterns, and a code review of a driver is mostly a check that each mask is right. A bug in one mask can break a peripheral that has nothing to do with the line you were editing, so people in this job read masks slowly and carefully.
+  </p>
+
+  <h2>The bitwise operators, one bit at a time</h2>
+  <p>
+    The C bitwise operators act on every bit position at once, with no carry between positions. Take one position at a time. <code>&amp;</code> (AND) gives 1 only where both inputs are 1. <code>|</code> (OR) gives 1 where either input is 1. <code>^</code> (XOR) gives 1 where the inputs differ. <code>~</code> (NOT) flips every bit. <code>&lt;&lt;</code> moves bits towards the most significant end, and <code>&gt;&gt;</code> moves them towards bit 0. Both shifts fill the vacated positions with zeros, for unsigned values.
     <span class="sidenote">The operators work on integer types only. Do not use <code>&amp;</code> on a float, and do not use the logical <code>&amp;&amp;</code> where you mean the bitwise <code>&amp;</code>. Lesson 45 covers the integer promotion rules that surprise people.</span>
   </p>
+
+  <table>
+    <thead><tr><th>A</th><th>B</th><th>A &amp; B</th><th>A | B</th><th>A ^ B</th></tr></thead>
+    <tbody>
+      <tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr>
+      <tr><td>0</td><td>1</td><td>0</td><td>1</td><td>1</td></tr>
+      <tr><td>1</td><td>0</td><td>0</td><td>1</td><td>1</td></tr>
+      <tr><td>1</td><td>1</td><td>1</td><td>1</td><td>0</td></tr>
+    </tbody>
+  </table>
+
   <p>
-    A <strong>mask</strong> is a pattern with ones in the bits you care about. The masks for one bit are simple: <code>1u &lt;&lt; n</code> has only bit <em>n</em> set. The C you will write on the Pico for an LED on GPIO 25 looks like this:
+    Each operator is the logic gate of lesson 22 applied to a whole word at once. A 32-bit AND is 32 AND gates side by side, each taking one bit from each operand. That is why a bitwise operation takes one instruction on the core, while a loop over the bits would take many.
   </p>
+
+  <h3>Worked example: one byte through four operators</h3>
+  <p>Let <code>x = 0xC5</code> (<code>1100 0101</code>) and <code>y = 0x0F</code> (<code>0000 1111</code>). Work each result bit by bit, then convert to hex.</p>
+  <ol class="steps">
+    <li><code>x &amp; y</code>: keep a bit only where both are 1. The high nibble of y is zero, so the high nibble is zero. The low nibble of x is 0101 and of y is 1111, so the result is 0101. Answer: <code>0000 0101</code>, which is 0x05.</li>
+    <li><code>x | y</code>: set a bit where either is 1. The high nibble comes from x (1100), and the low nibble is all 1s. Answer: <code>1100 1111</code>, which is 0xCF.</li>
+    <li><code>x ^ y</code>: flip where they differ. The high nibble of x is 1100 and of y is 0000, so the high nibble stays 1100. The low nibble of x is 0101 and of y is 1111, so the bits that differ are the ones that are 0 in x. Answer: <code>1100 1010</code>, which is 0xCA.</li>
+    <li><code>~x</code>: flip every bit of 1100 0101. Answer: <code>0011 1010</code>, which is 0x3A.</li>
+  </ol>
+  <p>
+    The pattern to notice is that AND with a mask keeps only the bits the mask selects, and OR with a mask forces them to 1. The next section uses exactly that.
+  </p>
+
+  <h2>Masks: one pattern that selects the bits you care about</h2>
+  <p>
+    A <strong>mask</strong> is a bit pattern with ones in the bits you want to keep, change or test. A single-bit mask for bit <em>n</em> is <code>1u &lt;&lt; n</code>, which has only bit <em>n</em> set. For bit 5 it is <code>0x20</code>, and for bit 25 it is <code>0x02000000</code>. The suffix <code>u</code> makes the constant unsigned. That matters: a plain <code>1 &lt;&lt; 31</code> shifts a signed int into its sign bit, which C does not define. Lesson 45 explains the rule.
+  </p>
+  <p>
+    With a mask, every bit operation is the same shape. You combine the register with a mask using one operator, and the mask decides which bits move. The table below is the whole vocabulary for one bit.
+  </p>
+
+  <table>
+    <thead><tr><th>Operation</th><th>C</th><th>Why it works</th></tr></thead>
+    <tbody>
+      <tr><td>Set bit n</td><td><code>reg |= (1u &lt;&lt; n);</code></td><td>OR with 1 forces the bit to 1; OR with 0 leaves a bit as it was.</td></tr>
+      <tr><td>Clear bit n</td><td><code>reg &amp;= ~(1u &lt;&lt; n);</code></td><td>AND with 0 forces the bit to 0; the inverted mask has 1s everywhere else.</td></tr>
+      <tr><td>Toggle bit n</td><td><code>reg ^= (1u &lt;&lt; n);</code></td><td>XOR with 1 flips the bit; XOR with 0 leaves it.</td></tr>
+      <tr><td>Test bit n</td><td><code>if (reg &amp; (1u &lt;&lt; n))</code></td><td>AND keeps only bit n, so the result is non-zero exactly when the bit is set.</td></tr>
+    </tbody>
+  </table>
+
+  <p>The C you will write on the Pico for an LED on GPIO 25 looks like this:</p>
 
   <pre><code><span class="c">// Set bit n: the bit becomes 1, the others stay as they were.</span>
 reg |= (<span class="k">1u</span> &lt;&lt; n);
@@ -38,13 +89,28 @@ reg ^= (<span class="k">1u</span> &lt;&lt; n);
 <span class="c">// Test bit n: non-zero if set.</span>
 <span class="k">if</span> (reg &amp; (<span class="k">1u</span> &lt;&lt; n)) { <span class="c">/* set */</span> }</code></pre>
 
+  <h3>Worked example: set, clear and toggle on 0x2C</h3>
+  <p>Start from <code>reg = 0x2C</code>, which is <code>0010 1100</code>. Apply three operations in turn.</p>
+  <ol class="steps">
+    <li><code>reg |= (1u &lt;&lt; 0);</code>. The mask is 0x01. OR sets bit 0, which was 0, so <code>0010 1101</code>, which is 0x2D.</li>
+    <li><code>reg &amp;= ~(1u &lt;&lt; 5);</code>. The mask is 0x20, and its inverse is 0xDF (<code>1101 1111</code>). AND clears bit 5, which was 1, and keeps the others. <code>0000 1101</code>, which is 0x0D. Check: 0x2D − 0x20 = 0x0D.</li>
+    <li><code>reg ^= (1u &lt;&lt; 7);</code>. The mask is 0x80. XOR flips bit 7, which was 0, so <code>1000 1101</code>, which is 0x8D.</li>
+  </ol>
   <p>
-    Each line is <strong>read-modify-write</strong>: read the register, change some bits, write it back. The other bits keep their values. Writing the whole register with a constant would wipe them, so the mask is what protects them.
+    Each line reads the register, changes some bits and writes it back. That is a <strong>read-modify-write</strong>. The other bits keep their values because the mask does not select them, and the writing back puts them in the same place they came from.
   </p>
 
-  <h2>Fields: several bits at once</h2>
+  <h2>Why a read-modify-write is three steps on the bus</h2>
   <p>
-    A field is a group of adjacent bits that hold one value, such as a 3-bit mode. To read it, shift it down to bit 0 and mask off the rest. To write it, clear the field, then OR in the new value shifted to the right place:
+    The C line <code>reg |= mask</code> looks like one operation, but on a Cortex-M core it becomes three. The core loads the register value from its address into a register, which is one bus read. It ORs the mask into that value inside the core, which costs no bus traffic. It stores the result back to the same address, which is one bus write. The core's load and store instructions move data across the bus to the peripheral. Lesson 38 explains how a peripheral register is reached through an address in the memory map.
+  </p>
+  <p>
+    Those three steps are the danger. If an interrupt runs between the load and the store, and it changes the same register, the store writes back the old value of the bits the interrupt changed. The interrupt's change is lost. Lesson 57 covers interrupts in practice, and this lost update is one of the classic reasons driver code disables interrupts around a read-modify-write.
+  </p>
+
+  <h2>Fields: several bits that hold one value</h2>
+  <p>
+    A <strong>field</strong> is a group of adjacent bits that together hold one number, such as a 3-bit mode or a 4-bit prescaler. A datasheet names the field and its bit range, for example bits 6 to 4. To read a field, shift it down so its lowest bit is bit 0, then mask off everything above it. To write a field, clear it with the inverse of its mask, then OR in the new value after shifting it to the right place.
   </p>
 
   <pre><code><span class="c">// Field at bits hi..lo. Width = hi - lo + 1.</span>
@@ -56,13 +122,76 @@ uint32_t mode = (reg &gt;&gt; lo) &amp; ((<span class="k">1u</span> &lt;&lt; wid
 <span class="c">// Write: clear the field, then insert the new value.</span>
 reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK(lo, width));</code></pre>
 
+  <h3>Worked example: write a 3-bit field at bits 6 to 4</h3>
+  <p>
+    Let <code>reg = 0x56</code>, which is <code>0101 0110</code>. Bits 6 to 4 hold <code>101</code>, which is 5. Write the value 3, which is <code>011</code>, into that field.
+  </p>
+  <ol class="steps">
+    <li>Build the mask. Bits 6 to 4 are <code>0111 0000</code>, which is 0x70. <code>FIELD_MASK(4, 3)</code> gives <code>((1u &lt;&lt; 3) - 1u) &lt;&lt; 4</code>, which is <code>(0b111) &lt;&lt; 4</code>, and that is 0x70.</li>
+    <li>Clear the field. The inverse of 0x70 is 0x8F (<code>1000 1111</code>). <code>0x56 &amp; 0x8F</code> is 0x06, because only bits 3 to 0 survive.</li>
+    <li>Shift the new value into place and mask it. <code>3 &lt;&lt; 4</code> is 0x30, and <code>0x30 &amp; 0x70</code> is still 0x30.</li>
+    <li>Combine. <code>0x06 | 0x30</code> is 0x36, which is <code>0011 0110</code>. Bits 6 to 4 now hold <code>011</code>, and bits 3 to 0 are unchanged.</li>
+  </ol>
+  <p>
+    Read the same field back with <code>(reg &gt;&gt; 4) &amp; 7u</code>. The shift gives 0x03, the mask keeps three bits, and the answer is 3.
+  </p>
+
   <div class="warning">Always mask the value before you shift it in. If <code>value</code> is 9 and the field is 3 bits wide, <code>value &lt;&lt; lo</code> sets a bit in a neighbouring field, and the bug appears somewhere else entirely.</div>
 
-  <h2>Why the hardware cares</h2>
+  <h2>Writing the Pico LED without a read</h2>
   <p>
-    A peripheral register often has several fields, and some bits are read-only or change on their own. Software that does read-modify-write races with an interrupt that changes the same register between the read and the write. The RP2040 solves this in hardware: each peripheral register block has aliases at offsets +0x2000 (atomic set) and +0x3000 (atomic clear), so one bus write sets or clears bits without a read.
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2 (Atomic Register Access)</a> gives the four aliases. Lesson 47 uses the register addresses, and lesson 57 explains why interrupts make this matter.
+    The RP2040 can avoid the read in the middle. Each peripheral register block is allocated 4 kB of address space, and each register can be reached through four addresses. The normal address does a plain read or write. The address plus 0x1000 does an atomic XOR on write, the address plus 0x2000 does an atomic bitmask set on write, and the address plus 0x3000 does an atomic bitmask clear on write. The datasheet says this lets software change a field without a read-modify-write sequence (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2, Atomic Register Access</a>).
   </p>
+  <p>
+    The SIO block is the exception. It is the single-cycle IO block that the cores use for GPIO, and it does not support atomic aliases at the bus level. Its GPIO registers have their own set, clear and XOR registers instead. The Pico SDK header lists them: <code>SIO_GPIO_OUT_OFFSET</code> is 0x10, <code>SIO_GPIO_OUT_SET_OFFSET</code> is 0x14, <code>SIO_GPIO_OUT_CLR_OFFSET</code> is 0x18 and <code>SIO_GPIO_OUT_XOR_OFFSET</code> is 0x1C, all added to <code>SIO_BASE</code>, which is 0xD0000000.
+  </p>
+  <p>
+    The LED on the Pico is GPIO 25 (the SDK defines <code>PICO_DEFAULT_LED_PIN</code> as 25 in its board header). Its mask is <code>1u &lt;&lt; 25</code>, which is 0x02000000. To turn the LED on with one write, store that mask to the SET register at 0xD0000014. To toggle it, store the mask to the XOR register at 0xD000001C. Neither write reads the register, so nothing else on the GPIO bank can be lost between a read and a write. Writing to SET only changes the bits you name, so the other outputs keep their values.
+  </p>
+
+  <div class="note">The SIO GPIO registers accept bits 0 to 29 only, as the SDK's <code>SIO_GPIO_OUT_SET_BITS</code> mask shows. Bits 30 and 31 are not GPIOs on the RP2040, so a mask for them does nothing useful.</div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>Five mistakes account for most bit bugs in firmware. Each one has a symptom you can see.</p>
+  <ol>
+    <li>
+      <strong>Using <code>=</code> where you meant <code>|=</code>.</strong> Writing <code>GPIO_OUT = 1u &lt;&lt; 25;</code> replaces the whole register, so every other output goes low. The symptom is an LED that turns off when a second output is driven. The fix is to use the SET alias, or the <code>|=</code> form on a register you have read.
+    </li>
+    <li>
+      <strong>Forgetting the inversion when clearing.</strong> The line <code>reg &amp;= (1u &lt;&lt; 5);</code> keeps only bit 5 and clears everything else. On 0x2C it gives 0x20, not 0x0C. The symptom is a peripheral that loses its configuration when you change one bit. The fix is <code>~</code> on the mask.
+    </li>
+    <li>
+      <strong>Precedence in a test.</strong> In C, <code>==</code> binds more tightly than <code>&amp;</code>. So <code>reg &amp; 1u &lt;&lt; 3 == 1</code> means <code>reg &amp; ((1u &lt;&lt; 3) == 1)</code>, which is <code>reg &amp; 0</code>, and the test is never true. Compiling with <code>-Wall</code> gives the warning <em>suggest parentheses around comparison in operand of '&amp;'</em>, which is the symptom. The fix is <code>(reg &amp; (1u &lt;&lt; 3)) != 0</code>. Put parentheses around every bitwise expression.
+    </li>
+    <li>
+      <strong>An unmasked value shifted into a field.</strong> If <code>value</code> is 9 and the field is 3 bits, the shift pushes bit 3 into the next field. The symptom is a change in a field you did not touch. The fix is to mask the value to the field width before the shift.
+    </li>
+    <li>
+      <strong>A signed mask.</strong> The expression <code>1 &lt;&lt; 31</code> shifts a signed int into its sign bit, and C says that is undefined. The symptom can be a wrong mask that only breaks on one compiler. The fix is <code>1u &lt;&lt; 31</code>.
+    </li>
+  </ol>
+
+  <h2>In real projects</h2>
+  <p>
+    Professional drivers rarely write raw masks in every function. They name each mask, or they use the device header's <code>_Pos</code> and <code>_Msk</code> macros. The STM32F103 header defines them for every field, so <code>RCC_CR_HSION_Msk</code> is <code>0x1UL</code> shifted by <code>RCC_CR_HSION_Pos</code>, which is 0. A reviewer then reads the name, not the number. The rule in most teams is that a bare hex constant in driver code is a finding. This rule keeps the mask next to its meaning.
+  </p>
+  <p>
+    The atomic aliases are how the Pico SDK avoids the race in the bus sequence. The SDK's <code>addressmap.h</code> defines <code>REG_ALIAS_XOR_BITS</code> as <code>0x1 &lt;&lt; 12</code>, <code>REG_ALIAS_SET_BITS</code> as <code>0x2 &lt;&lt; 12</code> and <code>REG_ALIAS_CLR_BITS</code> as <code>0x3 &lt;&lt; 12</code>. The header <code>address_mapped.h</code> provides <code>hw_set_bits()</code> and <code>hw_clear_bits()</code> as functions on a register pointer, for peripherals that have the aliases. For a register that does not have them, the same rule applies as in the table above: disable interrupts around the read-modify-write, or make sure no interrupt touches that register.
+  </p>
+  <p>
+    In interviews, the question is usually a small function. A typical prompt is "write a function that sets bits 5 to 3 of a register to a 3-bit value without disturbing the others, then say what can go wrong if an interrupt runs in the middle". A good answer uses a mask, masks the value, and names the lost update.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The bitwise operators work on every bit position at once, with no carry between positions.</li>
+    <li>A mask selects bits. Use <code>1u &lt;&lt; n</code> for one bit, so the constant is unsigned.</li>
+    <li>Set with <code>|=</code>, clear with <code>&amp;= ~mask</code>, toggle with <code>^=</code>, and test with <code>&amp; mask</code>.</li>
+    <li>Every change to a register is a read, a change and a write. The bus performs two transfers, and an interrupt can run between them.</li>
+    <li>A field is read by shifting down and masking, and written by clearing it and then OR-ing in the shifted value.</li>
+    <li>The RP2040 gives most peripherals SET, CLR and XOR aliases at +0x2000, +0x3000 and +0x1000. The SIO GPIO registers have their own set and clear registers at 0x14 and 0x18.</li>
+    <li>Put parentheses around every bitwise expression, because <code>==</code> binds more tightly than <code>&amp;</code>.</li>
+  </ul>
 
   <h2>Try it: concept-only drill</h2>
   <p>
@@ -107,7 +236,16 @@ reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK
         "prompt": "You change only bits 2 to 0 of a register. What is the first step?",
         "options": ["Read the whole register", "Write the new value", "Clear the whole register"],
         "answer": 0,
-        "why": "Read-modify-write starts with a read, so the other bits are kept. Writing the new value first, or clearing the whole register, wipes the bits you did not mean to change." }
+        "why": "Read-modify-write starts with a read, so the other bits are kept. Writing the new value first, or clearing the whole register, wipes the bits you did not mean to change." },
+      { "type": "number",
+        "prompt": "reg is <code>0x2C</code>. After <code>reg &amp;= ~(1u &lt;&lt; 5);</code>, what is reg as a decimal number?",
+        "answer": 12, "tolerance": 0,
+        "why": "Bit 5 is 32, so clearing it gives 44 − 32 = 12, which is 0x0C. The tempting answer, 32, is what you get if you leave out the ~ and AND with the plain mask, which keeps only bit 5." },
+      { "type": "mc",
+        "prompt": "Which test is true when bit 3 of <code>reg</code> is set?",
+        "options": ["(reg & (1u << 3)) != 0", "reg & 1u << 3 == 1", "reg | (1u << 3) == 0"],
+        "answer": 0,
+        "why": "The first ANDs the mask and compares the result with zero. The tempting answer, the second, binds == before &, so it becomes reg & 0 and is never true. The third has the same precedence trap and evaluates to reg itself." }
     ] }
     </script>
   </div>
@@ -133,7 +271,7 @@ reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK
   </div>
 
   <div class="source">
-    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2, Atomic Register Access</a>: the four access aliases (normal, XOR, set and clear) and why a read-modify-write is unsafe when an interrupt is concurrent. Read it with a register in mind, not a number.
+    <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf">RP2040 datasheet, section 2.1.2, Atomic Register Access</a>: the four access aliases (normal, XOR, set and clear) and why a read-modify-write is unsafe when an interrupt is concurrent. Read it with a register in mind, not a number. The same section notes that the SIO block has no bus-level aliases, although some of its GPIO registers have their own set, clear and XOR registers.
   </div>
 
   <div class="ask">

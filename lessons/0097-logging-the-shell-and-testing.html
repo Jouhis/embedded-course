@@ -16,21 +16,133 @@
     By the end of this lesson you can <strong>register a shell command that drives the LED, write a ztest case for a conversion function, and explain what Twister needs to run it, including why it cannot run on Windows</strong>.
   </div>
 
-  <h2>The idea</h2>
+  <h2>Where we are and why it matters</h2>
   <p>
-    The logger is a module with a name and a level. <code>LOG_MODULE_REGISTER(app, LOG_LEVEL_INF)</code> names this file's module and sets its level, and <code>LOG_INF</code>, <code>LOG_DBG</code> and the others print when the level allows (<code>include/zephyr/logging/log.h:845</code>). The global switch is <code>CONFIG_LOG</code>. With it off, every log call compiles to nothing.
-    <span class="sidenote">The shell is the other half of debugging. It runs in its own thread, reads commands from the UART, and calls your functions, which is how many teams test a board on the bench.</span>
+    Lesson <a href="0053-uart-logging.html">53</a> printed text from the Pico over its UART, one call at a time. Lesson <a href="0085-logging-tracing-and-field-diagnostics.html">85</a> explained why a deployed device needs logs it can send back, and lesson <a href="0080-unit-testing-on-the-host.html">80</a> introduced unit tests that run on a PC. Lesson <a href="0093-kconfig-and-the-build-system.html">93</a> taught Kconfig, the switches that turn each of these features on or off, and lesson <a href="0094-devicetree.html">94</a> showed how the board describes its UART. This lesson puts those pieces to work in Zephyr.
   </p>
   <p>
-    The shell is on with <code>CONFIG_SHELL=y</code>, and its serial backend uses the UART named by the board's <code>zephyr,shell-uart</code> node (<code>uart0</code> on the Pico). A command is one <code>SHELL_CMD_REGISTER</code> line, and a subcommand tree is a <code>SHELL_STATIC_SUBCMD_SET_CREATE</code> block (<code>include/zephyr/shell/shell.h:465, 502</code>).
+    The problem is practical. When a board sits on your desk, a shell lets you type <code>led on</code> and see the result, which saves a rebuild for each test. When a board is in a cabinet at a customer's site, the same log lines and the same command set tell you what it did. When no board is available at all, which is the normal state of a CI server, a unit test can check the logic that the firmware depends on. Each tool solves a different part of the same problem, and each one is in daily use at firms that ship embedded products.
   </p>
-  <div class="warning">
-    With the shell on, the UART log backend is off by default (<code>subsys/logging/backends/Kconfig.uart</code>: <code>default y if !SHELL_BACKEND_SERIAL</code>). The logs go through the shell's log backend instead, so set <code>CONFIG_SHELL_LOG_BACKEND=y</code>. Our starter forgot the shell, and the linker reported <code>undefined reference to shell_fprintf_impl</code>. That is a missing Kconfig symbol, not a code bug.
-  </div>
 
-  <h2>The conversion function, and its tests</h2>
+  <h2>The concepts, one at a time</h2>
+  <h3>A log message has a level and a module</h3>
   <p>
-    The MYS-1 reports 1/64 °C per count, as a signed 16-bit number (datasheet section 4.1). The conversion function <code>mys_raw_to_centi_c</code> has no hardware in it: it takes a number and returns hundredths of a degree. That makes it testable on any machine. In the solution it is <code>(int32_t)raw * 100 / 64</code>. The code multiplies first, so the division keeps the fraction, and the product fits in 32 bits.
+    A <a href="../reference/glossary.html#logging">log message</a> is a line of text that the firmware emits on purpose. Each message has a <em>level</em>, which says how serious it is. Zephyr defines four: <code>LOG_LEVEL_ERR</code> is 1, <code>LOG_LEVEL_WRN</code> is 2, <code>LOG_LEVEL_INF</code> is 3 and <code>LOG_LEVEL_DBG</code> is 4 (<code>include/zephyr/logging/log_core.h:40-46</code>). A lower number is more serious, and a higher number is more detail.
+  </p>
+  <p>
+    Each source file that logs is a <em>module</em>. <code>LOG_MODULE_REGISTER(app, LOG_LEVEL_INF)</code> names this file's module <code>app</code> and gives it a level. A message prints when its level is at most the module's level (<code>include/zephyr/logging/log_core.h:201</code>). So a module at level INF prints errors, warnings and info, and it drops debug messages. The macros <code>LOG_ERR</code>, <code>LOG_WRN</code>, <code>LOG_INF</code> and <code>LOG_DBG</code> each carry one level (<code>include/zephyr/logging/log.h</code>).
+  </p>
+  <p>
+    The global switch is <code>CONFIG_LOG</code>. With it off, every log macro compiles to nothing, so the calls cost no flash and no time. The default level for modules that do not name one is <code>CONFIG_LOG_DEFAULT_LEVEL</code>, which the solution sets to 3. A level in code is a decision about one file, and a level in Kconfig is a decision about the whole build.
+  </p>
+
+  <h3>Log backends decide where the text goes</h3>
+  <p>
+    A <em>backend</em> is the output that a log message reaches. Zephyr has a UART backend, which writes straight to a serial port, and a shell backend, which sends messages through the shell's output. Both cannot write to the same port without mixing their text. The UART backend has the symbol <code>LOG_BACKEND_UART</code>, and its default is set in <code>subsys/logging/backends/Kconfig.uart</code>: it is on by default only when the serial shell is not, as the line <code>default y if !SHELL_BACKEND_SERIAL</code> says.
+  </p>
+  <p>
+    The lesson's project turns on the shell, so the logs must go through the shell's backend. That is the reason for <code>CONFIG_SHELL_LOG_BACKEND=y</code> in <code>prj.conf</code>. It is defined in <code>subsys/shell/Kconfig</code> at line 288. A learner who turns on the logger but forgets this line sees nothing, because the UART backend is off and the shell backend is not selected.
+  </p>
+
+  <h3>The shell is a command line inside the firmware</h3>
+  <p>
+    A <a href="../reference/glossary.html#shell-zephyr">shell</a> reads text from a serial port, splits it into a command and its arguments, and calls a function you wrote for that command. The shell runs in its own thread, which the kernel starts for you, so <code>main()</code> can return. Its prompt is <code>uart:~$</code> (the default in <code>subsys/shell/backends/Kconfig.backends</code>). The serial backend uses the UART that the board names with <code>zephyr,shell-uart</code>, which is <code>&amp;uart0</code> on the Pico (<code>boards/raspberrypi/rpi_pico/rpi_pico-common.dtsi:21</code>).
+  </p>
+  <p>
+    A command is a function of the form <code>int handler(const struct shell *sh, size_t argc, char **argv)</code>, the type that <code>shell_cmd_handler</code> declares (<code>include/zephyr/shell/shell.h:267</code>). <code>argv[0]</code> is the command name and <code>argc</code> counts it too. You register it with <code>SHELL_CMD_REGISTER</code> (<code>shell.h:465</code>) for a plain command, or with <code>SHELL_CMD_ARG_REGISTER</code> when you want the shell to check the argument count. A command with subcommands, such as <code>led on</code>, is built with <code>SHELL_STATIC_SUBCMD_SET_CREATE</code> (<code>shell.h:502</code>).
+  </p>
+
+  <h3>Unit tests run where there is no board</h3>
+  <p>
+    A <a href="../reference/glossary.html#unit-test">unit test</a> checks one function with chosen inputs and compares the result with an expected value. The firmware is useful to test only if the logic is separate from the hardware. The MYS-1 conversion is a good example: it takes a number and returns a number, and it touches no register. Lesson <a href="0080-unit-testing-on-the-host.html">80</a> made the same argument for the host, and ztest is Zephyr's framework for the same job.
+  </p>
+  <p>
+    <code>ZTEST_SUITE</code> groups tests under one name, and <code>ZTEST</code> defines one test case (<code>subsys/testsuite/ztest/include/zephyr/ztest_test.h:289</code> and <code>:789</code>). <code>zassert_equal(a, b, message)</code> compares two values, and it is one of the assertion macros in <code>ztest_assert.h</code> (<code>:346</code>). The ztest documentation says that these macros "will instantly fail the test if the related assertion fails", which means the test case stops at that line, the failure is reported with its file and line, and the next test runs.
+  </p>
+
+  <h3>Twister runs the tests</h3>
+  <p>
+    Twister is Zephyr's test runner. It reads a description file in each test folder, builds the test for each platform the description names, and runs each one with the harness it names. The description file is <code>testcase.yaml</code> in this project. Zephyr's 4.5 documentation names <code>tests.yaml</code> as the file and calls <code>testcase.yaml</code> deprecated, but Twister still scans for both names (<code>scripts/pylib/twister/twisterlib/testplan.py:167</code>). The project uses the older name, and it still works.
+  </p>
+  <p>
+    The platform that runs on a PC is <code>native_sim</code>. It compiles the code into a Linux process, so the test runs at PC speed. The ztest documentation says that unit tests run as native applications and are "therefore only supported for Linux", and <code>arch/posix/CMakeLists.txt</code> stops the configure step on other hosts with the message <code>The POSIX architecture only works on Linux</code> (lines 4 and 5). <code>-p</code> (<code>--platform</code>) on the Twister command line selects the platform (<code>doc/develop/twister/index.rst</code>).</p>
+
+  <h2>Worked example: 1440 counts becomes 22.50 degrees</h2>
+  <p>
+    The MYS-1 reports temperature in units of 1/64 degree, as a signed 16-bit number (datasheet section 4.1, <code>projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html</code>). The conversion has to produce hundredths of a degree, so that the shell can print two decimal places without floating point. Take the raw value 1440 and follow the arithmetic.
+  </p>
+  <ol>
+    <li><strong>Raw count.</strong> The sensor says 1440. The integer is <code>raw = 1440</code>.</li>
+    <li><strong>Scale to hundredths.</strong> Multiply by 100 first: <code>1440 × 100 = 144000</code>.</li>
+    <li><strong>Divide by 64.</strong> <code>144000 / 64 = 2250</code> exactly, so the result is 2250 hundredths, which is 22.50 degrees. Check it another way: 1440 / 64 = 22.5.</li>
+    <li><strong>Print.</strong> The shell takes the magnitude, 2250, and prints <code>2250 / 100 = 22</code> and <code>2250 % 100 = 50</code>, giving <code>22.50 C</code>.</li>
+  </ol>
+  <p>
+    Now do it the wrong way. Divide first: <code>1440 / 64 = 22</code> in integer arithmetic, because the fraction .5 is dropped. Then <code>22 × 100 = 2200</code>, and the monitor prints <code>22.00 C</code>. The error is half a degree, and it comes from the order of two operations, not from the sensor. This is why the solution's comment says to multiply first.
+  </p>
+  <p>
+    The negative case shows the signed type at work. The count <code>-64</code> is <code>-1.00 C</code>. If the raw value is read as an unsigned 16-bit number, the same bits are 65472, which is <code>0xFFC0</code>, and 65472 × 100 / 64 gives 102300, which prints as <code>1023.00 C</code>. The datasheet gives the same warning in section 4.1.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>The solution is in <code>projects/0097-logging-shell-ztest/solution</code>. The conversion lives in <code>src/temp_format.c</code>, and the application in <code>src/main.c</code> only parses and prints.</p>
+  <pre><code>LOG_MODULE_REGISTER(app, LOG_LEVEL_INF);
+static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);</code></pre>
+  <p>
+    <code>LOG_MODULE_REGISTER</code> makes this file's module <code>app</code> at level INF, so the file's <code>LOG_INF</code> prints and its <code>LOG_DBG</code> does not. The LED is found through the <code>led0</code> alias, as in lesson 94, so the code names no pin.
+  </p>
+  <pre><code>static int cmd_led_on(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    gpio_pin_set_dt(&amp;led, 1);
+    shell_print(sh, "LED on");
+    return 0;
+}</code></pre>
+  <p>
+    This is a shell handler with the signature from above. <code>ARG_UNUSED</code> marks the two arguments that this command does not read, so the compiler does not warn. <code>gpio_pin_set_dt(&amp;led, 1)</code> sets the logical level 1, and the overlay's active-high flag turns that into a driven high pin. <code>shell_print</code> writes to the same session that sent the command, which is why the reply appears in the monitor and not on a different port.
+  </p>
+  <pre><code>SHELL_STATIC_SUBCMD_SET_CREATE(sub_led,
+    SHELL_CMD(on, NULL, "Turn the LED on", cmd_led_on),
+    SHELL_CMD(off, NULL, "Turn the LED off", cmd_led_off),
+    SHELL_CMD(toggle, NULL, "Toggle the LED", cmd_led_toggle),
+    SHELL_SUBCMD_SET_END
+);
+SHELL_CMD_REGISTER(led, &amp;sub_led, "Control the LED", NULL);</code></pre>
+  <p>
+    The subcommand set is a list of three children, <code>on</code>, <code>off</code> and <code>toggle</code>. The <code>NULL</code> in each entry means that a child has no children of its own. <code>SHELL_CMD_REGISTER</code> adds the parent, <code>led</code>, to the root of the shell, and the last argument is <code>NULL</code> because the parent has no handler, only the subcommands. Typing <code>led on</code> selects the first child, and typing <code>led</code> alone prints the list.
+  </p>
+  <pre><code>static int cmd_temp(const struct shell *sh, size_t argc, char **argv)
+{
+    if (argc != 2) {
+        shell_error(sh, "usage: temp &lt;raw count&gt;");
+        return -EINVAL;
+    }
+    long raw = strtol(argv[1], NULL, 0);
+    if (raw &lt; INT16_MIN || raw &gt; INT16_MAX) {
+        shell_error(sh, "raw count must fit in 16 bits");
+        return -ERANGE;
+    }</code></pre>
+  <p>
+    The first check counts the command name, so <code>argc == 2</code> means one argument. <code>strtol(argv[1], NULL, 0)</code> converts the text to a number, and base 0 accepts both decimal (<code>1440</code>) and hexadecimal (<code>0x5a0</code>). The range check comes before the cast, because a value outside the 16-bit range would be cut to the wrong number. The shell error function prints a message and returns a negative code, which the shell reports back.
+  </p>
+  <pre><code>    int32_t centi = mys_raw_to_centi_c((int16_t)raw);
+    int32_t mag = centi &lt; 0 ? -centi : centi;
+    LOG_DBG("raw %ld -&gt; %d centi-C", raw, (int)centi);
+    shell_print(sh, "%s%ld.%02ld C", centi &lt; 0 ? "-" : "",
+                (long)(mag / 100), (long)(mag % 100));
+    return 0;
+}
+SHELL_CMD_ARG_REGISTER(temp, NULL, "Convert a MYS-1 raw count to degrees C", cmd_temp, 2, 0);</code></pre>
+  <p>
+    The conversion runs on the value cast to <code>int16_t</code>, so the sign is kept. The magnitude is printed with <code>%02ld</code>, so a value of 50 prints as <code>50</code> and a value of 5 would print as <code>05</code>. That is why the sign is handled separately: printing a negative number's integer and fraction parts directly would give the wrong fraction. The <code>LOG_DBG</code> line is silent at level INF, and it costs nothing in the release build if you turn logging off. <code>SHELL_CMD_ARG_REGISTER</code> takes the minimum argument count, 2, which includes the command name, and the maximum optional count, 0.
+  </p>
+  <pre><code>int32_t mys_raw_to_centi_c(int16_t raw)
+{
+    return ((int32_t)raw * CENTI_PER_DEGREE) / COUNTS_PER_DEGREE;
+}</code></pre>
+  <p>
+    This is <code>src/temp_format.c</code>, and it is the function that the test calls. The cast to <code>int32_t</code> happens before the multiply, so the product of the 16-bit input and 100 fits in 32 bits. The multiply comes before the divide, as in the worked example. The function contains no hardware call, which is what makes it testable on a PC.
   </p>
   <pre><code>ZTEST_SUITE(temp_format, NULL, NULL, NULL, NULL, NULL);
 
@@ -39,32 +151,68 @@ ZTEST(temp_format, test_room_temperature)
     zassert_equal(mys_raw_to_centi_c(1440), 2250, "1440 counts should be 22.50 C");
 }</code></pre>
   <p>
-    <code>ZTEST_SUITE</code> groups the tests, and <code>ZTEST</code> defines one test case (<code>subsys/testsuite/ztest/include/zephyr/ztest_test.h:289, 789</code>). <code>zassert_equal</code> reports the message and goes on to the next test (<code>ztest_assert.h:346</code>). The tests live in <code>tests/temp_format/</code> with their own <code>prj.conf</code>, <code>CMakeLists.txt</code> and <code>testcase.yaml</code>. The test build compiles the same <code>temp_format.c</code> that the application uses, so the test checks the shipped code.
+    <code>ZTEST_SUITE</code> declares the suite and gives it no setup or teardown, because the conversion keeps no state. <code>ZTEST</code> defines the test case, and the test body calls <code>zassert_equal</code>. The third argument is the message printed on failure. The solution also has a negative case, <code>-64 → -100</code>, and a range case that checks <code>32767 → 51198</code> (the exact value 51198.4375 rounded toward zero) and <code>-32768 → -51200</code>. Each of these was chosen to test an edge of the arithmetic.
   </p>
 
-  <h2>Twister, and what it needs</h2>
+  <h2>Common mistakes and how to spot them</h2>
+  <h3>Shell enabled, but the shell symbols missing</h3>
   <p>
-    Twister is Zephyr's test runner. It reads <code>testcase.yaml</code>, builds each test for the platforms it names, and runs them where it can (<a href="https://docs.zephyrproject.org/4.5.0/develop/test/index.html">Zephyr testing</a>). The simulated board that CI uses is <code>native_sim</code>, which compiles the code into a Linux process. That needs Linux, and the docs say so: unit tests run as native applications, so they are "only supported for Linux" (<a href="https://docs.zephyrproject.org/4.5.0/develop/test/ztest.html">ztest docs</a>). The CMake guard says the same: <code>arch/posix/CMakeLists.txt</code> stops configuration unless the host is Linux.
+    <code>shell_print</code> is a macro that expands to a call to <code>shell_fprintf_impl</code> (<code>include/zephyr/shell/shell.h:1287</code> and <code>:1393</code>). That function exists only when <code>CONFIG_SHELL</code> is on. If the code calls <code>shell_print</code> and the symbol is off, the link fails with <code>undefined reference to shell_fprintf_impl</code>. The message looks like a code bug, but the cause is a missing Kconfig line, and the fix is <code>CONFIG_SHELL=y</code> in <code>prj.conf</code>. The starter's comment describes this failure, and the solution's <code>prj.conf</code> has the line.
   </p>
-  <div class="note">
-    What we checked on this Windows machine: the ztest suite builds for the Pico (<code>python -I tools/build.py projects/0097-logging-shell-ztest/solution/tests/temp_format</code>), and a <code>native_sim</code> configure stops with the POSIX message even with a MinGW gcc on the PATH. Twister could not run here: its Python modules need <code>natsort</code>, which is not installed, and this course does not install packages. On Linux or WSL you would install the Zephyr requirements and run <code>west twister -T projects/0097-logging-shell-ztest/solution/tests/temp_format -p native_sim</code>. We did not run that.
-  </div>
+  <h3>Logs missing from the monitor</h3>
+  <p>
+    The symptom is a <code>LOG_INF</code> line that never appears, while the shell works. The serial shell turns the UART log backend off by default, so the log messages go nowhere unless the shell log backend is selected. The fix is <code>CONFIG_SHELL_LOG_BACKEND=y</code>. A quick check is to type <code>help</code>: if the shell replies, the port works, and only the backend selection is wrong.
+  </p>
+  <h3>Dividing before multiplying</h3>
+  <p>
+    If the conversion is written as <code>raw / 64 * 100</code>, the monitor prints <code>22.00 C</code> for <code>temp 1440</code>, not <code>22.50 C</code>. The test <code>test_room_temperature</code> fails and prints its own message, which names the expected value, so the failing line is the fastest way to see the mistake. The fix is the expression in the solution: multiply first, divide last.
+  </p>
+  <h3>Reading the count as unsigned</h3>
+  <p>
+    If the parameter is declared <code>uint16_t</code>, the value <code>-64</code> arrives as 65472, and the output is <code>1023.00 C</code>. The negative-temperature test fails, and it says what it expected. Keep the raw type signed, as the datasheet says, and check the negative case every time the conversion changes.
+  </p>
+  <h3>Running native_sim on Windows</h3>
+  <p>
+    A learner who runs the test on the Windows PC sees the configure step stop with <code>The POSIX architecture only works on Linux</code>. The message is correct: <code>native_sim</code> is a Linux process. Run the test on Linux, or in WSL, which is a Linux environment inside Windows. The Pico build still works on Windows, which is why the test folder also lists <code>rpi_pico</code>.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production teams keep the logger at a level that matches the release. Debug messages are cut at build time, and the error and warning messages stay on, so a field report contains the lines that matter. The shell is often kept in a development image, or behind a build flag, because an open command line is a security risk in the field. Lesson <a href="0103-embedded-security.html">103</a> covers security in general.
+  </p>
+  <p>
+    Unit tests in CI are the usual form of this lesson's test. A server builds each test for a Linux host, runs it, and reports the result. Lesson <a href="0082-continuous-integration.html">82</a> describes that pipeline. The test folder is small, and its value grows with each bug it catches. Reviewers ask for a test with each change to conversion or parsing logic, and they look first at the edge cases.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A log message has a level: ERR is 1, WRN is 2, INF is 3 and DBG is 4. A module at level INF prints the first three.</li>
+    <li>With <code>CONFIG_LOG</code> off, the log macros compile to nothing. The UART log backend is off by default when the serial shell is on, so select <code>CONFIG_SHELL_LOG_BACKEND</code>.</li>
+    <li>A shell command is a handler with <code>(sh, argc, argv)</code>. <code>argc</code> counts the command name, and <code>SHELL_CMD_ARG_REGISTER</code> checks the count.</li>
+    <li>Do the arithmetic in the order that keeps the fraction: multiply by 100, then divide by 64.</li>
+    <li><code>ZTEST</code> defines a test case, and a failed <code>zassert</code> stops that test at once.</li>
+    <li>Twister runs tests from a description file, and <code>native_sim</code> needs a Linux host.</li>
+    <li>Keep the hardware-free logic separate, so the same function runs in the shell, on the board and in a host test.</li>
+  </ul>
 
   <h2>Try it in Wokwi</h2>
-  <p>The starter has the shell on, with three TODO(learner) handlers. You write the LED commands and the temperature command, and you turn on the logger.</p>
+  <p>The starter has the shell on and several TODO(learner) notes. You turn on the logger, write the LED commands and the temperature command, and fill in the formula and one test.</p>
   <ol class="steps">
-    <li>Open <code>projects/0097-logging-shell-ztest/starter</code> in VS Code. In <code>prj.conf</code>, turn on <code>CONFIG_LOG</code> and <code>CONFIG_SHELL_LOG_BACKEND</code> from the TODO(learner) note.</li>
-    <li>In <code>src/main.c</code>, write <code>cmd_led_on</code> and <code>cmd_led_off</code> with <code>gpio_pin_set_dt</code>. Then write <code>cmd_temp</code>: parse the argument with <code>strtol</code>, convert it with <code>mys_raw_to_centi_c</code>, and print the degrees.</li>
-    <li>In <code>src/temp_format.c</code>, fill in the formula, then build the test folder and check it compiles.</li>
-    <li>Build, start the simulator, and type <code>led on</code> and <code>temp 1440</code> in the serial monitor. You'll know it works when the LED turns on and the monitor prints <code>22.50 C</code>.</li>
+    <li>Open <code>projects/0097-logging-shell-ztest/starter</code> in VS Code. In <code>prj.conf</code>, uncomment or add <code>CONFIG_LOG=y</code>, <code>CONFIG_LOG_DEFAULT_LEVEL=3</code> and <code>CONFIG_SHELL_LOG_BACKEND=y</code>, from the TODO(learner) note.</li>
+    <li>In <code>src/main.c</code>, replace the two placeholder bodies in <code>cmd_led_on</code> and <code>cmd_led_off</code> with <code>gpio_pin_set_dt</code> and the correct messages, <code>LED on</code> and <code>LED off</code>.</li>
+    <li>Add the <code>toggle</code> entry to the subcommand set, calling <code>gpio_pin_toggle_dt</code>.</li>
+    <li>In <code>cmd_temp</code>, check <code>argc</code>, parse <code>argv[1]</code> with <code>strtol(argv[1], NULL, 0)</code>, convert it with <code>mys_raw_to_centi_c</code>, and print the degrees with the sign and the two decimals.</li>
+    <li>In <code>main()</code>, replace the TODO(learner) note with <code>LOG_INF("shell ready")</code>, so the log line appears before the prompt.</li>
+    <li>In <code>src/temp_format.c</code>, return <code>raw * 100 / 64</code>, multiplying first. In <code>tests/temp_format/src/test_temp_format.c</code>, add the negative test from the TODO(learner) note.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, start the simulator, and type <code>help</code>, then <code>led on</code> and <code>temp 1440</code>. You'll know it works when <code>led</code> appears in the help list, the LED turns on after <code>led on</code>, and the monitor prints <code>22.50 C</code>. The solution also prints <code>shell ready</code> at start, and that line is your check for step 5.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The shell only sees commands it was given. If <code>help</code> does not list <code>led</code>, check that the <code>SHELL_CMD_REGISTER</code> line is still in the file. For the formula, multiply first and divide last: <code>raw * 100 / 64</code>.</p>
+    <p>The shell only sees commands it was given. If <code>help</code> does not list <code>led</code>, check that the <code>SHELL_CMD_REGISTER</code> line is still in the file. For the formula, multiply first and divide last: <code>raw * 100 / 64</code>. For the negative test, the expected value for <code>-64</code> is <code>-100</code>.</p>
   </details>
   <p>The reference solution is in <code>projects/0097-logging-shell-ztest/solution</code>. Try first, compare after.</p>
   <div class="note">
-    Typing into the simulator's serial monitor depends on how Wokwi routes input to the Pico's UART, which we did not verify here (no simulator token). If your shell does not respond, check the serial monitor's input box and the RX/TX wiring in <code>diagram.json</code> first.
+    Typing into the simulator's serial monitor depends on how Wokwi routes input to the Pico's UART, which we did not verify here (no simulator token). If your shell does not respond, check the serial monitor's input box and the RX/TX wiring in <code>diagram.json</code> first. Run the host test on Linux or WSL, as the note above says, and compare its summary line with the one the test prints.
   </div>
 
   <div class="win">You turned on the logger and the shell, drove the LED from a command you registered, and wrote a ztest case that checks the conversion the shell uses.</div>
@@ -82,6 +230,11 @@ ZTEST(temp_format, test_room_temperature)
         "options": ["Linux or WSL", "Windows host ok", "macOS host ok", "Any host works"],
         "answer": 0,
         "why": "native_sim is a Linux process, and the CMake guard refuses other hosts. The tempting answer, any host, is false: the guard stops configuration on Windows." },
+      { "type": "mc",
+        "prompt": "The module is registered at LOG_LEVEL_INF. Which lines appear in the monitor?",
+        "options": ["Only debug lines appear", "Errors, warnings and info", "Every debug line appears", "Only info lines appear"],
+        "answer": 1,
+        "why": "A message prints when its level is at most the module's level, so errors (1), warnings (2) and info (3) print, and debug (4) does not. The tempting answer, only debug lines, reverses the order: debug is the most detailed level, and it is the one that is blocked." },
       { "type": "number",
         "prompt": "The test asserts mys_raw_to_centi_c(-64). What is the expected result in hundredths of a degree?",
         "answer": -100, "tolerance": 0, "unit": "centi-C",
@@ -90,6 +243,10 @@ ZTEST(temp_format, test_room_temperature)
         "prompt": "Compute 1440 times 100, divided by 64, with integer division. What do you get?",
         "answer": 2250, "tolerance": 0, "unit": "",
         "why": "144000 divided by 64 is exactly 2250. The tempting answer, 22, divides first and loses the hundredths." },
+      { "type": "number",
+        "prompt": "The shell command temp 720 prints what, in degrees C? Give the number, for example 22.50.",
+        "answer": 11.25, "tolerance": 0, "unit": "C",
+        "why": "720 times 100 is 72000, and 72000 divided by 64 is 1125, which is 11.25 C. The tempting answer, 11.00, divides first: 720 divided by 64 is 11 in integer arithmetic." },
       { "type": "text",
         "prompt": "Which Kconfig symbol sends the logs through the shell's log backend?",
         "accept": ["CONFIG_SHELL_LOG_BACKEND", "SHELL_LOG_BACKEND"],
@@ -119,7 +276,7 @@ ZTEST(temp_format, test_room_temperature)
   </div>
 
   <div class="source">
-    <a href="https://docs.zephyrproject.org/4.5.0/develop/test/ztest.html">Zephyr documentation: ztest</a>: read "Writing a test suite" and the note on the Linux-only native host. Then open <code>samples/subsys/testsuite/integration</code> in the Zephyr tree for a complete example.
+    <a href="https://docs.zephyrproject.org/4.5.0/develop/test/ztest.html">Zephyr documentation: ztest</a>: read "Creating a test suite", "Assertions" and the note on the Linux-only native host. Then open <code>samples/subsys/testsuite/integration</code> in the Zephyr tree for a complete example.
   </div>
 
   <div class="ask">
