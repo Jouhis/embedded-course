@@ -629,7 +629,7 @@
     const meta = main.querySelector(".lesson-meta");
     if (meta && !meta.textContent.trim()) {
       const label = item.kind === "lesson" ? `Lesson ${item.number}` : item.kind === "lab" ? "Lab" : "Checkpoint";
-      meta.textContent = [label, item.section, item.conceptOnly ? "concept lesson" : "", item.optional ? "optional" : ""]
+      meta.textContent = [label, item.conceptOnly ? "concept lesson" : "", item.optional ? "optional" : ""]
         .filter(Boolean).join(" · ");
     }
 
@@ -657,12 +657,7 @@
         el("span", { class: "progress" }),
       ]));
       const list = el("ul", { class: "lesson-list" });
-      let lastSection = null;
       p.items.forEach(i => {
-        if (i.section && i.section !== lastSection) {
-          list.appendChild(el("li", { class: "pending" }, [el("strong", { text: i.section })]));
-          lastSection = i.section;
-        }
         const num = i.kind === "lesson" ? String(i.number) : i.kind === "lab" ? "🔧" : "📝";
         const tags = [i.conceptOnly ? "concept" : "", i.optional ? "optional" : "", i.published ? "" : "coming"]
           .filter(Boolean).join(" · ");
