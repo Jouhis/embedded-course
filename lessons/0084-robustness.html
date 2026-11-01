@@ -23,12 +23,12 @@
     This lesson builds on four earlier ones. <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34</a> showed how the core enters an exception and pushes registers onto the stack. <a href="0039-the-mpu-and-how-faults.html">Lesson 39</a> introduced the faults and the System Control Block (SCB) that reports them. <a href="0042-startup-code-and-the-vector.html">Lesson 42</a> showed the vector table, which decides where the core goes when a fault happens. <a href="0078-memory.html">Lesson 78</a> showed how the stack grows into memory, and how a stack that is too deep becomes a hang or a corrupted variable.
   </p>
   <p>
-    The problem is a job situation. A product runs in a customer's building. It resets a few times a month, and a support engineer asks why. No debugger is attached, the serial port is unplugged, and the device is in a cabinet. The firmware has to do three jobs on its own. It must recover, so the device keeps working. It must record evidence, so the next engineer knows what happened. It must check its own assumptions, so that a broken invariant is found where it breaks and not three functions later. Each job has a tool in this lesson: a watchdog, a HardFault handler and an assertion.
+    This situation is common in the field. A product runs in a customer's building. It resets a few times a month, and a support engineer asks why. No debugger is attached, the serial port is unplugged, and the device is in a cabinet. The firmware has to do three jobs on its own. It must recover, so the device keeps working. It must record evidence, so the next engineer knows what happened. It must check its own assumptions, so that a broken invariant is found where it breaks and not three functions later. Each job has a tool in this lesson: a watchdog, a HardFault handler and an assertion.
   </p>
 
   <h2>Watchdogs: what they are for</h2>
   <p>
-    A <strong>watchdog</strong> is a counter that resets the chip if software does not clear it in time (glossary: <a href="../reference/glossary.html#watchdog">watchdog</a>). Normal code clears the counter on a schedule. Clearing it is called a <strong>kick</strong> or a refresh. If the program hangs in a loop, waits on a lock that never opens, or sits in a fault handler that never returns, the kick stops. The counter reaches zero and resets the system. A reset is a recovery, and a hung device is not. A stack overflow is one common cause of such a hang, and lesson 78 shows how to see the stack depth before it becomes one.
+    A <strong>watchdog</strong> is a counter that resets the chip if software does not clear it in time (glossary: <a href="../reference/glossary.html#watchdog">watchdog</a>). Normal code clears the counter on a schedule. Clearing it is called a <strong>kick</strong> or a refresh. If the program hangs in a loop, waits on a lock that never opens, or sits in a fault handler that never returns, the kick stops. The counter reaches zero and resets the system. A reset recovers the device. A hung device does not recover. A stack overflow is one common cause of such a hang, and lesson 78 shows how to see the stack depth before it becomes one.
   </p>
   <p>
     The STM32F1 has two watchdogs. Both are described in the reference manual RM0008, in the chapters on the independent watchdog (IWDG) and the window watchdog (WWDG). The two differ in their clock and in their rules:
@@ -47,7 +47,7 @@
     In this course's simulator, NOTES.md records that the Blue Pill's IWDG is <em>not</em> simulated, and WWDG is. The Pico's watchdog (<code>hardware_watchdog</code> in the SDK) has not been checked in the simulator, so treat its behaviour here as unverified.
   </div>
 
-  <h2>Kick strategies: check in, do not just kick</h2>
+  <h2>Kick strategies: check in before kicking</h2>
   <p>
     A watchdog kicked from one timer interrupt proves only that the interrupt runs. The main loop could be stuck, and the interrupt would keep the watchdog happy. A better design checks in. Each task sets its own bit when it has made progress. A supervisor kicks the watchdog only when every expected bit is set, and then clears the bits for the next round. If one task hangs, its bit never sets, the kick stops, and the chip resets. This is the task check-in pattern (glossary: <a href="../reference/glossary.html#task-check-in">task check-in</a>). It also tells you which task was stuck when you read the log in lesson 85.
   </p>
@@ -60,7 +60,7 @@
     When a fault happens, the core behaves like any other exception entry. It pushes a fixed set of eight words onto the active stack before it runs the handler (lesson 34). This set is the <strong>stacked frame</strong> (glossary: <a href="../reference/glossary.html#stacked-frame">stacked frame</a>). The eight words are R0, R1, R2, R3, R12, LR, PC and xPSR, in that order from the lowest address. Word 0 is at the frame pointer, word 6 is at the frame pointer plus 24 bytes, and word 7 is at 28 bytes.
   </p>
   <p>
-    The PC in the frame is the address of the instruction that was running when the fault happened. For a precise fault, which is the case in this lesson, the instruction that caused the fault is the one whose address is stacked. That is why the PC is the key to the crash: it tells you where the code was. The LR word holds whatever the link register held, which is not the caller in general, so it is a weaker clue.
+    The PC in the frame is the address of the instruction that was running when the fault happened. For a precise fault, which is the case in this lesson, the instruction that caused the fault is the one whose address is stacked. That is why the PC is the main clue: it tells you where the code was. The LR word holds whatever the link register held, which is not the caller in general, so it is a weaker clue.
   </p>
   <p>
     The handler needs to know which stack the frame went to. The core chooses the main stack pointer (MSP) or the process stack pointer (PSP) depending on the mode it was in, and it reports the choice in the exception return value, called EXC_RETURN (glossary: <a href="../reference/glossary.html#exc-return">EXC_RETURN</a>). Bit 2 of EXC_RETURN is 0 when the frame is on the MSP, and 1 when it is on the PSP. Because the firmware in this lesson has no operating system, the frame goes to the MSP.
@@ -174,7 +174,7 @@ void assert_failed(const char *file, int line) {
     A product team treats a reset as data. The firmware records the reset reason at boot (lesson 85), and the crash record survives the reset. The team keeps the ELF and the map file for every release, usually in the same archive as the firmware image, so the decode can always be repeated. A field report is then a short list of facts: the reset reason, the PC, the fault registers and the release number. The engineer reads that list before asking the customer for anything else.
   </p>
   <p>
-    Teams also design the watchdog timing as a requirement. Each task has a maximum time between check-ins, the supervisor's kick interval is shorter than the shortest of those, and the values are written in the design document. A reviewer asks what happens when a task is slow, not only when it is stuck. In an interview, the question about a HardFault tests whether you know which registers to read first, and whether you can turn an address into a line without a debugger. The model answer below covers both.
+    Teams also design the watchdog timing as a requirement. Each task has a maximum time between check-ins, the supervisor's kick interval is shorter than the shortest of those, and the values are written in the design document. A reviewer asks what happens when a task is slow as well as when it is stuck. In an interview, the question about a HardFault tests whether you know which registers to read first, and whether you can turn an address into a line without a debugger. The model answer below covers both.
   </p>
 
   <h2>Summary</h2>

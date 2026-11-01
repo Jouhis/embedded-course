@@ -19,7 +19,7 @@
 
   <h2>Where we are and why it matters</h2>
   <p>
-    Lesson 87 set up FreeRTOS and showed tasks being created and scheduled. Lesson 89 added queues and semaphores, and lesson 90 added mutexes and the problems they bring. In all of those lessons the code worked on the first try in the simulator, and that is the trap: a demo that runs once tells you nothing about whether the design survives a bad minute. A product has to meet its timing every time, with the worst input and the worst interrupt timing, and it has to do that in the RAM the chip actually has.
+    Lesson 87 set up FreeRTOS and showed tasks being created and scheduled. Lesson 89 added queues and semaphores, and lesson 90 added mutexes and the problems they bring. In all of those lessons the code worked on the first try in the simulator. A demo that runs once, though, tells you nothing about whether the design survives a bad minute. A product has to meet its timing every time, with the worst input and the worst interrupt timing, and it has to do that in the RAM the chip actually has.
   </p>
   <p>
     Two questions decide that. The first is whether each task has enough stack, the memory where its local variables and return addresses live (lesson 78 covered the stack and what overflow does). The second is whether each task finishes its work before its deadline, which is the time by which the work must be done or the system is wrong. A motor controller that runs its current loop 2 ms late can overheat a winding. A fitness tracker whose display update is late by 200 ms is only annoying. Real jobs in motor control, medical devices and automotive ECUs are judged on both questions, and a senior engineer will ask for the numbers. This lesson gives you the tools to produce them.
@@ -34,7 +34,7 @@
     The third argument is the stack depth, and the FreeRTOS header says it is "the number of variables the stack can hold - not the number of bytes" (<code>third_party/FreeRTOS-Kernel/include/task.h</code>, the <code>xTaskCreate</code> documentation). On the Cortex-M3 a stack variable is a 32-bit word, so a depth of 128 is 512 bytes. Forgetting that factor of four is one of the most common sizing errors, and it is covered in the mistakes section below.
   </p>
   <p>
-    A stack grows downward in memory on the Cortex-M3. Each function call pushes a return address and its local variables, and the stack pointer moves toward the bottom of the task's block. The bottom is the dangerous end. If a deep call chain or a large local array pushes past it, the write lands in whatever memory sits below, which may be another task's stack or a global variable. The CPU does not stop that write. Nothing in the hardware knows where one task's stack ends and the next begins.
+    A stack grows downward in memory on the Cortex-M3. Each function call pushes a return address and its local variables, and the stack pointer moves toward the bottom of the task's block. The bottom is the dangerous end. If a deep call chain or a large local array pushes past it, the write lands in whatever memory sits below, which may be another task's stack or a global variable. The CPU does not stop that write, and the hardware has no record of where one task's stack ends and the next begins.
   </p>
 
   <h2>Painting the stack: the high-water mark</h2>
@@ -45,7 +45,7 @@
     Later, <code>uxTaskGetStackHighWaterMark()</code> scans from the bottom of the stack upward, counting words that still hold the fill pattern. The function is defined at <code>tasks.c</code> line 6429, and it is enabled by <code>INCLUDE_uxTaskGetStackHighWaterMark</code>, which the project sets to 1. The return value is the fewest free words ever seen, in words, and the header says so: "the minimum amount of stack space that has remained for the task since the task was created" (<code>include/task.h</code>). The smaller the number, the closer the task came to overflowing.
   </p>
   <p>
-    The most important property of the high-water mark is that it is a record of the past. It is correct for the paths that actually ran. A rarely taken branch that makes a deep call can still overflow after your test passed, and the high-water mark will not warn you, because the mark only records what happened. So the procedure is: size the stack for the worst path you can reason about, run the system through its busiest scenario for long enough, read the mark, and keep a margin. The project uses 16 words as the margin, which is 64 bytes.
+    The high-water mark is a record of the past. It is correct for the paths that actually ran. A rarely taken branch that makes a deep call can still overflow after your test passed, and the high-water mark will not warn you, because the mark only records what happened. So the procedure is: size the stack for the worst path you can reason about, run the system through its busiest scenario for long enough, read the mark, and keep a margin. The project uses 16 words as the margin, which is 64 bytes.
   </p>
 
   <h2>Catching an overflow before it spreads</h2>
@@ -116,7 +116,7 @@ n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</co
     Step by step: the fast task uses 0.3 ms out of every 10 ms, so its share is 0.3 divided by 10, which is 0.030. The slow task uses 3 ms out of 100 ms, which is 0.030 again. The report task uses 0.5 ms out of 1000 ms, which is 0.0005. The total is 0.0605. The bound for three tasks is 0.780, so the set passes the test with a wide margin. Even if the real work were ten times longer than the targets, the total would be 0.605 and still under the bound.
   </p>
   <p>
-    The margin is the point of the exercise. The bound says nothing about the stack, the shared bus or the interrupts, so a passing result is a necessary first step, not a proof of the whole system. Lesson 90 showed that a mutex can make a high-priority task wait for a low-priority one, and that wait is extra time the bound does not include. A review should ask for the blocking time as well.
+    The bound says nothing about the stack, the shared bus or the interrupts, so a passing result is a necessary first step, not a proof of the whole system. Lesson 90 showed that a mutex can make a high-priority task wait for a low-priority one, and that wait is extra time the bound does not include. A review should ask for the blocking time as well.
   </p>
 
   <h2>Reading the code, line by line</h2>
@@ -132,7 +132,7 @@ n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</co
     }
 }</code></pre>
   <p>
-    <code>last_wake</code> holds the tick at which the task last started. It is set once, before the loop. <code>(void)arg</code> tells the compiler that the parameter is unused, which keeps the warning list clean. Inside the loop, <code>timed_work()</code> runs the work and records its worst time into <code>fast_max_us</code>. The last line is the important one. <code>vTaskDelayUntil()</code> sleeps until <code>last_wake</code> plus the period, and it then moves <code>last_wake</code> forward by exactly one period. A plain <code>vTaskDelay(10)</code> would instead sleep 10 ms after the work finished, so the period would drift by the work time on every cycle. Over a long run the drift adds up, and the measured rate is wrong. <code>pdMS_TO_TICKS()</code> converts milliseconds to ticks, and with a 1 kHz tick the conversion is the identity, so 10 ms is 10 ticks.
+    <code>last_wake</code> holds the tick at which the task last started. It is set once, before the loop. <code>(void)arg</code> tells the compiler that the parameter is unused, which keeps the warning list clean. Inside the loop, <code>timed_work()</code> runs the work and records its worst time into <code>fast_max_us</code>. The last line controls the timing. <code>vTaskDelayUntil()</code> sleeps until <code>last_wake</code> plus the period, and it then moves <code>last_wake</code> forward by exactly one period. A plain <code>vTaskDelay(10)</code> would instead sleep 10 ms after the work finished, so the period would drift by the work time on every cycle. Over a long run the drift adds up, and the measured rate is wrong. <code>pdMS_TO_TICKS()</code> converts milliseconds to ticks, and with a 1 kHz tick the conversion is the identity, so 10 ms is 10 ticks.
   </p>
   <p>
     The report function reads the mark for one task:
@@ -157,7 +157,7 @@ uint32_t used_words = depth_words - free_words;</code></pre>
     <strong>Mistake 4: using a plain delay for a periodic task.</strong> A task written with <code>vTaskDelay()</code> runs at a period of work time plus delay time, not at the period you wrote. The symptom appears only over time: the measured rate drifts, and a task that should run 100 times in 10 seconds runs 98 times. The fix is <code>vTaskDelayUntil()</code>, as the solution uses, with the previous wake time kept between cycles.
   </p>
   <p>
-    <strong>Mistake 5: an empty overflow hook.</strong> A hook that returns, or a missing <code>configCHECK_FOR_STACK_OVERFLOW</code>, means an overflow is silent. The symptom is a task that behaves strangely a long time later, with no error message. The fix is a hook that stops the system, as in the project, and a debugger session that reads the task name. The hook is the cheapest insurance in the whole lesson.
+    <strong>Mistake 5: an empty overflow hook.</strong> A hook that returns, or a missing <code>configCHECK_FOR_STACK_OVERFLOW</code>, means an overflow is silent. The symptom is a task that behaves strangely a long time later, with no error message. The fix is a hook that stops the system, as in the project, and a debugger session that reads the task name. The hook is only a few lines of code.
   </p>
 
   <h2>In real projects</h2>
