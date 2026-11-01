@@ -137,9 +137,11 @@ def build(project: Path, clean: bool, build_type: str = "Debug", test: bool = Fa
     if kind in ("pico", "cmake"):
         cache = build_dir / "CMakeCache.txt"
         cached = cache.read_text(encoding="utf-8", errors="replace") if cache.exists() else ""
-        if not (build_dir / "build.ninja").exists() or f"CMAKE_BUILD_TYPE:STRING={build_type}" not in cached:
+        if (not (build_dir / "build.ninja").exists() or f"CMAKE_BUILD_TYPE:STRING={build_type}" not in cached
+                or not (build_dir / "compile_commands.json").exists()):
             # Debug (-Og -g) by default, so stepping in GDB follows the source (lesson 54).
-            rc = run(["cmake", "-S", project, "-B", build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={build_type}"],
+            rc = run(["cmake", "-S", project, "-B", build_dir, "-G", "Ninja", f"-DCMAKE_BUILD_TYPE={build_type}",
+                         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
                      cwd=project, env=env)
             if rc:
                 return rc
