@@ -396,10 +396,9 @@
         block.appendChild(opts);
         if (q.hint) block.appendChild(el("div", { class: "q-input-row" }, [hintButton()]));
       } else {
-        const placeholder = q.type === "number" ? "e.g. 4.7k or 0x1F"
+        const placeholder = q.type === "number" ? "4.7k, 0x1F, 2.2u, 10mA etc."
           : q.type === "formula" ? `a formula using ${(q.vars || []).join(", ")}` : "your answer";
-        const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder,
-          class: q.type === "number" ? "" : "wide" });
+        const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder });
         const check = el("button", { class: "btn", type: "button", text: "Check" });
         const reveal = el("button", { class: "btn secondary", type: "button", text: "Show answer" });
         const row = el("div", { class: "q-input-row" }, [input]);
