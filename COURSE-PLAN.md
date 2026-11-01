@@ -3,7 +3,7 @@
 **Mission (draft):** Reach junior embedded-engineer level and finish with a portfolio project on GitHub.
 **Learner:** Already programs; new to electronics.
 **Platforms:** Raspberry Pi Pico (RP2040, Pico SDK, C) and STM32 Blue Pill (STM32F103, CMSIS + HAL), simulated with Wokwi in VS Code.
-**Size:** 116 lessons, 6 labs, 8 checkpoint exams.
+**Size:** 122 lessons, 6 labs, 8 checkpoint exams.
 
 **Legend**
 - 🔧 lab
@@ -142,49 +142,55 @@
 86. Why use an RTOS: super-loop vs scheduler
 87. FreeRTOS setup, tasks, and scheduling
 88. Context switching at the register level
-89. Queues, semaphores, and event groups
-90. Mutexes, priority inversion, and deadlock
-91. Timing analysis, deadlines, and stack sizing
+89. Context switching in the FreeRTOS port: the handler and PendSV
+90. Queues, semaphores, and event groups
+91. Mutexes, priority inversion, and deadlock
+92. Stack sizing: high-water marks and overflow checks
+93. Timing analysis: execution time, deadlines, and rate-monotonic priorities
 
 - 🔧 **Lab 5:** Move Lab 4 onto FreeRTOS
 
 ### 7.2 Zephyr
-92. Zephyr setup: west, the SDK, and a first app on the Pico
-93. Kconfig and the build system
-94. Devicetree: describing hardware
-95. Threads and kernel services: message queues, semaphores, mutexes, work queues
-96. The device driver model and the GPIO and I2C APIs
-97. Logging, the shell, and testing with ztest and Twister
+94. Zephyr setup: west, the SDK, and a first app on the Pico
+95. Kconfig and the build system
+96. Devicetree: describing hardware
+97. Threads and kernel services: message queues, semaphores, mutexes, work queues
+98. The device driver model and the GPIO and I2C APIs
+99. Logging, the shell, and testing with ztest and Twister
 
 - 🔧 **Lab 6:** Port Lab 5 to Zephyr and compare the two RTOSes
 - 📝 **Checkpoint 7**
 
 ## Part 8: Communication and Connected Systems
-98. 💡 CAN bus
-99. RS-485 and Modbus RTU (with a Python master on the PC over the simulated serial port)
-100. 💡 USB fundamentals (plus a USB CDC serial demo on the Pico)
-101. Designing a serial protocol: framing, checksums, CRC
-102. Bootloaders and firmware updates: A/B slots, OTA
-103. Embedded security: secure boot, debug port lockdown, attack surfaces
+100. 💡 CAN bus
+101. RS-485 and Modbus RTU (with a Python master on the PC over the simulated serial port)
+102. 💡 USB fundamentals (plus a USB CDC serial demo on the Pico)
+103. Designing a serial protocol: framing, checksums, CRC
+104. Bootloaders and firmware updates: A/B slots, OTA
+105. Embedded security: secure boot, debug port lockdown, attack surfaces
 
 - 📝 **Checkpoint 8**
 
 ## Part 9: Signal Processing, Control, and Beyond
-104. Digital filtering: moving average and IIR filters
-105. PID control
-106. ⭐ PCB design in KiCad: from schematic to board
-107. ⭐ Embedded Linux: when to use it instead of an MCU
-108. ⭐ Embedded Rust on the Pico (including setup)
-109. ⭐ Functional safety: IEC 61508 and ISO 26262
+106. Digital filtering: moving average and IIR filters
+107. PID control
+108. ⭐ PCB design in KiCad: from schematic to board
+109. ⭐ Embedded Linux: when to use it instead of an MCU
+110. ⭐ Embedded Rust on the Pico (including setup)
+111. ⭐ Functional safety: IEC 61508 and ISO 26262
 
 ## Part 10: Capstone and Career
-110. Capstone 1: requirements and architecture for a filament-dryer controller
-111. Capstone 2: drivers and unit tests
-112. Capstone 3: RTOS threads and PID heater control
-113. Capstone 4: Modbus interface, bootloader, and CI
-114. Portfolio and CV for embedded jobs
-115. Interview preparation (practice quiz)
-116. Next steps: real hardware to buy, communities
+112. Capstone 1: requirements and the state machine for a filament-dryer controller
+113. Capstone 2: layered architecture, tasks, and the pin map
+114. Capstone 3: the NTC driver and unit tests
+115. Capstone 4: heater PWM, buttons, display, and safety checks
+116. Capstone 5: RTOS threads and PID heater control
+117. Capstone 6: Modbus RTU interface and the host master
+118. Capstone 7: the bootloader and the image layout
+119. Capstone 8: CI and the finished capstone
+120. Portfolio and CV for embedded jobs
+121. Interview preparation (practice quiz)
+122. Next steps: real hardware to buy, communities
 
 ---
 

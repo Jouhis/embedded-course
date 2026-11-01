@@ -1,3 +1,4 @@
+// EXPECT: address check OK: &GPIOC->BSRR matches
 /* Lesson 38 solution: the memory map and memory-mapped registers.
  * GPIOC->BSRR is a memory-mapped register at GPIOC base + offset. The struct
  * GPIOC->BSRR is the compiler's way of writing that address; the raw pointer below

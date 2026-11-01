@@ -1,3 +1,4 @@
+// EXPECT: OWN STRUCT OK
 /* Blink PC13 with YOUR OWN register struct for the GPIO block, not the CMSIS GPIO_TypeDef.
  * LED: PC13 (active low). Serial: USART1 TX on PA9, 115200 baud.
  * RCC, SysTick and USART1 still come from CMSIS. Only GPIO is ours.

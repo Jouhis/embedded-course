@@ -1,3 +1,4 @@
+// EXPECT: Blink 5 Hz: on-board on, external off
 #include <stdio.h>
 #include "pico/stdlib.h"
 

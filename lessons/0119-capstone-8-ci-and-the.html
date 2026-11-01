@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 8: CI and the finished capstone · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0119">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 8: CI and the finished capstone</h1>
+  <p class="subtitle">A capstone is finished when a machine can check it on every change and a person can explain what those checks do not cover. This last stage shows the pipeline, and then it takes stock of the whole project.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read the dryer's CI workflow job by job, say which failures block a change and which only report, run the host tests and the static analysis the way CI runs them, and name the capstone lesson where each part of the dryer was taught.
+  </div>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lessons <a href="0112-capstone-1-requirements-and-the.html">112</a> to <a href="0118-capstone-7-the-bootloader-and.html">118</a> built the dryer part by part: its requirements, its drivers, its control loop, its Modbus interface and its bootloader. This lesson covers the last piece, the checks that run on every change, and then the capstone as a whole.
+  </p>
+  <p>
+    Continuous integration (CI) was introduced in <a href="0082-continuous-integration.html">lesson 82</a>, where a sample workflow ran on a small project. <a href="0083-static-analysis.html">Lesson 83</a> added static analysis with cppcheck, and <a href="0080-unit-testing-on-the-host.html">lesson 80</a> introduced the host unit tests. The workflow in this project puts those pieces together for the dryer. It runs the same checks, on the same sources, that a developer runs on a laptop.
+  </p>
+
+  <h2>What CI runs on every change</h2>
+  <p>
+    Continuous integration is a service that runs a fixed list of commands on every change, so a broken change is caught before it reaches a board. The dryer's workflow has four jobs. A job is a set of steps that run on a fresh machine, and its <code>needs</code> line says which jobs must pass before it starts. A job whose needed job fails is skipped, and so is every job that depends on it.
+  </p>
+  <table>
+    <thead><tr><th>Job</th><th>Needs</th><th>What it does</th><th>What a failure blocks</th></tr></thead>
+    <tbody>
+      <tr><td>host-tests</td><td>nothing</td><td>Builds the host test project with CMake and Ninja, then runs ctest on its ten test programs</td><td>The firmware job and, through it, the simulation</td></tr>
+      <tr><td>static-analysis</td><td>nothing</td><td>Runs cppcheck on the firmware sources, and fails on any warning or style finding</td><td>The firmware job and, through it, the simulation</td></tr>
+      <tr><td>firmware</td><td>host-tests, static-analysis</td><td>Builds the bootloader and the application as one ELF, prints the sizes, and keeps the ELF, the hex and the map file</td><td>The simulation</td></tr>
+      <tr><td>simulate</td><td>firmware</td><td>Runs the firmware in Wokwi and expects the banner <code>DRYER RTOS OK</code> within 10 seconds, when the token is set</td><td>Only the run itself, because nothing waits after it</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The two jobs with no <code>needs</code> line start together, and the other two wait for them. A change that fails a test therefore never produces a firmware image, and a change that fails static analysis never reaches the simulator. The order is the design. Each job checks something more basic than the job after it, and the cheap checks run first, so a failure stops the expensive steps early.
+  </p>
+
+  <h2>The workflow file, step by step</h2>
+  <p>
+    The workflow is <code>projects/0117-dryer-modbus-bootloader/.github/workflows/ci.yml</code>. It is adapted from the sample in lesson 82. GitHub reads workflows only from the <code>.github/workflows</code> folder at the root of a repository, so the copy inside the project folder is there for reading. To make it run, copy it to the root of the repository and keep the course layout, because the paths in the file and in the CMake files are relative to the root. The file's first comment says the same thing.
+  </p>
+  <p>
+    The excerpts below leave out the comments in the file. Each one is followed by what its lines do.
+  </p>
+
+  <h3>The triggers and the shared settings</h3>
+  <pre><code class="language-yaml">name: dryer-ci
+
+on:
+  push:
+  pull_request:
+
+env:
+  FIRMWARE: projects/0117-dryer-modbus-bootloader/solution
+  HOST_TESTS: projects/0119-dryer-host-tests/solution</code></pre>
+  <ul>
+    <li><code>name</code> is the label that appears in the Actions tab and on the pull request.</li>
+    <li><code>on</code> lists the events that start the workflow. Here a push to any branch and a pull request both start it. A pull request from a branch in the same repository therefore runs twice, once for the push and once for the pull request. A branch filter can reduce that cost.</li>
+    <li><code>env</code> sets two variables for every job. <code>FIRMWARE</code> is the folder of the firmware, and <code>HOST_TESTS</code> is the folder of the host test project. Later lines use <code>$FIRMWARE</code> and <code>$HOST_TESTS</code>, so a path changes in one place.</li>
+  </ul>
+
+  <h3>The host-tests job</h3>
+  <pre><code class="language-yaml">  host-tests:
+    name: Host unit tests and closed loop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install CMake and Ninja
+        run: sudo apt-get update &amp;&amp; sudo apt-get install -y cmake ninja-build
+      - name: Build and run the unit tests (ctest)
+        run: |
+          cmake -S $HOST_TESTS -B build-host -G Ninja
+          cmake --build build-host
+          ctest --test-dir build-host --output-on-failure</code></pre>
+  <ul>
+    <li><code>runs-on: ubuntu-latest</code> asks for a fresh Linux machine. Nothing from an earlier run is kept on it, which is why every job begins with a checkout.</li>
+    <li><code>uses: actions/checkout@v4</code> downloads the repository into the job. Without it the machine has no source files.</li>
+    <li>The install step adds CMake and Ninja. The host tests use the Ninja generator, so the commands here match the ones you run locally.</li>
+    <li><code>cmake -S $HOST_TESTS -B build-host -G Ninja</code> configures the project. <code>-S</code> names the source folder and <code>-B</code> names the build folder, which is created inside the job.</li>
+    <li><code>cmake --build build-host</code> compiles the test programs and the application sources they use.</li>
+    <li><code>ctest --test-dir build-host --output-on-failure</code> runs every test program. The flag prints the output of a failing test, so the log says what failed without a second run. The step fails if any test fails.</li>
+  </ul>
+
+  <h3>The static-analysis job</h3>
+  <pre><code class="language-yaml">  static-analysis:
+    name: Static analysis (cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update &amp;&amp; sudo apt-get install -y cppcheck
+      - name: Check the firmware sources
+        run: &gt;
+          cppcheck --enable=warning,style --inline-suppr --error-exitcode=1 --std=c11 --quiet
+          -I $FIRMWARE/app -I $FIRMWARE/rtos -I $FIRMWARE/boot -I $FIRMWARE
+          $FIRMWARE/app $FIRMWARE/rtos/tasks.c $FIRMWARE/boot/bootloader.c $FIRMWARE/boot/app_vectors.c $FIRMWARE/main.c</code></pre>
+  <ul>
+    <li>The job follows the same checkout and install pattern as the others, with cppcheck in place of CMake.</li>
+    <li><code>run: &gt;</code> folds the following lines into one shell command, so the three lines below it are read as one long command.</li>
+    <li><code>--enable=warning,style</code> turns on the warning and style checks. Lesson 83 explains what each class catches.</li>
+    <li><code>--inline-suppr</code> lets a source file silence a single finding with a comment. Each suppression is then visible in the code and in review.</li>
+    <li><code>--error-exitcode=1</code> is the flag that makes this job a gate. cppcheck returns 1 when it reports any finding, and returns 0 otherwise. Without the flag, the job would show a green result even with findings in the log. The Try it in this lesson tests this on purpose.</li>
+    <li><code>--std=c11</code> sets the language standard, and <code>--quiet</code> hides the progress lines, so the log holds only the findings.</li>
+    <li><code>-I</code> adds the include folders, so cppcheck can resolve the headers that the sources include. The last line lists the folders and files to check. The folder <code>$FIRMWARE/app</code> is checked recursively.</li>
+  </ul>
+
+  <h3>The firmware job</h3>
+  <pre><code class="language-yaml">  firmware:
+    name: Build the firmware (bootloader + application, one ELF)
+    needs: [host-tests, static-analysis]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the Arm GCC toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: '15.3.Rel2'
+      - name: Install CMake and Ninja
+        run: sudo apt-get update &amp;&amp; sudo apt-get install -y cmake ninja-build
+      - name: Build (Debug, with the ELF, the hex and the map file)
+        run: |
+          cmake -S $FIRMWARE -B $FIRMWARE/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build $FIRMWARE/build
+          arm-none-eabi-size $FIRMWARE/build/dryer.elf
+      - name: Keep the build outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: |
+            ${{ env.FIRMWARE }}/build/dryer.elf
+            ${{ env.FIRMWARE }}/build/dryer.hex
+            ${{ env.FIRMWARE }}/build/dryer.map</code></pre>
+  <ul>
+    <li><code>needs: [host-tests, static-analysis]</code> makes this job wait for both. If either one fails, the firmware is not built at all.</li>
+    <li>The Arm action installs the cross compiler, pinned to release 15.3.Rel2. The local workspace uses Arm GNU 14.2, so the two builds can differ slightly, as the note in lesson 118 says. A real project pins one release in both places.</li>
+    <li>The Debug build type is the configuration that lesson 118 measured. The build writes the ELF, the hex and the map file into the build folder.</li>
+    <li><code>arm-none-eabi-size</code> prints the text, data and bss columns that lesson 118 reports, so the size of every build is in the log.</li>
+    <li><code>upload-artifact@v4</code> keeps the three files after the job ends. A reviewer can download the exact image that CI built, and the simulate job uses the same files.</li>
+  </ul>
+
+  <h3>The simulate job</h3>
+  <pre><code class="language-yaml">  simulate:
+    name: Simulate in Wokwi (only when the token is set)
+    needs: firmware
+    runs-on: ubuntu-latest
+    env:
+      WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the token is present
+        id: token
+        run: |
+          if [ -n "$WOKWI_CLI_TOKEN" ]; then echo "present=true" &gt;&gt; "$GITHUB_OUTPUT"; else echo "present=false" &gt;&gt; "$GITHUB_OUTPUT"; echo "WOKWI_CLI_TOKEN not set: the simulation is skipped"; fi
+      - name: Download the firmware
+        if: steps.token.outputs.present == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: ${{ env.FIRMWARE }}/build
+      - name: Run the simulation and expect the banner
+        if: steps.token.outputs.present == 'true'
+        uses: wokwi/wokwi-ci-action@v1
+        with:
+          token: ${{ secrets.WOKWI_CLI_TOKEN }}
+          path: ${{ env.FIRMWARE }}
+          timeout: 10000
+          expect_text: 'DRYER RTOS OK'</code></pre>
+  <ul>
+    <li><code>needs: firmware</code> means the simulation runs only on an image that has already built. It downloads that image rather than building it again.</li>
+    <li><code>env</code> passes the repository secret into the job as the variable <code>WOKWI_CLI_TOKEN</code>. The expression <code>${{ secrets.WOKWI_CLI_TOKEN }}</code> reads the secret without writing its value into the file.</li>
+    <li>The token check is a short shell script. It tests whether the variable is empty, and it writes <code>present=true</code> or <code>present=false</code> to <code>$GITHUB_OUTPUT</code>. Later steps read that output in their <code>if:</code> lines.</li>
+    <li>The check is a step, not an <code>if:</code> on the whole job, and the comment in the file gives the reason: a secret cannot be tested in a job-level condition. The step writes the result out, and the other steps read it.</li>
+    <li>The download step restores the firmware into the build folder, so the simulator runs the same image that the firmware job produced.</li>
+    <li><code>wokwi/wokwi-ci-action@v1</code> runs the simulation for at most 10000 ms, which is the <code>timeout</code>. It fails unless the serial output contains <code>DRYER RTOS OK</code>, the <code>expect_text</code>. This is the same check that lesson 82 described, with the same inputs.</li>
+  </ul>
+  <p>
+    This job differs from the sample in lesson 82. The sample skipped the whole job for a pull request from a fork, while this file runs the job and skips only its steps. Both give a green result for a fork, so the difference matters for how you read the log. A green simulate job for a fork contains no simulation. The token step prints a line that says so, and a reviewer who reads only the green tick would miss it.
+  </p>
+
+  <h2>How the host tests run in CI</h2>
+  <p>
+    The host-tests job builds one project, <code>projects/0119-dryer-host-tests/solution</code>, and runs ten test programs from it. The project is a CMake project that compiles with the PC's compiler, not with the Arm compiler. Its CMake file shows how the same application code is tested on a PC and built for the board.
+  </p>
+  <p>
+    The file starts by building Unity, the test framework, from the copy in the <code>third_party</code> folder. Unity becomes a static library, a single archive that each test program links against. The next block holds the central idea. It builds a library called <code>dryer_app</code> from the application sources in <code>projects/0117-dryer-modbus-bootloader/solution/app</code>, which are the same files the firmware compiles. The tests therefore check the code that ships, not a copy of it. The thermal model used by the closed-loop test comes from the plant of lesson 107, and it is compiled into the same library.
+  </p>
+  <p>
+    The last block is the list of tests. It is a loop over ten names, and each name becomes one executable and one test:
+  </p>
+  <pre><code class="language-cmake">enable_testing()
+foreach(t ntc safety dryer ui debounce filters controller closed_loop modbus regmap)
+  add_executable(test_${t} test/test_${t}.c)
+  target_link_libraries(test_${t} dryer_app unity)
+  add_test(NAME ${t} COMMAND test_${t})
+endforeach()</code></pre>
+  <ul>
+    <li><code>enable_testing()</code> turns on the test runner, ctest, for this project.</li>
+    <li>The <code>foreach</code> line lists the test names. Each name stands for a file in the <code>test</code> folder, so <code>ntc</code> means <code>test_ntc.c</code>.</li>
+    <li><code>add_executable</code> compiles one test file into a program. <code>target_link_libraries</code> links that program to the application library and to Unity.</li>
+    <li><code>add_test</code> registers the program with ctest. The name is what the summary prints.</li>
+  </ul>
+  <p>
+    Each test program is a small <code>main()</code> that runs its Unity tests and returns the failure count. The Unity header states that the return value of the test's <code>main()</code> becomes the exit code of the program. A test that fails therefore makes its program exit with a non-zero code, and ctest marks that test as failed. The CI step fails when any of the ten is marked failed.
+  </p>
+  <p>
+    The <code>foreach</code> list is the one place where a new test file must be named. Creating <code>test/test_fan.c</code> is not enough. If its name is not in the list, CMake never builds it and ctest never runs it. That is mistake 2 below, and it is easy to make, because nothing reports an error. The count in the summary is the only sign, which is why it is worth reading every time.
+  </p>
+
+  <h2>Run the same checks on your machine</h2>
+  <p>
+    CI runs commands that you can also run in the workspace. The results below were produced for this lesson, on the solution and on the starter. The host tests need the MinGW compiler on the path, which <code>tools/build.py</code> sets up for you. The summary lines are shown without the build output around them.
+  </p>
+  <pre><code class="language-plaintext">python -I tools/build.py projects/0119-dryer-host-tests/solution --clean --test
+100% tests passed out of 10</code></pre>
+  <p>
+    The starter gives a different result, because one of its tests needs code that you write in lesson 117:
+  </p>
+  <pre><code class="language-plaintext">python -I tools/build.py projects/0119-dryer-host-tests/starter --clean --test
+90% tests passed, 1 tests failed out of 10
+
+The following tests FAILED:
+	 10 - regmap (Failed)</code></pre>
+  <p>
+    The static-analysis step can be run with the same flags as CI. The path below is the local cppcheck install, because cppcheck is not on the default path in this workspace. The firmware sources of the solution produce no output and exit with 0:
+  </p>
+  <pre><code class="language-plaintext">"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --inline-suppr --error-exitcode=1 --std=c11 --quiet -I projects/0117-dryer-modbus-bootloader/solution/app -I projects/0117-dryer-modbus-bootloader/solution/rtos -I projects/0117-dryer-modbus-bootloader/solution/boot -I projects/0117-dryer-modbus-bootloader/solution projects/0117-dryer-modbus-bootloader/solution/app projects/0117-dryer-modbus-bootloader/solution/rtos/tasks.c projects/0117-dryer-modbus-bootloader/solution/boot/bootloader.c projects/0117-dryer-modbus-bootloader/solution/boot/app_vectors.c projects/0117-dryer-modbus-bootloader/solution/main.c
+(no output; exit code 0)</code></pre>
+  <p>
+    If <code>build.py</code> reports a CMake cache error that names a different folder, the build folder was made under an older path. Rerun the command with <code>--clean</code>, which deletes the build folder before it configures the project again.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>Each of these mistakes lets a broken change through without a visible error. Each entry gives the symptom first.</p>
+  <h3>Mistake 1: a check that reports but cannot fail</h3>
+  <p>
+    <strong>Symptom:</strong> the static-analysis job is green, and the log lists style findings a few lines above the end. <strong>Cause:</strong> the step runs cppcheck without <code>--error-exitcode=1</code>, so cppcheck exits with 0 even when it reports findings. <strong>Fix:</strong> keep the flag, and run the probe in the Try it to see the exit code change. A check that cannot fail is a log, not a gate.
+  </p>
+  <h3>Mistake 2: a new test file that is not in the list</h3>
+  <p>
+    <strong>Symptom:</strong> you add a test file with a failing check, push, and the summary still reads <code>100% tests passed out of 10</code>, when it should read 11. <strong>Cause:</strong> the file's name is not in the <code>foreach</code> list in <code>CMakeLists.txt</code>, so the program is never built. <strong>Fix:</strong> add the name to the list. Then check that the count rises by one. If it does not, the test is not running.
+  </p>
+  <h3>Mistake 3: the workflow in the wrong folder</h3>
+  <p>
+    <strong>Symptom:</strong> the pull request shows no checks at all, and the Actions tab lists no run for the dryer. <strong>Cause:</strong> the file is in <code>projects/0117-dryer-modbus-bootloader/.github/workflows/</code>, which GitHub does not read. Only the root of the repository is read. <strong>Fix:</strong> copy <code>ci.yml</code> to the root's <code>.github/workflows</code> folder. The paths in the file are relative to the root, so keep the course layout beside it.
+  </p>
+  <h3>Mistake 4: a skipped check that looks like a pass</h3>
+  <p>
+    <strong>Symptom:</strong> the simulate job is green on every branch, including the main branch, and nobody has seen the banner in the log. <strong>Cause:</strong> the token is missing on that branch, so the token step writes <code>present=false</code>, prints the skip line and every later step is skipped. The job still completes. <strong>Fix:</strong> read the skip line in the log, and decide on purpose whether a missing token should fail the run on the main branch. If it should, add a condition that fails on that branch, and say so in the repository's README.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    A team decides what CI blocks and what it only reports, and the choice matters more than the tools. A pipeline that only reports is easy to ignore, while one that fails the merge gets fixed. Most teams make the required checks part of the repository's protection rules, so that a change cannot be merged until those checks pass. The four jobs here follow that rule: a failing test stops the firmware build, and a cppcheck finding fails its job.
+  </p>
+  <p>
+    Some results in this pipeline are reported and not gated. The size of the firmware is printed in the log, but no limit fails the job. A slow growth in size, one feature at a time, is then visible only to a reader who looks at the log. Teams that care about size usually add a threshold that fails the job, or they store the sizes per commit so that the trend can be drawn. Either change is a small edit to this file.
+  </p>
+  <p>
+    What the simulation proves is also a limit. The Wokwi run shows that the firmware boots in the simulator and prints the banner. It does not show that the sensor reads correctly on a real chamber, that the heater switches at the right current, or that the fan runs at the right speed. Lesson 82 covers this in detail. A real product adds hardware-in-the-loop tests on a board for those parts, and the CI pipeline is where those tests would be started.
+  </p>
+
+  <h2>What you built: the capstone, lesson by lesson</h2>
+  <p>
+    The capstone is eight lessons, numbered 112 to 119. Each one builds a part of the dryer and leaves a test or a check behind, so every part can be shown and explained. The list below gives the lesson for each stage.
+  </p>
+  <ul>
+    <li><strong>Capstone 1 (lesson 112):</strong> requirements with acceptance criteria, the state machine and its transition table, the pin map, and rate-monotonic priorities for the RTOS tasks.</li>
+    <li><strong>Capstone 2 (lesson 113):</strong> the layered architecture and the hardware abstraction, and the plan of tasks that the later lessons fill in.</li>
+    <li><strong>Capstone 3 (lesson 114):</strong> the NTC driver, which turns a 12-bit reading into degrees with the Beta equation, the detection of an open or shorted sensor, and the host unit tests with Unity and FFF.</li>
+    <li><strong>Capstone 4 (lesson 115):</strong> the heater PWM, the debounced buttons, the status display and the safety checks.</li>
+    <li><strong>Capstone 5 (lesson 116):</strong> the RTOS threads and their queue and mutex, the watchdog with check-ins, the PID controller with anti-windup and derivative on measurement, the temperature filter, and the closed-loop test against the plant.</li>
+    <li><strong>Capstone 6 (lesson 117):</strong> the Modbus RTU slave, its register map, and the host master script that reads the status and writes the commands.</li>
+    <li><strong>Capstone 7 (lesson 118):</strong> the bootloader, the image header and vector table, the one-ELF layout with its two regions, and the size check.</li>
+    <li><strong>Capstone 8 (lesson 119):</strong> the CI workflow with its four jobs, the host tests that CI runs, and the static-analysis gate.</li>
+  </ul>
+  <p>
+    The table is the map of the whole capstone. Each row is a part of the product, the capstone lesson where it was built, and the lessons that taught the ideas behind it. An interviewer who asks about any part can be pointed to the lessons, the code and the test.
+  </p>
+  <table>
+    <thead><tr><th>Part of the dryer</th><th>Built in</th><th>Lessons it comes from</th></tr></thead>
+    <tbody>
+      <tr><td>Requirements, acceptance criteria, pin map</td><td>112</td><td><a href="0111-functional-safety.html">111</a>, <a href="0043-navigating-a-reference-manual.html">43</a></td></tr>
+      <tr><td>Layered architecture and the HAL</td><td>112, 113</td><td><a href="0076-driver-design-and-hardware-abstraction.html">76</a>, <a href="0077-layered-and-event-driven-architecture.html">77</a></td></tr>
+      <tr><td>State machine and transition table</td><td>112</td><td><a href="0056-state-machines.html">56</a></td></tr>
+      <tr><td>NTC conversion and sensor faults</td><td>114</td><td><a href="0058-adc.html">58</a></td></tr>
+      <tr><td>Heater PWM at 1 kHz, fan output</td><td>115</td><td><a href="0059-pwm.html">59</a>, <a href="0071-timers.html">71</a>, <a href="0012-mosfets.html">12</a>, <a href="0014-inductors-motors-and-relays.html">14</a></td></tr>
+      <tr><td>Debounced buttons, one event per press</td><td>115</td><td><a href="0052-gpio-input-and-debouncing.html">52</a>, <a href="0080-unit-testing-on-the-host.html">80</a></td></tr>
+      <tr><td>OLED status screen, font</td><td>115</td><td><a href="0060-the-i2c-protocol.html">60</a>, <a href="0061-an-i2c-oled-display-and.html">61</a>, <a href="lab05-move-lab-4-onto-freertos.html">Lab 5</a></td></tr>
+      <tr><td>Host unit tests, fakes</td><td>114</td><td><a href="0080-unit-testing-on-the-host.html">80</a>, <a href="0081-mocks-and-fakes.html">81</a></td></tr>
+      <tr><td>Safety checks, heater runaway</td><td>114, 115</td><td><a href="0111-functional-safety.html">111</a>, <a href="0084-robustness.html">84</a></td></tr>
+      <tr><td>Filter on the temperature</td><td>116</td><td><a href="0106-digital-filtering.html">106</a></td></tr>
+      <tr><td>PID control, anti-windup, derivative on measurement</td><td>116</td><td><a href="0107-pid-control.html">107</a></td></tr>
+      <tr><td>Tasks, queue, mutex, event group</td><td>113, 116</td><td><a href="0087-freertos-setup-tasks-and-scheduling.html">87</a>, <a href="0090-queues-semaphores-and-event-groups.html">90</a>, <a href="0091-mutexes-priority-inversion-and-deadlock.html">91</a></td></tr>
+      <tr><td>Rate-monotonic priorities and the CPU budget</td><td>112, 116</td><td><a href="0093-timing-analysis.html">93</a></td></tr>
+      <tr><td>Watchdog with check-ins</td><td>116</td><td><a href="0084-robustness.html">84</a></td></tr>
+      <tr><td>Closed-loop test against the plant</td><td>116</td><td><a href="0107-pid-control.html">107</a></td></tr>
+      <tr><td>Modbus RTU slave and register map</td><td>117</td><td><a href="0101-rs-485-and-modbus-rtu.html">101</a>, <a href="0103-designing-a-serial-protocol.html">103</a></td></tr>
+      <tr><td>Master script over RFC 2217</td><td>117</td><td><a href="0101-rs-485-and-modbus-rtu.html">101</a></td></tr>
+      <tr><td>Bootloader, image header, one ELF</td><td>118</td><td><a href="0104-bootloaders-and-firmware-updates.html">104</a>, <a href="0105-embedded-security.html">105</a></td></tr>
+      <tr><td>CI workflow, cppcheck</td><td>119</td><td><a href="0082-continuous-integration.html">82</a>, <a href="0083-static-analysis.html">83</a></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Extensions: where to take it next</h2>
+  <ul>
+    <li>Move to real hardware. Build the heater stage on a board with a logic-level MOSFET, a fan with a flyback diode, and a bimetal thermal cutoff in series with the heater (lesson 108 for the board). Replace the LED with the heater and measure the real step response. Tune the PID on that data, not on the model.</li>
+    <li>Add a humidity sensor. An SHT31 or a BME280 on the same I2C bus would show the moisture the filament still holds. Each has its own I2C address and its own measurement sequence, and the datasheet gives both. Add it as a driver behind the same kind of interface as the NTC, and test its conversion on the PC with a fake.</li>
+    <li>Log to flash. Keep the last fault and its time in the last flash page, so a field failure can be read after a reset. Writing flash needs an unlock, and erasing works on whole pages (RM0008 Rev 21, section 3.3.3, "Programming and erasing the Flash memory"), so put the log in one page and wear-level it if you write often. Lesson 85 covers what a useful field log contains.</li>
+    <li>Sign the image. Replace the header's reserved words with a CRC and then a signature, and check it in the bootloader before the jump. This is the step that makes the update path safe against a tampered image (lesson 105).</li>
+  </ul>
+
+  <h2>What to show an interviewer</h2>
+  <p>
+    Open the repository and show the requirements table from lesson 112, with each acceptance criterion pointing to a test. Run the host tests live, then show the closed-loop output and explain what the 80.4 s runaway means: a dead heater, at full power with no rise in temperature, is caught after 80.4 s, inside the 300 s limit the test sets. Show the linker script and the header, and explain why the bootloader needs no copy of RAM. Finally show the CI workflow and the cppcheck line. Be honest about the limits: the sizes are the simulator's, the PID was not tuned on a real chamber, the presets are a compile-time table, and the display flush takes a large share of the CPU. A candidate who names those limits first is more credible than one who claims a perfect design.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The dryer's CI has four jobs: host tests, static analysis, the firmware build and the simulation. The <code>needs</code> lines decide what runs after a failure.</li>
+    <li>A check gates a change only when its failure stops the run. cppcheck gates because of <code>--error-exitcode=1</code>, and without that flag its findings are only text in the log.</li>
+    <li>The host tests build the application sources that ship. Each test program's return value becomes its exit code, and ctest reports the failure.</li>
+    <li>A new test file must be named in the <code>foreach</code> list. The count in the summary shows whether the test ran.</li>
+    <li>Without a token, the simulate job is green and says that the simulation was skipped. Read that line before you trust the tick.</li>
+    <li>The capstone's eight lessons, 112 to 119, build the dryer from requirements to a checked image, and each one leaves a test or a check behind.</li>
+    <li>Name the limits first: the simulator's numbers, a PID that was not tuned on a real chamber, and a bootloader that does not check a signature yet.</li>
+  </ul>
+
+  <h2>Try it: run the checks the way CI does</h2>
+  <ol class="steps">
+    <li>From the workspace root, run the host tests on the solution: <code>python -I tools/build.py projects/0119-dryer-host-tests/solution --clean --test</code>. Expected: <code>100% tests passed out of 10</code>.</li>
+    <li>Run the same command on the starter folder. Expected: <code>90% tests passed, 1 tests failed out of 10</code>, with <code>10 - regmap (Failed)</code>. If you finished the Try it in lesson 117, expect <code>100% tests passed out of 10</code> instead.</li>
+    <li>Run the CI static-analysis command from the section above on the firmware sources. Expected: no output. Then read the exit code. In Git Bash, <code>echo $?</code> on the next line prints it. In PowerShell, <code>$LASTEXITCODE</code> does. Expected: 0.</li>
+    <li>Make a probe file in a temporary folder outside the projects. Give it this content:
+      <pre><code class="language-c">int main(void) {
+    int unused = 3;
+    return 0;
+}</code></pre>
+      Run cppcheck on it with the flags from the CI step, and print the exit code. Then run it again without <code>--error-exitcode=1</code>. Expected: one style message that names <code>unused</code>, exit code 1 with the flag and exit code 0 without it. Delete the probe file when you are done.
+    </li>
+  </ol>
+  <details>
+    <summary>Hint for step 4</summary>
+    <p>The flag is the only difference between the two runs. Compare the two exit codes, and then open the CI workflow and find the line where the flag appears in the static-analysis step.</p>
+  </details>
+
+  <div class="win">You can read the dryer's CI workflow job by job, say which failures block a change and which only report, and run the host tests and the static analysis yourself. You can also name the capstone lesson that built each part of the dryer, from the requirements in lesson 112 to the image check in lesson 118.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A teammate removes <code>--error-exitcode=1</code> from the static-analysis step, to stop a noisy style warning from failing the build. The job now shows a green tick, and its log lists two style findings. Which statement is right?",
+        "options": ["The job passes, because the flag is missing and cppcheck exits with 0", "The job fails, because cppcheck always exits with 1 when it reports anything", "The job is skipped, because cppcheck refuses to run without the flag", "The firmware job waits for the findings to be fixed first"],
+        "answer": 0,
+        "feedback": [
+          "Right. Without the flag, cppcheck reports the findings and still exits with 0, so the step passes. The flag is what makes the check a gate, and the probe in the Try it shows the difference.",
+          "The flag is what makes cppcheck exit with 1. Without it the exit code stays 0, even with findings in the log.",
+          "cppcheck runs without the flag. Only its exit code changes, so the step runs and reports the findings.",
+          "The firmware job depends only on the result of the static-analysis job. A passing job lets the firmware job run."
+        ],
+        "hint": "Which command-line flag sets the exit code when cppcheck finds something?",
+        "why": "A check that reports but cannot fail is a log, not a gate. The run looks green while the findings sit in the log, which is one of the most common ways that CI quietly stops doing its job (lesson 83)."
+      },
+      { "type": "mc",
+        "prompt": "You add <code>test/test_fan.c</code> with three checks to the host-test project and push. The summary still reads <code>100% tests passed out of 10</code>. What is the most likely cause?",
+        "options": ["The new file is not in the foreach list in CMakeLists.txt, so ctest never runs it", "CI keeps the old test results and runs only the firmware job", "Unity runs every .c file in the test folder automatically", "Three checks are too few for ctest to count as a test program"],
+        "answer": 0,
+        "feedback": [
+          "Right. CMake builds only the programs it is told to build, and ctest runs only the tests it was given. Adding the name to the foreach list is the fix, and the count then rises to 11.",
+          "CI does not cache test results. Every run builds and runs the host project from its source.",
+          "Unity runs only the tests that a program's main() calls. It does not look for files, and CMake does not compile a file that it was not told about.",
+          "The number of checks inside a program does not change the count. The count is the number of programs that ctest runs."
+        ],
+        "hint": "Which file lists the test programs, and what does ctest count?",
+        "why": "A test that is never built is worse than a missing test, because nothing fails. The count in the summary is the check: it should rise by one each time a test program is added."
+      },
+      { "type": "mc",
+        "prompt": "A pull request comes from a fork, so it has no WOKWI_CLI_TOKEN. Every job shows a green tick. What should a reviewer conclude?",
+        "options": ["The firmware ran in the simulator and printed the banner", "The host tests and the firmware build passed, but no simulation ran", "The run failed quietly, and the error is hidden from view", "The token was read from the repository and the simulation passed"],
+        "answer": 1,
+        "feedback": [
+          "The banner needs the simulator, and the simulator steps are skipped when the token is missing. A green tick does not mean the banner was seen.",
+          "Right. The host tests and the firmware build passed, and the token step printed that the simulation is skipped. Read that line before you trust the tick.",
+          "Nothing failed. The token step skips by design, so the job completes normally.",
+          "A fork's pull request gets no secrets, so the repository token cannot be read there."
+        ],
+        "hint": "Which step writes the message about the missing token, and what do the steps after it do?",
+        "why": "A green tick says that no step failed. It does not say that every check ran. A reviewer who knows which steps were skipped can decide whether the missing check matters for this change (lesson 82)."
+      },
+      { "type": "mc",
+        "prompt": "The host-tests job fails on a push. Which other jobs run in that same run?",
+        "options": ["static-analysis still runs, but firmware and simulate are skipped", "firmware runs, because it does not wait for host-tests to pass", "simulate runs alone, because it needs only the firmware image", "Every job runs, and the failure is shown at the end of the run"],
+        "answer": 0,
+        "feedback": [
+          "Right. static-analysis has no needs line, so it runs on its own. firmware needs host-tests, so it is skipped, and simulate needs firmware, so it is skipped too.",
+          "firmware lists host-tests in its needs line, so it waits for that job to pass. A failure there skips it.",
+          "simulate needs firmware, and firmware never ran. Without an image there is nothing to simulate.",
+          "Only jobs with no dependency on the failed job run to the end. The others are skipped, not run and then reported."
+        ],
+        "hint": "Read the needs line of each job, and find the one job that has no needs line.",
+        "why": "Gating works through needs lines. Putting the cheapest checks first means a failure stops the expensive steps early, which saves time on every failing change (lesson 82)."
+      },
+      { "type": "number",
+        "prompt": "The host-test list has 10 names. A teammate adds 3 test files, but adds only 1 name to the foreach list. How many test programs does ctest run now?",
+        "answer": 11, "tolerance": 0,
+        "wrong": [
+          { "answer": 13, "feedback": "That assumes all three names were added. Only one was, so the list has 11 names." }
+        ],
+        "hint": "Count the names in the list, not the files in the folder.",
+        "why": "Each name in the list becomes one test program. A file that is not named is never built or run, so the list is the source of truth for what CI tests."
+      },
+      { "type": "reflect",
+        "prompt": "A manager asks you to remove cppcheck from CI. The reasons are that it slows the pipeline and that it only finds style problems. Argue for or against, in terms of what the pipeline should block.",
+        "hint": "Which findings matter for firmware that will run unattended for months?",
+        "answer": "Against, at least in part. cppcheck runs in seconds on these sources, and some of its findings are real bugs, such as a variable that is assigned a value and never read, which often means a result was computed and then ignored, or a possible out-of-bounds access. Blocking those keeps them out of the image. The style checks are open to argument, and a team can silence a known false alarm with --inline-suppr, where the suppression stays visible in review. The better answer is to keep the gate and tune the rules, not to remove the gate. If the team decides that the style rules are noise, it can turn style off and keep the warning checks, so the gate still fails on real problems."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Lesson 82 described a workflow that skips a job for a pull request from a fork. The dryer's simulate job still starts for a fork. What does it do instead?",
+        "options": ["It runs, but the token step skips the simulation", "It is removed from the workflow for forks, so it never appears", "It fails, which blocks the merge of every fork", "It uses a default token that the repository stores"],
+        "answer": 0,
+        "feedback": [
+          "Right. The job starts, the token step finds the secret empty, and the simulation steps are skipped. The job is green, which is why the log line matters.",
+          "The workflow file runs for every event, so the job is not removed. The skip happens inside its steps.",
+          "A missing token is a known condition, not an error. The step skips itself, so the merge is not blocked by it.",
+          "Forks do not receive the repository's secrets, so there is no default token to fall back on."
+        ],
+        "hint": "What happens to secrets in a fork's run, and what does the token step do with an empty variable?",
+        "why": "Fork pull requests get no secrets, so a check that needs one has to skip on purpose and say so. Lesson 82 set that rule for the sample, and this workflow applies it inside the job."
+      },
+      { "type": "number",
+        "prompt": "A CRC function returns 19256 for the text 123456789. The standard check value is 0x4B37, as lesson 101 describes. What is the difference between the two, in decimal?",
+        "answer": 1, "tolerance": 0,
+        "wrong": [
+          { "answer": 19256, "feedback": "That is the value the function returned. The difference is the returned value minus 0x4B37, which is 19255 in decimal." }
+        ],
+        "hint": "Convert 0x4B37 to decimal first, then subtract it from 19256.",
+        "why": "The check value is published, so a host test can compare against it instead of against the function's own output. A difference of one is still a failure, and the test catches it before any frame is sent (lesson 101)."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What does your CI stop, and what does it only tell you?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>It stops a change in four places. A failing host test stops the firmware build. A cppcheck finding fails the static-analysis job, because of the exit-code flag. A firmware build error stops the simulation. A failed simulation expectation fails the run when the token is set. It only reports two things. The image sizes are printed in the log with no limit that fails the job, so slow growth is visible only to a reader. A skipped simulation shows as a green run with a line in the log, which is why a reviewer has to read that line. I'd say that plainly first, and then say what I would add: a size threshold that fails the job, and a required check on the main branch, so that a run which skipped its simulation cannot be merged without a human looking at that step.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://github.com/wokwi/wokwi-ci-action">wokwi/wokwi-ci-action (GitHub)</a>: read the action's inputs (token, path, timeout and expect_text), which the simulate job uses exactly as written here, and how the action reports an expectation that is not met. The ctest and cppcheck flags in this lesson are explained in the workflow file and in the local runs above; lesson 83 covers the cppcheck classes.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Which of the eight capstone parts would you test first on a real dryer, and what would that test need to run?"
+    Related: <a href="0082-continuous-integration.html">Lesson 82: Continuous integration</a>, <a href="0080-unit-testing-on-the-host.html">Lesson 80: Unit testing on the host</a>, and <a href="0112-capstone-1-requirements-and-the.html">Lesson 112: Capstone 1</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

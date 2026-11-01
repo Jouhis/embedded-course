@@ -1,3 +1,4 @@
+// EXPECT: SystemCoreClock (Hz): 0x007A1200
 
 /* The clock tree: print SystemCoreClock (the HCLK value in hertz) and the PLL
  * fields in RCC_CFGR. After reset the core runs from HSI at 8 MHz, PLL off.

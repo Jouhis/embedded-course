@@ -2,6 +2,78 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.3 (unreleased)
+
+### Shorter lessons: five long lessons split, 116 lessons became 122
+
+- 88 became 88 (context switching at the register level) and 89 (the FreeRTOS port, PendSV).
+- 91 became 92 (stack sizing) and 93 (timing analysis); its project is now `0093-stack-and-timing`.
+- The capstone grew from 4 lessons to 8 (112 to 119): requirements and state machine;
+  architecture, tasks and pin map; the NTC driver and tests; PWM, buttons, display and safety;
+  RTOS threads and PID; Modbus RTU; the bootloader; CI and the finished capstone. Projects were
+  renamed to the lesson that uses them (`0113-dryer-skeleton` to `0119-dryer-host-tests`).
+- Every lesson from 89 on moved up (old 89 is now 90, ..., old 116 is now 122). Lesson files,
+  project folders and cross-references were renumbered by script. Labs and checkpoints keep their
+  numbers.
+- Saved progress moves to the new numbers on the first visit (`assets/course.js`). A split
+  lesson's "done" mark carries to each of its parts.
+- Errors found while splitting were fixed: the debounce confirms after 40 ms, not 60 ms; 1 kHz PWM
+  is audible (the old claim that it was not is gone); there is no cold-sensor safety rule, and
+  lesson 115 now says so; the application image ends at 0x08008FC0 (20416 bytes), measured from a
+  fresh build.
+
+### Code and reading aids
+
+- Syntax highlighting (highlight.js, vendored by `tools/vendor_highlight.py`) and a Copy button
+  on every code block.
+- The 25 older diagrams use the course's label font (JetBrains Mono), and labels were resized to fit.
+- STM32 lessons cite RM0008 and PM0056 by section. `setup` downloads both manuals into the
+  git-ignored `docs-local/` (they are ST's copyright, so they are never committed or published).
+- Bootloader fix: VTOR needs 512-byte alignment on this part (PM0056 4.4.4), so the application's
+  vector table moved from slot + 0x100 to slot + 0x200 (lessons 104 and 118, both projects).
+- `configASSERT` in every FreeRTOSConfig.h uses `taskDISABLE_INTERRUPTS()`, the kernel's own idiom,
+  instead of an inline `cpsid i`.
+
+### Automated project checks
+
+- Every solution names its pass line in a comment in `main.c`: `// EXPECT: <text>`,
+  plus `// SIM-SCENARIO: <file>.yaml` when the run needs a button press, or `// SIM: skip <reason>`.
+- `tools/verify_projects.py` builds and lints every project, reports a solution without a pass line,
+  runs the host unit tests, treats the FreeRTOS projects on the STM32 as build-only, and can write a
+  Markdown summary. `--skip zephyr,rust` leaves out the large toolchains.
+- `tools/sim.py` takes `--scenario` and `--fail-text`.
+- New GitHub workflow `.github/workflows/projects.yml` runs those checks on every push and pull
+  request. Simulation runs only when the workflow is started by hand, because Wokwi CI minutes are
+  limited; it needs the repository secret `WOKWI_CLI_TOKEN`.
+
+Known issues:
+- The EXPECT lines added in 0.0.3 and the two button scenarios were worked out from the code; they
+  have not been run, because the Wokwi minute quota was used up. The first `--sim` run will tell.
+- The new workflow has not run on GitHub yet. Ubuntu's `gcc-arm-none-eabi` is 13.2, not the 14.2
+  used locally.
+- **FreeRTOS on the STM32 cannot run in Wokwi.** Probing the simulator (Wokwi CLI 0.29.1) found
+  that its STM32 core differs from a Cortex-M3 in five ways: `cpsie`/`cpsid` are inverted, byte
+  reads of the NVIC and SHPR priority registers return 0, BASEPRI is not implemented, PRIMASK does
+  not mask SysTick or peripheral interrupts, and a software-pended exception (PendSV, ISPR, STIR)
+  is taken at the pending store and returns to it, so it runs forever. FreeRTOS's port asserts at
+  start-up, and once past that the first yield never returns. Without working interrupt masking
+  there are no real critical sections, so this can't be patched around. The FreeRTOS projects
+  (lessons 87 to 93, Lab 5, the capstone's RTOS, Modbus and bootloader projects) are build-checked
+  only until Wokwi fixes its core. A report with a minimal repro is ready to send to Wokwi.
+- The same simulator bugs probably explain some bare-metal failures (`__enable_irq()` sets PRIMASK
+  in Wokwi). Still to check:
+  - 0057 (`presses=1`) and 0098 wait for a button press, so they cannot pass unattended as written.
+  - 0071: input capture reads `pulse_us=0` (expected 1500).
+  - 0072: prints nothing at all, not even the line before the interrupts start.
+  - 0073: prints `elapsed=2001 ms`, expected `2000`; off by one tick.
+  - 0084: the HardFault report never printed.
+  - lab06 (Zephyr): `LAB6 init failed`.
+- The Wokwi CLI's free plan has a monthly limit on simulation minutes, which this round of
+  debugging used up. Automated simulation checks (`verify_projects.py --sim`) wait for the next
+  month or a paid plan.
+- The Zephyr projects that were renamed still have build folders from their old paths; build them
+  once with `--clean`.
+
 ## 0.0.2 (2026-11-01)
 
 ### Quizzes that teach

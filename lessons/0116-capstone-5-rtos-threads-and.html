@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 5: RTOS threads and PID heater control · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0116">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 5: RTOS threads and PID heater control</h1>
+  <p class="subtitle">Bang-bang control from lesson 115 switches the heater hard and overshoots. This lesson puts the dryer on FreeRTOS, runs a PID controller at a fixed 10 Hz, and gives a supervisor task the job of kicking the watchdog only when every other task has proved it is alive.</p>
+
+  <div class="goal">
+    By the end of this lesson you can split a product into FreeRTOS tasks with rate-monotonic priorities, use a queue, a mutex and an event group, run a PID loop with anti-windup and derivative on measurement at a fixed rate with <code>vTaskDelayUntil()</code>, and check the whole loop on the PC against a thermal plant, with numbers.
+  </div>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lesson <a href="0114-capstone-3-the-ntc-driver.html">114</a> gave you a temperature the safety rules can trust, and a state machine tested on the PC. Its control code was a bang-bang switch. This lesson turns the dryer into a set of concurrent jobs. <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87</a> introduced FreeRTOS tasks, <a href="0090-queues-semaphores-and-event-groups.html">lesson 90</a> queues and event groups, <a href="0091-mutexes-priority-inversion-and-deadlock.html">lesson 91</a> mutexes, and <a href="0084-robustness.html">lesson 84</a> the watchdog that resets a stuck chip. <a href="0107-pid-control.html">Lesson 107</a> gave you the PID controller on its own. Here it runs on the dryer at a fixed rate.
+  </p>
+  <p>
+    The problem is timing. A PID controller is only as good as its time step. If the control loop runs at irregular intervals, the integral and derivative terms are computed with the wrong step, and the heater no longer behaves like the one you tuned. A supervisor that watches the control loop and resets the chip when the loop stops is the standard answer. It is the reason a product can survive a software fault without leaving the heater on. The real dryer runs its control loop at 10 Hz, and it uses a watchdog to catch any task that stops.
+  </p>
+
+  <h2>The idea: tasks with deadlines, and a supervisor</h2>
+  <p>
+    Lesson 113 chose five tasks and their priorities by the rate-monotonic rule. This lesson builds four of them (the Modbus comms task arrives in lesson 117) and gives each one a single job, a period, and a way to report that it ran. The safety monitor is the one task whose job is to check the others, so it runs at the highest priority and never shares logic with the control code.
+  </p>
+  <table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Period</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td>safety</td><td>4</td><td>50 ms, <code>vTaskDelayUntil()</code></td><td>Independent checks on the published state; cuts the heater on a trip; kicks the watchdog</td></tr>
+      <tr><td>control</td><td>3</td><td>100 ms, <code>vTaskDelayUntil()</code></td><td>Sensor, filter, state machine, PID, outputs, and the snapshot for the others</td></tr>
+      <tr><td>ui</td><td>2</td><td>20 ms (buttons), 200 ms (draw)</td><td>Debounce the buttons, post presses to the queue, draw the OLED under the I2C mutex</td></tr>
+      <tr><td>logger</td><td>1</td><td>100 ms check-in, one line a second</td><td>Check in with the watchdog; print the status line</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The periods are constants, the priorities follow the rule in lesson 93, and the tasks never call each other directly. They share data through three kinds of object, each with a reason:
+  </p>
+  <ul>
+    <li>A queue (lesson 90) carries button presses from the UI task to the control task. A queue is a copy in, copy out, so the sender never holds a pointer into the receiver's data.</li>
+    <li>A mutex (lesson 91) protects the snapshot of the control state, and the I2C bus. A mutex, unlike a binary semaphore, has priority inheritance, so a low-priority task that holds it does not stall the safety monitor for long.</li>
+    <li>An event group is the check-in board. Each monitored task sets its bit each cycle, and the supervisor reads the board.</li>
+  </ul>
+
+  <h3>The snapshot, and why tasks do not wait on each other</h3>
+  <p>
+    The safety task and the logger must read the control state without waiting for the control loop to finish. The control task therefore publishes a <strong>snapshot</strong>: a copy of the state the others need, written while it holds the state mutex. Readers take the same mutex, copy the structure, and release it. The mutex is held only for the time it takes to copy a structure. Nobody keeps a pointer into the control task's working data, so the control task can change its own variables freely. The price is that readers see the state as of the last publish, and a watchdog needs exactly that.
+  </p>
+
+  <h2>The watchdog, and why the check-in board</h2>
+  <p>
+    A watchdog resets the chip unless the code kicks it on time (lesson 84). If the safety monitor kicked it every 50 ms no matter what, a stalled control loop would never be noticed: the monitor itself would keep the chip alive. The fix is that the monitor kicks only when every monitored task has set its bit since the last kick. A stalled task leaves its bit clear, the kick does not happen, and the window expires.
+  </p>
+  <p>
+    The Blue Pill's window watchdog (WWDG) runs from the bus clock, with a counter that falls from 0x7F to 0x3F in about 262 ms at the settings used here. The window register is 0x7F, so any refresh before the counter reaches 0x3F is accepted. The logger therefore checks in every 100 ms, even though it prints only once a second: a once-a-second check-in would expire the watchdog between prints.  </p>
+  <div class="note">
+    <strong>On real hardware, use the IWDG.</strong> The independent watchdog (IWDG) runs from its own 40 kHz low-speed clock, so it keeps counting when the bus clock fails. The WWDG does not, and it cannot detect a stopped clock. The IWDG is not simulated by Wokwi (NOTES.md), so the course uses the WWDG here. The check-in logic is the same for both; only the peripheral changes, and the IWDG cannot be stopped once started, just like the WWDG.
+  </div>
+
+  <h3>The window, worked through</h3>
+  <p>
+    A <a href="../reference/glossary.html#window-watchdog-wwdg">window watchdog (WWDG)</a> is a down-counter with a window. The counter starts at its reload value and falls by one on each tick. A refresh, which is the kick, reloads the counter. The reset happens if the counter falls to 0x3F without a refresh. The counter's clock is PCLK1 ÷ 4096 ÷ 8, as the board file's comment states. At 8 MHz that is 8 000 000 ÷ 4096 ÷ 8 = 244 Hz, so one count lasts 4.096 ms. Falling from 0x7F to 0x3F is 64 counts, and 64 × 4.096 ms = 262 ms. The window register is 0x7F, which is the top of the counter, so a refresh is accepted at any time before the count reaches 0x3F.
+  </p>
+  <p>
+    Now a stall. The supervisor kicks at time 0, after all three check-in bits are set, and the counter reloads to 0x7F. The control task then stops. The UI and logger keep setting their bits, but the control bit is never set again, so the supervisor never sees all three bits and never kicks. The counter falls to 0x3F at about 262 ms, and the chip resets. Without the check-in board, the supervisor would kick every 50 ms regardless, the monitor itself would keep the chip alive, and the stall would never be seen.  </p>
+
+  <h2>The PID controller</h2>
+  <p>
+    A PID controller adds three terms to form its output from the error e = setpoint − measurement. The proportional term reacts to the error now, the integral term removes the steady offset a proportional controller leaves, and the derivative term damps the approach (lesson 107 derived the discrete form). The module has the same update equations as lesson 107, and the same code is tested on the PC and runs on the board.
+  </p>
+  <p>
+    Two details make the difference between a textbook loop and one that works on a heater. The first is <em>anti-windup</em>: the integral is clamped to the actuator's range, so while the heater is saturated at full power the integral cannot keep growing and overshoot badly later. The second is <em>derivative on measurement</em>: the derivative uses the measured temperature, not the error, so a setpoint step does not kick the output. A rising temperature reduces the output, which is why the derivative term has the minus sign.
+  </p>
+  <p>
+    The controller runs at 10 Hz with <code>CONTROL_DT_S = 0.1</code>. The integral and derivative terms are written in per-second units, so the gains keep their meaning if the period changes. The gains still need the closed-loop test, because the period also changes how the discrete loop behaves. The dryer's gains are kp = 0.04, ki = 0.0005 and kd = 0.5, from <code>app/tuning.h</code>.
+  </p>
+  <h3>The update, line by line</h3>
+  <pre><code class="language-c">float error = setpoint - measurement;                  /* degrees C */
+float p_term = p-&gt;kp * error;
+p-&gt;integral += p-&gt;ki * error * p-&gt;dt;               /* area under the error */
+p-&gt;integral = clampf(p-&gt;integral, p-&gt;out_min, p-&gt;out_max);
+float d_term = 0.0f;
+if (!p-&gt;first) {
+    d_term = -p-&gt;kd * (measurement - p-&gt;last_meas) / p-&gt;dt;
+}
+p-&gt;first = false;
+p-&gt;last_meas = measurement;
+return clampf(p_term + p-&gt;integral + d_term, p-&gt;out_min, p-&gt;out_max);</code></pre>
+  <p>
+    The first line is the error, in degrees. The proportional term scales it. The integral line adds the error times the period times ki, which is the area under the error curve for one sample. The clamp on the next line keeps the stored integral between 0 and 1, the output limits, so it cannot grow while the heater is saturated. The derivative needs a previous measurement, so the first call skips it. After that, the change in the measurement, in degrees, is divided by the period to get degrees per second, multiplied by kd, and subtracted. The minus sign is the damping: a rising chamber lowers the output. The last line adds the three terms and clamps the result to the actuator range.
+  </p>
+  <p>
+    Work two samples. The chamber is at 25.00 °C and the setpoint is 45.00 °C. In sample 1, the error is 20.00, so the proportional term is 0.04 × 20 = 0.800. The integral is 0.0005 × 20 × 0.1 = 0.001. There is no derivative yet, so the output is 0.801, which is 801 permille. In sample 2 the chamber has risen to 25.13 °C. That is 0.13 °C in 0.1 s, or 1.3 °C per second. The error is 19.87, so the proportional term is 0.7948, and the integral is 0.001 + 0.0005 × 19.87 × 0.1 = 0.001994. The derivative is −0.5 × 1.3 = −0.65. The output is 0.7948 + 0.001994 − 0.65 = 0.147, which is 147 permille. At full power the plant starts near 80 ÷ 60 = 1.3 °C per second, so that rate is realistic. The derivative pulled the output from 801 to 147 as soon as the chamber began to move.  </p>
+
+  <h2>The filter on the temperature</h2>
+  <p>
+    The NTC reading jitters by a few codes from sample to sample, and the derivative term turns that jitter into large output swings. A filter smooths the signal before the controller sees it. The filter here is an <a href="../reference/glossary.html#iir-filter-infinite-impulse-response">IIR filter</a>, which means that each output depends on the previous output as well as the new input. Its update is one line: the state moves by a fraction of the gap between the state and the new sample. In the code the fraction is 1 ÷ 2<sup>k</sup>, and with k = 2 it is one quarter.
+  </p>
+  <p>
+    The NTC reading has noise of a few codes, and the derivative term amplifies noise, so the temperature is filtered before the controller sees it. The filter is the exponential moving average from lesson 106, with k = 2, so alpha is one quarter. Its time constant is −1 ÷ ln(1 − 1/4) ≈ 3.5 samples, which is 0.35 s at 10 Hz. That lag is small against the thermal time constant of the chamber, about a minute, so the filter costs little response and removes most of the jitter.
+  </p>
+
+  <h3>The filter's step response</h3>
+  <p>
+    Suppose the sensor jumps from 25.00 °C to 45.00 °C in one step. The filter moves a quarter of the gap at each sample. After sample 1 the gap is 20 °C, and the filter moves 5 °C, to 30.00 °C. After sample 2 the gap is 15 °C, and the filter moves 3.75 °C, to 33.75 °C. After sample 3 the gap is 11.25 °C, and the filter moves 2.81 °C, to 36.56 °C. Each step leaves 0.75 of the gap, so the gap shrinks geometrically. The time constant is the number of samples to reach 63 % of a step, and here it is −1 ÷ ln(0.75) = 3.48 samples, which is 0.35 s at 10 Hz. The lag is about a third of a second, which the chamber's minute-long time constant can absorb, and the filter removes most of the jitter before the derivative sees it.
+  </p>
+
+  <h2>Measured: the closed loop against the plant</h2>
+  <p>
+    A physical heater is not on your desk, so the loop is closed in the host test. The thermal plant is the first-order model from lesson 107: 25 °C ambient, 80 °C rise at full power, and a 60 s time constant. The test does not use a copy of the control code. It calls <code>controller_step()</code>, the same function the control task calls, with the plant's temperature turned into an ADC code through the NTC divider and the beta equation, and then converted back by the firmware's <code>ntc_centi_from_raw()</code>. The only simulated part is the sensor and the heater.
+  </p>
+  <h3>The simulated sensor, line by line</h3>
+  <pre><code class="language-c">double t = celsius + 273.15;
+double r = 10000.0 * exp(3950.0 * (1.0 / t - 1.0 / 298.15));
+double code = 4095.0 * r / (r + 10000.0);</code></pre>
+  <p>
+    These three lines run the Beta equation in reverse. The first converts the plant's temperature to kelvin. The second computes the NTC's resistance, R = R<sub>25</sub> × e<sup>B(1/T − 1/T<sub>25</sub>)</sup>, with R<sub>25</sub> = 10 kΩ and B = 3950. The third is the divider from lesson 114, with the NTC as the lower resistor, so the ADC code is 4095 × R ÷ (R + 10 kΩ). The firmware's own <code>ntc_centi_from_raw()</code> then converts the code back to a temperature. If the two directions agree, the sensor adds no conversion error, and any error in the result must come from the control code or the plant.
+  </p>
+  <p>
+    The test reports two numbers. The settling time is measured from the press to the last sample outside the 1 °C band around 45 °C. The overshoot is the highest the temperature gets above 45 °C after the press. Both are checked against the requirements in lesson 112.
+  </p>
+  <p>The real output of the host test, from the solution, is:</p>
+  <pre><code class="language-plaintext">[closed loop] PLA 45 C: settle 75.6 s, overshoot 0.36 C, final 45.00 C
+[closed loop] dead heater: runaway latched at 80.4 s</code></pre>
+  <table>
+    <thead><tr><th>Measure</th><th>Requirement (lesson 112)</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Settling time, PLA to 45 °C within 1 °C</td><td>600 s or less</td><td>75.6 s</td></tr>
+      <tr><td>Overshoot above 45 °C</td><td>2 °C or less</td><td>0.36 °C</td></tr>
+      <tr><td>Final temperature</td><td>within 1 °C of the setpoint</td><td>45.00 °C</td></tr>
+      <tr><td>Heater with no gain: runaway latched</td><td>within 300 s</td><td>80.4 s</td></tr>
+    </tbody>
+  </table>
+  <div class="warning">
+    <strong>What these numbers mean and do not mean.</strong> They show that the control code, the state machine and the safety check work together on a model of a heater. They do not show that a real dryer chamber behaves this way. The model's gain and time constant are assumptions, and the gains were not retuned for a real chamber. Measure the step response of the real dryer, fit a model, and tune against that before you trust the numbers. Lesson 107 shows the Ziegler-Nichols method for that job.
+  </div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>1. One task kicks the watchdog for everybody.</strong> Symptom: the control loop stops publishing, but the chip never resets, and the heater stays at its last duty. Cause: the kick does not look at the check-in board. Fix: kick only when every monitored task has set its bit since the last kick, and clear the bits after each kick.
+  </p>
+  <p>
+    <strong>2. A check-in once a second.</strong> Symptom: the banner repeats on the serial monitor about every quarter of a second, because the chip resets each time the window expires and <code>main()</code> starts again. Cause: the logger is the only task that checks in slowly, and the board requires every bit. Fix: check in on every cycle, at 100 ms as the logger does, and keep the status line at one per second.
+  </p>
+  <p>
+    <strong>3. An integral with no clamp.</strong> Symptom: the closed-loop overshoot is far above 2 °C. Cause: the integral keeps summing while the heater is at full power, so it is large when the setpoint is reached. Fix: clamp the stored integral to the output range, as <code>pid_update()</code> does. Clamping only the final output does not stop the windup.
+  </p>
+  <p>
+    <strong>4. Derivative on the error.</strong> Symptom: pressing start drives the heater to full power for a sample, then back down. Cause: a setpoint step is a step in the error, and the derivative of a step is a spike. Fix: differentiate the measurement, as the module does.
+  </p>
+  <p>
+    <strong>5. The wrong unit.</strong> Symptom: the duty is 1000 permille whatever the chamber temperature. Cause: the state machine keeps hundredths of a degree and the PID wants degrees, so a setpoint of 4500 is read as 4500 °C. Fix: divide by 100 before the call, and check that the first duty is about 800 permille for a 20 °C error, as the controller test expects.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Production heater control adds several things this lesson leaves out: sensor fault handling in the control path, output rate limits, and tuning on the real plant. The usual tuning method is a step-response test on the device, with the Ziegler–Nichols rule from lesson 107 as a starting point, and the simulated numbers here are only as good as the model. An interviewer will ask how you know the simulation matches the printer. The honest answer is that it does not yet, and the measurement comes first.
+  </p>
+  <p>
+    The watchdog pattern is standard. Commercial firmware uses an independent watchdog with its own low-speed clock, so a stopped bus clock still resets the chip, and it uses a check-in board or a similar scheme so that one task cannot hide another. Fixed-rate control with a timed delay (<code>vTaskDelayUntil()</code>) is the usual way to keep the time step of a PID loop honest. A reviewer will look for a fixed period, a clamped integral and a derivative on the measurement, in that order.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Tasks run at fixed periods with <code>vTaskDelayUntil()</code>, and their priorities follow the rate-monotonic rule: the shorter the period, the higher the priority.</li>
+    <li>A queue carries events by copy, a mutex protects shared data, and an event group records which tasks have checked in.</li>
+    <li>A supervisor kicks the watchdog only when every monitored task has checked in since the last kick, so a stalled task causes a reset.</li>
+    <li>The WWDG window here is 64 counts of 4.096 ms, about 262 ms, so every monitored task must check in faster than that.</li>
+    <li>A PID update takes the error, its integral clamped to the output range, and the derivative of the measurement, which damps the response without kicking on a setpoint step.</li>
+    <li>An IIR filter with k = 2 moves a quarter of the gap per sample and has a time constant of about 3.5 samples.</li>
+    <li>A closed-loop test calls the same controller as the firmware, against a model of the plant, and checks settling time and overshoot against the requirements.</li>
+  </ul>
+
+  <h2>Try it: close the loop yourself</h2>
+  <p>
+    The starter has the whole RTOS layer and the safety monitor. The PID step in <code>controller_step()</code> is a stub that always gives a duty of 0, so the heater never comes on. Your task is to wire the PID into that step.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0116-dryer-rtos-pid/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0116-dryer-rtos-pid/starter</code> from the workspace root.</li>
+    <li>Open <code>app/controller.c</code> and find the <code>TODO(learner)</code> comment in the heating branch. Convert the setpoint and the measured temperature to degrees C, call <code>pid_update()</code>, and convert its 0.0 to 1.0 result to permille. Expect the duty to be a whole number from 0 to 1000, with no decimal part.</li>
+    <li>Run the host tests: <code>python -I tools/build.py projects/0116-dryer-host-tests/starter --test</code>. Before your change, the summary reads <code>75% tests passed, 2 tests failed out of 8</code>, and the two failing programs are <code>controller</code> and <code>closed_loop</code>.</li>
+    <li>You know it works when the summary reads <code>100% tests passed out of 8</code>. The closed-loop program also prints two lines: <code>[closed loop] PLA 45 C: settle 75.6 s, overshoot 0.36 C, final 45.00 C</code> and <code>[closed loop] dead heater: runaway latched at 80.4 s</code>. Those match the table above. The reference is in <code>projects/0116-dryer-rtos-pid/solution</code>, and its host project is <code>projects/0116-dryer-host-tests/solution</code>.</li>
+    <li>Optional: change <code>TUNED_KP</code> in <code>tuning.h</code> to 0.02 and rerun the closed loop. Predict first whether the settling time gets longer or shorter, then check.</li>
+  </ol>
+  <details>
+    <summary>Hint for the units</summary>
+    <p>The state machine keeps the setpoint and the temperature in hundredths of a degree, and the PID works in degrees as floats. Divide by 100 before the call. The output is a fraction, so multiply by 1000 and round before you store it as a duty.</p>
+  </details>
+  <details>
+    <summary>Hint for the test that fails</summary>
+    <p>The <code>controller</code> test checks the first step after starting: the duty should be above 700 permille, because the error is 20 °C and kp is 0.04. A duty of 0 means the PID is not running at all, which points at the heating branch.</p>
+  </details>
+
+  <div class="win">You ran a PID loop at a fixed 10 Hz on FreeRTOS, with a supervisor that refuses to kick the watchdog for a stalled task, and you measured the closed loop against a thermal plant. Lesson 117 adds the Modbus interface, the bootloader and the CI.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The operator presses start, and the setpoint steps from 25 °C to 45 °C. The first version differentiates the error, and the heater goes to full power for one sample and then drops back. What is the cause, and what changes?",
+        "options": ["A setpoint step becomes a spike; use the measurement", "The setpoint step doubles the output right away", "The measurement is noise-free, so the error is safer", "Floats cannot take a derivative of an error signal"],
+        "answer": 0,
+        "feedback": [
+          "Right. The error jumps when the setpoint steps, and the derivative of a step is a spike. Differentiating the measurement only sees the plant respond (mistake 4).",
+          "Doubling the output is the kick itself, not a cure. The fix is in what the derivative is taken of.",
+          "The measurement is noisy in practice, which is why the filter exists. Noise is not the reason the design takes the derivative of the measurement.",
+          "Floats handle a derivative well. The problem is the step in the error, not the arithmetic type."
+        ],
+        "hint": "What is the derivative of a step, and which signal jumps when the setpoint changes?",
+        "why": "The derivative term reacts to rate of change. A setpoint step is an instant change in the error but not in the measurement, so the measurement's derivative stays smooth on a press."
+      },
+      { "type": "number",
+        "prompt": "The temperature filter has k = 2, so each sample moves a quarter of the gap. Its time constant is −1 ÷ ln(0.75) samples. At 10 Hz, how many seconds is that time constant? Give two decimal places.",
+        "answer": 0.35, "tolerance": 0.02, "unit": "s",
+        "wrong": [
+          { "answer": 0.4, "feedback": "That is the rough rule of 2 to the power k, which gives 4 samples. It is only close for small alpha. The exact value is 3.48 samples, which is 0.35 s." }
+        ],
+        "hint": "Compute ln(0.75), divide −1 by it to get samples, then divide by the 10 Hz sample rate.",
+        "why": "−1 ÷ ln(0.75) = 3.48 samples, and 3.48 ÷ 10 Hz = 0.35 s. The lag is small against the chamber's minute-long time constant, so the filter costs little response and removes most of the jitter."
+      },
+      { "type": "mc",
+        "prompt": "The control task publishes its last snapshot and then stops. The UI and the logger keep setting their check-in bits. What happens to the chip?",
+        "options": ["It resets after about 262 ms, since no kick arrives", "It keeps running, since the UI still checks in", "It resets at once, because the snapshot is stale", "It resets after one second, the logger's print period"],
+        "answer": 0,
+        "feedback": [
+          "Right. The safety monitor kicks only when all three bits are set. The control bit is never set again, so no kick comes, and the WWDG counter reaches 0x3F at about 262 ms.",
+          "The UI's bits are not enough. The kick needs every monitored task, so one missing bit stops it.",
+          "A stale snapshot does not reset the chip. The watchdog only counts time without a kick.",
+          "The logger's print period is not the watchdog window. The window is about 262 ms, so a once-a-second check-in would fail."
+        ],
+        "hint": "The kick needs every bit. What is the window length?",
+        "why": "The check-in board turns a stalled task into a missing kick. Without it, the safety monitor would kick every 50 ms and keep the chip alive while control was dead (lesson 84)."
+      },
+      { "type": "mc",
+        "prompt": "The heater saturates at full power for 30 s while the chamber warms. The team clamps only the final output, not the stored integral. What happens when the setpoint is reached?",
+        "options": ["The integral has grown large, so the chamber overshoots", "Nothing: clamping the output is enough", "The derivative removes the integral at once", "The watchdog resets the chip for overshoot"],
+        "answer": 0,
+        "feedback": [
+          "Right. Clamping only the output lets the stored integral keep growing while the heater is saturated, so the overshoot appears when the setpoint is reached (mistake 3).",
+          "The output clamp limits the duty, not the stored integral. The integral still winds up behind it.",
+          "The derivative reacts to the measurement's rate of change. It does not reset the integral.",
+          "The watchdog watches for stalled tasks, not for overshoot. An overshoot does not reset the chip."
+        ],
+        "hint": "Which variable keeps summing while the output is stuck at its limit?",
+        "why": "Anti-windup clamps the stored integral to the output range, so it cannot grow while the heater is saturated. That is the difference between a loop that settles and one that overshoots by many degrees."
+      },
+      { "type": "number",
+        "prompt": "The first sample of the loop: setpoint 45.00 °C, chamber 25.00 °C, kp = 0.04, ki = 0.0005 and dt = 0.1 s. The derivative is skipped on the first sample. What is the duty in permille?",
+        "answer": 801, "tolerance": 0.001, "unit": "‰",
+        "wrong": [
+          { "answer": 800, "feedback": "That is the proportional term alone. The integral adds 0.0005 × 20 × 0.1 = 0.001 on the first sample, which is 1 permille, so the duty is 801." }
+        ],
+        "hint": "Work out the proportional term and the integral term separately, then add them. Convert the fraction to permille at the end.",
+        "why": "p = 0.04 × 20 = 0.800 and i = 0.0005 × 20 × 0.1 = 0.001, so the output is 0.801, which is 801 permille. The first duty in the controller test is about 800 for this reason."
+      },
+      { "type": "mc",
+        "prompt": "The chamber rises 0.13 °C in one 0.1 s sample, and kd is 0.5. What does the derivative term add to the output?",
+        "options": ["Minus 0.65, lowering the output", "Plus 0.65, raising the output", "Zero, because it uses the error"],
+        "answer": 0,
+        "feedback": [
+          "Right. A rise of 1.3 °C per second times kd 0.5 is 0.65, and the minus sign makes it subtract. A rising chamber lowers the output, which is the damping.",
+          "The sign is backwards. A rising measurement must lower the output, or the loop would push harder as the chamber warmed.",
+          "This describes a derivative on the error, which the design avoids. The derivative here uses the measurement's change per second."
+        ],
+        "hint": "What is the rate of change in degrees per second, and what does the minus sign do?",
+        "why": "The minus sign is the damping: as the chamber warms, the output drops before the setpoint is reached, so the heater does not overshoot. That is why the derivative is taken of the measurement, with a minus sign."
+      },
+      { "type": "mc",
+        "prompt": "A dead heater with no gain runs through the closed-loop test, which requires runaway to latch within 300 s. What do you expect?",
+        "options": ["Runaway latches at about 80 s, inside the limit", "Runaway never latches, because the heater is dead", "Overshoot trips the runaway check instead", "Runaway latches at about 10 s, before the first sample"],
+        "answer": 0,
+        "feedback": [
+          "Right. The measured result is 80.4 s, well inside 300 s (requirement 2.3). The check opens a window at full power and expires when the chamber does not rise by 2 °C.",
+          "A dead heater that never trips would be the failure the check exists to prevent, so the test would fail.",
+          "Overshoot is the wrong quantity for a heater that never heats. The check is about rising, not about overshooting.",
+          "10 s would be too early for the 60 s window. The first window cannot expire before its time is up."
+        ],
+        "hint": "How long is the runaway window, and when does it open?",
+        "why": "The runaway check is the last line against a heater that does not work: it expires after one window without a 2 °C rise. The 60 s window is why the check trips in about a minute, not in seconds, and the measured 80.4 s is the model's result, not a number to memorise."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says the safety task (every 50 ms) should kick the watchdog on every run, to keep the design simple. Explain what breaks, and what you would build instead.",
+        "hint": "Which tasks would still be alive if the control loop stopped?",
+        "answer": "If the safety task kicks on every run, the kick does not depend on the control loop. A stalled control task never produces a reset, because the safety task keeps the chip alive, and the heater stays at its last duty. The fix is a check-in board: each monitored task sets its bit every cycle, and the safety task kicks only when every bit is set, then clears them. The window (about 262 ms here) must be longer than each task's period, so every task checks in on time. On real hardware, use the independent watchdog, which keeps counting even when the bus clock stops, and keep the check-in logic the same. Mention the trade-off: a shared board needs its bits cleared on each kick, or a stale bit hides a stall."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Two periodic tasks: a 10 ms job every 40 ms, and a 25 ms job every 100 ms. Using the sufficient rate-monotonic test for two tasks (lesson 93), do both deadlines hold?",
+        "options": ["Yes: 0.50 is below the two-task bound of 0.83", "No: rate-monotonic needs a total below 0.69", "No: two tasks can never share the CPU safely", "Yes: any total below 1.00 is always schedulable"],
+        "answer": 0,
+        "feedback": [
+          "Right. The utilisations are 10 ÷ 40 = 0.25 and 25 ÷ 100 = 0.25, so the total is 0.50. The two-task bound is 2 × (√2 − 1) = 0.83, so the deadlines are guaranteed.",
+          "0.69 is the limit for a very large number of tasks. For two tasks the bound is 0.83, so 0.50 passes.",
+          "Two tasks share the CPU with a scheduler every day. The question is the load, not the count.",
+          "100 % is not a guarantee for fixed-priority scheduling. The bound depends on the number of tasks, and above it the test cannot promise anything."
+        ],
+        "hint": "Compute each task's utilisation (time ÷ period), add them, and compare with 2 × (√2 − 1).",
+        "why": "The test is sufficient, so passing it guarantees the deadlines. The same arithmetic in the dryer's four-task plan (lesson 113) is how the team checked the 0.555 total before writing any code."
+      },
+      { "type": "mc",
+        "prompt": "The I2C bus is guarded by a mutex that the UI task holds while it flushes the OLED, about 90 ms each time. The safety monitor runs every 50 ms. Why must the safety monitor never wait for that mutex?",
+        "options": ["The I2C mutex can be held about 90 ms per flush, longer than 50 ms", "The I2C mutex is a binary semaphore, so it cannot be inherited", "The safety task has no I2C pins, so it should never touch the bus", "The mutex guards only the logger's prints, which safety never uses"],
+        "answer": 0,
+        "feedback": [
+          "Right. Waiting for a 90 ms flush would make the safety monitor late for its 50 ms period, so it reads the state snapshot instead and never waits on the I2C bus.",
+          "The I2C guard is a mutex, which does have priority inheritance. The reason to keep safety off it is the time the bus is held, not the type.",
+          "Pins are not the question: any task could use the bus. The issue is that safety would wait behind a long flush.",
+          "The mutex guards the OLED flush, not the logger. Safety never needs it, and that is exactly why it must not wait on it."
+        ],
+        "hint": "How long does one flush hold the bus, compared with the safety task's period?",
+        "why": "A high-priority task must not depend on a slow, low-priority resource. The safety monitor reads the snapshot under the state mutex, which is held only for a copy, so its deadline does not depend on the display."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How do you stop a watchdog from hiding a stalled task?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>I don't let one task kick the watchdog. A supervisor kicks it only when every monitored task has set its check-in bit since the last kick. Each task sets its bit on every cycle, not once a second, because the window is shorter than a slow task's period. The supervisor runs at the highest priority, so it is not starved, and it uses data from the other tasks through a snapshot under a mutex, so it can decide without holding them up. On real hardware I would use the independent watchdog, which keeps counting even if the bus clock stops.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.freertos.org/Documentation/00-Overview">FreeRTOS documentation: overview</a>: read the sections on tasks, the scheduler and the kernel's queues and mutexes, to check the priority and blocking rules used in <code>rtos/tasks.c</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "If I cut the control period from 100 ms to 200 ms, which of the closed-loop numbers would change, and in which direction?"
+    Related: <a href="0107-pid-control.html">Lesson 107: PID control</a>, <a href="0106-digital-filtering.html">Lesson 106: Digital filtering</a>, and <a href="0084-robustness.html">Lesson 84: Robustness</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

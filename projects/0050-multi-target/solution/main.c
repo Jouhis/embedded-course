@@ -1,3 +1,4 @@
+// EXPECT: MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "board.h"

@@ -1,6 +1,6 @@
 # Embedded Systems: From Electrons to Firmware Engineer
 
-An introductory embedded-development course: 116 lessons, 6 labs and 8 checkpoints, from Ohm's law
+An introductory embedded-development course: 122 lessons, 6 labs and 8 checkpoints, from Ohm's law
 and computer architecture to bare-metal C, FreeRTOS, Zephyr and a capstone project. Raspberry Pi Pico
 and STM32 Blue Pill, simulated in [Wokwi](https://wokwi.com) inside VS Code. No hardware needed.
 
@@ -88,16 +88,19 @@ setup.cmd            # Windows (double-click works too)
 
 It fetches `third_party/` and installs Arm GCC, CMake, Ninja, a host C compiler and cppcheck
 with your package manager (winget, Homebrew, apt, dnf or pacman), then Pico SDK 2.3.1 and the
-VS Code extensions, and test-builds the Pico and STM32 templates.
+VS Code extensions, and test-builds the Pico and STM32 templates. It also downloads ST's STM32F103
+reference manual (RM0008) and Cortex-M3 programming manual (PM0056) into `docs-local/`, which the
+STM32 lessons cite by section. They are ST's copyright, so that folder is git-ignored: keep them local.
+If ST's site refuses the download, the setup prints the link; save the PDFs there by hand.
 
 No package manager, or not allowed to install software? It then downloads the official portable
 archives into `~/.embedded-course-tools` instead, with no admin rights needed (add `--portable` to
 choose this yourself). `tools/build.py` finds tools there automatically.
 
-Optional parts: add `--zephyr` (lessons 92-96, about 1-2 GB), `--rust` (lesson 108), `--wokwi-cli`
+Optional parts: add `--zephyr` (lessons 94-98, about 1-2 GB), `--rust` (lesson 110), `--wokwi-cli`
 (automated simulation checks) or `--all`, for
 example `./setup.sh --all`. `--dry-run` shows what it would do. It is safe to run again: it skips
-what is already there, so run it again with `--zephyr` when you reach lesson 92.
+what is already there, so run it again with `--zephyr` when you reach lesson 94.
 
 Lesson 1 explains each tool, if you'd rather install them by hand. To see what's missing:
 
@@ -124,9 +127,15 @@ On macOS and Linux, type `python3` where these say `python`.
 | Command | What it does |
 | --- | --- |
 | `python tools/check_course.py` | validates every lesson page |
-| `python tools/verify_projects.py` | builds and lints every Wokwi project |
-| `python tools/verify_projects.py --sim` | also runs solutions in the Wokwi cloud (needs `WOKWI_CLI_TOKEN`) |
+| `python tools/verify_projects.py` | builds and lints every Wokwi project, checks each has a pass line, runs the host unit tests |
+| `python tools/verify_projects.py --sim` | also runs solutions in the Wokwi cloud and checks the pass line (needs `WOKWI_CLI_TOKEN`) |
 | `python tools/build_manifest.py` | rebuilds `assets/manifest.js` from `COURSE-PLAN.md` |
+
+A project's pass line is a comment in its `main.c`: `// EXPECT: <serial text>`, or
+`// SIM: skip <reason>` when it can only be built (the FreeRTOS projects on the STM32 are build-only
+automatically: see the known issues in `CHANGELOG.md`). The GitHub workflow
+`.github/workflows/projects.yml` runs the same checks on every push; start it by hand with
+"simulate" ticked to run the simulations too, which uses Wokwi CI minutes.
 
 Lesson authoring rules are in `tools/LESSON-SPEC.md`; verified toolchain and simulator facts are in `NOTES.md`.
 

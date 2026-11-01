@@ -1,3 +1,5 @@
+// EXPECT: presses=1
+// SIM-SCENARIO: press-button.yaml
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,7 +42,7 @@ int main(void) {
         restore_interrupts(saved);
 
         if (pending) {
-            printf("presses=%lu\n", (unsigned long)total);   // EXPECT: presses=1
+            printf("presses=%lu\n", (unsigned long)total);
         }
         sleep_ms(LOOP_MS);
     }

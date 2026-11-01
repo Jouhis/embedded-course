@@ -1,3 +1,4 @@
+// EXPECT: TRUTH TABLE OK
 #include <stdbool.h>
 #include <stdio.h>
 #include "pico/stdlib.h"

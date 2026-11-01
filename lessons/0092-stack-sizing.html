@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stack sizing: high-water marks and overflow checks · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0092">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Stack sizing: high-water marks and overflow checks</h1>
+  <p class="subtitle">A task that runs out of stack writes over memory that belongs to something else, and the bug may appear long after its cause. This lesson shows how to measure each task's stack with the kernel's high-water mark, and how to make the kernel stop the system the moment an overflow happens.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read a task's stack high-water mark in bytes, decide whether its margin is large enough, enable the stack-overflow check, and explain why an overflow hook that returns hides the bug.
+  </div>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lesson <a href="0078-memory.html">78</a> introduced the stack: the region of RAM where a function keeps its local variables and its return address, and what happens when that region is too small. Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> set up FreeRTOS tasks, lesson <a href="0088-context-switching-at-the-register.html">88</a> showed how the kernel switches between them, and lesson <a href="0091-mutexes-priority-inversion-and-deadlock.html">91</a> added mutexes. In all of those lessons the code worked the first time in a demo. A demo runs the shallow paths of the code, though, and a product also runs the deep ones, the rare command and the error branch that a demo never reaches.
+  </p>
+  <p>
+    This lesson covers the memory half of a design review. Each task's stack size should be justified by a measurement, and the overflow check should be on, so that a mistake shows up at once instead of years later. The timing half, which asks whether each task finishes before its deadline, is in lesson <a href="0093-timing-analysis.html">93</a>. A motor controller or a medical device has a fixed amount of RAM, and a stack that is too small there overwrites a variable that another task depends on. Teams that ship such products treat the stack numbers as evidence, and a senior engineer will ask where each number came from.
+  </p>
+
+  <h2>The stack of each task</h2>
+  <p>
+    A <a href="../reference/glossary.html#stack">stack</a> is a block of RAM that the CPU uses as a last-in, first-out store. The <a href="../reference/glossary.html#stack-pointer-sp">stack pointer</a>, SP, is a register that holds the address of the top of the stack. On the Cortex-M3 it is register R13. Each push writes a word and moves SP, and each pop reads a word and moves SP back. Lesson <a href="0033-the-stack-and-the-aapcs.html">33</a> described the layout as a <a href="../reference/glossary.html#full-descending-stack">full-descending</a> stack: SP points at the last item pushed, and a push moves SP down before it writes.
+  </p>
+  <p>
+    The CPU does not know what the stack is for. A function call pushes a return address and its local variables. An exception pushes a frame of registers, as lesson <a href="0034-exceptions-and-interrupt-entry.html">34</a> showed. Each of those writes travels over the bus to RAM in the same way as any other write. Nothing in the hardware stops a write from landing in the wrong place, so the size of the stack is a promise that the program has to keep by itself.
+  </p>
+  <p>
+    In FreeRTOS, every task has its own stack, and the kernel allocates it when the task is created. Lesson 88 showed what happens to that stack on every switch. When a running task is interrupted, the hardware pushes an eight-word frame onto that task's stack, and the switch handler pushes the eight registers R4 to R11 below it. A task that is switched out therefore keeps 16 words of its own context on its stack before any of its function calls are counted. The stack must hold that context and also the deepest chain of calls the task can make.
+  </p>
+  <p>
+    You choose each stack's size when you create the task. The depth is the third argument of <code>xTaskCreate()</code>. In the project, the call looks like this (<code>projects/0093-stack-and-timing/solution/main.c</code>):
+  </p>
+<pre><code class="language-c">xTaskCreate(fast_task, "fast", FAST_STACK_WORDS, NULL, 3U, &amp;fast_handle);</code></pre>
+  <p>
+    The FreeRTOS header says that the depth is "the number of variables the stack can hold - not the number of bytes" (<code>third_party/FreeRTOS-Kernel/include/task.h</code>, the <code>xTaskCreate</code> documentation). On the Cortex-M3 a stack variable is a 32-bit word, so a depth of 128 is 512 bytes. Forgetting that factor of four is one of the most common sizing errors, and it is covered in the mistakes section below.
+  </p>
+  <p>
+    A stack on the Cortex-M3 grows downward in memory. Each push moves the stack pointer toward the bottom of the task's block. The bottom is the dangerous end. If a deep call chain or a large local array pushes past it, the write lands in whatever memory sits below, which may be another task's stack or a global variable. The CPU does not stop that write, and the hardware keeps no record of where one task's stack ends and the next begins.
+  </p>
+  <p>
+    The depth is therefore the value most likely to be a guess when the code is first written. The rest of this lesson is about replacing that guess with a measurement.
+  </p>
+
+  <h2>Painting the stack: the high-water mark</h2>
+  <p>
+    Lesson 78 showed how to see how deep a stack went by filling the unused part with a known pattern, a technique called <a href="../reference/glossary.html#stack-painting">stack painting</a>. The kernel does the same for every task it creates. When it creates a task, it fills the whole stack with a known byte pattern. The fill byte is defined in <code>tasks.c</code> as <code>tskSTACK_FILL_BYTE</code>, which is <code>0xa5</code> (line 120). The stacks are filled only if the kernel is configured to need the information (the condition is at line 130 of <code>tasks.c</code>, which is true when the high-water mark function is enabled). When the task runs, its stack pointer moves down and overwrites some of the pattern. Words that still hold the pattern were never touched.
+  </p>
+  <p>
+    Later, <code>uxTaskGetStackHighWaterMark()</code> scans from the bottom of the stack upward, counting words that still hold the fill pattern. The function is defined at <code>tasks.c</code> line 6429, and it is enabled by <code>INCLUDE_uxTaskGetStackHighWaterMark</code>, which the project sets to 1. The return value is the fewest free words ever seen, in words, and the header says so: "the minimum amount of stack space that has remained for the task since the task was created" (<code>include/task.h</code>). The <a href="../reference/glossary.html#high-water-mark">high-water mark</a> is the name for that low point. The smaller the number of free words, the closer the task came to overflowing.
+  </p>
+  <p>
+    The high-water mark is a record of the past. It is correct for the paths that actually ran. A rarely taken branch that makes a deep call can still overflow after your test passed, and the high-water mark will not warn you, because the mark records only what happened. So the procedure is: size the stack for the worst path you can reason about from the code, run the system through its busiest scenario for long enough, read the mark, and keep a margin. The project uses 16 words as the margin, which is 64 bytes.
+  </p>
+
+  <h2>Worked example: is one stack big enough?</h2>
+  <p>
+    Suppose the fast task was created with a depth of 128 words, and the report prints a high-water mark of 40 free words for it. The numbers below are made up for the arithmetic. What matters is the order of the steps.
+  </p>
+  <p>
+    <strong>Step 1: convert the free space to bytes.</strong> Each word is 4 bytes, so 40 words is 40 × 4 = 160 bytes free.
+  </p>
+  <p>
+    <strong>Step 2: find the peak use.</strong> The peak use is the depth minus the fewest free words ever seen: 128 − 40 = 88 words. In bytes that is 88 × 4 = 352 bytes. Check the total: 352 bytes used plus 160 bytes free is 512 bytes, which is the whole 128-word stack. If the two numbers do not add up to the depth, something is in the wrong unit.
+  </p>
+  <p>
+    <strong>Step 3: compare with the margin.</strong> The project asks for at least 16 free words, which is 64 bytes. The task has 40 free words, which is more than 16, so it passes, with 24 words to spare.
+  </p>
+  <p>
+    <strong>Step 4: ask what the mark did not see.</strong> Suppose a rarely taken branch makes a call chain that needs 50 more words than the test ever used. The peak becomes 88 + 50 = 138 words. The stack has only 128 words, so the call would overflow by 10 words. The test passed and the mark said 40 free words, because that branch never ran during the test. The margin of 40 words is the only protection against this case, and here it is not enough.
+  </p>
+  <p>
+    <strong>Step 5: choose a fix.</strong> One option is to raise the depth to 192 words, which is 768 bytes. The measured paths would then have 192 − 88 = 104 words free, and the rare path would have 192 − 138 = 54 words free. Both are above the 16-word margin. The cost is 256 bytes more RAM for this task, and the team should record that cost next to the measurement, so the trade-off is visible in review.
+  </p>
+
+  <h2>Catching an overflow before it spreads</h2>
+  <p>
+    A high-water mark tells you about the past. A stack overflow check tells you the moment one happens. The option <a href="../reference/glossary.html#stack-overflow-hook">configCHECK_FOR_STACK_OVERFLOW</a> controls it, and the project sets it to 2. With level 2, at every task switch the kernel checks two things: whether the saved stack pointer has gone below the stack's limit, and whether the fill pattern is still present at the bottom of the stack (the four words checked are the <code>0xa5a5a5a5</code> pattern, in the macro in <code>include/stack_macros.h</code>). If either check fails, the kernel calls <code>vApplicationStackOverflowHook()</code>.
+  </p>
+  <p>
+    The check is a warning, and it does not stop the write. An overflow has already overwritten memory by the time the next switch happens. What the check buys is the moment of detection. Without it, the corrupted memory keeps being used, and the symptom appears somewhere else, usually in a task that has nothing to do with the stack that overflowed.
+  </p>
+  <p>
+    The hook is a function you write, with the signature <code>void vApplicationStackOverflowHook(TaskHandle_t t, char *name)</code>. The project's version does nothing except loop forever, which is deliberate. It stops the system at the moment of the bug, so a debugger shows which task overflowed and where. A hook that returns quietly hides the bug, and the corrupted memory keeps spreading. Real systems often log the task name to non-volatile memory and then reset, but the principle is the same: a stack overflow is a bug, and the system must not continue as if it were not.
+  </p>
+  <div class="warning">The check runs at task switches. A task that overflows and then blocks in a way that does not switch can corrupt memory before the hook runs. The high-water mark and the hook catch most overflows, not every one. This is one reason for the margin.</div>
+
+  <h2>Reading the code, line by line</h2>
+  <p>
+    The project's sizing is spread over a few lines. Here are the definitions, with the margin and the stack depth of the fast task:
+  </p>
+<pre><code class="language-c">#define FAST_STACK_WORDS   128U
+#define STACK_MARGIN_WORDS 16U</code></pre>
+  <p>
+    <code>FAST_STACK_WORDS</code> is the depth in words that the task is created with. The <code>U</code> suffix makes it an unsigned constant, which matches the unsigned type of the kernel's arguments. <code>STACK_MARGIN_WORDS</code> is the smallest number of free words the report accepts. Keeping both as named constants means that a reader can see the sizing decision in one place, and a change to either one is visible in review. The comment in the solution gives the margin in bytes as well, so that the unit is never a guess.
+  </p>
+  <p>
+    The call to <code>xTaskCreate()</code> was shown above. Its arguments are the task function, a name string used for debugging, the depth in words, a parameter that is <code>NULL</code> because the task takes no data, the priority, and a pointer that receives the task's handle. The handle is the value the report needs later to ask the kernel about this task. The priority argument is the subject of lesson <a href="0093-timing-analysis.html">93</a>.
+  </p>
+  <p>
+    The report function reads the high-water mark for one task:
+  </p>
+<pre><code class="language-c">UBaseType_t free_words = uxTaskGetStackHighWaterMark(h);
+uint32_t used_words = depth_words - free_words;
+return free_words &gt;= STACK_MARGIN_WORDS;</code></pre>
+  <p>
+    The first line asks the kernel for the fewest free words the task has ever had, using the handle <code>h</code> that the report stored at creation. The second line subtracts it from the depth requested at creation, which gives the peak use in words. Both values are in words, so the report multiplies by four before it prints bytes. The last line compares the free words with the margin and returns the result, so that the caller can print a verdict. The starter's version of this function is the one you change in the hands-on task.
+  </p>
+  <p>
+    The overflow hook is a single line in the solution:
+  </p>
+<pre><code class="language-c">void vApplicationStackOverflowHook(TaskHandle_t t, char *name) { (void)t; (void)name; for (;;) {} }</code></pre>
+  <p>
+    The kernel calls the hook with the handle of the task that overflowed and its name. The two <code>(void)</code> casts tell the compiler that the parameters are deliberately unused, which keeps the warning list clean. The empty <code>for (;;)</code> loop never returns, so the system stops at the point of the overflow, and a debugger can read the state. The same pattern appears in the project's malloc hook, and it is the usual way to stop on a fatal error in firmware.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: leaving the placeholder in the report.</strong> The starter's <code>report_one()</code> sets the free words to 0 until you call the kernel function. The symptom on the serial monitor is clear: every task shows <code>free=0 B</code> and the verdict says <code>STACK LOW</code>, even for a stack that has plenty of room. The fix is to call <code>uxTaskGetStackHighWaterMark(h)</code> and remove the placeholder. The lesson here is that a report which always prints the same value is not a measurement. A quick test is to change a stack depth and check that the number moves.
+  </p>
+  <p>
+    <strong>Mistake 2: confusing words with bytes.</strong> A stack depth of 128 is 128 words, which is 512 bytes on the Cortex-M3. If you size a stack in bytes by mistake and pass 512, the task gets 2048 bytes, and its memory use is four times what you planned. The symptom is the opposite one: the heap runs out sooner than you expect, because each task reserves four times the memory. The fix is to read the header comment of <code>xTaskCreate</code>, keep one unit throughout the code, and put the conversion in one place, as the report does.
+  </p>
+  <p>
+    <strong>Mistake 3: reading the high-water mark too early.</strong> The mark records only what has run. If you read it a few milliseconds after startup, the deepest path may not have run yet. The symptom is a comfortable margin in the first report and an overflow in the field, when a rare command arrives. The fix is to read the mark after the system has run its busiest scenario, and to keep a margin on top. The project's report task reads the marks every second, which is a practical habit: the kernel keeps the worst value, so the last reading is the peak so far.
+  </p>
+  <p>
+    <strong>Mistake 4: an empty overflow hook.</strong> A hook that returns, or a missing <code>configCHECK_FOR_STACK_OVERFLOW</code>, means an overflow is silent. The symptom is a task that behaves strangely a long time later, with no error message. The fix is a hook that stops the system, as in the project, and a debugger session that reads the task name. The hook is only a few lines of code.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that ship RTOS products treat stack use as a measured quantity. A common practice is to record the high-water mark of every task after a long soak test, and to keep it in the test report. A change that uses more stack then shows up as a number in code review rather than as a crash in the field. Some teams also keep the stack check on in the production build, so that a field overflow stops the system instead of corrupting memory without a trace.
+  </p>
+  <p>
+    In a code review, a senior engineer looks for three things about stacks. Each stack size should be justified by a number, and not left at a default or a round guess. The number should come from the busiest scenario that the team can produce, with a margin on top for the paths that were not exercised. And the overflow check and its hook should be enabled, so that a bug stops the system. Be ready to say that the high-water mark covers only the paths that ran, and that the context saved by a switch sits on the same stack as the task's calls.
+  </p>
+
+  <h2>Try it: measure the stacks</h2>
+  <p>
+    The project <code>projects/0093-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms, and a report task every second. The report prints each task's stack use, its free words, and its worst measured time in microseconds. Lesson <a href="0093-timing-analysis.html">93</a> uses the timing half of the same project. This lesson uses the stack lines. It prints <code>STACK OK</code> if every free margin is at least 16 words.
+  </p>
+  <div class="warning">
+    <strong>Known issue: the simulator may print nothing.</strong> The projects in this lesson build, but they cannot run in Wokwi. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (see the open issue in <code>CHANGELOG.md</code> at the workspace root). In the simulator the output stops after the first task's first output, or prints nothing, so the report may never appear. The steps below are still how you check the work. Build and read the code. Compare your report with the expected output in <code>projects/0093-stack-and-timing/solution/main.c</code>, which is what a real Blue Pill prints.
+  </div>
+  <ol class="steps">
+    <li>Open <code>projects/0093-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The build should finish with no errors.</li>
+    <li>In <code>report_one()</code>, find the <code>TODO(learner)</code>. Replace the placeholder value of <code>free_words</code> with the call <code>uxTaskGetStackHighWaterMark(h)</code>, and delete the <code>(void)h;</code> line, since the handle is now used. Leave the priority <code>TODO(learner)</code> in <code>main()</code> for lesson 93.</li>
+    <li>Build again and simulate. In the simulator the report may not appear. On a real Blue Pill the report should show a stack line for each task with its used bytes and free bytes, and the verdict line <code>STACK OK: every task keeps a margin</code>. The free bytes should be at least 64 for each task, which is the 16-word margin.</li>
+    <li>Predict before you change anything. In the starter, change <code>FAST_STACK_WORDS</code> from <code>128U</code> to <code>256U</code>, build, and simulate. If the task's peak use stays the same, its free bytes should rise by 512 bytes, which is 128 words, and its used bytes should stay about the same. Write down your prediction first, then compare it with the report.</li>
+    <li>Restore <code>FAST_STACK_WORDS</code> to <code>128U</code>. Compare the stack lines with the solution's output in <code>projects/0093-stack-and-timing/solution/main.c</code>. The exact digits depend on the simulated run, so compare the size of each number rather than the digits.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p><code>uxTaskGetStackHighWaterMark()</code> takes one argument, the task handle, and returns the fewest free words as a value of type <code>UBaseType_t</code>. Assign its result to <code>free_words</code>, which is already declared, and the rest of the function will use it.</p>
+  </details>
+  <div class="note">The report task measures nothing and runs at the lowest priority, so it cannot delay the other two. Its own stack is still reported, because an overflow in the report task would also corrupt memory.</div>
+
+  <div class="win">You read the stack high-water mark of each task in bytes, checked each margin against the 16-word rule, and predicted how a change in depth moves the free space.</div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Each FreeRTOS task has its own stack, and the depth in <code>xTaskCreate()</code> is in words, which are 4 bytes on the Cortex-M3.</li>
+    <li>A switch saves 16 words of context on the task's own stack: eight by the hardware and eight by the switch handler.</li>
+    <li>The kernel paints each new stack with <code>0xa5</code>. <code>uxTaskGetStackHighWaterMark()</code> returns the fewest free words the task has had, which is a record of the paths that ran.</li>
+    <li>Peak use is the depth minus the high-water mark. Keep a margin on top for paths that the test did not reach.</li>
+    <li><code>configCHECK_FOR_STACK_OVERFLOW</code> set to 2 checks at each task switch, and calls <code>vApplicationStackOverflowHook()</code> when the stack limit or the bottom pattern fails.</li>
+    <li>The hook should stop the system, not return. A hook that returns hides the bug and lets the corrupted memory spread.</li>
+  </ul>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The report task's stack is 160 words on a Cortex-M3. How many bytes is that?",
+        "answer": 640, "tolerance": 0.05, "unit": "B",
+        "wrong": [
+          { "answer": 160, "feedback": "That is the count in words. A word on the Cortex-M3 is 32 bits, so multiply by 4 to get bytes." }
+        ],
+        "hint": "A word on the Cortex-M3 is 32 bits, which is 4 bytes.",
+        "why": "160 × 4 = 640 bytes. The depth argument of xTaskCreate() is in words, but the memory on the chip is counted in bytes, so a report that mixes the two is off by a factor of four."
+      },
+      { "type": "number",
+        "prompt": "A task was created with 128 words of stack. Its report shows 40 free words. The team doubles the depth to 256 words, and the task's peak use stays the same. How many words are free now?",
+        "answer": 168, "tolerance": 0.05, "unit": "words",
+        "wrong": [
+          { "answer": 40, "feedback": "That is the free space at 128 words. The stack is bigger now, so the free space grows by the same 128 words." }
+        ],
+        "hint": "Work out the peak use first: 128 minus 40.",
+        "why": "The peak use is 128 − 40 = 88 words, and it does not change. With 256 words of stack, 256 − 88 = 168 words are free. The tempting answer, 40, forgets that the extra words are free space, not used space."
+      },
+      { "type": "formula",
+        "prompt": "A task was created with a stack depth of D words. Its high-water mark reports F free words, the fewest it ever had. Write the peak use in words, using D and F.",
+        "vars": ["D", "F"],
+        "answer": "D-F",
+        "display": "peak use = D − F",
+        "examples": ["D - F", "-F+D", "D+(-F)"],
+        "wrong": [
+          { "answer": "F", "feedback": "That is the free space, the part that was never used. The peak use is the depth minus it." },
+          { "answer": "F-D", "feedback": "That is negative. The free words are subtracted from the depth, not the other way round." }
+        ],
+        "hint": "The mark is the fewest free words ever seen, so subtract it from the depth.",
+        "why": "With D = 128 and F = 40, the peak use is 88 words, or 352 bytes. The margin is the 40 free words, which is above the 16-word margin the project asks for."
+      },
+      { "type": "mc",
+        "prompt": "The serial report shows every task with free=0 B and STACK LOW, although each stack was sized at 128 words. What is the likely cause?",
+        "options": ["The stacks are too small, and need about 1000 words", "The report still prints a placeholder, not the high-water mark", "The overflow hook fires at every single task switch", "The report task runs at a higher priority than the others"],
+        "answer": 1,
+        "feedback": [
+          "A stack of 128 words with a real high-water mark would show its real margin. The same value for every task is a sign of a placeholder, not of a stack problem.",
+          "Right. A placeholder value never changes when the stacks change. Call uxTaskGetStackHighWaterMark() and check that the number moves.",
+          "The hook runs only when the stack check fails. It is not an alarm at every switch, so this is not what the report shows.",
+          "Priority changes when the report runs, not the value of its free words. The placeholder would print 0 at any priority."
+        ],
+        "hint": "Does the number on the report change when you change the stack size?",
+        "why": "A report that prints the same value every time is not a measurement. This is mistake 1 in the lesson, and the test for it is simple: change a stack size and see whether the number moves."
+      },
+      { "type": "mc",
+        "prompt": "A team reads the high-water marks two seconds after boot. Every task has 60 words free, and the report says STACK OK. A week later a rare command overflows a task's stack. What went wrong?",
+        "options": ["The stacks were sized in bytes, so the report misread them.", "The mark was read before the rare command ran.", "The overflow hook was not enabled in the report task.", "The report task ran at too low a priority to print the marks."],
+        "answer": 1,
+        "feedback": [
+          "Units do not change what was measured. Words and bytes describe the same stack, and the report already converts between them.",
+          "Right. The mark records only the paths that ran before it was read, so the deeper path that ran a week later was never measured.",
+          "The overflow hook is one setting for the whole kernel, not one per task. It runs only when a check fails, and it was not what missed the peak.",
+          "Priority decides when the report runs, not what the stack held. The mark would still show only the paths that had run."
+        ],
+        "hint": "When was the mark read, and which paths had run by then?",
+        "why": "This is mistake 3. A mark read early is a correct reading of an early moment. The fix is to read it after the busiest scenario, and to keep a margin for the paths that have not run yet."
+      },
+      { "type": "mc",
+        "prompt": "A task is switched out by the scheduler many times a second. Before any of its own function calls, how many words of its stack does its saved context occupy?",
+        "options": ["4 words, one per saved register", "8 words, the hardware frame only", "16 words, the frame plus R4 to R11", "32 words, one per CPU register"],
+        "answer": 2,
+        "feedback": [
+          "A word is 4 bytes, and the switch saves more than four registers. The hardware frame alone is eight words.",
+          "The hardware frame is eight words, but the switch handler also saves R4 to R11 on the same stack.",
+          "Right. The hardware stacks eight words on exception entry, and the switch handler stacks eight more (R4 to R11). The stack must hold that before the task's own calls.",
+          "Not every register is saved on a switch. The saved context is the hardware frame and R4 to R11, which is sixteen words in total."
+        ],
+        "hint": "Lesson 88 counted the frame the hardware pushes and the registers the switch handler pushes.",
+        "why": "The context of a switched-out task lives on that task's stack. The high-water mark already counts those words, because they are written to the same stack, but the plan for the depth must include them before the calls the task makes."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'After a day of testing the high-water mark still shows 60 words free, so the 128-word stack is safe.' Why might the team still be wrong, and what would you do?",
+        "hint": "What does the mark record, and what does it not record?",
+        "answer": "The high-water mark records only the paths that ran during the test. A rare command with a deeper call chain may not have run, so the real peak can be higher than the mark. Run the busiest scenarios, reason about the deepest path by reading the code, keep a margin on top, and leave the overflow check and the hook on, so an overflow stops the system at once if it happens in the field."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A stack has a canary word at its lowest reserved address, as in lesson 78. At the end of a run the canary has changed. What does that tell you?",
+        "options": ["The stack is safe, because the canary only guards the top of the stack.", "The task has been switched out, which always changes the canary.", "The stack has written past its limit, and the write has already happened.", "The MPU has stopped the write before it reached the canary."],
+        "answer": 2,
+        "feedback": [
+          "The canary sits at the bottom, the lowest reserved address, because the stack grows down toward it. The top is where the stack starts.",
+          "A switch saves registers on the stack, but it does not change the canary word. A changed canary means a write into that word, not a switch.",
+          "Right. A canary tells you after the damage. It does not stop the write, which is why lesson 78 lists the MPU guard as a separate check.",
+          "A canary is not an MPU guard. The MPU stops a write. The canary only shows a write that has already happened."
+        ],
+        "hint": "Which end of the stack does the canary sit at, and what does a changed value prove?",
+        "why": "This applies the canary from lesson 78 to a real run. The canary reports an overflow after it happens, so it is useful for diagnosis but not for protection. An MPU guard at the bottom of the stack is the check that stops the write itself."
+      },
+      { "type": "mc",
+        "prompt": "A super-loop firmware has one stack for all of its jobs. The team moves the same three jobs into three FreeRTOS tasks. How should they size the stacks?",
+        "options": ["Keep one stack of the old size, since the jobs have not changed", "Give each task its own depth, measured for its own calls and context", "Give every task the largest depth, so all stacks match", "Let the tasks share one stack, since the kernel switches it"],
+        "answer": 1,
+        "feedback": [
+          "The jobs are the same, but the structure is not. Each FreeRTOS task has its own stack, so one shared old size does not fit three separate stacks.",
+          "Right. Each task gets its own stack when it is created, so each depth comes from that task's calls and its saved context (lesson 88).",
+          "Matching every stack to the largest one wastes RAM. Each task needs only what its own calls and context use, and the measurement shows that.",
+          "The kernel gives each task its own stack, and it switches the stack pointer between them. Two tasks writing one stack would overwrite each other's frames."
+        ],
+        "hint": "How many stacks does a FreeRTOS system have, and whose calls use each one?",
+        "why": "A super-loop has one stack for everything it runs. Moving to tasks gives each task its own stack, so the sizing becomes one measurement per task, not one number for the whole program."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Your product has eight RTOS tasks. How do you know each stack is big enough, and what would you check in a code review?"</strong> Answer out loud in 90 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>Enable the stack overflow check at level 2, with a hook that stops the system. Measure each task's high-water mark after a long run of the busiest scenario, and convert the free words to bytes. Subtract the free words from the depth to get the peak use, and keep a margin on top for the paths that did not run. Include the 16 words of context a switch saves on the task's own stack. In review, check that each stack size is backed by a measured number, that the number came from a realistic scenario, that the hook stops rather than returns, and that the change does not add a deep call chain that the test has not covered. Say that the mark is a record of the past and cannot prove the stack safe for every path.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://github.com/FreeRTOS/FreeRTOS-Kernel-Book">Mastering the FreeRTOS Real Time Kernel</a>: read the material on stack overflow and run-time statistics. For the exact behaviour, read the kernel source: <code>third_party/FreeRTOS-Kernel/tasks.c</code> line 120 (the fill byte), line 130 (when new stacks are filled), and line 6429 (<code>uxTaskGetStackHighWaterMark</code>); and <code>include/stack_macros.h</code> for the overflow check.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "A stack is 96 words, and its high-water mark shows 30 free words after a soak test. What is the peak use, and what would you still check before you accept it with the 16-word margin?"
+    Related: <a href="0078-memory.html">Lesson 78: Memory, stack vs heap and stack overflow</a>, <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup, tasks and scheduling</a>, <a href="0088-context-switching-at-the-register.html">Lesson 88: Context switching at the register</a>, <a href="0091-mutexes-priority-inversion-and-deadlock.html">Lesson 91: Mutexes, priority inversion and deadlock</a>, and <a href="0093-timing-analysis.html">Lesson 93: Timing analysis</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

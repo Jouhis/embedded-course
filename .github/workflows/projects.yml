@@ -1,0 +1,69 @@
+name: Check projects
+
+# On every push and pull request: build every Pico and STM32 project, lint its Wokwi diagram,
+# check it has a pass line, and run the host unit tests. Zephyr and Rust projects are not built
+# here (their toolchains take several GB); build them locally with tools/build.py.
+#
+# Simulation runs only when started by hand (Actions > Check projects > Run workflow, tick
+# "simulate"), because the Wokwi CLI's free plan has a monthly minute limit. It needs the
+# repository secret WOKWI_CLI_TOKEN (create one at https://wokwi.com/dashboard/ci).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: "Also run every solution in Wokwi (uses Wokwi CI minutes)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  projects:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # Not --recursive: FreeRTOS has nested submodules the course does not need (see README).
+      - name: Libraries in third_party
+        run: git submodule update --init --depth 1
+
+      - name: Toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib \
+            cmake ninja-build build-essential cppcheck python3
+
+      - name: Cache the Pico SDK
+        id: pico-sdk
+        uses: actions/cache@v4
+        with:
+          path: ~/.pico-sdk/sdk/2.3.1
+          key: pico-sdk-2.3.1-tinyusb
+
+      # The same clone tools/setup.py makes: only TinyUSB of the SDK's submodules is needed.
+      - name: Pico SDK 2.3.1
+        if: steps.pico-sdk.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch 2.3.1 https://github.com/raspberrypi/pico-sdk ~/.pico-sdk/sdk/2.3.1
+          git -C ~/.pico-sdk/sdk/2.3.1 submodule update --init --depth 1 lib/tinyusb
+
+      - name: Wokwi CLI (diagram lint, and simulation when asked)
+        run: curl -L https://wokwi.com/ci/install.sh | sh
+
+      - name: Check the course pages
+        run: python3 tools/check_course.py
+
+      - name: Build, lint and test every project
+        env:
+          WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}
+        run: >
+          python3 tools/verify_projects.py --skip zephyr,rust
+          --summary "$GITHUB_STEP_SUMMARY"
+          ${{ inputs.simulate && '--sim' || '' }}

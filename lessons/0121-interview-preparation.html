@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interview preparation: a practice quiz · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0121" data-concept>
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Interview preparation: a practice quiz</h1>
+  <p class="subtitle">An embedded interview tests recall under pressure, so this lesson drills the whole course in one sitting: C traps, hardware, RTOS and debugging, plus five coding routines you should be able to write without notes.</p>
+
+  <div class="goal">
+    By the end of this lesson you can answer <strong>33 mixed questions</strong> from across the course and write <strong>five classic C routines</strong> (bit reversal, popcount, a ring buffer, a byte swap, and macro pitfalls) from memory, then explain a design out loud.
+  </div>
+
+  <p class="note"><strong>This lesson is concept-only.</strong> There is no Wokwi project: the practice is in your head and on paper. The coding drills were compiled and run with the host GCC (MinGW) using <code>-std=c11 -Wall -Wextra -Werror</code>, so the reference answers are checked, not just written. The drills use the same host-test approach as lesson <a href="0080-unit-testing-on-the-host.html">80</a>.</p>
+
+  <h2>How to use this lesson</h2>
+  <ol class="steps">
+    <li>Answer the practice quiz <em>before</em> looking at any explanation. Use the quiz score as a map, not a grade.</li>
+    <li>Write each coding drill on paper or in an empty file before opening its solution.</li>
+    <li>Say each "explain out loud" answer aloud, in about two minutes, then compare with the outline.</li>
+    <li>Revisit the lesson each time an answer surprises you. The "Why" text names the lesson to reread.</li>
+  </ol>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    This lesson comes after the whole course, and it does a different job from the lessons before it. The earlier lessons taught you to build things, and each one checked your understanding with a quiz right after the material. An interview asks the same ideas cold, with no code in front of you and a person watching you think. The skill it tests is recall under pressure, followed by a clear explanation, and that skill is trained by answering questions before you look at the answers.
+  </p>
+  <p>
+    The problem this lesson solves is that the course's knowledge is spread across about a hundred lessons. A candidate who remembers the idea of volatile but not the exact rule for an ISR flag loses the question. The drills below put the most common ideas side by side, so you can see how they connect: a C rule, a hardware fact and a timing number that all come from the same few concepts.
+  </p>
+
+  <h2>The ideas behind the questions</h2>
+  <p>
+    The practice quiz asks you to pick or type an answer. Before you do, it helps to know the idea each question tests. The next sections take the main ideas one at a time, with a worked example for each. Read a section only after you have attempted its questions, so the explanation confirms your reasoning instead of replacing it.
+  </p>
+
+  <h3>Integer promotion and wraparound</h3>
+  <p>
+    C computes arithmetic on small integers in a larger type. This rule is called integer promotion: any integer type narrower than <code>int</code> is converted to <code>int</code> before an operation (cppreference, "Conversions", in <code>RESOURCES.md</code>). The value only becomes an 8-bit number again when it is stored back into an 8-bit variable.
+  </p>
+  <p>Take <code>uint8_t a = 200</code> and <code>uint8_t b = 100</code>, then work out <code>(uint8_t)(a + b)</code> step by step:</p>
+  <ol class="steps">
+    <li>Promote both operands to <code>int</code>: 200 and 100, which fit in an <code>int</code>.</li>
+    <li>Add them in <code>int</code>: 300. Nothing has wrapped yet.</li>
+    <li>Convert to <code>uint8_t</code>. An unsigned conversion keeps the value modulo 2<sup>8</sup>, which is 256 for 8 bits, so 300 becomes 300 − 256 = 44.</li>
+  </ol>
+  <p>
+    The reason the language works this way is that the CPU has no 8-bit add for a value you have not yet stored. The compiler computes in a register that is at least 32 bits wide, and it truncates only when the result must fit a smaller variable. The other rule to remember is about signed types. A signed overflow, such as adding past <code>INT_MAX</code>, is undefined behaviour, which means the compiler may assume it never happens (cppreference, "Arithmetic operators, overflows"). Unsigned arithmetic always wraps modulo 2<sup>N</sup>, so the same sum is safe on an unsigned type and dangerous on a signed one.
+  </p>
+
+  <h3>Two's complement and signed values</h3>
+  <p>
+    An 8-bit signed variable stores its 256 bit patterns as −128 to 127. In two's complement, the top bit has weight −128 instead of +128, and the other bits add up as usual. So the pattern 0x80 (binary 1000 0000) is −128, and 0xFF is −1: adding 1 to 0xFF gives 0x100, which wraps to 0x00. You can check any negative value the same way: write the positive value, invert the bits, add one. That is how the register value in lesson 117 was built, and it is the rule behind the ADC and temperature questions too.
+  </p>
+
+  <h3>Volatile and the value the compiler does not see</h3>
+  <p>
+    The compiler optimises on the assumption that the code it can see is the only code that changes a variable. An interrupt handler is code the main loop cannot see in its own body, so a flag set there can look constant to the main loop. Consider a loop that waits for <code>done</code>, where <code>done</code> is set in an ISR. Without <code>volatile</code>, the compiler may read <code>done</code> once, keep it in a register, and loop forever, because nothing in the loop writes it.
+  </p>
+  <p>
+    Declaring the variable <code>volatile</code> tells the compiler that every read and write of it is an observable side effect, which it may not skip, merge or reorder against other visible side effects in the same thread (cppreference, "volatile", in <code>RESOURCES.md</code>). It does not make an access atomic, and it gives no synchronisation between threads. The same page says that threads should use <code>_Atomic</code> types from C11 for that job, and the mutex and critical section ideas below cover the rest.
+  </p>
+
+  <h3>Setting one bit without touching the others</h3>
+  <p>
+    A register is a number, and a bit is one of its 32 positions. To change one bit, you combine the register with a mask, a number that is 1 only at the positions you want to affect. Work through an example with <code>REG = 0x05</code> (binary 0000 0101) and bit 3:
+  </p>
+  <ol class="steps">
+    <li>The mask for bit 3 is <code>1u &lt;&lt; 3</code>, which is 0x08 (0000 1000).</li>
+    <li>OR the register with the mask: 0000 0101 | 0000 1000 = 0000 1101, which is 0x0D. Bit 3 is set, and bits 0 and 2 are unchanged.</li>
+    <li>AND with the inverted mask clears the bit: 0000 1101 &amp; 1111 0111 = 0000 0101, which is back to 0x05.</li>
+  </ol>
+  <p>
+    OR sets, AND clears, and XOR toggles. The read-modify-write pattern (lesson 20) works because the other bits pass through unchanged. It also explains a common bug: writing <code>REG = (1u &lt;&lt; 3)</code> sets bit 3 and clears every other bit, which is wrong for a register that other code relies on.
+  </p>
+
+  <h3>Interrupts, critical sections and latency</h3>
+  <p>
+    An interrupt is a hardware signal that makes the CPU stop the current code, save its state and run a handler (lesson 34). A critical section is a short piece of code that runs with interrupts masked, so no handler can change the shared data in the middle of it. The cost is latency: while interrupts are masked, a pending interrupt waits. If a critical section runs for 2 µs, a timer interrupt that fires during it starts 2 µs late, however high its priority. The priority only chooses the winner after the mask is lifted.
+  </p>
+
+  <h3>Mutexes, priority inversion and the ring buffer</h3>
+  <p>
+    A mutex is a lock that one task holds at a time, and it has an owner. Priority inversion happens when a high-priority task waits for a mutex that a low-priority task holds, while a medium-priority task keeps the low one from running. The fix is priority inheritance, where the holder temporarily runs at the waiter's priority (lesson 91). Interview answers that name the lock and the timeline score well, because the cause is easy to draw.
+  </p>
+  <p>
+    A ring buffer stores bytes in a fixed array and moves two indices around it. The drill below uses free-running 32-bit counters: the head and tail count up forever, and the slot is the counter masked to the array size. The buffer is full when head minus tail equals the size. Because the counters never reset, all 16 slots can hold data, and the subtraction still works after the counters wrap at 2<sup>32</sup>, since the size divides 2<sup>32</sup>.
+  </p>
+
+  <h3>Timing numbers you should be able to compute</h3>
+  <p>
+    Many questions reduce to a few numbers. A UART byte with a start bit, eight data bits and a stop bit takes 10 bit times, so at 115200 baud it takes 10 ÷ 115200 s, which is 86.8 µs (lesson 53). An I2C byte with its acknowledge takes nine clock pulses, so at 100 kHz it takes 90 µs (lesson 60). A PWM period at 1 kHz from a 1 MHz clock has 1000 ticks, so the auto-reload value is 999 (lesson 59). Write the formula before you write the number, and say the unit out loud.
+  </p>
+
+  <h2>What interviewers test</h2>
+  <p>
+    Most junior embedded interviews sample five areas: C semantics (what the compiler may do with your code), computer architecture (what the CPU does for an interrupt), peripherals (buses, timing and converters), RTOS concepts, and how you debug a failure you cannot step through. The design round then asks you to structure a small firmware. The table maps each area to the lessons that teach it.
+    <span class="sidenote">The Barr Group coding standard is a good companion for the C questions, because it explains why many defensive habits exist.</span>
+  </p>
+  <table>
+    <thead><tr><th>Area</th><th>Main lessons</th></tr></thead>
+    <tbody>
+      <tr><td>C semantics</td><td><a href="0045-stdint-types-integer-promotion-overflow.html">45</a>, <a href="0046-volatile-const-and-static.html">46</a>, <a href="0047-pointers-to-registers-and-struct.html">47</a>, <a href="0048-bit-fields-unions-packing-endianness.html">48</a>, <a href="0050-the-preprocessor-and-multi-target.html">50</a></td></tr>
+      <tr><td>Bits and numbers</td><td><a href="0019-number-systems.html">19</a>, <a href="0020-bitwise-operations-and-masks.html">20</a>, <a href="0021-fixed-point-vs-floating-point.html">21</a></td></tr>
+      <tr><td>Architecture</td><td><a href="0033-the-stack-and-the-aapcs.html">33</a>, <a href="0034-exceptions-and-interrupt-entry.html">34</a>, <a href="0038-the-memory-map-and-memory.html">38</a>, <a href="0039-the-mpu-and-how-faults.html">39</a></td></tr>
+      <tr><td>Peripherals</td><td><a href="0052-gpio-input-and-debouncing.html">52</a>, <a href="0058-adc.html">58</a>, <a href="0059-pwm.html">59</a>, <a href="0060-the-i2c-protocol.html">60</a>, <a href="0062-spi.html">62</a>, <a href="0053-uart-logging.html">53</a></td></tr>
+      <tr><td>RTOS</td><td><a href="0086-why-use-an-rtos.html">86</a>, <a href="0088-context-switching-at-the-register.html">88</a>, <a href="0091-mutexes-priority-inversion-and-deadlock.html">91</a>, <a href="0092-stack-sizing.html">92</a></td></tr>
+      <tr><td>Debugging and robustness</td><td><a href="0054-gdb-debugging.html">54</a>, <a href="0084-robustness.html">84</a></td></tr>
+      <tr><td>Design</td><td><a href="0056-state-machines.html">56</a>, <a href="0076-driver-design-and-hardware-abstraction.html">76</a>, <a href="0077-layered-and-event-driven-architecture.html">77</a>, <a href="0080-unit-testing-on-the-host.html">80</a></td></tr>
+    </tbody>
+  </table>
+
+  <!-- ===== 1. Practice quiz: four sets, 33 questions, mixed across the course ===== -->
+  <h2>Practice quiz</h2>
+  <p>Work through the four sets in order. Each answer is checked at once. Scores are kept on this page while you work, so answer every question before you read a "Why".</p>
+
+  <div class="widget quiz" data-title="Practice set 1 of 4: C and data">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "An interviewer shows this code and asks what goes wrong at -O2:<pre><code class=\"language-c\">static int done = 0;   /* set to 1 in USART1_IRQHandler */\n\nint main(void)\n{\n    start_rx();\n    while (!done) { }   /* wait for the ISR */\n    handle_frame();\n}</code></pre>The loop never exits at -O2. What is the fix?",
+        "options": ["Declare done as const", "Declare done as volatile", "Make done a local in main", "Build the project at -O0"],
+        "answer": 1,
+        "feedback": [
+          "const forbids writes through this name, so the ISR's assignment to done would not compile. The optimiser may still keep a copy of a value it believes is fixed.",
+          "Right. volatile tells the compiler that done can change outside the code it can see, so each read in the loop is a real load from memory.",
+          "A local lives on the stack of main, and the ISR cannot reach it. The flag must be a file-scope or global variable.",
+          "That hides the symptom: the loop breaks again with the next compiler, flag or optimisation level. Fix the declaration instead."
+        ],
+        "hint": "Ask what the compiler is allowed to assume about done inside the while loop.",
+        "why": "The loop body writes nothing, so the optimiser may read done once and keep it in a register. volatile removes that freedom for every access. It does not make an access atomic, so a read-modify-write shared with an ISR still needs a critical section (see the reflect question in this set)."
+      },
+      { "type": "mc",
+        "prompt": "What does this print on a 32-bit MCU?<pre><code class=\"language-c\">uint8_t a = 200;\nuint8_t b = 100;\nprintf(\"%d\\n\", a + b);</code></pre>",
+        "options": ["300", "44", "256", "0"],
+        "answer": 0,
+        "feedback": [
+          "Right. Both operands are promoted to int before the addition, so the sum is 300 and nothing has wrapped.",
+          "44 is what you get if the sum is stored in a uint8_t first. Here the sum goes straight to printf as an int.",
+          "256 is the modulus for 8 bits, not a result of this addition. No wrap happens until a value is stored back into 8 bits.",
+          "0 would need the sum to be a multiple of 256. 300 is not, so nothing wraps to zero."
+        ],
+        "hint": "Which type does a + b have before anything is stored?",
+        "why": "Integer promotion widens each uint8_t to int before the + (lesson 45). The wrap happens only at a store into an 8-bit variable. The natural follow-up question is 'what if you assign it to a uint8_t?', and then the answer is 44."
+      },
+      { "type": "number",
+        "prompt": "A battery monitor stores its average in a uint8_t:<pre><code class=\"language-c\">uint8_t a = 200;\nuint8_t b = 100;\nuint8_t avg = (uint8_t)((a + b) / 2);</code></pre>What value does avg hold?",
+        "answer": 150, "tolerance": 0,
+        "wrong": [
+          { "answer": 22, "feedback": "That casts first: (uint8_t)(a + b) is 44, and 44 ÷ 2 is 22. In this code the division runs on the int sum, so the cast comes last." },
+          { "answer": 300, "feedback": "That is a + b before the halving. Halving 300 gives 150, which fits in 8 bits." }
+        ],
+        "hint": "Work out what is inside the brackets first, with a and b promoted to int.",
+        "why": "a + b is 300 as an int, then ÷ 2 gives 150, and the cast keeps 150. The trap is putting the cast before the division, which truncates 300 to 44 first. Where the cast sits decides the answer, so say it out loud in the interview."
+      },
+      { "type": "number",
+        "prompt": "A signed 8-bit field in a sensor register holds the bit pattern 0x80. You read it into an <code>int8_t</code>. What decimal value does the code see?",
+        "answer": -128, "tolerance": 0,
+        "wrong": [
+          { "answer": 128, "feedback": "That reads the pattern as unsigned. In an int8_t the top bit has weight -128, so the same bits are -128." }
+        ],
+        "hint": "What is the weight of the top bit in a signed 8-bit number?",
+        "why": "In two's complement the top bit of an 8-bit signed value is worth -128, so 0x80 is -128. A driver that treats a signed field as unsigned reports a large positive reading where a small negative one is correct."
+      },
+      { "type": "number",
+        "prompt": "A 12-bit ADC with a 3.3 V reference reports a conversion result of 3000. What is the input voltage, in volts?",
+        "answer": 2.417, "tolerance": 0.01, "unit": "V",
+        "wrong": [
+          { "answer": 3000, "feedback": "That is the raw count. The count is a fraction of full scale, so multiply by Vref and divide by 4096 to get volts." }
+        ],
+        "hint": "There are 4096 codes, and each code is worth Vref ÷ 4096 volts.",
+        "why": "3000 × 3.3 ÷ 4096 = 2.417 V. Each code is Vref ÷ 4096 volts (lesson 58), because the codes run from 0 to 4095. A good follow-up is the resolution: 3.3 ÷ 4096 is about 0.8 mV per code."
+      },
+      { "type": "mc",
+        "prompt": "A reviewer says: \"This register field is an int, and an int is 16 bits on some toolchains.\" Which declaration gives the same width on every compiler?",
+        "options": ["int, whose width depends on the target", "long, which is 64 bits on some hosts", "uint32_t, an exact 32-bit unsigned type", "unsigned char, then combined by shifts"],
+        "answer": 2,
+        "feedback": [
+          "int is at least 16 bits in C, and it can be narrower than 32 on small targets. The standard does not fix its width.",
+          "long is only guaranteed to be 32 bits. It is 64 bits on many 64-bit hosts, so its width differs between platforms.",
+          "Right. uint32_t from stdint.h is exactly 32 bits wherever it exists, which is why drivers use it for registers.",
+          "It works, but it splits one 32-bit value into four bytes and adds shifts. A fixed-width type states the width directly."
+        ],
+        "hint": "Which type name states its width in the name itself?",
+        "why": "Fixed-width types from stdint.h (lesson 45) put the width into the code, so a reviewer does not need to know the toolchain. The same reasoning covers register structs (lesson 47)."
+      },
+      { "type": "mc",
+        "prompt": "The linker reports <code>multiple definition of rx_count</code>. Both <code>main.c</code> and <code>uart.c</code> contain <code>int rx_count;</code> at file scope, and only <code>uart.c</code> uses it. Which change fixes the link error and keeps the counter private to <code>uart.c</code>?",
+        "options": ["Add static to the definition in uart.c", "Add const to both definitions", "Make it a local variable in each function", "Declare it register in both files"],
+        "answer": 0,
+        "feedback": [
+          "Right. static at file scope gives the name internal linkage, so it is no longer exported, and only uart.c can use rx_count.",
+          "const does not change linkage. Both files still define an exported rx_count, so the same link error remains.",
+          "A local resets on every call and is invisible to the ISR that counts the bytes. A counter must live for the whole program.",
+          "register is not allowed on file-scope variables in C, so this does not compile at all."
+        ],
+        "hint": "Which keyword limits a name to one file?",
+        "why": "Two definitions with external linkage clash at link time, not at compile time. static is the tool for a file-private variable (lesson 46). A strong answer adds the rule: other files declare it with extern in a header, and exactly one .c file defines it."
+      },
+      { "type": "number",
+        "prompt": "A colleague's macro is tested in an interview. What is <code>y</code> after this code runs?<pre><code class=\"language-c\">#define SQUARE(x) x * x\nint y = SQUARE(1 + 2);</code></pre>",
+        "answer": 5, "tolerance": 0,
+        "wrong": [
+          { "answer": 9, "feedback": "That is the intended result, (1 + 2) squared. A macro pastes text, so the line becomes 1 + 2 * 1 + 2, and the multiplication binds only to the neighbouring 2s." }
+        ],
+        "hint": "Substitute the text 1 + 2 for x, without adding any brackets.",
+        "why": "The preprocessor pastes the tokens: 1 + 2 * 1 + 2 = 5. Parenthesising every use, as in ((x) * (x)), gives 9. An inline function avoids the problem and evaluates its argument once (lesson 50)."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague says: \"The flag fix worked, so the shared counter is safe now too.\" The ISR does <code>count++</code>, and the main loop prints <code>count</code>. Explain why the colleague is wrong, and what you would do.",
+        "hint": "What does count++ compile to, and can an interrupt land in the middle of it?",
+        "answer": "volatile makes every access a real memory access, so main sees the ISR's updates. It does not make count++ atomic. On a Cortex-M, count++ is a load, an add and a store, and the ISR can run between the load and the store, which loses an increment. A 32-bit read in main can also be torn if the ISR changes the value between two partial reads. Fix it with a short critical section around the read-modify-write in the ISR and the copy in main, or let only the ISR write and have main take a copy with interrupts masked. Say that volatile is about visibility to the compiler, not about atomicity or ordering between threads."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Practice set 2 of 4: architecture and peripherals">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A Cortex-M function pushes a value onto the stack. Which way does the stack pointer move, and what does that mean for an overflow?",
+        "options": ["Up, so the stack grows toward higher addresses", "Down, so a push lowers SP before it stores", "Sideways, into the peripheral register block", "Into the heap, which sits at a fixed address"],
+        "answer": 1,
+        "feedback": [
+          "This is the picture most people have, and it is wrong for Cortex-M. The stack is full-descending, so an overflow writes below the stack, not above it.",
+          "Right. Cortex-M uses a full-descending stack: a push decrements SP first and then stores. Overflow writes into memory below the stack, which is why lesson 78 adds a canary.",
+          "Peripherals sit at fixed addresses in their own region of the memory map. The stack pointer never moves into them.",
+          "The heap is a separate region that the allocator manages. The stack pointer does not move into it."
+        ],
+        "hint": "On Cortex-M a push first changes SP, then stores. Which way does SP change?",
+        "why": "A stack overflow in a deep call chain silently corrupts the lowest variables in memory, which makes it a classic interview case. Know the direction, and know where a guard value would catch it (lesson 33)."
+      },
+      { "type": "mc",
+        "prompt": "A 1 µs-accurate timer shows that its highest-priority ISR starts 2 µs late every time. A logic analyzer shows that each late start lines up with the end of a critical section in the main loop. What is the most likely cause?",
+        "options": ["The timer prescaler is set too high", "A critical section masks the ISR", "The main loop uses too many registers", "The stack pointer sits in flash"],
+        "answer": 1,
+        "feedback": [
+          "A high prescaler slows the timer's count rate. It does not delay the start of one interrupt, and it would not line the late starts up with a critical section.",
+          "Right. While interrupts are masked, even the top-priority interrupt waits. Priority only chooses the winner once the mask is lifted.",
+          "Register use changes how much work the ISR does, not when it starts. It would not produce a delay that lines up with a critical section.",
+          "A bad stack pointer causes a fault or corruption, not a clean 2 µs delay that lines up with the end of a critical section."
+        ],
+        "hint": "Which code can stop even the highest-priority interrupt from starting?",
+        "why": "Interrupt latency here comes from the longest masked section. Quote the number in the answer: a 2 µs section adds up to 2 µs of latency to every interrupt that fires during it (lesson 57)."
+      },
+      { "type": "mc",
+        "prompt": "A driver writes <code>*(volatile uint32_t *)0x40020014 = 1;</code> to set a GPIO output. Why is that address valid in plain C?",
+        "options": ["The linker picks a new address on every build", "The chip's memory map fixes the address", "The compiler stores it in the stack frame", "The heap allocator reserves it at startup"],
+        "answer": 1,
+        "feedback": [
+          "The linker places code and variables, but it cannot move a fixed peripheral address. That address comes from the chip's datasheet.",
+          "Right. The memory map is part of the chip, so the address is constant, and the pointer just names it. volatile stops the compiler from dropping the write.",
+          "The stack holds local variables that come and go, so a peripheral register is never stored there.",
+          "The heap belongs to malloc and does not reserve hardware addresses. Registers are never allocated at runtime."
+        ],
+        "hint": "Who decides where GPIO's registers live: the program, or the chip?",
+        "why": "A peripheral register is a pointer to a fixed address, qualified volatile (lessons 38 and 47). The interview trap is the write without volatile: the compiler sees no reader and may remove it."
+      },
+      { "type": "mc",
+        "prompt": "Your board needs three sensors, and the team wants the fewest wires on the microcontroller. Which choice is correct?",
+        "options": ["SPI addresses each device by its address", "SPI shares two wires among many devices", "I2C needs one select line per device", "I2C shares two wires among many devices"],
+        "answer": 3,
+        "feedback": [
+          "SPI does not address devices. It selects each one with its own chip-select line, and no address is sent on the bus.",
+          "SPI shares MOSI, MISO and SCK, but each device also needs its own chip-select line. That is three shared wires plus one per device, not two.",
+          "I2C has no per-device select line. Every device sits on the same SDA and SCL and answers to its address.",
+          "Right. I2C uses SDA and SCL for every device, and each one answers to its own address (lesson 60)."
+        ],
+        "hint": "Count the wires for three devices on each bus, and say which wires they share.",
+        "why": "The wire count is a trade-off: I2C is slower and needs addresses, while SPI is faster and costs a chip-select per device (lessons 60 and 62). Interviewers want the trade-off, not only the name."
+      },
+      { "type": "number",
+        "prompt": "A device logs 20-byte lines over a UART at 115200 baud, 8N1 (one start bit, eight data bits, no parity, one stop bit). How long does one line take to send, in milliseconds?",
+        "answer": 1.736, "tolerance": 0.01, "unit": "ms",
+        "wrong": [
+          { "answer": 1.389, "feedback": "That counts only the eight data bits, and forgets the start and stop bits. Each byte takes 10 bit times, not 8." }
+        ],
+        "hint": "How many bit times does one byte take on the wire, and how many bytes are in the line?",
+        "why": "10 bits per byte × 20 bytes = 200 bit times, and 200 ÷ 115200 s = 1.736 ms. A polled print of that line holds the CPU for about 1.7 ms, which is why logging is often moved to a DMA or interrupt-driven path (lesson 53)."
+      },
+      { "type": "number",
+        "prompt": "A sensor on an I2C bus at 100 kHz needs 16 bytes read, and each byte is followed by an ACK. Ignore start and stop conditions. How long do the 16 bytes take, in milliseconds?",
+        "answer": 1.44, "tolerance": 0.01, "unit": "ms",
+        "wrong": [
+          { "answer": 1.28, "feedback": "That is 16 × 80 µs. It leaves out the ACK, which is a ninth clock pulse for each byte." }
+        ],
+        "hint": "One byte with its ACK is nine clock pulses. How long is one clock pulse at 100 kHz?",
+        "why": "Nine pulses of 10 µs = 90 µs per byte, and 16 × 90 µs = 1.44 ms. Real reads add start and stop conditions and the sensor's own response time, so measure the bus before you promise a sample rate (lesson 60)."
+      },
+      { "type": "number",
+        "prompt": "A motor driver needs a 1 kHz PWM from a 1 MHz timer clock. The counter runs from 0 up to ARR and then resets. What ARR value do you write?",
+        "answer": 999, "tolerance": 0,
+        "wrong": [
+          { "answer": 1000, "feedback": "That makes the period 1001 ticks, because the counter starts at zero. The period is ARR + 1 ticks." }
+        ],
+        "hint": "How many timer ticks make one 1 kHz period? Then remember that the count starts at 0.",
+        "why": "1 MHz ÷ 1 kHz = 1000 ticks per period, and the counter counts 0 to ARR, which is ARR + 1 values, so ARR = 999 (lesson 59). Off-by-one errors like this are small, common and easy to catch in review."
+      },
+      { "type": "text",
+        "prompt": "A peripheral's own interrupt-enable bit is set, its flag rises, and the handler still never runs. Name the Cortex-M block that must also enable that interrupt (the abbreviation).",
+        "accept": ["NVIC", "nvic", "nested vectored interrupt controller"],
+        "wrong": [
+          { "answer": "SysTick", "feedback": "SysTick is the 24-bit system timer. It has its own interrupt, but it does not gate the interrupts of other peripherals." }
+        ],
+        "hint": "Two enable bits must be set: one in the peripheral, and one in the chip's interrupt controller.",
+        "why": "Each interrupt has an enable and a priority in the NVIC (lesson 72). Forgetting the NVIC step is a classic bring-up bug, and it looks exactly like an ISR that never runs. The peripheral's own enable only controls what the peripheral raises."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Practice set 3 of 4: RTOS and debugging">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Your scope shows a high-priority task blocked for 40 ms on a mutex. The holder is a low-priority logger, and a medium-priority UI task runs the whole time. What is happening, and what do you change?",
+        "options": ["Deadlock, where two tasks wait for each other; add a timeout", "Priority inversion; enable priority inheritance on the mutex", "Stack overflow in the logger; raise its stack size", "Starvation of the UI; lower its priority to 1"],
+        "answer": 1,
+        "feedback": [
+          "Deadlock needs a cycle: each task holds something the other wants. Here the logger is runnable, so a timeout would only hide the real cause.",
+          "Right. The medium task keeps the low holder from finishing, so the high task waits on a lock it needs. Priority inheritance raises the logger while it holds the mutex (lesson 91).",
+          "A stack overflow shows up as a fault or corruption, not as a clean wait on a mutex. A bigger stack changes nothing about this wait.",
+          "Lowering the UI priority hides the symptom in this test, but the same inversion returns with the next medium task. It is not the fix."
+        ],
+        "hint": "Trace who holds the mutex, and which task keeps the holder from running.",
+        "why": "Priority inversion needs three ingredients: a shared lock, a low holder, and a medium task that runs in between. Priority inheritance is the standard fix (lesson 91). The Mars Pathfinder case in the explain-out-loud section is the model answer to reuse."
+      },
+      { "type": "mc",
+        "prompt": "Two tasks share an SPI bus, and each transaction must finish before another task starts. Which primitive protects the bus, and why?",
+        "options": ["A binary semaphore, because any task can give it back", "A mutex, because only the owner can release it", "A counting semaphore with five permits, to allow five users", "A message queue, because tasks post requests to it"],
+        "answer": 1,
+        "feedback": [
+          "A binary semaphore has no owner, so any task can release a bus it does not hold. A mistake like that can corrupt a transfer in progress.",
+          "Right. A mutex has an owner, so only the task that took the bus can release it, and it supports priority inheritance (lesson 91).",
+          "Five permits lets five tasks use the bus at once, which is the opposite of what a shared SPI bus needs.",
+          "A queue passes requests to a worker task, which is a good design for a driver. It does not stop two callers from using the bus directly."
+        ],
+        "hint": "Think about who may release the lock, and how many users may hold it at once.",
+        "why": "The ownership rule is the detail interviewers listen for. Use a semaphore to signal events between tasks, and a mutex to guard a resource (lesson 91)."
+      },
+      { "type": "mc",
+        "prompt": "You write a context switch in the PendSV handler on a Cortex-M3. On exception entry the hardware has already stacked eight registers. Which registers must your handler save itself?",
+        "options": ["R0 to R3 and R12, pushed by our handler code", "R4 to R11, which hardware did not stack", "PC and LR, the two registers with return addresses", "The PendSV entry in the vector table at startup"],
+        "answer": 1,
+        "feedback": [
+          "Those are already stacked by the hardware on exception entry. Saving them again wastes time and does not fix anything.",
+          "Right. Hardware stacks R0 to R3, R12, LR, PC and xPSR. The handler must save R4 to R11 itself before it switches to another task's stack (lesson 88).",
+          "PC and LR are among the eight registers the hardware stacks on entry, so the handler does not need to save them.",
+          "The vector table holds the handler's address. It is fixed state set at startup, not a register that the switch has to save."
+        ],
+        "hint": "Count the eight registers on the hardware frame, then look at what is left over.",
+        "why": "The hardware frame is eight words, and the software half is the other eight, R4 to R11. Interviewers ask why the split exists: it is how a context switch stays short (lesson 88)."
+      },
+      { "type": "mc",
+        "prompt": "Three periodic tasks use rate-monotonic priorities and together use 75 % of the CPU. Can you guarantee that every deadline is met, using the Liu and Layland bound for three tasks?",
+        "options": ["Yes, because 0.75 is below the 0.78 bound", "No, because 0.75 is above the 0.69 bound", "No, because any load above half the CPU fails", "Yes, because any load below 100 % is schedulable"],
+        "answer": 0,
+        "feedback": [
+          "Right. For n = 3 the bound is 3 × (2^(1/3) − 1) = 0.7798. Below it the schedule is guaranteed, although the test is only sufficient.",
+          "0.69 is the limit for a very large number of tasks (ln 2). For three tasks the bound is higher, so 0.75 passes.",
+          "Half the CPU is not a rule. The bound depends on the number of tasks, and it is about 0.78 for three.",
+          "100 % is the most a perfect scheduler could handle, not a guarantee for rate-monotonic tasks. Above about 0.78 the test is inconclusive."
+        ],
+        "hint": "Compute n × (2^(1/n) − 1) for n = 3, and compare the result with 0.75.",
+        "why": "The Liu and Layland test is sufficient, not necessary. Passing guarantees schedulability, and failing means you should run a response-time analysis before giving up (lesson 93). Quote the bound together with the number of tasks."
+      },
+      { "type": "mc",
+        "prompt": "A board hangs in HardFault_Handler after a bad pointer write, and a debugger is attached. Which register do you read first to learn why the fault was taken?",
+        "options": ["SysTick->VAL, the current count", "RCC->CR, the clock control flags", "SCB->HFSR, the HardFault status register", "GPIOA->IDR, the input pin levels"],
+        "answer": 2,
+        "feedback": [
+          "SysTick->VAL is the timer's current count. It can tell you the time, not why the fault happened.",
+          "RCC->CR holds clock control flags, which have nothing to do with a memory fault.",
+          "Right. HFSR records why the HardFault was taken, such as a forced escalation, and points you to CFSR for the detail (lesson 84).",
+          "GPIOA->IDR shows the levels on the pins. It cannot say why the CPU faulted."
+        ],
+        "hint": "Which register is about the fault itself, rather than the timer, the clocks or the pins?",
+        "why": "The fault status registers are the first evidence after a crash. HFSR says why the HardFault was taken, and CFSR gives the detail. Copy them into RAM that the startup code does not clear, so the next boot can report them (lesson 84)."
+      },
+      { "type": "mc",
+        "prompt": "A driver waits forever in a loop for a sensor that never answers, and the device stays stuck until someone power-cycles it. What should the watchdog do?",
+        "options": ["Speed up the CPU clock inside the wait loop", "Reset the MCU when the periodic kicks stop", "Disable every interrupt and wait for a reset", "Write the stack pointer value to flash"],
+        "answer": 1,
+        "feedback": [
+          "A faster clock makes the same endless loop run faster. It does not end the loop, so the device still hangs.",
+          "Right. The watchdog resets the chip when the software stops refreshing it, which turns a hang into a restart. A stuck loop must not keep kicking it.",
+          "Disabling interrupts can stop the code that refreshes the watchdog, so nothing else can run and the hang is locked in.",
+          "Writing to flash does not help a hang. The stack pointer is not stored there, and a flash write does not clear the fault."
+        ],
+        "hint": "The watchdog only knows whether the software still checks in on time.",
+        "why": "A watchdog is the last line of defence, not a replacement for timeouts in the driver. A good answer adds a timeout in the driver too, and kicks the watchdog only after real progress (lesson 84)."
+      },
+      { "type": "mc",
+        "prompt": "An ISR must pass one received byte to a FreeRTOS task without blocking. Which call is safe to use inside the ISR?",
+        "options": ["xQueueSend, which blocks until space is free", "xSemaphoreTake, which waits for the mutex", "vTaskDelay, to wait a few milliseconds", "xQueueSendFromISR, the ISR-safe send"],
+        "answer": 3,
+        "feedback": [
+          "xQueueSend can block, and blocking is not allowed in an ISR. Use the FromISR variant instead.",
+          "Taking a mutex in an ISR can block, and mutexes are not meant for interrupt context. The ISR should only pass the data along.",
+          "vTaskDelay blocks the calling task for a time. It has no place in interrupt context at all.",
+          "Right. The FromISR variant does not block, and it can report that a higher-priority task woke, so the switch happens on exit (lesson 90)."
+        ],
+        "hint": "Which of these names says that it is meant for interrupt context?",
+        "why": "A call that may block must never run in an ISR, because the ISR has no task to block. The FromISR suffix is the naming convention FreeRTOS uses for interrupt-safe versions (lesson 97)."
+      },
+      { "type": "reflect",
+        "prompt": "A device resets on its own every few hours in the field, and you have no debugger on site. Explain how you would find out why it resets, and what you would record in the firmware so that the next reset tells you more.",
+        "hint": "Name what the chip tells you on boot, then ask what you could store before the reset.",
+        "answer": "First read the reset cause flags the chip sets on boot, so you can tell a watchdog reset from a power-on or software reset. Keep the fault handler's status registers (for example HFSR and CFSR) in a RAM area that the startup code does not clear, so the next boot can log them, and log a reset counter with the reason. Set the watchdog timeout longer than the longest legitimate loop, and kick it only from the main loop's progress, not from a timer that keeps running while the main loop hangs. Reproduce it in the lab with a stress test and a long soak before you blame the hardware. Name the trade-off: the logging uses RAM and flash, and it must not add timing that breaks the design."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Practice set 4 of 4: design and bits">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A switch bounces for about 5 ms on each press. You are asked for a debouncer that never blocks the CPU. Which design fits?",
+        "options": ["Call delay_ms(50) in the button ISR, then read it", "Read once and trust the first edge you see", "Sample every 5 ms and require three equal reads", "Disable the button pin after one press until reset"],
+        "answer": 2,
+        "feedback": [
+          "A delay in an ISR blocks the CPU and stalls every other interrupt. It is a defect, even if it appears to work.",
+          "Bounce produces several edges within a few milliseconds. The first edge is exactly the one you cannot trust.",
+          "Right. A level is accepted only after it has stayed the same over several samples, so the chatter is filtered without a delay (lesson 52).",
+          "Disabling the pin stops the button working after one press, which is a bug, not debouncing."
+        ],
+        "hint": "Picture a timer tick that takes a sample, and ask what a settled level looks like over several samples.",
+        "why": "Sample on a timer, and accept a level only after N equal samples. Let the measured bounce time choose N, and say so, because it turns a guess into a number."
+      },
+      { "type": "mc",
+        "prompt": "You are designing firmware for a sensor, a display and a radio. The team wants the measurement logic to be testable on a PC. Which structure allows that?",
+        "options": ["Every register write sits in the main loop", "One file holds every driver and the logic", "Global variables that every task can change", "Pure logic modules behind a thin hardware layer"],
+        "answer": 3,
+        "feedback": [
+          "Register writes in the main loop tie the logic to the chip, so nothing can run without the hardware.",
+          "A single file mixes hardware and logic, so the logic cannot be compiled on its own without the drivers.",
+          "Shared globals hide the data flow, so a test cannot set up a state without touching other code.",
+          "Right. Logic modules take values in and return values out, so they build on the PC. Only the thin layer talks to registers (lessons 76 and 80)."
+        ],
+        "hint": "What must a test be able to run without?",
+        "why": "This is the design answer interviewers look for: a seam between logic and hardware, with an interface you can fake. It is the same idea as the host unit-test drills in lesson 80."
+      },
+      { "type": "number",
+        "prompt": "A status register reads 0xF0F0, and each set bit means one active channel. How many channels are active?",
+        "answer": 8, "tolerance": 0,
+        "wrong": [
+          { "answer": 16, "feedback": "That is the number of bits in the register, or of the zero bits. Count only the 1 bits: 0xF0 has four in each byte." }
+        ],
+        "hint": "Count the set bits in each byte separately, then add them.",
+        "why": "0xF0 is 1111 0000, which has four set bits, so 4 + 4 = 8. A portable loop for this is x &= x - 1 repeated until x is zero (lesson 20). A Cortex-M0+ has no popcount instruction, so that loop is the usual answer there."
+      },
+      { "type": "mc",
+        "prompt": "You want to clear only the lowest set bit of an unsigned value <code>x</code>. For example, 0b1000 becomes 0b0000, and 0b10100 becomes 0b10000. Which expression does that?",
+        "options": ["x & ~x, the bitwise NOT of x", "x & (x - 1), subtract one then AND", "x | (x - 1), subtract one then OR", "x ^ (x - 1), subtract one then XOR"],
+        "answer": 1,
+        "feedback": [
+          "x & ~x is always zero, so it clears every bit, not just the lowest one.",
+          "Right. Subtracting one flips the lowest set bit and the zeros below it. The AND keeps only the bits above, so the lowest set bit goes away.",
+          "OR sets the bits that subtraction changed, so 0b1000 becomes 0b1111. It turns bits on when you wanted them off.",
+          "XOR also changes the zeros below the lowest set bit, so 0b1000 becomes 0b1111 again. It does not clear the value."
+        ],
+        "hint": "Subtract one from 0b1000, and look at which bits change.",
+        "why": "This is the Kernighan trick. Each pass clears one set bit, which is also how popcount works (drill 2). Interviewers often ask for this one-liner, so know it, and know why it works."
+      },
+      { "type": "mc",
+        "prompt": "Which operation has undefined behaviour in C, so that the compiler may assume it never happens?",
+        "options": ["Unsigned 8-bit addition wrapping past 255", "Signed int addition overflowing past INT_MAX", "Converting a negative int to unsigned", "Shifting an unsigned value left by one"],
+        "answer": 1,
+        "feedback": [
+          "Defined. Unsigned arithmetic wraps modulo 2 to the power N, so the result stays in 0 to 255 for uint8_t.",
+          "Right. Signed overflow is undefined, and the optimiser may assume it does not happen, which can remove a check you wrote to catch it.",
+          "Defined. The value is taken modulo 2 to the power N, so −1 becomes the all-ones pattern.",
+          "Defined for unsigned types. Bits shifted out of the top are simply lost, and the rest of the value is kept."
+        ],
+        "hint": "Which type's overflow does the standard leave open?",
+        "why": "The classic interview trap: a check such as if (a + b &lt; a) on signed ints may be optimised away. Use unsigned types for wrapping arithmetic, or check before you add (lesson 45)."
+      },
+      { "type": "number",
+        "prompt": "A 16-slot ring buffer uses two free-running 32-bit counters, head and tail. It is full when head − tail equals 16, and it never wastes a slot. How many bytes can it hold at once?",
+        "answer": 16, "tolerance": 0,
+        "wrong": [
+          { "answer": 15, "feedback": "That is the classic design that keeps one slot empty to tell full from empty. With free-running counters, full is head − tail = 16, so no slot is lost." }
+        ],
+        "hint": "Full means the counters differ by the array size. Does that need an empty slot?",
+        "why": "With free-running counters the difference gives the fill level, so all 16 slots hold data. The counters wrap at 2^32, and because 16 divides 2^32 the subtraction still works after the wrap (lesson 70)."
+      },
+      { "type": "number",
+        "prompt": "A 16-bit sensor register is read into an <code>int16_t</code>, and its raw bits are 0xFFFF. What decimal value does the code see?",
+        "answer": -1, "tolerance": 0,
+        "wrong": [
+          { "answer": 65535, "feedback": "That reads the same bits as unsigned. A signed field treats the top bit as −32768, which makes 0xFFFF equal to −1." }
+        ],
+        "hint": "In two's complement, adding 1 to all ones gives zero with a carry out.",
+        "why": "All 16 bits set is −1 in two's complement, because 0xFFFF + 1 = 0x10000, which wraps to zero (lessons 19 and 45). A driver that reads a signed temperature as unsigned shows 65535 instead of −1, and field testing finds that bug quickly."
+      },
+      { "type": "mc",
+        "prompt": "Your code must clear bit 3 of <code>REG</code> and leave every other bit as it was. Which statement does that?",
+        "options": ["<code>REG &amp;= ~(1u &lt;&lt; 3);</code>", "<code>REG |= (1u &lt;&lt; 3);</code>", "<code>REG ^= (1u &lt;&lt; 3);</code>", "<code>REG = (1u &lt;&lt; 3);</code>"],
+        "answer": 0,
+        "feedback": [
+          "Right. The inverted mask is 1 everywhere except bit 3, so the AND clears bit 3 and passes every other bit through.",
+          "OR with the mask sets bit 3, which is the opposite of what you need.",
+          "XOR toggles bit 3. A set bit becomes clear, but a clear bit becomes set, so the result depends on the starting state.",
+          "Plain assignment overwrites the whole register, which breaks every other bit that other code relies on."
+        ],
+        "hint": "Which mask has ones everywhere except bit 3?",
+        "why": "Read-modify-write is the rule: AND with the inverted mask clears, OR sets and XOR toggles (lesson 20). A follow-up question is whether this is safe when an ISR also writes the register, and the answer needs a critical section (lesson 57)."
+      }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 2. Explain out loud ===== -->
+  <h2>Explain out loud</h2>
+  <p>Interviewers often ask you to talk through a design on a whiteboard. Set a two-minute timer, speak the answer, and only then open the outline.</p>
+
+  <div class="interview">
+    <p><strong>"Design a button debouncer for a firmware with a main loop and a 1 ms tick."</strong> Speak for two minutes, then compare.</p>
+    <details><summary>Model answer outline</summary>
+      <ol>
+        <li>State the goal: report one press per physical press, with no blocking delay.</li>
+        <li>Sample the pin in the 1 ms tick (or a 5 ms slot) and store the last raw reading.</li>
+        <li>Count consecutive equal samples. Accept a new level only after N equal samples, for example N = 5 at 5 ms, and measure the switch's real bounce time with a logic analyzer before choosing N (lesson 52).</li>
+        <li>Report the edge once, on the change of the accepted level. Never call a delay.</li>
+        <li>Test it on the host: feed a scripted sequence of bouncing samples and check the output (lesson 80).</li>
+        <li>Say what you would change for a wake-up pin in a low-power design (lesson 75).</li>
+      </ol>
+    </details>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Structure the firmware for a battery-powered sensor node with a radio, a display and a button."</strong> Speak for two minutes, then compare.</p>
+    <details><summary>Model answer outline</summary>
+      <ol>
+        <li>Split the layers: drivers that touch registers (sensor, display, radio), a hardware abstraction layer with an interface per device, and pure logic modules for the measurement and the display state (lessons 76 and 77).</li>
+        <li>Put each piece behind an interface so the logic can be tested on a PC with fakes (lessons 80 and 81).</li>
+        <li>Choose the scheduler: a super-loop with a timer tick is enough for one sensor; an RTOS when radio and display need their own timing (lessons 86 and 87).</li>
+        <li>Plan the low-power loop: sleep between samples and wake on a timer or the button pin (lesson 75).</li>
+        <li>Add a watchdog, a logging path, and a bootloader slot for updates (lessons 84, 85 and 104).</li>
+      </ol>
+    </details>
+  </div>
+
+  <div class="interview">
+    <p><strong>"Explain priority inversion on a whiteboard, with a timeline."</strong> Speak for two minutes, then compare.</p>
+    <details><summary>Model answer outline</summary>
+      <ol>
+        <li>Draw three tasks: low (L), medium (M), high (H). Mark when L takes a mutex.</li>
+        <li>H becomes ready and blocks on the mutex that L holds.</li>
+        <li>M becomes ready. M has higher priority than L, so it runs, and L cannot finish and release the mutex. H waits for M, which has nothing to do with the mutex.</li>
+        <li>The fix is priority inheritance: L runs at H's priority while it holds the mutex, so M cannot preempt it (lesson 91).</li>
+        <li>Mention the Mars Pathfinder story as the real case where the mutex lacked inheritance (RISKS Digest, in the resources).</li>
+      </ol>
+    </details>
+  </div>
+
+  <!-- ===== 3. Coding drills ===== -->
+  <h2>Coding drills</h2>
+  <p>Write each routine from memory, then compile it with <code>gcc -std=c11 -pedantic -Wall -Wextra -Werror</code> and add a small <code>main</code> with <code>assert</code> checks. Each solution below compiled and passed its tests on the host GCC used in this course. Open a solution only after you have tried.</p>
+
+  <h3>Drill 1: reverse the bits of a 32-bit value</h3>
+  <p>Return the value whose bit 0 is bit 31 of the input, and so on. Test with <code>0x00000001</code> and <code>0x0000000F</code>.</p>
+  <details><summary>Solution</summary>
+    <pre><code class="language-c">/* Reverse the order of the 32 bits: bit 0 becomes bit 31, and so on. */
+uint32_t reverse_bits32(uint32_t x)
+{
+    uint32_t r = 0u;
+    for (unsigned i = 0u; i &lt; 32u; i++) {
+        r = (r &lt;&lt; 1) | (x &amp; 1u);   /* append the lowest bit of x to r */
+        x &gt;&gt;= 1;                   /* move to the next bit of x */
+    }
+    return r;
+}
+</code></pre>
+    <p>The loop appends one input bit to the result on each pass. It runs 32 times, so the result has the input bits in reverse order.</p>
+  </details>
+
+  <h3>Drill 2: count the set bits</h3>
+  <p>Return the number of 1 bits in a 32-bit value, without a loop over all 32 positions.</p>
+  <details><summary>Solution</summary>
+    <pre><code class="language-c">/* Count the set bits. x &amp;= x - 1 clears the lowest set bit, so the loop runs once per 1. */
+unsigned popcount32(uint32_t x)
+{
+    unsigned n = 0u;
+    while (x != 0u) {
+        x &amp;= x - 1u;
+        n++;
+    }
+    return n;
+}
+</code></pre>
+    <p>Each pass clears the lowest set bit, so the loop runs once per set bit. This version is portable C, so it runs on any core, including the Cortex-M0+ with no popcount instruction.</p>
+  </details>
+
+  <h3>Drill 3: a ring buffer</h3>
+  <p>Write a FIFO of 16 bytes with <code>push</code> and <code>pop</code>. It must report full and empty without a wasted slot, and it must keep working when the indices wrap. Explain why <code>head</code> and <code>tail</code> are <code>volatile</code>.</p>
+  <details><summary>Solution</summary>
+    <pre><code class="language-c">#define RB_SIZE 16u                 /* must be a power of two */
+#define RB_MASK (RB_SIZE - 1u)
+
+/* head and tail count up forever (they wrap at 2^32). The index is
+   head &amp; RB_MASK. Because RB_SIZE divides 2^32, the wrap is harmless.
+   volatile: an ISR may change head or tail, so the compiler must reload them. */
+typedef struct {
+    uint8_t buf[RB_SIZE];
+    volatile uint32_t head;         /* written only by the producer */
+    volatile uint32_t tail;         /* written only by the consumer */
+} ring_t;
+
+static bool rb_push(ring_t *rb, uint8_t v)
+{
+    if (rb-&gt;head - rb-&gt;tail == RB_SIZE) {
+        return false;               /* full: all 16 slots in use */
+    }
+    rb-&gt;buf[rb-&gt;head &amp; RB_MASK] = v;
+    rb-&gt;head = rb-&gt;head + 1u;
+    return true;
+}
+
+static bool rb_pop(ring_t *rb, uint8_t *v)
+{
+    if (rb-&gt;head == rb-&gt;tail) {
+        return false;               /* empty */
+    }
+    *v = rb-&gt;buf[rb-&gt;tail &amp; RB_MASK];
+    rb-&gt;tail = rb-&gt;tail + 1u;
+    return true;
+}
+
+static uint32_t rb_count(const ring_t *rb)
+{
+    return rb-&gt;head - rb-&gt;tail;
+}
+</code></pre>
+    <p>The indices count up forever and wrap at 2<sup>32</sup>. Because the size divides 2<sup>32</sup>, the unsigned subtraction still gives the fill level. An interrupt may change one index, so both are <code>volatile</code>. For a producer in an ISR and a consumer in main, this is the usual single-producer single-consumer pattern (lesson 70). It is safe for exactly one writer per index.</p>
+  </details>
+
+  <h3>Drill 4: swap the bytes of a 32-bit value, and read big-endian</h3>
+  <p>Write a byte swap for <code>uint32_t</code>, and a function that reads a big-endian 16-bit value from a byte buffer without casting the buffer.</p>
+  <details><summary>Solution</summary>
+    <pre><code class="language-c">/* Swap the byte order of a 32-bit value. */
+uint32_t bswap32(uint32_t x)
+{
+    return ((x &amp; 0x000000FFu) &lt;&lt; 24) |
+           ((x &amp; 0x0000FF00u) &lt;&lt; 8)  |
+           ((x &amp; 0x00FF0000u) &gt;&gt; 8)  |
+           ((x &amp; 0xFF000000u) &gt;&gt; 24);
+}
+
+/* Read a big-endian 16-bit value from a byte buffer. Byte-by-byte access
+   works on any CPU and avoids unaligned or type-punned reads. */
+uint16_t be16_read(const uint8_t *p)
+{
+    return (uint16_t)(((uint16_t)p[0] &lt;&lt; 8) | p[1]);
+}
+</code></pre>
+    <p>Byte-by-byte access works on any CPU and avoids unaligned reads and strict-aliasing problems (lessons 45 and 48). Cortex-M cores have a byte-reverse instruction (REV), and the compiler may use it for this pattern, but the portable form is the one to write.</p>
+  </details>
+
+  <h3>Drill 5: the macro pitfalls</h3>
+  <p>Show why <code>SQUARE(1 + 2)</code> is wrong with a naive macro, how to fix it, why an inline function avoids double evaluation, and why a <code>do { } while (0)</code> wrapper is needed for a macro that is a statement.</p>
+  <details><summary>Solution</summary>
+    <pre><code class="language-c">#define SQUARE_BAD(x) x * x            /* no parentheses: wrong for expressions */
+#define SQUARE(x) ((x) * (x))          /* parenthesise every use of the argument */
+
+/* An inline function evaluates its arguments exactly once. */
+static inline int min_int(int a, int b)
+{
+    return (a &lt; b) ? a : b;
+}
+
+/* A do-while(0) makes the macro one statement, so it works after if/else. */
+#define SET_BITS(reg, mask) do { (reg) |= (mask); } while (0)
+</code></pre>
+    <p>The naive macro expands <code>SQUARE_BAD(1 + 2)</code> to <code>1 + 2 * 1 + 2</code>, which is 5. Parentheses around every use of the argument fix it. The inline function evaluates <code>i++</code> once. The do-while wrapper makes the macro one statement, so an <code>if</code> without braces still works (lesson 50).</p>
+  </details>
+
+  <!-- ===== 4. Behavioural questions: STAR ===== -->
+  <h2>Behavioural questions and the STAR method</h2>
+  <p>
+    Behavioural questions ("Tell me about a time when...") test judgement. Answer with STAR: <strong>S</strong>ituation (one or two sentences of context), <strong>T</strong>ask (what you had to achieve), <strong>A</strong>ction (what <em>you</em> did, in order), and <strong>R</strong>esult (a measurable outcome and what you would do differently). Most candidates spend too long on the situation. Give it a third of your time at most.
+    <span class="sidenote">Use STAR as a checklist, not a script.</span>
+  </p>
+  <table>
+    <thead><tr><th>Part</th><th>Length</th><th>Embedded example</th></tr></thead>
+    <tbody>
+      <tr><td>Situation</td><td>one sentence</td><td>A sensor board gave wrong readings on some units but not all.</td></tr>
+      <tr><td>Task</td><td>one sentence</td><td>Find the cause within the sprint and make the readings reliable.</td></tr>
+      <tr><td>Action</td><td>three steps</td><td>I captured the I2C lines with a logic analyzer, found slow rise times on SDA, and tested a lower pull-up value. I checked the datasheet's timing limits before changing it (lesson 60).</td></tr>
+      <tr><td>Result</td><td>measured</td><td>Zero failed reads in 1000 cycles on five boards, and I added a rise-time check to the bring-up checklist.</td></tr>
+    </tbody>
+  </table>
+  <p>Replace the example with a real story from your own work. The learner's own project is the best source: a bug in the capstone, a timing fault in a lab, or a review that changed a design.</p>
+
+  <div class="interview">
+    <p><strong>"Tell me about a bug that took you the longest to find."</strong> Use STAR. Keep the answer under two minutes.</p>
+    <details><summary>Model answer</summary>
+      <p><strong>S:</strong> Readings from a sensor were wrong on only some boards. <strong>T:</strong> Find the cause before the demo on Friday. <strong>A:</strong> I first ruled out the software by reading the raw bytes, then used the logic analyzer on the I2C lines and saw SDA rising slowly, which I traced to an oversized pull-up. I measured the rise time against the bus specification and lowered the value. <strong>R:</strong> The failures stopped in 1000 cycles on five boards, and I added the rise-time measurement to the bring-up checklist, so the next board is checked before it is shipped.</p>
+    </details>
+  </div>
+
+  <!-- ===== 5. Spaced review ===== -->
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "A sensor output goes through a divider from a 3.3 V supply: a 10 kΩ resistor on top and a 4.7 kΩ resistor below. The ADC is connected across the bottom resistor. What voltage does the ADC see, in volts?",
+        "answer": 1.055, "tolerance": 0.01, "unit": "V",
+        "wrong": [
+          { "answer": 2.245, "feedback": "That is 3.3 × 10 ÷ 14.7, the voltage across the top resistor. The resistors are the wrong way round in the calculation: the ADC sits across the bottom one." }
+        ],
+        "hint": "The bottom resistor takes its share of the total resistance.",
+        "why": "V = 3.3 × 4.7 ÷ (10 + 4.7) = 1.055 V (lesson 8). Check where the ADC is connected before you calculate. Swapping the two resistors gives 2.245 V, and that error looks plausible on a scope, so it is a good one to catch in a design review."
+      },
+      { "type": "mc",
+        "prompt": "A colleague wires a button between a GPIO pin and ground, and enables no pull resistor in code or on the board. The pin reads a random level while the button is open. What is the cause?",
+        "options": ["The pin floats, because nothing holds it high or low", "The pin always reads low because ground is connected", "The core idles the pin high when no code drives it", "The pin is pulled high by the MCU's default setting"],
+        "answer": 0,
+        "feedback": [
+          "Right. With no pull resistor, an input whose switch is open is connected to nothing, so it picks up noise. A pull-up or pull-down, internal or external, fixes it (lesson 16).",
+          "The switch is open, so the pin is not connected to ground. Ground only matters when the button is pressed.",
+          "The core does not drive idle pins high. An unconnected input simply has no defined level.",
+          "A pull-up does make the pin high, but only when it is enabled. This case has none, so the default is not a pull-up here."
+        ],
+        "hint": "What holds the pin at a level when the switch is open?",
+        "why": "A floating input is a classic bring-up bug: it reads different levels from one run to the next. The fix is a pull resistor, which gives the pin a defined level when the button is open (lesson 16)."
+      },
+      { "type": "text",
+        "prompt": "On the scope, one press of the button shows five edges within about 5 ms. What is the physical effect on the switch contacts called?",
+        "accept": ["bounce", "contact bounce", "switch bounce"],
+        "wrong": [
+          { "answer": "debounce", "feedback": "Debounce is the software fix, not the effect. The effect is contact bounce, which the debouncer removes." }
+        ],
+        "hint": "The contacts hit each other several times before they settle.",
+        "why": "Contact bounce is the mechanical chatter in the first few milliseconds of a press (lesson 52). The name matters in interviews, because the debouncer design depends on the measured bounce time."
+      }
+    ] }
+    </script>
+  </div>
+
+  <!-- ===== 6. Common mistakes ===== -->
+  <h2>Common mistakes and how to spot them</h2>
+  <p>Most lost interview marks come from how a candidate answers, not from what they know. Each entry below gives the symptom, so you can notice it while you practise.</p>
+
+  <h3>Mistake 1: answering from recognition</h3>
+  <p>
+    <strong>Symptom:</strong> you read a question, feel that you know it, and say "volatile, yes" without a reason. In the interview the follow-up question ("so what does the compiler do without it?") exposes the gap. <strong>Cause:</strong> the words feel familiar, and familiarity is not recall. <strong>Fix:</strong> answer on paper first, in one sentence with a reason, and only then open the "Why" text. The "Why" is a check, not a source of the answer.
+  </p>
+
+  <h3>Mistake 2: reading the tempting answer as the right one</h3>
+  <p>
+    <strong>Symptom:</strong> you miss the same kind of question again and again, always choosing the answer that sounds like the textbook. <strong>Cause:</strong> the wrong options in these quizzes are chosen because they sound plausible, such as "const" for "volatile" or "128" for a signed 0x80. <strong>Fix:</strong> for each miss, write down which rule the tempting answer broke. A pattern of the same broken rule points to one lesson to reread.
+  </p>
+
+  <h3>Mistake 3: copying a drill solution</h3>
+  <p>
+    <strong>Symptom:</strong> the drill looks easy after you have read its solution, and you cannot write it on a blank page the next day. <strong>Cause:</strong> reading a solution gives recognition, not recall, which is the skill that interviews test. <strong>Fix:</strong> close the solution, write the function from memory, compile it with <code>-Wall -Wextra -Werror</code>, and check it with the asserts. Only then compare. A drill you can write three days later counts as learned.
+  </p>
+
+  <h3>Mistake 4: a model answer with no number</h3>
+  <p>
+    <strong>Symptom:</strong> the answer says "the timing is fine" or "the code is efficient", and the interviewer asks for the figure. <strong>Cause:</strong> the candidate has a conclusion but no measurement or calculation behind it. <strong>Fix:</strong> attach one number to each claim: the bit time, the utilisation, the cycle count or the measured rise time. The timing and calculation answers in this lesson each carry one.
+  </p>
+
+  <h2>In real projects and interviews</h2>
+  <p>
+    Interviewers at small embedded teams usually ask you to reason out loud about a small design, and they care more about the path than the final answer. They listen for three things: that you state the problem before the solution, that you name the trade-off you accepted, and that you know how you would test the result. The explain-out-loud prompts in this lesson are written in that order for that reason.
+  </p>
+  <p>
+    On the job, the same ideas appear in code review. A reviewer who sees a flag shared with an interrupt and no <code>volatile</code>, a mask written as a plain assignment, or a blocking call inside an ISR will ask about it in review, usually with a question of the same shape as the quiz. Answering that question well is the same skill the interview tests, and it shows whether you understand the rule or only remember it.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Integer promotion happens before arithmetic. The result wraps only when it is stored in a smaller type, and an unsigned conversion keeps the value modulo 2<sup>N</sup>.</li>
+    <li>Signed overflow is undefined, so keep arithmetic that can overflow in unsigned types when the wrap is wanted.</li>
+    <li>In two's complement, the top bit has weight −128 for 8 bits. Build a negative value by inverting the bits and adding one.</li>
+    <li><code>volatile</code> stops the compiler keeping a value in a register across code it cannot see. It does not give atomicity or thread safety.</li>
+    <li>OR sets a bit, AND with the inverted mask clears it, and XOR toggles it. Plain assignment overwrites the whole register.</li>
+    <li>Priority inversion needs a lock, a low task that holds it, and a medium task that keeps the low task from finishing. Priority inheritance fixes it.</li>
+    <li>Write the formula before the number, and say the unit out loud.</li>
+  </ul>
+
+  <div class="win">You can answer 33 mixed embedded questions, explain three designs out loud, and write five C routines from memory with tests. That is the core of a junior technical interview, and the next step is to practise it with a real person.</div>
+
+  <div class="source">
+    <a href="https://en.cppreference.com/w/c/language/conversion">cppreference: Conversions</a>: read the sections "Integer promotions" and "Usual arithmetic conversions" and work the examples. These two sections decide most of the C questions in this lesson, and they are the primary text behind lesson 45.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) to quiz you on the questions you missed, one at a time, without the answers. Try: "Quiz me on the three questions I missed in practice set 3, and tell me which lesson to reread after each wrong answer." Related: <a href="../reference/interview-questions.html">Interview question bank</a> and <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

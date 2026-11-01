@@ -1,3 +1,4 @@
+// EXPECT: FRAME PARSE OK temp=4660 mode=1 valid=1
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

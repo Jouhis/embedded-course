@@ -1,3 +1,4 @@
+// EXPECT: main() code   (flash):
 
 /* Where do the bytes live? Print one object from each memory region.
  * The const table is placed in flash, the initialised global is in SRAM (copied from

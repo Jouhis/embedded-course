@@ -1,3 +1,4 @@
+// EXPECT: [pull-up]   GP14 = 1
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

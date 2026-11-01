@@ -1,3 +1,4 @@
+// EXPECT: DISPATCH OK handled=2 ignored=1
 #include <stdio.h>
 #include "pico/stdlib.h"
 

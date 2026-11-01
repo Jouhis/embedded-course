@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Context switching in the FreeRTOS port · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0089">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Context switching in the FreeRTOS port</h1>
+  <p class="subtitle">The FreeRTOS port does the switch from lesson 88 in one assembly handler, PendSV, which runs at the lowest interrupt priority. The tick only asks for the switch. This lesson reads each step in the port's source, maps it to the simulator, and explains why PendSV is set to the lowest priority.</p>
+
+  <div class="goal">
+    By the end of this lesson you can read <code>xPortPendSVHandler</code> line by line, map each of its steps to the simulator's handler from lesson 88, and explain why PendSV runs at the lowest priority and what goes wrong at a higher one.
+  </div>
+
+  <h2>Where we are, and why it matters</h2>
+  <p>
+    Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> set up the tick and said that the switch happens in PendSV. Lesson <a href="0088-context-switching-at-the-register.html">88</a> explained what a switch does to the registers and the stacks, using a two-task program with its own handler. This lesson reads the real FreeRTOS port in the same order: the tick that starts a switch, the first frame the kernel builds for a task, the first start, and the switch itself.
+  </p>
+  <p>
+    Two earlier lessons set up the priority rules. Lesson <a href="0072-the-nvic.html">72</a> defined the priority numbers: on the NVIC a lower number is more urgent, and an interrupt of equal priority does not preempt another. Lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> covered SysTick, the timer that produces the tick in this port. The lowest-priority placement of PendSV follows from those rules, and the second half of this lesson works through it.
+  </p>
+
+  <p>
+    Line numbers in this lesson refer to the kernel's own port file, <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code> (FreeRTOS V11.2.0), and to the port header next to it, <code>portmacro.h</code>. The projects compile these files. The code excerpts are copied from them without changes.
+  </p>
+
+  <h2>Concept 1: the tick asks for a switch, and PendSV performs it</h2>
+  <p>
+    On every tick the port calls <code>xTaskIncrementTick()</code> from the SysTick handler. That function adds one to the tick count, wakes any task whose delay has ended, and returns whether a switch is needed. The SysTick handler in the port looks like this.
+  </p>
+    <pre><code class="language-c">void xPortSysTickHandler( void )
+{
+    /* The SysTick runs at the lowest interrupt priority, so when this interrupt
+     * executes all interrupts must be unmasked.  There is therefore no need to
+     * save and then restore the interrupt mask value as its value is already
+     * known. */
+    portDISABLE_INTERRUPTS();
+    traceISR_ENTER();
+    {
+        /* Increment the RTOS tick. */
+        if( xTaskIncrementTick() != pdFALSE )
+        {
+            traceISR_EXIT_TO_SCHEDULER();
+
+            /* A context switch is required.  Context switching is performed in
+             * the PendSV interrupt.  Pend the PendSV interrupt. */
+            portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT;
+        }
+        else
+        {
+            traceISR_EXIT();
+        }
+    }
+    portENABLE_INTERRUPTS();
+}
+</code></pre>
+  <p>
+    The handler brackets its work with <code>portDISABLE_INTERRUPTS()</code> and <code>portENABLE_INTERRUPTS()</code>. The comment above the function says that SysTick runs at the lowest interrupt priority, so all interrupts are already unmasked when it starts. The port therefore does not need to save the old mask and restore it. It can simply enable interrupts again at the end.
+  </p>
+  <p>
+    When <code>xTaskIncrementTick()</code> reports a switch, the handler writes <code>portNVIC_PENDSVSET_BIT</code> to the interrupt control and state register. That sets PendSV pending and changes nothing else. The tick handler does not touch any stack or task. It only records the request.
+  </p>
+  <p>
+    The switch runs later. PendSV is at the lowest priority, so it cannot interrupt any other handler. When the tick handler returns with nothing else active, the pending PendSV is taken at once. If another interrupt is active, PendSV waits for it to finish.
+  </p>
+
+  <h2>Concept 2: the first frame, built by the kernel</h2>
+  <p>
+    Lesson 88 built the first frames by hand, with stores into the simulator's RAM. The port does the same job in <code>pxPortInitialiseStack</code>, which the kernel calls when a task is created. The function is short, and its layout is the one the handler expects, so it is worth reading slowly.
+  </p>
+    <pre><code class="language-c">StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
+                                     TaskFunction_t pxCode,
+                                     void * pvParameters )
+{
+    /* Simulate the stack frame as it would be created by a context switch
+     * interrupt. */
+    pxTopOfStack--;                                                      /* Offset added to account for the way the MCU uses the stack on entry/exit of interrupts. */
+    *pxTopOfStack = portINITIAL_XPSR;                                    /* xPSR */
+    pxTopOfStack--;
+    *pxTopOfStack = ( ( StackType_t ) pxCode ) &amp; portSTART_ADDRESS_MASK; /* PC */
+    pxTopOfStack--;
+    *pxTopOfStack = ( StackType_t ) portTASK_RETURN_ADDRESS;             /* LR */
+    pxTopOfStack -= 5;                                                   /* R12, R3, R2 and R1. */
+    *pxTopOfStack = ( StackType_t ) pvParameters;                        /* R0 */
+    pxTopOfStack -= 8;                                                   /* R11, R10, R9, R8, R7, R6, R5 and R4. */
+
+    return pxTopOfStack;
+}
+</code></pre>
+  <p>
+    The first line of the function, line 188, moves the pointer down one word, and the port's comment says that this offset accounts for the way the MCU uses the stack on exception entry and exit. Line 189 stores <code>portINITIAL_XPSR</code>, which is <code>0x01000000</code> (defined at line 78). This is the same value that lesson 88 wrote into the xPSR slot.
+  </p>
+  <p>
+    Lines 190 and 191 store the PC. The task's entry function is masked with <code>portSTART_ADDRESS_MASK</code>, which is <code>0xfffffffe</code> (line 90). That clears bit 0 of the address, so the stored PC is an even address. The Thumb state itself comes from the xPSR bit that line 203 sets. Lines 192 and 193 store the LR. The value is <code>portTASK_RETURN_ADDRESS</code>, which is <code>prvTaskExitError</code> in this port (line 110). If a task ever returns from its function, it goes there, and that function asserts and stops, as lesson 87 said a task must never return.
+  </p>
+  <p>
+    Line 194 moves the pointer down five words, past the slots for R12, R3, R2 and R1, to the R0 slot. Line 195 stores the parameter there. The parameter is the first argument of the task function, so the task receives it in R0, as the calling convention in lesson 33 says. Line 196 moves down eight more words for R11 to R4, and writes nothing into them. The returned pointer is the lowest of those eight slots, and it is the value the kernel stores as the task's stack top.
+  </p>
+  <p>
+    That returned pointer is the saved block from lesson 88. The port leaves R4 to R11 unwritten, so their starting values are whatever the stack memory held. The simulator writes zeros into its block, which is a difference between the two versions. It does not affect the structure: in both, the handler loads the stack top, pops the block, and then reaches the frame by moving up past it.
+  </p>
+
+  <h2>Concept 3: the first start, with no task to save</h2>
+  <p>
+    The first task does not come from a switch, because there is no running task to save. <code>prvPortStartFirstTask</code> prepares the stacks and raises an SVC, and <code>vPortSVCHandler</code> starts the first task. Both are short. Their source is shown below.
+  </p>
+    <pre><code class="language-c">static void prvPortStartFirstTask( void )
+{
+    __asm volatile (
+        " ldr r0, =0xE000ED08   \n" /* Use the NVIC offset register to locate the stack. */
+        " ldr r0, [r0]          \n"
+        " ldr r0, [r0]          \n"
+        " msr msp, r0           \n" /* Set the msp back to the start of the stack. */
+        " cpsie i               \n" /* Globally enable interrupts. */
+        " cpsie f               \n"
+        " dsb                   \n"
+        " isb                   \n"
+        " svc 0                 \n" /* System call to start first task. */
+        " nop                   \n"
+        " .ltorg                \n"
+        );
+}
+</code></pre>
+  <p>The SVC handler is next, from the same file.</p>
+  <pre><code class="language-c">void vPortSVCHandler( void )
+{
+    __asm volatile (
+        "   ldr r3, =pxCurrentTCB           \n" /* Restore the context. */
+        "   ldr r1, [r3]                    \n" /* Get the pxCurrentTCB address. */
+        "   ldr r0, [r1]                    \n" /* The first item in pxCurrentTCB is the task top of stack. */
+        "   ldmia r0!, {r4-r11}             \n" /* Pop the registers that are not automatically saved on exception entry and the critical nesting count. */
+        "   msr psp, r0                     \n" /* Restore the task stack pointer. */
+        "   isb                             \n"
+        "   mov r0, #0                      \n"
+        "   msr basepri, r0                 \n"
+        "   orr r14, #0xd                   \n"
+        "   bx r14                          \n"
+        "                                   \n"
+        "   .ltorg                          \n"
+        );
+}
+</code></pre>
+  <p>
+    Line 250 loads the address <code>0xE000ED08</code> into R0. That is the vector table offset register, which the port's comment calls the NVIC offset register. Line 251 reads it, and the value is the base of the vector table. Line 252 reads the first word of that table, which is the initial stack pointer. Line 253 writes it to MSP, which resets the main stack to its top. Lines 254 and 255 enable interrupts with <code>cpsie i</code> and <code>cpsie f</code>, and <code>svc 0</code> on line 258 raises the call that starts the first task.
+  </p>
+  <p>
+    <code>vPortSVCHandler</code> does not save anything. The kernel has already chosen the first task, because this handler does not call <code>vTaskSwitchContext()</code>. It reads <code>pxCurrentTCB</code>, loads the stack top, and pops R4 to R11 with <code>ldmia</code> (line 234). The <code>!</code> in <code>ldmia r0!</code> writes the moved address back into R0, so R0 ends at the frame. Line 235 writes PSP, lines 237 and 238 clear BASEPRI to zero, and line 239 ORs <code>0xD</code> into LR. The SVC entry leaves <code>0xFFFFFFF9</code> in LR, so the result is <code>0xFFFFFFFD</code>. The last line, <code>bx r14</code>, performs the return to thread mode on the PSP.
+  </p>
+
+  <h2>Code, line by line: the simulator's handler</h2>
+  <p>
+    The simulator's switch handler from lesson 88 is listed here in full, so that each group can be read against the port. The listing follows the three jobs from lesson 88. A short first group reads the running task. The next group saves it, the one after stores the save and chooses the next task, and the last group restores the next task and returns.
+  </p>
+    <pre><code class="language-armasm">SVC_Handler:                     @ handler mode, on MSP; the frame of the running task is on its PSP
+        LDR  R1, =0x20000000
+        LDR  R2, [R1]            @ R2 = the task that was running
+        CMP  R2, #2
+        BEQ  first               @ nothing to save on the very first switch
+        MRS  R0, PSP             @ R0 = the running task's hardware frame
+        SUB  R0, R0, #32         @ room below the frame for R4-R11
+        STR  R4, [R0, #0]
+        STR  R5, [R0, #4]
+        STR  R6, [R0, #8]
+        STR  R7, [R0, #12]
+        STR  R8, [R0, #16]
+        STR  R9, [R0, #20]
+        STR  R10, [R0, #24]
+        STR  R11, [R0, #28]
+        LDR  R3, =0x20000004     @ the PSP slot of task A
+        CMP  R2, #0
+        BEQ  store
+        LDR  R3, =0x20000008     @ the PSP slot of task B
+store:  STR  R0, [R3]
+        CMP  R2, #0              @ the next task is the other one
+        BEQ  pickb
+        MOV  R2, #0
+        B    load
+pickb:  MOV  R2, #1
+        B    load
+first:  MOV  R2, #0              @ the very first switch starts task A
+load:   STR  R2, [R1]            @ CUR = the next task
+        LDR  R3, =0x20000004
+        CMP  R2, #0
+        BEQ  restore
+        LDR  R3, =0x20000008
+restore: LDR R0, [R3]            @ R0 = the next task's saved block
+        LDR  R4, [R0, #0]
+        LDR  R5, [R0, #4]
+        LDR  R6, [R0, #8]
+        LDR  R7, [R0, #12]
+        LDR  R8, [R0, #16]
+        LDR  R9, [R0, #20]
+        LDR  R10, [R0, #24]
+        LDR  R11, [R0, #28]
+        ADD  R0, R0, #32         @ R0 = its hardware frame; the exception return pops it
+        MSR  PSP, R0
+        LDR  LR, =0xFFFFFFFD     @ return to thread mode, using the PSP
+        BX   LR
+</code></pre>
+  <p>
+    <code>LDR R1, =0x20000000</code> and <code>LDR R2, [R1]</code> load the address of the slot and then the value in it, which is the task that was running. <code>CMP R2, #2</code> and <code>BEQ first</code> test for the very first switch, where there is nothing to save. This is a test on the saved state, not a special case in the hardware.
+  </p>
+  <p>
+    <code>MRS R0, PSP</code> reads the running task's PSP into R0, which is the address of its hardware frame. <code>SUB R0, R0, #32</code> moves R0 down eight words, to the room below the frame. The next eight <code>STR</code> lines store R4 to R11 at offsets 0 to 28 from R0. This is the save, and it is the step that the hardware does not do for these registers. The store order matches the load order in <code>restore</code>, so the same offsets find the same values.
+  </p>
+  <p>
+    <code>LDR R3, =0x20000004</code> chooses the slot for task A, and <code>CMP</code> and <code>BEQ</code> move to the slot for task B when CUR is 1. <code>STR R0, [R3]</code> stores the new stack top into that slot. This is the store that saves the task's state for next time. The stack top is the only value the kernel needs to find everything else in the block.
+  </p>
+  <p>
+    The next lines choose the next task. <code>CMP R2, #0</code> and the <code>pickb</code> branch set R2 to the other task's number, and <code>STR R2, [R1]</code> writes it back to CUR. This is the simulator's version of <code>vTaskSwitchContext()</code>, which picks the next task and changes the current task pointer. The real kernel does this in C, and the simulator does it in a few instructions.
+  </p>
+  <p>
+    <code>restore</code> loads the next task's saved block address and pops R4 to R11 with eight <code>LDR</code> lines. <code>ADD R0, R0, #32</code> moves R0 up to the next task's frame, because the saved block is below the frame. <code>MSR PSP, R0</code> sets the PSP to that frame, which the exception return will pop. <code>LDR LR, =0xFFFFFFFD</code> sets the return value to thread mode on the PSP, and <code>BX LR</code> performs the return. The branch to an EXC_RETURN value is what makes the core unstack the frame, and it is the last thing the handler does.
+  </p>
+
+  <h2>Map it to the FreeRTOS port</h2>
+  <p>
+    The real port does the same work in one handler, <code>xPortPendSVHandler</code>, in <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code>. The table lines up each step of the simulator with the instruction or call that does the same job in the port. The port's column gives line numbers in that file.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Step</th><th>Simulator (lesson 88)</th><th>FreeRTOS port</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Read the running task</td><td>LDR R2, [R1] from the CUR slot</td><td><code>mrs r0, psp</code> (line 461) and <code>ldr r2, [r3]</code> for the TCB (line 465)</td></tr>
+      <tr><td>Save R4 to R11</td><td>Eight STR lines below the frame</td><td><code>stmdb r0!, {r4-r11}</code> (line 467)</td></tr>
+      <tr><td>Store the stack top</td><td>STR R0, [R3] into the PSP slot</td><td><code>str r0, [r2]</code> into the first member of the TCB (line 468)</td></tr>
+      <tr><td>Choose the next task</td><td>Write the other task's number to CUR</td><td><code>bl vTaskSwitchContext</code> (line 473)</td></tr>
+      <tr><td>Load the next stack top</td><td>LDR R3, then LDR R0, [R3]</td><td><code>ldr r1, [r3]</code> and <code>ldr r0, [r1]</code> (lines 478 and 479)</td></tr>
+      <tr><td>Pop R4 to R11</td><td>Eight LDR lines, then ADD R0, R0, #32</td><td><code>ldmia r0!, {r4-r11}</code> (line 480), which moves R0 past the block</td></tr>
+      <tr><td>Set PSP</td><td>MSR PSP, R0</td><td><code>msr psp, r0</code> (line 481)</td></tr>
+      <tr><td>Return</td><td>LDR LR, =0xFFFFFFFD, then BX LR</td><td><code>bx r14</code> (line 483), with LR already holding the EXC_RETURN value from the entry</td></tr>
+    </tbody>
+  </table>
+  <p>
+    Two rows differ in form only. The port's <code>stmdb</code> and <code>ldmia</code> save and pop all eight registers in one instruction each, and the write-back moves R0 across the block. The simulator adds 32 by hand instead.
+  </p>
+  <p>
+    The port's handler is shown below, as it appears in the file. The code is C with inline assembly in strings, so the instructions are in quotes.
+  </p>
+    <pre><code class="language-c">void xPortPendSVHandler( void )
+{
+    /* This is a naked function. */
+
+    __asm volatile
+    (
+        "   mrs r0, psp                         \n"
+        "   isb                                 \n"
+        "                                       \n"
+        "   ldr r3, =pxCurrentTCB               \n" /* Get the location of the current TCB. */
+        "   ldr r2, [r3]                        \n"
+        "                                       \n"
+        "   stmdb r0!, {r4-r11}                 \n" /* Save the remaining registers. */
+        "   str r0, [r2]                        \n" /* Save the new top of stack into the first member of the TCB. */
+        "                                       \n"
+        "   stmdb sp!, {r3, r14}                \n"
+        "   mov r0, %0                          \n"
+        "   msr basepri, r0                     \n"
+        "   bl vTaskSwitchContext               \n"
+        "   mov r0, #0                          \n"
+        "   msr basepri, r0                     \n"
+        "   ldmia sp!, {r3, r14}                \n"
+        "                                       \n" /* Restore the context, including the critical nesting count. */
+        "   ldr r1, [r3]                        \n"
+        "   ldr r0, [r1]                        \n" /* The first item in pxCurrentTCB is the task top of stack. */
+        "   ldmia r0!, {r4-r11}                 \n" /* Pop the registers. */
+        "   msr psp, r0                         \n"
+        "   isb                                 \n"
+        "   bx r14                              \n"
+        "                                       \n"
+        "   .ltorg                              \n"
+        ::"i" ( configMAX_SYSCALL_INTERRUPT_PRIORITY )
+    );
+}
+</code></pre>
+  <p>
+    <code>mrs r0, psp</code> reads the running task's PSP (line 461), and the <code>isb</code> after it is an instruction synchronisation barrier. It makes the core finish the earlier instructions before it uses the new value. <code>ldr r3, =pxCurrentTCB</code> loads the address of the variable that points to the current task's control block, and <code>ldr r2, [r3]</code> loads the block's address (lines 464 and 465).
+  </p>
+  <p>
+    <code>stmdb r0!, {r4-r11}</code> is the save (line 467). It writes R4 to R11 into the eight words directly below the frame, with R4 at the lowest address, and the <code>!</code> leaves R0 pointing at that lowest word. <code>str r0, [r2]</code> stores that address into the first member of the control block (line 468). The comment on line 479 says the first item in the block is the task's top of stack, which is the same role the simulator's PSP slot plays.
+  </p>
+  <p>
+    <code>stmdb sp!, {r3, r14}</code> saves R3 and LR on the main stack (line 470). LR holds the EXC_RETURN value from the entry, and both registers are needed again after the C call, which may change them. Lines 471 and 472 load the mask value that the port passes in as the <code>%0</code> operand, which is <code>configMAX_SYSCALL_INTERRUPT_PRIORITY</code>, and write it to BASEPRI. BASEPRI masks interrupts whose priority number is equal to or greater than the value written, so the interrupts that are allowed to call FreeRTOS functions are held off during the call. The port's comment at lines 167 to 170 names this value as the limit for interrupts that call the kernel. Interrupts more urgent than the limit still run.
+  </p>
+  <p>
+    <code>bl vTaskSwitchContext</code> calls the C function that chooses the next task and updates <code>pxCurrentTCB</code> (line 473). Lines 474 and 475 clear BASEPRI again, and line 476 restores R3 and LR from the main stack. Lines 478 and 479 then load the new task's stack top through the updated pointer. This is why the loads must come after the call. Line 480 pops the new task's R4 to R11, and line 481 writes PSP. Line 483, <code>bx r14</code>, returns to the new task on its PSP.
+  </p>
+  <p>
+    The prototype at line 123 carries <code>__attribute__( ( naked ) )</code>, and the comment at line 457 says the function is naked. A naked function has no compiler prologue or epilogue, so the first instruction of its body is the <code>mrs</code>, and the port controls every register from there. The next section, on common mistakes, shows what goes wrong when the attribute is missing.
+  </p>
+
+  <h2>Why PendSV is at the lowest priority</h2>
+  <p>
+    The port sets the priorities of the three system handlers in <code>xPortStartScheduler</code>. The code is short, and the comment above it gives the design in one sentence.
+  </p>
+    <pre><code class="language-c">    /* Make PendSV and SysTick the lowest priority interrupts, and make SVCall
+     * the highest priority. */
+    portNVIC_SHPR3_REG |= portNVIC_PENDSV_PRI;
+    portNVIC_SHPR3_REG |= portNVIC_SYSTICK_PRI;
+    portNVIC_SHPR2_REG = 0;
+</code></pre>
+  <p>
+    The system handler priority registers hold one byte for each system handler. SHPR2, at <code>0xE000ED1C</code>, holds the byte for SVCall. SHPR3, at <code>0xE000ED20</code>, holds the byte for PendSV in bits 23 to 16 and the byte for SysTick in bits 31 to 24. The port's shifts by 16 and 24 on lines 56 and 57 use those positions. The Cortex-M3 Technical Reference Manual gives the register map in the source box below.
+  </p>
+  <p>
+    The value written for PendSV and SysTick comes from <code>portMIN_INTERRUPT_PRIORITY</code>, which is 255 (line 55). On a device that implements only the top four priority bits, the lowest level is 15, as lesson 72 explains for the STM32F1. A written value of 0xFF therefore selects that lowest level, because its top four bits are all set. SVCall gets 0, the most urgent level, because line 392 clears the whole SHPR2 register.
+  </p>
+  <p>
+    Lower numbers are more urgent (lesson 72). So PendSV and SysTick are the least urgent handlers in the port, and SVCall is the most urgent. Two sources at the same priority do not preempt each other, which lesson 72 states as a rule. So once PendSV has started, a tick cannot interrupt it, because SysTick has the same level.
+  </p>
+  <p>
+    The lowest level has a second effect. An exception return to a task is valid only when no other handler is still active. PendSV can start only when no other handler is active, because it cannot preempt any handler. That is the condition for a valid return to a task. A more urgent interrupt can still preempt PendSV, but it returns to PendSV before PendSV returns to the task. If PendSV were set higher than a running interrupt, it could preempt that interrupt, and its return would go to a task while the interrupt was still active. That return is not valid, so the result is a fault or a corrupted return.
+  </p>
+  <p>
+    Interrupts more urgent than PendSV can still arrive while it runs. They are not blocked by the lowest level, and the core takes them on their own priority. The BASEPRI lines protect only the call to <code>vTaskSwitchContext()</code>, because only the list operations inside it must not be interrupted by an interrupt that calls the kernel. The save and the restore run with interrupts unmasked.
+  </p>
+  <p>
+    Finally, lesson 72 describes tail-chaining. When one handler returns and PendSV is pending, the core takes PendSV next, without an extra save and restore of the frame. For the tick, this means the switch follows the tick work with very little delay in the common case.
+  </p>
+  <div class="warning">The simulator has no BASEPRI and no nesting, so a real interrupt can arrive in the middle of the switch on silicon in a way this simulator cannot show. Treat the simulator as a model of the order of operations, not of the timing.</div>
+
+  <h2>Try it in the FreeRTOS project</h2>
+  <p>
+    This exercise reads the real port in the project from lesson 87. It needs no change to the code and does not need the simulator. It checks the names and lines that this lesson uses.
+  </p>
+  <div class="warning">The FreeRTOS projects in this course build, but they cannot run in the Wokwi simulator. Checked on 2026-11-01 with Wokwi CLI 0.29.1, its STM32 model differs from a real Cortex-M3 in these ways:
+    <ul>
+      <li>cpsie and cpsid are inverted.</li>
+      <li>Byte reads of the NVIC and SHPR priority registers return 0.</li>
+      <li>BASEPRI is not implemented: writes are ignored and reads return 0.</li>
+      <li>PRIMASK does not mask SysTick or peripheral interrupts.</li>
+      <li>A software-pended exception such as PendSV is taken at the store that pended it and returns to that store, so it runs forever.</li>
+    </ul>
+    The same code runs on a real Blue Pill.
+  </div>
+  <ol class="steps">
+    <li>Open <code>projects/0087-freertos-tasks/solution</code> in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build it. The build should end with no errors.</li>
+    <li>Open <code>FreeRTOSConfig.h</code> in that folder and find line 36. It defines <code>xPortPendSVHandler</code> as another name. Write down that name. It is the name the vector table uses for the PendSV handler.</li>
+    <li>Open <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code> and find <code>xPortPendSVHandler</code> at line 455. Find the two loads of the next task's stack top after the <code>bl vTaskSwitchContext</code> call. Say which lines they are on.</li>
+    <li>Find where the PendSV priority is set. In <code>xPortStartScheduler</code>, line 390 ORs <code>portNVIC_PENDSV_PRI</code> into <code>portNVIC_SHPR3_REG</code>. Follow <code>portNVIC_PENDSV_PRI</code> to line 56, which shifts <code>portMIN_INTERRUPT_PRIORITY</code> into bits 23 to 16. What value does PendSV get?</li>
+    <li>Open <code>FreeRTOSConfig.h</code> and find <code>configKERNEL_INTERRUPT_PRIORITY</code> at line 29. It is set to <code>(15 &lt;&lt; 4)</code>. Search <code>port.c</code> for that name. Does this port use it to set the PendSV priority?</li>
+  </ol>
+  <p>
+    The expected answers are <code>PendSV_Handler</code> for step 2, lines 478 and 479 for step 3, and 255 (0xFF) for step 4. For step 5, the port does not read <code>configKERNEL_INTERRUPT_PRIORITY</code>: the name does not appear in <code>port.c</code>. The project's value, <code>(15 &lt;&lt; 4)</code>, which is 240, has no effect on PendSV in this port. The kernel's <code>History.txt</code> marks that setting obsolete for ARMv7-M ports. PendSV always gets the lowest level, which on a chip with 4 priority bits is level 15 (lesson 72). If your answers differ, check which file you have open.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: a switch written in plain C.</strong> A developer writes the switch as an ordinary C function with <code>asm</code> inside it, and the attribute is missing. The compiler is then free to add code around the assembly, and that code can change registers that the assembly expects to hold particular values. The symptom is a switch that works in a short test and fails under load, when the compiler makes different choices. The fix is the naked attribute, as the port declares it on line 123, so that the assembly is the whole function.
+  </p>
+  <p>
+    <strong>Mistake 2: PendSV at a higher priority than the interrupt it runs inside.</strong> A developer sets PendSV to a priority that is more urgent than a peripheral interrupt, so the switch can start while that interrupt is active. The return to a task is then not valid, and the symptom is a fault or a corrupted return. It may appear rarely and look like random data. The fix is the lowest priority for PendSV, as the port sets it at line 390.
+  </p>
+  <p>
+    <strong>Mistake 3: loading the new stack top before the switch.</strong> A developer moves the two loads of the next task's stack top above the call to <code>vTaskSwitchContext()</code>, perhaps while tidying the handler. The loads now read <code>pxCurrentTCB</code> before the call has changed it, so they still point at the task that just yielded. The symptom is that the same task runs again, and the switch appears to do nothing. The fix is to keep the loads after the call, as lines 478 and 479 do.
+  </p>
+  <p>
+    <strong>Mistake 4: removing the BASEPRI lines.</strong> A developer sees lines 471 to 475 as noise, because the handler works in a quick test without them. The list operations inside <code>vTaskSwitchContext()</code> are then open to an interrupt that calls the kernel, and the ready list can be changed in the middle of an update. The symptom is intermittent corruption under load, and the simulator cannot show it, because it has no BASEPRI. The fix is to restore the masking around the call, with the same mask value that the port passes.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams that port FreeRTOS to a new core test the handler with a two-task program like the one in lesson 88 before they trust it. Code review of a port checks the split of saved registers, the priority of the switch exception, the EXC_RETURN values, and the order of the loads around the call. The interview drill below walks through the steps in order.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The tick handler calls <code>xTaskIncrementTick()</code>, and when a switch is needed it only pends PendSV. It does not switch tasks itself.</li>
+    <li><code>pxPortInitialiseStack</code> builds a task's first frame, with xPSR at <code>0x01000000</code>, the entry point as PC, and the task return address in LR.</li>
+    <li>The first task starts through <code>vPortSVCHandler</code>, which pops the frame without saving anything, since no task is leaving.</li>
+    <li><code>xPortPendSVHandler</code> saves R4 to R11 below the frame, stores the stack top in the control block, calls <code>vTaskSwitchContext()</code> with BASEPRI set, and then loads the new task's stack top after the call.</li>
+    <li>PendSV and SysTick are at priority 255, the lowest level, and SVCall is at 0, the highest. A switch at a higher level could return to a task while another handler is still active.</li>
+    <li>Tail-chaining lets PendSV run as soon as the last other handler returns, which keeps the switch prompt.</li>
+  </ul>
+
+  <div class="win">You read the port's switch line by line, matched each step to the simulator's handler from lesson 88, and can say why PendSV is set to the lowest priority and what a higher setting would break.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A developer writes the switch as a C function with inline assembly, without the naked attribute. It passes a short test and fails under load. What is the most likely cause?",
+        "options": ["The compiler adds code around the asm that changes its registers", "The compiler sets the Thumb bit too late in the frame", "The FreeRTOS heap is too small, so the switch runs out of memory"],
+        "answer": 0,
+        "feedback": [
+          "Right. Without naked, the compiler may place its own code around the asm, and that code can change registers the asm assumes hold particular values. The naked attribute removes that freedom.",
+          "The Thumb bit is part of the frame the port builds with portINITIAL_XPSR. The compiler does not set it during the switch, so this is not the cause.",
+          "The heap holds task objects and stacks, and the switch allocates nothing. A small heap fails when a task is created, not during the switch."
+        ],
+        "hint": "What can the compiler do around inline assembly that a naked function does not allow?",
+        "why": "A naked function has no prologue or epilogue, so its body is exactly the assembly the port wrote. A switch that is correct only in a short test is often a register or layout problem like this one, because the compiler's choices change with the code around the switch."
+      },
+      { "type": "mc",
+        "prompt": "A team sets PendSV to a higher priority than a UART interrupt. The UART handler is running when a switch is requested. What can go wrong?",
+        "options": ["The switch saves a task while the UART ISR still runs", "The tick is missed, so the timer runs slow", "SVC, which starts the first task, stops working", "The UART interrupt is disabled for the whole switch"],
+        "answer": 0,
+        "feedback": [
+          "Right. PendSV at a higher priority can preempt the UART handler, and then the switch returns to a task while the UART handler is still active. That return is not valid, and the result is a fault or a corrupted return that may look like random data.",
+          "The tick is set by SysTick, not by PendSV. The danger is the switch running inside the ISR, not the tick rate.",
+          "SVC is a separate exception, and it is used only to start the first task. The PendSV priority does not change it.",
+          "The PendSV priority does not disable other interrupts. The problem is the switch running while the UART handler is still active."
+        ],
+        "hint": "PendSV runs when it can. What does it do with the stack, and when is that safe?",
+        "why": "The port sets PendSV to the lowest priority, so it runs only after every other active handler has returned. That is what makes the return to a task valid. The same comparison in lesson 72 applies: a more urgent source can run inside a less urgent handler, and this is the case the lowest priority avoids."
+      },
+      { "type": "mc",
+        "prompt": "A developer moves the two loads of the next task's stack top above the call to vTaskSwitchContext(), to tidy the handler. What symptom should the team expect?",
+        "options": ["The task that just yielded runs again, since it is still current", "The stack overflows at once, because the loads use the MSP", "The tick rate doubles, because PendSV runs twice", "The tick count resets to zero on every switch"],
+        "answer": 0,
+        "feedback": [
+          "Right. The loads now run before vTaskSwitchContext() has changed pxCurrentTCB, so they still point at the task that just yielded, and that task resumes.",
+          "The loads use R3 to reach the pxCurrentTCB variable, not the MSP. Moving them does not change which stack the task uses.",
+          "PendSV runs once for each request. Moving a load does not change how often it is pended.",
+          "The tick count lives in the tick handler, and moving two loads inside PendSV does not touch it."
+        ],
+        "hint": "Which line is it that changes pxCurrentTCB, and what must happen before the loads?",
+        "why": "vTaskSwitchContext() picks the next task and updates pxCurrentTCB, so the restore must read the control block after the call. Reading it before the call is a classic bug, and it shows up as the same task running again. A quick check is to log which task runs after two ticks."
+      },
+      { "type": "number",
+        "prompt": "The port writes portMIN_INTERRUPT_PRIORITY, which is 255, into PendSV's priority field. Lesson 72 says that a device such as the STM32F1 implements only the top four priority bits. What priority level does PendSV get on that chip?",
+        "answer": 15, "tolerance": 0,
+        "wrong": [
+          { "answer": 255, "feedback": "That is the value written to the register, not the level. Only the top four bits are implemented, so the level is the top nibble, 0xF, which is 15, the least urgent level on this device." }
+        ],
+        "hint": "Only the top four bits of the priority byte are implemented. What are the top four bits of 0xFF?",
+        "why": "The top four bits of 0xFF are 1111, which is 15. Writing a larger value than the device can hold does not give a higher priority. It gives the lowest level, and the port depends on that, because PendSV must not preempt any other handler."
+      },
+      { "type": "mc",
+        "prompt": "SysTick and PendSV are both at priority 255. The tick fires while PendSV is running. What happens?",
+        "options": ["The tick waits until PendSV returns, then runs", "The tick preempts PendSV and switches tasks again", "The tick is discarded, so the time is lost", "PendSV is cancelled and the switch restarts"],
+        "answer": 0,
+        "feedback": [
+          "Right. Equal priority does not preempt (lesson 72), so the tick stays pending until PendSV finishes. The tick count is not lost, because the pending SysTick is still there when PendSV returns.",
+          "Equal priority does not preempt, so the tick cannot interrupt PendSV. Only a more urgent interrupt could do that.",
+          "A pending interrupt stays pending until it runs. The tick is delayed, not discarded.",
+          "Nothing in the port cancels PendSV. Once it is taken, it runs to its return."
+        ],
+        "hint": "Lesson 72 says what an interrupt of equal priority can do to a running handler.",
+        "why": "Two sources at the same priority cannot preempt each other, so the lowest level keeps the tick and the switch from nesting. A pending interrupt is held until the running handler returns, which is why a delayed tick is not a lost tick."
+      },
+      { "type": "reflect",
+        "prompt": "A teammate says: 'The tick handler already runs every millisecond, so move the switch code into it and skip PendSV.' Explain why the port keeps the switch in PendSV, and what the tick handler does instead.",
+        "hint": "Think about which handler is allowed to return to a task, and what the tick handler's priority means for the switch.",
+        "answer": "The tick handler only decides. It calls xTaskIncrementTick(), and when a switch is needed it pends PendSV. PendSV is the one handler at the lowest priority, so it runs only when no other handler is active, and its return to a task is valid in that case. Putting the switch in the tick would run it at SysTick's level, where other interrupts can still arrive, and it would make the tick handler long. The split keeps the tick short and gives the switch the one priority where its return is always valid."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A driver author enables a UART interrupt and forgets to call NVIC_SetPriority for it. Lesson 72 describes what the reset value means. Which statement is right?",
+        "options": ["It runs at priority 0, the most urgent level, and can preempt larger numbers", "It runs at priority 0, the least urgent level, so it waits for every other handler", "It stays disabled until its priority is written, so it cannot fire", "It shares the lowest level with PendSV, so the two take turns"],
+        "answer": 0,
+        "feedback": [
+          "Right. A lower number is more urgent, and the reset value of every priority is 0 (lesson 72). An unconfigured source is therefore the most urgent one, which is the trap that lesson describes.",
+          "A lower number is more urgent, so 0 is the most urgent level, not the least. The mix-up is with the FreeRTOS task rule from lesson 87.",
+          "Enabling a source and setting its priority are separate steps. Forgetting the priority does not keep the source disabled.",
+          "Two handlers at the same level do not preempt each other, but a source at 0 is not at the lowest level. It is at the highest."
+        ],
+        "hint": "Which number is the most urgent on the NVIC, and what is the reset value of a priority?",
+        "why": "The reset value of every priority is 0, which is the most urgent level. An interrupt you forget to configure can therefore preempt the switch's PendSV handler and everything else. This is why the port sets PendSV's priority explicitly, and why the setup order matters."
+      },
+      { "type": "text",
+        "prompt": "Lesson 88's simulator puts task B's saved block at 0x20000080, and its hardware frame starts 32 bytes higher. What PSP value does the handler load to resume task B?",
+        "accept": ["0x200000A0", "0x200000a0", "200000A0", "200000a0"],
+        "wrong": [
+          { "answer": "0x20000080", "feedback": "That is the saved block, where the stack top is stored. The handler adds 32 bytes to reach the frame, and PSP must point at the frame." }
+        ],
+        "hint": "The restore adds 32 to the stored block address before it writes PSP.",
+        "why": "The stored stack top is the saved block, and the restore adds 32 to reach the frame. The PSP is then the frame's address, 0x200000A0. The same rule holds in the FreeRTOS port, where ldmia moves R0 past the block as it pops."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What happens in a context switch on a Cortex-M3 with FreeRTOS, step by step?"</strong> Answer out loud in 90 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The tick handler decides a switch is needed and pends PendSV. When no higher-priority interrupt is active, PendSV runs: the running task's PSP is read, R4 to R11 are pushed below the hardware frame that the core stacked on entry, and the new top of stack is stored in the task's control block. vTaskSwitchContext picks the highest-priority ready task and updates pxCurrentTCB. The handler loads the new task's stack top, pops its R4 to R11, writes PSP, and returns with an EXC_RETURN value that pops the hardware frame. The task resumes at the PC it saved. A good answer also says which registers are which: the core saves R0 to R3, R12, LR, PC and xPSR, and the kernel saves R4 to R11, and it says why PendSV is the lowest priority.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf">Arm Cortex-M3 TRM DDI0337G</a>: Table 8-18 on page 8-29 (the system handler priority registers). The FreeRTOS port source in this workspace, <code>third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c</code>: <code>portINITIAL_XPSR</code> (line 78), <code>pxPortInitialiseStack</code> (lines 182 to 199), <code>vPortSVCHandler</code> (lines 228 to 244), <code>prvPortStartFirstTask</code> (lines 247 to 262), the priority setup in <code>xPortStartScheduler</code> (lines 388 to 392), <code>xPortSysTickHandler</code> (lines 491 to 515), and <code>xPortPendSVHandler</code> (lines 455 to 488). <code>vTaskSwitchContext()</code> is defined in <code>tasks.c</code> at line 5109. Read <code>xPortPendSVHandler</code> line by line before the interview.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Explain why the port sets PendSV to priority 255 and what would happen if it were set to 1, using the return rule for PendSV."
+    Related: <a href="0072-the-nvic.html">Lesson 72: The NVIC</a>, <a href="0073-systick-and-a-millisecond-time.html">Lesson 73: SysTick and a millisecond time</a>, <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87: FreeRTOS setup, tasks and scheduling</a>, <a href="0088-context-switching-at-the-register.html">Lesson 88: Context switching at the register level</a>, and <a href="../reference/freertos.html">Reference: FreeRTOS</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+<script src="../assets/cpusim.js"></script>
+</body>
+</html>

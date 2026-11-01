@@ -1,3 +1,4 @@
+// EXPECT: __MPU_PRESENT (header):     0x00000000
 
 /* Faults: this demo prints the Cortex-M3 fault status registers and the MPU
  * presence flag from the device header. The STM32F103 header sets __MPU_PRESENT to 0.

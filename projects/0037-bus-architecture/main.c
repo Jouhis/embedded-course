@@ -1,3 +1,4 @@
+// EXPECT: APB2ENR:    0x00004014
 
 /* The bus delivers each access to the right block. This demo prints the base
  * addresses that the bus fabric routes to (APB1, APB2 and AHB) and the GPIOC

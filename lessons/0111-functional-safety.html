@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Functional safety: IEC 61508 and ISO 26262 · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0111">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Functional safety: IEC 61508 and ISO 26262</h1>
+  <p class="subtitle">A car's brake controller or a heater's thermal cut-off must still do the safe thing when a chip fails. Functional safety is the discipline of deciding how much that matters, and then building and proving that the firmware is safe enough.</p>
+
+  <div class="goal">
+    By the end of this lesson you can explain what SIL and ASIL measure, sketch the V-model, name three firmware safety mechanisms and what each detects, and run a March C- RAM test that finds a stuck-at bit.
+  </div>
+
+  <p class="note"><strong>This lesson is optional.</strong> Functional safety is a career path of its own. The standards are paid documents, so this lesson cites them by title and uses freely available overviews. The hands-on part is a host-test project that you can run without hardware.</p>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    The earlier lessons gave you the tools a safety-critical product needs: interrupts and timers from <a href="0057-interrupts-in-practice.html">lesson 57</a>, the watchdog and HardFault analysis from <a href="0084-robustness.html">lesson 84</a>, the static analysis and MISRA C rules from <a href="0083-static-analysis.html">lesson 83</a>, and the unit tests with fakes from lessons 80 and 81. Each of those makes the firmware more reliable. None of them, on its own, says how reliable the product must be, or how anyone would prove it.
+  </p>
+  <p>
+    That question comes up on a real product. A brake controller, a steering motor, an airbag squib driver, a medical pump or the thermal cut-off on a 3D printer's heater all have a way to cause harm when they fail. A company that sells such a product must show a regulator or a customer that the chance of that harm is acceptably small, and it must show how it got there. Functional safety is the name for that discipline. This lesson introduces its vocabulary, one idea at a time, and then builds one of its firmware mechanisms.
+  </p>
+
+  <h2>Concept 1: a failure is not the same as a hazard</h2>
+  <p>
+    Reliability asks how often a system fails. Functional safety asks a narrower question: when the system fails, can it hurt someone, and how often would that harmful failure happen? A thermostat that stops working is annoying. A heater that keeps heating when it should stop is a hazard, because the room can catch fire. Both are failures, but only the second needs the safety machinery.
+  </p>
+  <p>
+    The formal term for the harm is a <a href="../reference/glossary.html#functional-safety">functional safety</a> concern, and the standard that covers electrical, electronic and programmable electronic systems in general is IEC 61508. The automotive standard built on it is ISO 26262, which adapts the same ideas to road vehicles. Both are paid documents. A free overview from Freescale, now part of NXP, summarises them. Its white paper is titled <em>Addressing the Challenges of Functional Safety in the Automotive and Industrial Markets</em> (document FCTNLSFTYWP, revision 1, 2011 and 2013). Read the overview for the vocabulary, then read the standards through your employer or a certified course.
+    <span class="sidenote">The white paper is a vendor document from 2011 and 2013, so use its numbers as an overview and check the current standards before you rely on a level.</span>
+  </p>
+
+  <h2>Concept 2: integrity levels, SIL and ASIL</h2>
+  <p>
+    Once a harmful failure is identified, the standards assign it an integrity level. The level is a target for how rarely that failure may happen, and it rises with the severity of the harm. IEC 61508 defines four <a href="../reference/glossary.html#sil-safety-integrity-level">Safety Integrity Levels (SIL)</a>, from SIL 1 to SIL 4, with SIL 4 the most stringent. ISO 26262 defines four <a href="../reference/glossary.html#asil-automotive-safety-integrity-level">Automotive Safety Integrity Levels (ASIL)</a>, from ASIL A to ASIL D, with ASIL D the most stringent.
+  </p>
+  <p>
+    The two scales are not the same. The white paper states that there is no direct correlation between SIL and ASIL levels, so an ASIL D function is not automatically a SIL 4 function. Keep the scales apart in your notes and in your interview answers. The white paper's table gives the random hardware failure targets: for SIL 4, a rate from 10<sup>−9</sup> up to but not including 10<sup>−8</sup> per hour, and for ASIL D, below 10<sup>−8</sup> per hour <a href="https://nxp.com/docs/en/white-paper/FCTNLSFTYWP.pdf">Freescale (NXP) white paper FCTNLSFTYWP, failure measures table</a>.
+  </p>
+  <p>
+    A level is a target, not a property of the chip. A higher level means more evidence: more reviews, more independent checks, more traceability and more testing of the safety mechanisms. Buying a chip with a safety label does not make the product meet a level by itself.
+  </p>
+
+  <h2>Concept 3: the V-model, development on the left and proof on the right</h2>
+  <p>
+    Safety standards follow a lifecycle that looks like a V. On the left side you go down from the requirements, to the system architecture, to the software design, to the code. On the right side you go back up, testing each level against the matching requirement: unit tests against the design, integration tests against the architecture, and system tests against the requirements. Each arm of the V has its own evidence, and the safety case collects it.
+  </p>
+  <p>
+    The V is useful because it makes the tests a planned output of the design. A requirement without a test on the right side of the V is a gap that a reviewer will find. The model is general practice; the standards spell out the steps in detail, and the details differ between IEC 61508 and ISO 26262.
+  </p>
+
+  <h2>Concept 4: HARA, the hazard analysis that comes first</h2>
+  <p>
+    The hazard analysis and risk assessment (HARA) starts before any design. For each function, you list the ways it can fail in a harmful way. Then you rate three things for each hazard: the severity of the harm, how often the situation occurs (exposure), and how controllable it is by the driver or operator. Those ratings give the ASIL, or in IEC 61508 the SIL. The glossary entry for <a href="../reference/glossary.html#hara-hazard-analysis-and-risk-assessment">HARA</a> gives the short form.
+  </p>
+  <p>
+    Take the heater from the subtitle. One hazard is that the heater keeps heating when the controller asks it to stop. Severity is high, because a heater can start a fire. Exposure depends on how often the printer runs unattended. Controllability is low if the user cannot see the heater working. Those three ratings point to a high integrity level, and so to more than one independent protection. The rating sets how much evidence the design must carry.
+  </p>
+
+  <h2>Concept 5: faults, safe states and safety mechanisms</h2>
+  <p>
+    Three terms come up in every safety discussion. A <a href="../reference/glossary.html#stuck-at-fault">stuck-at fault</a> is a bit or line that always reads 0 or always reads 1, whatever was written. A <a href="../reference/glossary.html#safe-state">safe state</a> is the state the system moves to when a fault is detected, chosen so that no harm results, such as the heater off or the brake applied. A <a href="../reference/glossary.html#safety-mechanism">safety mechanism</a> is the piece of hardware or software that detects the fault and moves the system to the safe state.
+  </p>
+  <p>
+    Three mechanisms are common on a small MCU. Each detects a different class of fault, so a product usually uses more than one:
+  </p>
+  <ul>
+    <li><strong>Watchdog.</strong> A timer that resets the chip unless the code kicks it on time. It detects a program that has stopped making progress. Lesson 84 covers the independent and window watchdogs, which are different on the STM32.</li>
+    <li><strong>RAM and flash self-tests.</strong> A <a href="../reference/glossary.html#march-test">March test</a> writes and reads patterns over every byte of RAM, and detects stuck-at bits, which is the case you build below. A CRC over the flash image, computed at startup and compared with a stored value, detects a corrupted program. The CRC is the same idea as the checksums in <a href="0103-designing-a-serial-protocol.html">lesson 103</a>.</li>
+    <li><strong>Plausibility checks.</strong> A <a href="../reference/glossary.html#plausibility-check">plausibility check</a> tests whether a value is physically possible, given its last value and the physics of the process. A heater's temperature cannot rise 40 °C in one second; a thermistor reading of 0 counts is a broken wire. The check runs on the sensor data, not on the hardware.</li>
+  </ul>
+  <p>
+    Redundancy (two channels that must agree) and a safe state (heater off, brake applied) complete the picture. Coding rules such as MISRA C (lesson 83) reduce the faults you put in, and the mechanisms above catch the faults that remain. Hardware and software both have to be covered, and a mechanism that only watches another mechanism is not enough on its own.
+  </p>
+
+  <h2>Concept 6: the safety case</h2>
+  <p>
+    A <a href="../reference/glossary.html#safety-case">safety case</a> is the argument, with evidence, that the system is acceptably safe. It names the hazards, the safety goals, the mechanisms that meet each goal, and the tests that show the mechanisms work. The evidence is the test results, the reviews and the traceability from requirement to test. A reviewer who cannot follow that chain will reject the case, however good the code is.
+  </p>
+
+  <h2>Worked example: a March test that finds a stuck bit</h2>
+  <p>
+    The RAM self-test is the mechanism you can build without hardware. A March test walks the memory in both directions, writing and reading 0 and 1 patterns, so every bit is seen in both states. The version in this project is March C-, which the Microchip SRAM diagnostic documentation describes as detecting stuck-at faults, addressing faults, transition faults and coupling faults <a href="https://onlinedocs.microchip.com/oxy/GUID-CA566412-3E3C-467B-98AF-9F1D156615B7-en-US-3/GUID-4236B5E8-131B-4198-BED7-A31CE5426ACD.html">Microchip SRAM diagnostic, DIAG_SRAM_MarchCMinus</a>.
+  </p>
+  <p>
+    The March C- sequence has six passes. The first writes 0 to every address. The second walks up, reading 0 and writing 1. The third walks up, reading 1 and writing 0. The fourth and fifth repeat that pattern walking down. The sixth walks up once more, reading 0. Counting the operations per byte: pass 1 has one write, passes 2 to 5 have one read and one write each, and pass 6 has one read. That is 10 operations per byte, as the quiz below checks.
+  </p>
+  <p>
+    Now trace the project's simulated 64-byte RAM with a fault planted by the first test. The test sticks bit 3 of address 17 at 0, so that bit reads 0 whatever was written. Pass 1 writes 0x00 to address 17, and pass 2 reads it back: the stored value is 0x00, the stuck bit is already 0, so the read is 0x00 and the test expects 0x00. Pass 2 then writes 0xFF there, which is stored as 0xFF. In pass 3, the test reads address 17 expecting 0xFF. The stuck bit forces bit 3 to 0, so the read returns 0xF7. That is not 0xFF, so the function returns 17 at once.
+  </p>
+  <p>
+    The same reasoning shows the other fault. The second test sticks bit 0 of address 40 at 1. Pass 1 writes 0x00, but the read in pass 2 returns 0x01, because the stuck bit forces bit 0 high. The expected value is 0x00, so the function returns 40 in pass 2. A stuck-at-1 bit is caught earlier than a stuck-at-0 bit in this sequence, because pass 2 is the first to read a stored 0.
+  </p>
+
+  <h2>Code, line by line</h2>
+  <p>
+    The solution's <code>march_c_minus()</code> is short. Its helper and its first two passes look like this:
+  </p>
+  <pre><code class="language-c">static int check(const mem_iface_t *m, int addr, uint8_t expected) {
+    return m-&gt;read(m-&gt;ctx, (uint8_t)addr) == expected;
+}
+
+int march_c_minus(const mem_iface_t *mem) {
+    int n = mem-&gt;size;
+
+    for (int a = 0; a &lt; n; a++) {                 /* pass 1 */
+        mem-&gt;write(mem-&gt;ctx, (uint8_t)a, 0x00u);
+    }
+    for (int a = 0; a &lt; n; a++) {                 /* pass 2 */
+        if (!check(mem, a, 0x00u)) return a;
+        mem-&gt;write(mem-&gt;ctx, (uint8_t)a, 0xFFu);
+    }</code></pre>
+  <p>
+    Line by line. The <code>mem_iface_t</code> argument is a struct with a context pointer, a read function and a write function. The March code calls <code>read</code> and <code>write</code> through those pointers and never touches the RAM directly. That is why the same function can test the real RAM on the chip or the simulated RAM in the host test, which is the callback pattern from lesson 49.
+  </p>
+  <p>
+    The <code>check()</code> helper reads one address and compares the result with the expected pattern. It returns 1 when they match. The comparison uses the expected pattern, not the value written earlier, and that choice is what makes stuck bits visible. The cast to <code>uint8_t</code> keeps only the low 8 bits of the address, so it wraps at 256. The 64-byte RAM is well inside that range.
+  </p>
+  <p>
+    The first loop is pass 1. It writes 0x00 to every address. The second loop is pass 2. It first checks that each address reads 0x00, which returns the address on failure, and then writes 0xFF. The check comes before the write, so the function always reads what the previous pass left behind. The remaining passes follow the same pattern, with the expected value and the direction changed as the sequence requires.
+  </p>
+
+  <h2>Try it: a March test that finds stuck bits</h2>
+  <ol class="steps">
+    <li>Open <code>projects/0111-march-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0111-march-host/starter --test</code> from the workspace root. The starter compiles, and its tests fail, because the function reports every RAM as healthy.</li>
+    <li>Your task: write the six passes of <code>march_c_minus()</code> in <code>src/march.c</code>, following the comment at the top of the file. Return the address of the first wrong read, or -1 if every pass succeeds.</li>
+    <li>You will know it works when the test summary reports 0 failures. Four tests plant a stuck bit and check that the function returns that address, one checks that healthy RAM passes, and one checks that the simulator itself shows the stuck bit on a plain read.</li>
+  </ol>
+  <p>
+    The reference solution is in <code>projects/0111-march-host/solution</code>; it passes all 6 tests.</p>
+  <p>
+    The four fault tests are the ones that matter. A self-test deserves trust only after it has found faults you planted on purpose.
+  </p>
+  <details>
+    <summary>Hint for the passes</summary>
+    <p>Each pass reads what the previous pass wrote and then writes the next value. Passes 2 and 3 walk up, passes 4 and 5 walk down, and pass 6 is a final read that walks up. Remember that the test writes to every address, so it destroys the RAM contents: that is why a real device runs it at startup.</p>
+  </details>
+  <details>
+    <summary>Hint for the stuck-bit tests</summary>
+    <p>The RAM simulator applies a stuck bit on every read, so the fault is visible only through a read. A pass that writes a cell but never reads it cannot see the fault at all. Each pass must read the cell and compare the result with the value its sequence expects.</p>
+  </details>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    The first mistake is checking a pass against the wrong expected value. Pass 2 must expect 0x00, because pass 1 wrote 0x00, but a developer who copies the pass 3 check into pass 2 expects 0xFF. A healthy RAM then fails at address 0, and the healthy-RAM test reports 0 where it expects -1. The fix is to read the sequence from the comment at the top of the file, and to check each pass against the value the previous pass left behind.
+  </p>
+  <p>
+    The second mistake is returning the wrong thing from the function. A common version returns the value read, or the loop counter after the loop has finished, instead of the address that failed. The symptom is a fault test that reports the right failure, but with the wrong number, often one more than the address. The fix is to return <code>a</code> at the moment of the failed check, and nothing else.
+  </p>
+  <p>
+    The third mistake is running the test while the RAM holds live data. A developer adds the test to <code>main</code> after the stack and the globals are in use. The March test writes every byte, so it overwrites the stack and the variables, and the program crashes or behaves strangely at random. The symptom looks like a random fault that moves when the code changes. The fix is the comment in the solution's header: run the test at startup, before the RAM holds anything you need, or test a region that is not in use.
+  </p>
+  <p>
+    The fourth mistake is treating a passing self-test as a proof of safety. A team runs the March test at boot, sees it pass on every unit, and writes the safety case as finished. A stuck bit can appear later in the product's life, and the test only runs at boot, so the product can run for weeks with a failing cell. The fix is to state the test's coverage and interval in the safety case, and to add a runtime check or a plausibility check where the standard requires one. The test is one mechanism, not the whole case.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Microcontroller vendors that sell into automotive and industrial markets publish safety manuals and self-test libraries for their parts. A team usually adopts those libraries, runs them at startup, and reuses the vendor's evidence where it applies. The team then adds its own requirements and tests, because the vendor cannot know the product's hazards. Reviewers ask for the traceability from each hazard to a mechanism and from each mechanism to a test.
+  </p>
+  <p>
+    In a code review of safety firmware, the checks are stricter than in ordinary firmware. Reviewers look for a coding standard, a documented set of deviations from it, static analysis with a clean report, and tests that fail on the injected fault before the fix. They also look for what the code does when a mechanism fails: the safe state must be entered on purpose, not by accident.
+  </p>
+  <p>
+    In interviews, the questions test the vocabulary and the reasoning. Expect to define SIL and ASIL without mixing them, to name a safety mechanism and what it detects, and to explain why a plausibility check is not a range check. The model answer below covers the ASIL question. Learn the vocabulary first, then the reasoning.
+  </p>
+
+  <div class="win">You wrote a RAM self-test that finds stuck-at faults at the right address, and you can explain the integrity levels, the V-model and the safety mechanisms that a safety engineer would discuss with you in an interview.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A thermal cut-off for an industrial oven has to meet a documented integrity level. Which scale does the team use?",
+        "options": ["SIL, from IEC 61508", "ASIL, from ISO 26262", "IEC 62443 security level"],
+        "answer": 0,
+        "feedback": [
+          "Right. An industrial oven falls under IEC 61508, which uses SIL 1 to 4. Keep the scales apart: a SIL is not an ASIL, even at the same rank.",
+          "ASIL belongs to ISO 26262, the standard for road vehicles. An oven is not a road vehicle.",
+          "IEC 62443 is about industrial cybersecurity. It does not set the integrity level of a safety function such as a cut-off."
+        ],
+        "hint": "Which standard covers electrical systems in general, and which one covers only road vehicles?",
+        "why": "The two scales are not interchangeable, and interviewers check that you keep them apart. Name the standard first, then its scale, and you will not mix them up under pressure."
+      },
+      { "type": "mc",
+        "prompt": "Your March test reports address 17 in pass 3, where it read 0 and expected 1. Which fault fits?",
+        "options": ["Stuck-at-zero bit", "Stuck-at-one bit", "Stuck-high bus"],
+        "answer": 0,
+        "feedback": [
+          "Right. A bit that always reads 0 gives a wrong read in pass 3, which expects 1. The wrong bit is in one cell, at one address.",
+          "A stuck-at-one bit reads 1 when 0 was written, so it fails in pass 2, which expects 0. This failure came from a read that expected 1.",
+          "A bus fault would show on many addresses at once. One address with one wrong bit points at a stuck cell."
+        ],
+        "hint": "Which value did pass 3 expect, and what did the cell give back?",
+        "why": "A stuck bit always reads the same, so the failing pass tells you which value it is stuck at. Pass 2 catches stuck-at-one, and pass 3 catches stuck-at-zero."
+      },
+      { "type": "mc",
+        "prompt": "Your RAM has one bit stuck at 1. In the solution's March C- code, which pass first reports it?",
+        "options": ["Pass 2", "Pass 1", "Pass 6"],
+        "answer": 0,
+        "feedback": [
+          "Right. Pass 2 is the first read that expects 0, and a bit stuck at 1 gives 1 there. The test returns that address at once.",
+          "Pass 1 only writes 0. Nothing is read yet, so a bit stuck high cannot show.",
+          "Pass 6 would also catch it, but pass 2 comes first and stops the test at the first wrong read."
+        ],
+        "hint": "Which pass reads a stored 0 for the first time?",
+        "why": "The first read of each value is where a stuck bit shows. Knowing the order of passes lets you say which fault a test will catch early, and which it will catch only at the end."
+      },
+      { "type": "mc",
+        "prompt": "A heater's temperature sensor reading jumps 40 °C in one second. The controller samples once a second. What should the plausibility check do with that reading?",
+        "options": ["Flag the reading as a fault", "Accept it and raise the setpoint", "Keep the heater running on it"],
+        "answer": 0,
+        "feedback": [
+          "Right. A rise of 40 °C in one second is not physically possible for this heater, so the reading is a fault. The check marks it and moves the system to its safe state.",
+          "Accepting a jump the physics forbids feeds the controller bad data. Raising the setpoint does not change the reading, and it is not what the check is for.",
+          "Keeping the heater on a reading that cannot be true is the opposite of a safe state. The heater must not run on data the system knows is wrong."
+        ],
+        "hint": "What is the heater's maximum plausible rise in one second, given how a heater warms?",
+        "why": "A plausibility check uses physics, not a fixed range, to catch a sensor that is wrong while still in range. A broken wire reads 0 counts, and a plausible-looking but wrong value needs the rate check."
+      },
+      { "type": "number",
+        "prompt": "How many memory operations (reads and writes together) does March C- make on a 64-byte RAM?",
+        "answer": 640,
+        "tolerance": 0,
+        "wrong": [
+          { "answer": 320, "feedback": "That is the reads alone: 5 reads per byte × 64. Passes 2 to 5 also write, so the total is 10 operations per byte." },
+          { "answer": 64, "feedback": "That is one operation per byte, which is one pass. March C- makes six passes, and each byte is touched in every one of them." }
+        ],
+        "hint": "Count the operations per byte pass by pass: one write in pass 1, then a read and a write in each of passes 2 to 5, and a read in pass 6.",
+        "why": "The count matters because the test runs at boot. Ten operations per byte for each byte of RAM sets the time the device spends in the test before it does anything useful."
+      },
+      { "type": "number",
+        "prompt": "A test writes and reads 4 KB of RAM (4096 bytes). Assume one memory operation takes 1 µs, a figure chosen for this calculation. How many milliseconds does one March C- run take?",
+        "answer": 40.96,
+        "tolerance": 0.01,
+        "unit": "ms",
+        "wrong": [
+          { "answer": 40960, "feedback": "That is in microseconds. 40,960 µs = 40.96 ms." },
+          { "answer": 4.096, "feedback": "That counts one operation per byte. March C- makes 10 operations per byte: 10 × 4096 × 1 µs = 40.96 ms." }
+        ],
+        "hint": "Operations per byte is 10, so the total is 10 × 4096 operations, each taking 1 µs. Then convert microseconds to milliseconds.",
+        "why": "A self-test at boot has a cost in time, and that cost decides when it can run. Calculate it before you add the test to the boot sequence, so the start-up budget is known."
+      },
+      { "type": "mc",
+        "prompt": "A HARA rates a heater hazard as severe (the heater can start a fire), with frequent exposure (the printer runs unattended often), and hard to control (the user cannot see the heater working). What does that rating produce?",
+        "options": ["A high integrity target", "A cheaper part choice", "A shorter test plan"],
+        "answer": 0,
+        "feedback": [
+          "Right. The three ratings set a high integrity level. That level sets how much evidence the design must carry, and it does not choose the parts.",
+          "A HARA rates hazards for safety. Part cost does not come into the ratings, and the level does not pick a cheaper part.",
+          "A higher level means more evidence, so the test plan grows. A HARA does not shorten it."
+        ],
+        "hint": "What do severity, exposure and controllability together decide, and what does a higher level add to the work?",
+        "why": "The HARA is the first step of the V-model, and its output is a target for the design. Higher targets bring more reviews, checks and tests, so the rating shapes the work from the start."
+      },
+      { "type": "mc",
+        "prompt": "A March test passes on every unit at boot, and the team writes the safety case as finished. What is still missing?",
+        "options": ["State its coverage and interval", "Nothing: a boot test is enough", "Run it faster at boot"],
+        "answer": 0,
+        "feedback": [
+          "Right. A boot-time test sees the RAM only at power-on, and a cell can fail later. The safety case should state what the test covers, how often it runs, and what covers the gap.",
+          "A passing boot test shows one moment only. A stuck bit can appear weeks later, so a pass at boot does not prove the RAM stays good.",
+          "A faster boot test finishes sooner, but it still runs only once. It does not check cells that fail after boot."
+        ],
+        "hint": "When does the test run, and what happens to the RAM between power-ons?",
+        "why": "A passing self-test is one mechanism in the safety case. Add a runtime check or a plausibility check where the standard calls for one, and say in the case what each mechanism covers."
+      },
+      { "type": "reflect",
+        "prompt": "A colleague says: 'We have MISRA C and a watchdog, so the firmware is safe.' Explain what each of those does for the safety case, and what neither of them does.",
+        "hint": "Think about which faults each one puts in or catches, and which failures stay hidden.",
+        "answer": "MISRA C reduces the faults that go into the code, through coding rules, so there are fewer defects to find. A watchdog detects a program that has stopped making progress and resets the chip, so it recovers from a hang. Neither one detects a stuck RAM cell, a sensor value that is wrong but in range, or a missing safe state. Those need a RAM self-test, plausibility checks, a defined safe state, and evidence that ties each hazard to a mechanism and each mechanism to a test."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Your main loop takes 120 ms per pass, but the watchdog from <a href=\"0084-robustness.html\">lesson 84</a> has a 100 ms timeout, and the loop kicks it once per pass. What do you see on the bench?",
+        "options": ["The chip keeps resetting", "The loop runs without a fault", "The watchdog stops the clock"],
+        "answer": 0,
+        "feedback": [
+          "Right. The kick arrives 120 ms after the last one, and the timeout is 100 ms, so the chip resets before each kick. Either shorten the loop below the timeout, or set the timeout above the loop's worst case.",
+          "The loop does run 20 ms over the timeout, and the watchdog only sees the time between kicks. Nothing in the loop protects it from that.",
+          "A watchdog resets the chip. It does not stop the clock, so the symptom is repeated resets, not a frozen device."
+        ],
+        "hint": "Compare the time between kicks with the timeout.",
+        "why": "A watchdog checks that progress happens. It does not measure speed. If the code is slower than the timeout, the watchdog cannot tell a slow loop from a hung one, and it resets the chip either way."
+      },
+      { "type": "number",
+        "prompt": "The March code casts each address to <code>uint8_t</code>. In a 300-byte RAM, which address does the cast produce for byte 300? (<a href=\"0045-stdint-types-integer-promotion-overflow.html\">Lesson 45</a>.)",
+        "answer": 44,
+        "tolerance": 0,
+        "wrong": [
+          { "answer": 300, "feedback": "A uint8_t cannot hold 300. It keeps only the low 8 bits, so 300 becomes 300 − 256 = 44." }
+        ],
+        "hint": "A uint8_t holds 0 to 255. Its modulus is 256.",
+        "why": "The cast keeps only the low 8 bits, so any address above 255 silently wraps back to the start. A test that uses such a cast tests the wrong cells without warning, which is why the RAM size must fit the address type."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"What is ASIL D, and what does it change in your firmware?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>ASIL D is the most stringent automotive integrity level, set by the hazard analysis from severity, exposure and controllability. It demands a stricter failure target, usually below 10<sup>−8</sup> per hour, and more evidence. In firmware that means independent safety mechanisms such as a watchdog, RAM and flash self-tests, plausibility checks and a defined safe state; a coding standard such as MISRA C; traceability from each requirement to a test; and a safety case that ties the evidence together. The level does not change the code's syntax; it changes how much of the code must be checked, reviewed and tested.</p></details>
+  </div>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Functional safety asks how often a harmful failure may happen, not how often the system fails.</li>
+    <li>IEC 61508 uses SIL 1 to 4; ISO 26262 uses ASIL A to D. The scales do not correspond directly.</li>
+    <li>The HARA rates severity, exposure and controllability for each hazard, and that rating sets the level.</li>
+    <li>The V-model pairs each level of design with a test on the right side; the safety case collects the evidence.</li>
+    <li>A safety mechanism detects a fault and moves the system to a safe state: watchdogs, self-tests, plausibility checks.</li>
+    <li>A March C- test uses six passes and finds a stuck-at-0 bit in pass 3 and a stuck-at-1 bit in pass 2.</li>
+    <li>Compare the read with the expected pattern, run the test before the RAM is in use, and never count a passing test as the whole case.</li>
+  </ul>
+
+  <div class="source">
+    <a href="https://nxp.com/docs/en/white-paper/FCTNLSFTYWP.pdf">Freescale (now NXP), Addressing the Challenges of Functional Safety in the Automotive and Industrial Markets, white paper FCTNLSFTYWP rev 1</a>: read the first sections for the scope of each standard and the table comparing SIL and ASIL. It is a vendor overview, so use it to learn the vocabulary, then read the standards themselves through your employer or a certified course.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Which of my firmware functions would need a plausibility check, and what should the safe state be for a heater?"
+    Related: <a href="0084-robustness.html">Lesson 84: Robustness</a>, <a href="0083-static-analysis.html">Lesson 83: Static analysis</a>, and Lesson 103: Designing a serial protocol.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -36,7 +36,8 @@
  * 3. Code. Tag every block with its language: <pre><code class="language-c">. Languages: c,
  *    armasm, bash, powershell, cmake, dts, ini, rust, markdown, yaml, ld (linker script), kconfig,
  *    and plaintext for logs, tool output and worked arithmetic (not coloured). Write the code as
- *    plain escaped text; highlight.js adds the colours when the page loads.
+ *    plain escaped text; highlight.js adds the colours when the page loads. Every code block
+ *    also gets a Copy button.
  */
 (function () {
   "use strict";
@@ -108,9 +109,41 @@
 
   // ---------- Progress storage ----------
 
+  // Version 0.0.3 split lessons 88, 91, 110, 111 and 113 and renumbered everything after 87.
+  // Progress saved under the old numbers moves to the new ones once; a split lesson's "done"
+  // carries to every part (its quiz scores stay with the first part).
+  const NUMBERING_KEY = "embedded-course-numbering";
+  const RENUMBER_0_0_3 = (() => {
+    const map = { 88: [88, 89], 89: [90], 90: [91], 91: [92, 93], 110: [112, 113], 111: [114, 115],
+                  112: [116], 113: [117, 118, 119], 114: [120], 115: [121], 116: [122] };
+    for (let n = 92; n <= 109; n++) map[n] = [n + 2];
+    return map;
+  })();
+  function migrateNumbering(p) {
+    const out = {};
+    for (const [id, rec] of Object.entries(p)) {
+      const n = /^\d{4}$/.test(id) ? parseInt(id, 10) : NaN;
+      const targets = RENUMBER_0_0_3[n];
+      if (!targets) { out[id] = rec; continue; }
+      targets.forEach((t, i) => {
+        const key = String(t).padStart(4, "0");
+        out[key] = i === 0 ? rec : { done: rec.done, updatedAt: rec.updatedAt };
+      });
+    }
+    return out;
+  }
+
   function loadProgress() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }
+    let p;
+    try { p = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }
     catch (e) { return {}; }
+    try {
+      if (localStorage.getItem(NUMBERING_KEY) !== "2") {
+        if (Object.keys(p).length) { p = migrateNumbering(p); saveProgress(p); }
+        localStorage.setItem(NUMBERING_KEY, "2");
+      }
+    } catch (e) { /* storage disabled */ }
+    return p;
   }
   function saveProgress(p) {
     try { localStorage.setItem(STORE_KEY, JSON.stringify(p)); } catch (e) { /* storage disabled */ }
@@ -753,6 +786,39 @@
     document.head.appendChild(script);
   }
 
+  // ---------- Copy buttons on code blocks ----------
+  /* The Clipboard API needs a secure context (https or localhost); pages opened as file:// in some
+     browsers fall back to a hidden textarea and execCommand("copy"). */
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    return new Promise((resolve, reject) => {
+      const area = el("textarea", { "aria-hidden": "true" });
+      area.value = text;
+      area.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      ok ? resolve() : reject(new Error("copy failed"));
+    });
+  }
+
+  function addCopyButtons() {
+    document.querySelectorAll("pre > code").forEach(code => {
+      const pre = code.parentElement;
+      if (pre.querySelector(".copy-btn")) return;
+      const btn = el("button", { class: "copy-btn", type: "button", "aria-label": "Copy code", text: "Copy" });
+      btn.addEventListener("click", () => {
+        copyText(code.textContent.replace(/\n$/, "")).then(
+          () => { btn.textContent = "Copied"; btn.classList.add("done"); },
+          () => { btn.textContent = "Select and copy"; });
+        setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1500);
+      });
+      pre.classList.add("has-copy");
+      pre.appendChild(btn);
+    });
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     renderCircuitLinks();
     renderCourseIndex();
@@ -762,6 +828,7 @@
     renderCompleteBar();
     renderIndexProgress();
     highlightCode();   // after the quizzes, so code in their prompts is in the page
+    addCopyButtons();
   });
 
   // Exposed for other components (calculators, drills).

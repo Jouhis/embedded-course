@@ -1,3 +1,4 @@
+// EXPECT: SHIFT OK
 #include <stdint.h>
 #include <stdio.h>
 #include "pico/stdlib.h"

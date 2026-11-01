@@ -1,3 +1,4 @@
+// EXPECT: g_copied at main(): 0x0000CAFE
 
 /* Startup code: g_copied starts at 0xCAFE in flash and is copied to RAM by
  * Reset_Handler; g_cleared starts at zero and is cleared in .bss. Both values are

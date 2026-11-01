@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>USB fundamentals · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js. data-concept: no simulator task. -->
+<body data-lesson="0102" data-concept>
+<main>
+  <p class="lesson-meta"></p>
+  <h1>USB fundamentals</h1>
+  <p class="subtitle">A USB device only answers: the host asks, and the device replies. Everything a device can do, from a keyboard to a serial port, is described in descriptors that the host reads at connection time. This lesson covers that model, and it builds a USB serial demo for the Pico that you can run on real hardware.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>describe the order of USB enumeration, name the four transfer types and the device classes, and explain why the CDC demo needs a real Pico to show its port</strong>.
+  </div>
+
+  <div class="note">
+    <strong>Why this lesson has no simulator task.</strong> Wokwi's USB support is partial (NOTES.md), so it cannot enumerate a device. The lesson is concept-first, and it ends with a demo that builds here and runs on a real board.
+  </div>
+
+  <h2>Where we are, and why this matters</h2>
+  <p>
+    Lessons <a href="0053-uart-logging.html">53</a> and <a href="0070-usart-and-exti-interrupts-with.html">70</a> gave you the UART, a serial port with a fixed baud rate. Lessons <a href="0100-can-bus.html">100</a> and <a href="0101-rs-485-and-modbus-rtu.html">101</a> gave you two serial buses that share a pair of wires. USB works differently. Its wires carry a host-controlled conversation, where the PC asks and each device answers, and the device describes itself when it is plugged in. That is why a single Pico can appear on a PC as a serial port with no driver written by you.
+  </p>
+  <p>
+    This situation is everyday. A USB keyboard, a flash drive, a microcontroller board used for logging, and a USB-to-serial adapter all plug into the same port on the same computer. The host has to know, for each one, what it is and how to talk to it, without a human telling it. The rest of this lesson explains how it finds out, and builds a small demo that shows the result on a real board.
+  </p>
+
+  <h2>The idea: the host is in charge</h2>
+  <p>
+    A USB network has one host, normally the PC, and devices hang off it through hubs. The host starts every transfer. A device does not send data on its own: it answers when the host asks, or it queues a message on an interrupt endpoint until the host polls it. The primer describes the interrupt case directly: a device that needs attention must wait until the host polls it before it can report that it needs attention (Beyond Logic, USB in a NutShell, chapter on interrupt transfers).
+    <span class="sidenote">This is the opposite of a serial line, where either side may start a byte. It is also why a USB keyboard reports at a fixed rate: the host polls the interrupt endpoint on a schedule that the endpoint descriptor sets.</span>
+  </p>
+  <p>
+    The primer that explains the host-and-device model, endpoints, descriptors and enumeration in full is <a href="https://www.beyondlogic.org/usbnutshell/usb1.shtml">USB in a NutShell</a>. Its endpoint, descriptor and enumeration chapters were read for this lesson, and the facts below come from them. The USB specification itself is the final reference, and this lesson did not open it.
+  </p>
+
+  <h2>Endpoints and transfer types</h2>
+  <p>
+    An <a href="../reference/glossary.html#endpoint">endpoint</a> is one source or sink of data on a device, identified by a number and a direction (IN to the host, or OUT from it). Every device has endpoint 0, the default control endpoint, which the primer says is always a control endpoint and never has a descriptor. Other endpoints use one of four transfer types, each chosen for a purpose.
+  </p>
+  <table>
+    <thead><tr><th>Transfer type</th><th>Typical use</th><th>What the primer says</th></tr></thead>
+    <tbody>
+      <tr><td>Control</td><td>Enumeration, configuration, class requests</td><td>Used for setup and requests. Endpoint 0 is always a control endpoint.</td></tr>
+      <tr><td>Interrupt</td><td>Keyboards, mice, small status messages</td><td>Polled at a rate set by the endpoint descriptor, with bounded latency and a small payload. A corrupt packet is retried in the next period.</td></tr>
+      <tr><td>Bulk</td><td>Printers, scanners, large blocks of data</td><td>Error correction and retransmission, using the bandwidth left after the other transfers. No latency guarantee.</td></tr>
+      <tr><td>Isochronous</td><td>Audio and video streams</td><td>Guaranteed bandwidth and bounded latency. Errors are detected by CRC, but bad data is not retried.</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The primer gives the payload limits too. An interrupt endpoint carries at most 8 bytes per transaction on a low-speed device, 64 on a full-speed device and 1024 on a high-speed device. The interval at which the host polls an interrupt endpoint comes from its endpoint descriptor, which the next section describes.
+  </p>
+
+  <h2>Descriptors: the device describes itself</h2>
+  <p>
+    A device does not have a fixed identity. It stores descriptors, which are small structures the host reads: the <em>device</em> descriptor (vendor and product IDs, the default class), one or more <em>configuration</em> descriptors, the <em>interface</em> descriptors inside each configuration (each interface is one function with a class), and the <em>endpoint</em> descriptors inside each interface (number, direction, transfer type and maximum packet size). String descriptors give the names a user sees.
+  </p>
+
+  <h2>Enumeration: how the host meets a new device</h2>
+  <p>
+    <a href="../reference/glossary.html#enumeration">Enumeration</a> is the host's sequence for a new device, and it is made entirely of control transfers on endpoint 0. The primer describes the same order, with the requests it uses (chapter 9 of the USB specification is the reference for the request codes).
+  </p>
+  <h3>Worked example: enumerating a Pico</h3>
+  <ol class="steps">
+    <li>The device is plugged in and the host resets the bus. The device answers only at address 0, the address every unconfigured device must answer to.</li>
+    <li>The host sends a GET_DESCRIPTOR request to address 0 for the device descriptor, which the primer gives as 18 bytes. It contains the vendor and product IDs and the default class.</li>
+    <li>The host sends SET_ADDRESS (request code 0x05) with a new unique address. From now on the device answers at that address, and address 0 is free for the next device.</li>
+    <li>The host reads the configuration descriptor. It is one block that holds the configuration, every interface descriptor and every endpoint descriptor in order, so one request returns the whole tree.</li>
+    <li>The host sends SET_CONFIGURATION (request code 0x09) with the chosen configuration value. The device's endpoints are now active, and the host loads a class driver for each interface.</li>
+  </ol>
+  <p>
+    Only after step 5 does data move. A device that fails at an early step never reaches the point where its class driver is loaded, so there is no port to open.
+  </p>
+
+  <h2>Device classes: one protocol, many devices</h2>
+  <p>
+    A class defines how an interface behaves, so the host can use a standard driver without knowing the vendor. Three classes matter here:
+  </p>
+  <ul>
+    <li><strong>CDC</strong>, the communications device class, which gives a virtual serial port (a COM port on Windows). The Pico's stdio over USB uses it.</li>
+    <li><strong>HID</strong>, the human interface device class, for keyboards, mice and generic input and output reports.</li>
+    <li><strong>MSC</strong>, the mass storage class, which makes the device look like a disk.</li>
+  </ul>
+  <p>
+    TinyUSB, the open-source USB stack that the Pico SDK uses, supports all three as device classes, along with others (<a href="https://docs.tinyusb.org/en/latest/">TinyUSB documentation</a>). Its device stack is what the demo below runs on the RP2040.
+  </p>
+
+  <h2>TinyUSB in the Pico SDK</h2>
+  <p>
+    The Pico SDK wires TinyUSB into the standard I/O library. Setting <code>pico_enable_stdio_usb(target 1)</code> in CMake makes <code>printf</code> go to a USB CDC port. Setting <code>pico_enable_stdio_uart(target 0)</code> stops it from using UART0 at the same time. The SDK in this workspace (2.3.1) includes TinyUSB under <code>lib/tinyusb</code>, and the demo builds with it.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The CMake file does three things. <code>set(PICO_NO_PICOTOOL 1)</code> turns off the UF2 converter, so the build produces an ELF file for the debug probe or the simulator. <code>pico_enable_stdio_usb(usb_cdc_demo 1)</code> makes the SDK build TinyUSB's device stack into the program and send <code>printf</code> to a CDC port. <code>pico_enable_stdio_uart(usb_cdc_demo 0)</code> removes the UART0 path from stdio, so each character goes to one place only.
+  </p>
+  <p>
+    The C file is short, and each part does one job:
+  </p>
+  <ul>
+    <li><code>stdio_init_all()</code> starts the stdio drivers that the CMake file selected. With USB selected, that starts TinyUSB, and the port then appears to the host once the device enumerates.</li>
+    <li><code>while (!stdio_usb_connected() &amp;&amp; waited_ms &lt; HOST_WAIT_MS)</code> waits up to three seconds for a terminal to open. <code>stdio_usb_connected()</code> reports whether a host has opened the port, which is the test that matters. The loop sleeps 10 ms at a time, so the wait is measured in milliseconds, not in loop passes.</li>
+    <li><code>gpio_init</code> and <code>gpio_set_dir</code> set the on-board LED on GP25 as an output. The LED has no role in the USB part, but it gives you a visible sign that the loop is running without a terminal.</li>
+    <li>The first <code>printf</code> reports whether the wait ended with a host present, and how long the wait took. Its format uses <code>%lu</code> with a cast to <code>unsigned long</code>, so the argument matches the conversion it is printed with.</li>
+    <li>The endless loop turns the LED on, prints a line, sleeps 500 ms, turns it off, prints again and sleeps 500 ms. The <code>tick</code> counter goes up once per full cycle, which is once per second.</li>
+  </ul>
+
+  <h2>Try it: build the USB CDC demo</h2>
+  <p>
+    The project is <code>projects/0102-usb-cdc-demo</code>. It prints a line each half-second over USB, and it waits up to three seconds for a terminal to open first. You cannot see the port in Wokwi, so you build it and check the build output.
+  </p>
+  <ol class="steps">
+    <li>From the workspace root, run <code>python -I tools/build.py projects/0102-usb-cdc-demo</code>. It ends with the link step, and it produces <code>build/usb_cdc_demo.elf</code>.</li>
+    <li>Read <code>main.c</code>. Find the call that enables the USB stdio in <code>CMakeLists.txt</code>, and the line that turns UART stdio off.</li>
+    <li>On a real Pico, you need a way to load the program. The templates turn picotool off (<code>PICO_NO_PICOTOOL</code>), so the build makes an ELF, not a UF2. Load it with a debug probe, or turn picotool on and build a UF2. Then plug the board in, and open the new serial port in a terminal at any baud rate. You will know it works when the first line is <code>CDC demo: connected=1 after N ms</code>, with N below 3000, and then the lines <code>tick 0: LED on</code> and <code>tick 0: LED off</code> follow, one every 500 ms, with the tick number rising by one every second. If the first line says <code>connected=0</code>, no terminal opened within three seconds, and the program prints anyway.</li>
+  </ol>
+  <div class="warning">
+    Do not expect the Wokwi simulator to show this port. Its serial monitor is a UART, and the Pico's USB support is only partial there (NOTES.md), so the CDC port does not appear in the simulator.
+  </div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    The first mistake is to expect the simulator to show the port. The build succeeds, the serial monitor shows nothing from the USB side, and it is easy to conclude that the code is broken. The symptom is an empty serial monitor and no new port in the simulator. The fix is to check the wiring of the UART and the CMake file, then test the port on a real board. The build output is correct, and the port simply does not exist in Wokwi.
+  </p>
+  <p>
+    The second mistake is to print before the host is listening. A USB device cannot tell whether a terminal is open, so output sent too early can be lost. The symptom is a first line that is missing, or a terminal that opens after the program has already printed its start-up text. The fix is the wait loop in this demo, which checks <code>stdio_usb_connected()</code> for up to three seconds. Look at the first line: <code>connected=0</code> tells you the wait ran out.
+  </p>
+  <p>
+    The third mistake is to enable both stdio targets. If <code>pico_enable_stdio_uart(usb_cdc_demo 1)</code> stays on next to the USB line, output goes to UART0 as well as to the port, and a logic analyser or a second terminal on the UART shows lines you did not expect. The symptom is text on a pin nobody meant to use. The fix is to set the UART target to 0 whenever you choose USB, as the CMake file in this lesson does, and to check the file after you copy a template.
+  </p>
+  <p>
+    The fourth mistake is to flash a board that never enumerated. A device that fails early in enumeration has no port, so a terminal opens nothing. The symptom is no new port on the PC. The fix is to check the descriptors and the class choice in the project, not the printf calls, because the printf calls cannot run until the port exists.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Engineers use a CDC port for logs, a command line and firmware debugging, because the host has a class driver for it, so the device needs no custom driver on the PC. The same device can present several functions at once, each with its own interface descriptor. The descriptors are therefore part of the product, and they are reviewed like code. A change to a product ID or a class is a change that the host and every installed driver see.
+  </p>
+  <p>
+    A review of USB firmware looks at the class choice first: CDC for a serial port, HID for input, MSC for storage, and a vendor class only when none of those fits. It then checks that the transfer types match the job. Interrupt endpoints carry small, time-bounded messages, bulk endpoints carry large transfers that can wait, and isochronous endpoints carry streams that must not stall but can drop a packet. Choosing bulk for a stream, or isochronous for a file, is a finding a senior engineer will raise.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The host starts every transfer. A device answers, or queues a message on an interrupt endpoint until it is polled.</li>
+    <li>Endpoint 0 is the default control endpoint, and enumeration is made of control transfers on it.</li>
+    <li>The four transfer types are control, interrupt, bulk and isochronous. Interrupt endpoints are polled, bulk endpoints are error-corrected with no latency promise, and isochronous endpoints have guaranteed bandwidth without retry.</li>
+    <li>Enumeration reads the device descriptor at address 0, assigns an address with SET_ADDRESS (0x05), and selects a configuration with SET_CONFIGURATION (0x09).</li>
+    <li>The device descriptor is 18 bytes, and one configuration request returns the configuration, interface and endpoint descriptors together.</li>
+    <li>CDC gives a virtual serial port. The Pico's stdio uses it when <code>pico_enable_stdio_usb</code> is set.</li>
+    <li>Wokwi's USB support for the Pico is partial, so the CDC port must be tested on a real board.</li>
+  </ul>
+
+  <div class="win">You can describe a USB enumeration from the first reset to the first data transfer, and you built a CDC demo that the Pico SDK wires to TinyUSB.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+  { "type": "mc",
+    "prompt": "A keyboard's interrupt endpoint is polled every 10 ms. You press a key 2 ms after a poll. When does the host see the key?",
+    "options": ["Immediately, the keyboard sends it on its own", "About 8 ms later, at the next poll", "About 2 ms later, when the endpoint is ready", "Only after the host resets the bus"],
+    "answer": 1,
+    "feedback": [
+      "The device cannot send on its own. It has to wait until the host polls its interrupt endpoint, and the key waits in the device until then.",
+      "Right. The key waits for the next poll. The poll came 2 ms before your press, so the next one is 10 − 2 = 8 ms later.",
+      "The endpoint is ready all the time. What sets the delay is the polling interval, not when the endpoint is free.",
+      "A reset would reconfigure the whole bus. It is not part of normal key reporting, so the key does not wait for one."
+    ],
+    "hint": "The host polls every 10 ms. Where does your press fall between two polls?",
+    "why": "The host is in charge of USB, so a device reports on the host's schedule. The delay is at most one polling interval, which the endpoint descriptor sets. A keyboard that polls every 10 ms therefore reports within 10 ms, and a slower interval would be felt as lag." },
+  { "type": "mc",
+    "prompt": "You are designing a USB device that streams live audio samples to a PC. Which transfer type fits, and what do you give up?",
+    "options": ["Bulk: every bad packet is retried", "Interrupt: the fastest transfer type", "Isochronous: guaranteed bandwidth, no retries", "Control: audio is configuration data"],
+    "answer": 2,
+    "feedback": [
+      "Bulk retries every bad packet, which suits files, but it has no latency guarantee. A late audio packet is worse than a lost one, so bulk is the wrong trade.",
+      "Interrupt endpoints carry small, polled messages with bounded latency, not a stream of samples. Their payload is also small, so they do not fit audio.",
+      "Right. Audio needs steady bandwidth and bounded latency more than it needs every packet. You give up retries, so a bad packet is lost, and a lost sample is a small click.",
+      "Control transfers set up the device. Endpoint 0 is reserved for them, and they are not a data channel for a stream."
+    ],
+    "hint": "Compare the two things you need: steady timing for the samples, and every packet arriving. Which one do you have to give up?",
+    "why": "The trade is the one the primer describes: isochronous transfers reserve bandwidth and bound latency, and they detect errors by CRC without retrying. Bulk is the right choice for a file, where every byte must arrive and waiting is fine, and the wrong choice for a stream that must keep time." },
+  { "type": "mc",
+    "prompt": "You are making a data logger that should appear on the PC as a drive, so a user can drag log files off it. Which device class do you choose?",
+    "options": ["MSC, the mass storage class", "CDC, the serial class", "HID, the human input class", "A vendor class, with a driver"],
+    "answer": 0,
+    "feedback": [
+      "Right. MSC makes the device look like a disk, so the PC mounts it with its standard storage driver. You write no driver for the PC.",
+      "CDC gives a virtual COM port, a byte stream. A user cannot drag files onto a serial port, so this is the wrong class for a drive.",
+      "HID is for keyboards, mice and generic input and output reports. It does not present a disk, whatever the device sends.",
+      "A vendor class works, but you would then write the PC driver too. The standard MSC class already gives drag-and-drop with no driver of yours."
+    ],
+    "hint": "Which class does the PC already know how to mount as a drive?",
+    "why": "The class decides what the host can do without your code. A standard class needs no driver on the PC, which is a large saving for a product. Choose a vendor class only when none of the standard classes fits the job." },
+  { "type": "mc",
+    "prompt": "A USB device is plugged in. Which list gives the first three enumeration steps in the right order?",
+    "options": ["SET_ADDRESS, then reset, then the device descriptor", "Device descriptor at address 0, SET_CONFIGURATION, then reset", "Reset, device descriptor at address 0, then SET_ADDRESS", "Reset, SET_CONFIGURATION, then SET_ADDRESS"],
+    "answer": 2,
+    "feedback": [
+      "The host cannot send SET_ADDRESS before it has reset the device and read its descriptor. Each step depends on the one before it.",
+      "A configuration can be selected only after the address is set and the descriptors are read, so SET_CONFIGURATION is not third.",
+      "Right. The bus is reset, the device answers at address 0 while it has no address, and the host reads the device descriptor. Only then does SET_ADDRESS give it a unique address.",
+      "SET_CONFIGURATION comes after the address is set and the configuration descriptor is read. Selecting it third skips the descriptors the host needs."
+    ],
+    "hint": "Which step needs an address the device does not have yet?",
+    "why": "Enumeration is a chain: the device must be reset before it answers, the descriptor is read at the default address, and SET_ADDRESS frees address 0 for the next device. A device that fails early in the chain never reaches its class driver, so there is no port to open." },
+  { "type": "text",
+    "prompt": "Your firmware has bulk endpoint 1 for file data and interrupt endpoint 2 for status. The host sends a GET_DESCRIPTOR request. Which endpoint number does it use?",
+    "accept": ["0", "ep0", "endpoint0", "endpoint 0"],
+    "hint": "Which endpoint does every device have, even one with no descriptors of its own?",
+    "why": "Requests such as GET_DESCRIPTOR go to endpoint 0, the default control endpoint that every device has. The tempting answer, 1, is the bulk data endpoint, which carries file bytes and does not take setup requests." },
+  { "type": "mc",
+    "prompt": "A full-speed device has one interrupt endpoint, and its firmware sends 200 bytes of status. Each transaction carries the largest payload the endpoint allows. How many transactions does the status take?",
+    "options": ["25 transactions", "1 transaction", "3 transactions", "4 transactions"],
+    "answer": 3,
+    "feedback": [
+      "25 is the count at 8 bytes each, which is the low-speed limit. This device is full speed, so each transaction carries up to 64 bytes.",
+      "One transaction carries at most 64 bytes on a full-speed device, so 200 bytes cannot fit in one.",
+      "Three transactions carry only 192 bytes. The last 8 bytes need a fourth transaction.",
+      "Right. 200 ÷ 64 is 3.125, so three full transactions leave 8 bytes, and a fourth transaction carries them."
+    ],
+    "hint": "Find the largest payload for a full-speed interrupt endpoint, then divide 200 by it and round up.",
+    "why": "Divide, then round up whenever there is a remainder. The payload limit depends on the speed: 8 bytes at low speed, 64 at full speed and 1024 at high speed, as the primer gives. A design that assumes the wrong speed under-counts the transactions and the time they take." },
+  { "type": "mc",
+    "prompt": "Your USB CDC demo prints nothing on the PC, and its serial monitor is empty. The LED blinks. What is the most useful next question?",
+    "options": ["Did the USB port appear, or is CMake wrong?", "Is the LED blinking in the right colour?", "Is the baud rate slower than the LED?", "Should it print more lines to find out?"],
+    "answer": 0,
+    "feedback": [
+      "Right. The LED shows the loop runs, so the question is whether the port exists. If it does not, the stdio setup or enumeration failed, and printf has nowhere to go.",
+      "The LED shows the loop runs, which is all it can show. Its colour says nothing about whether the USB port exists.",
+      "A CDC port has no baud rate for the host to match. The speed of the LED is a separate matter from the port.",
+      "More printf calls cannot run through a port that does not exist. Check the port first, then add output."
+    ],
+    "hint": "The LED proves the loop is running. What does the empty monitor prove, if anything?",
+    "why": "An empty monitor can mean no port, or a port that opened after the output was sent. A device with no port cannot print, so the sign that matters is the port on the PC, not the text. The demo's first line, connected=0 or connected=1, tells you which of these you have." },
+  { "type": "reflect",
+    "prompt": "Your demo's first line says connected=0. Explain what that tells you about the host, why the program still prints afterwards, and what you would check next.",
+    "hint": "The program waits for a terminal for three seconds. What does the wait test, and what does printf do when no terminal is listening?",
+    "answer": "connected=0 means no terminal had opened the CDC port within three seconds, so the host is not listening yet. The program still prints, because it does not stop at the wait. Output sent before a terminal opens can be lost, so the first lines may be missing. I would check the port on the PC: does it enumerate, does a terminal open it, and is the stdio setup in CMake the USB one with the UART target set to 0. Then I would open the terminal and reset the board, so the wait happens with a host present."
+  }
+] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+  { "type": "number",
+    "prompt": "Your USB logger reads a temperature sensor on an ADC pin and gets a raw count of 2048. The ADC has 4096 codes across a 3.3 V full scale. What voltage does that count represent, in volts?",
+    "answer": 1.65, "tolerance": 0.02, "unit": "V",
+    "wrong": [
+      { "answer": 3.3, "feedback": "3.3 V is the full-scale voltage, which is the count 4096. A count of 2048 is half of that." },
+      { "answer": 2.048, "feedback": "That reads the count as millivolts. The count is a fraction of the 4096 codes, so scale it by 3.3 V ÷ 4096." }
+    ],
+    "hint": "One code is 3.3 V ÷ 4096. How many codes does 2048 stand for?",
+    "why": "2048 × 3.3 V ÷ 4096 = 1.65 V, which is half of full scale. The code is a fraction of the scale, not a voltage, and the logger converts it once before it sends a value to the PC. Send the raw count and you hand the PC a number whose unit it has to guess." },
+  { "type": "number",
+    "prompt": "A 40-byte log line from your demo is moved to UART0 at 115200 baud, 8N1, with no gaps. How long does the line take on the wire, in milliseconds?",
+    "answer": 3.472, "tolerance": 0.02, "unit": "ms",
+    "wrong": [
+      { "answer": 2.778, "feedback": "That is 40 × 8 ÷ 115200. It counts only the data bits. Each byte also has a start bit and a stop bit, so use 10 bit times per byte." },
+      { "answer": 0.003472, "feedback": "That is in seconds. Multiply by 1000 to get milliseconds." }
+    ],
+    "hint": "Count the bit times for one byte, then multiply by 40 bytes.",
+    "why": "Each byte is 10 bit times, so 40 bytes are 400 bit times. 400 ÷ 115200 = 0.003472 s, which is 3.472 ms. That is why a long printf on a blocking UART holds the CPU for milliseconds, as lesson 53 warns." }
+] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How does a USB device get an address and tell the host what it is?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The host detects the attach and resets the bus, so the device answers at address 0. The host reads the device descriptor, then sends SET_ADDRESS to give the device a unique address. It reads the configuration and interface descriptors, which list the classes and the endpoints, selects a configuration, and loads a driver for each class. The device never announces itself: the host learns everything from its descriptors.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://www.beyondlogic.org/usbnutshell/usb1.shtml">USB in a NutShell (Beyond Logic)</a>: read the chapters on transfers, descriptors and enumeration. This lesson read the transfer, descriptor and request pages (the request codes 0x05 and 0x09 and the 18-byte device descriptor come from them), and it did not open the USB specification, which is the final reference. For the device classes in the demo, the <a href="https://docs.tinyusb.org/en/latest/">TinyUSB documentation</a> is the primary reference.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Draw the descriptor tree of a CDC device, from the device descriptor down to the endpoints, and say which endpoint carries the bytes that printf sends."
+    Related: <a href="0100-can-bus.html">Lesson 100: CAN bus</a>, <a href="0101-rs-485-and-modbus-rtu.html">Lesson 101: RS-485 and Modbus RTU</a>, <a href="../reference/protocols.html">Protocol comparison</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

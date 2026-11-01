@@ -1,3 +1,4 @@
+// EXPECT: sum_to(100) = 5050
 #include <stdint.h>
 #include <stdio.h>
 #include "pico/stdlib.h"

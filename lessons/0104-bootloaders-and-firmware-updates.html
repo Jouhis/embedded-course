@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bootloaders and firmware updates · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0104">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bootloaders and firmware updates</h1>
+  <p class="subtitle">A device in the field must be updated without a debugger, and it must survive an update that goes wrong. A bootloader owns the reset vector, checks the image it is about to run, and keeps a way back to the last good one. You will build a small bootloader and an application slot, and boot the application from the bootloader.</p>
+
+  <div class="goal">
+    By the end of this lesson you can <strong>validate an application image header, hand over to the application by setting VTOR and MSP and branching to its reset handler, and explain how a test-then-confirm rollback recovers from a failed update</strong>.
+  </div>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lesson <a href="0042-startup-code-and-the-vector.html">42</a> showed what happens at reset: the core reads the vector table at address 0, takes its first word as the stack pointer and its second word as the address of the reset handler, and starts running there. Lesson <a href="0068-writing-your-own-linker-script.html">68</a> showed how a linker script places code and data at fixed addresses. Lesson <a href="0084-robustness.html">84</a> showed the fault handlers and the watchdog, which turn a crash into a recovery. This lesson joins them: a device that is running in the field must accept a new firmware image over a serial link or a radio, and it must not brick itself if the new image is broken.
+  </p>
+  <p>
+    Products of many kinds need this. A printer, a router, a heater controller or a sensor node ships with firmware that will need fixes after it is installed. Nobody will connect a debugger to each one. The update has to arrive through the normal interface, and the device has to decide, by itself and before it runs the new code, whether that code is safe to run. A bootloader is the small program that makes that decision.
+  </p>
+
+  <h2>The idea: the bootloader runs first</h2>
+  <p>
+    After reset the core reads the vector table at address 0 and starts whatever image sits there (lesson 42). A bootloader makes that image small and fixed: it decides which application runs, and it can replace the application with a new one. The application is a separate image in its own flash slot. The bootloader validates it, and the boot only proceeds if the image passes.
+    <span class="sidenote">Over-the-air (OTA) updates use the same mechanism. The device downloads a new image into the spare slot, and the bootloader then decides whether to switch to it. The download is a transport problem; the switch is the bootloader's job.</span>
+  </p>
+  <p>
+    The bootloader is a program like any other, with one special role. It is the only code that must be trusted to run before anything else. Its size is kept small so that it can be reviewed completely, and it is written to be updated rarely, because a bug in the bootloader can make the device impossible to update at all. Many products therefore protect the bootloader's own flash region from ordinary updates.
+  </p>
+
+  <h2>The flash layout: slots and metadata</h2>
+  <p>
+    Flash is the only non-volatile memory on the chip, and an update has to write a whole new image somewhere without destroying the one that is running. The usual answer is to divide the flash into regions with fixed roles, called <em>slots</em> (<a href="../reference/glossary.html#slot">glossary: slot</a>). A slot is an area that holds one firmware image. With two slots the device can keep a known-good image in slot A while it writes the new one into slot B. A third region, the metadata area, remembers state across resets, such as whether the new image has been tried yet.
+  </p>
+  <figure>
+    <svg viewBox="0 0 600 220" role="img" aria-label="Flash layout: bootloader, slot A, slot B and a metadata area, with addresses" style="max-width:780px">
+      <defs><marker id="ah69" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="10" y="20" width="320" height="36" rx="0"/>
+        <rect x="10" y="56" width="320" height="56" rx="0"/>
+        <rect x="10" y="112" width="320" height="56" rx="0"/>
+        <rect x="10" y="168" width="320" height="36" rx="0"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="170" y="41.85" text-anchor="middle" font-size="11">Bootloader (16 KiB) 0x08000000</text>
+        <text x="170" y="87.85" text-anchor="middle" font-size="11">Slot A: application (48 KiB) 0x08004000</text>
+        <text x="170" y="143.85" text-anchor="middle" font-size="11">Slot B: new image, downloaded OTA</text>
+        <text x="170" y="189.85" text-anchor="middle" font-size="11">Metadata: boot counter, confirm flag</text>
+        <text x="350" y="44" text-anchor="start" font-size="12">The bootloader reads only</text>
+        <text x="350" y="60" text-anchor="start" font-size="12">its own slot and the header</text>
+        <text x="350" y="76" text-anchor="start" font-size="12">of the image it is about to run.</text>
+        <text x="350" y="140" text-anchor="start" font-size="12">Written by the update path, then</text>
+        <text x="350" y="156" text-anchor="start" font-size="12">validated by the bootloader.</text>
+      </g>
+    </svg>
+    <figcaption>Figure 1. Two application slots let the device keep a known-good image while it writes the new one. The metadata area remembers the boot state across resets. In this course's build there is one slot, and the layout is the same idea.</figcaption>
+  </figure>
+  <p>
+    The addresses in the figure are not arbitrary. The bootloader sits at the bottom of flash, where the chip starts executing after reset (lesson 42). The application slot starts right after it, at 0x08004000, which is 16 KiB above the flash base: 0x4000 bytes is 16 384, and that is the size of the bootloader region. Each region's start address is the sum of the sizes below it, so the layout is simply a set of additions done once, in the linker script (lesson 68).
+  </p>
+  <p>
+    MCUboot, the bootloader Zephyr ships, calls the two application slots the primary and the secondary. The primary slot is the image area the bootloader normally runs from. The secondary slot holds a new candidate image. MCUboot normally runs only the primary slot. To run a new image from the secondary, it moves the contents into the primary during an upgrade, and it keeps the old image so that it can go back (<a href="https://docs.mcuboot.com/design.html">MCUboot design: image slots</a>).
+  </p>
+
+  <h2>The image header: is this really an application?</h2>
+  <p>
+    Before the bootloader trusts a slot, it reads a header at the slot's start. MCUboot's header is 32 bytes. It begins with a magic value, <code>0x96f3b83d</code>, and then holds the load address, the header size, the size of the protected TLVs, the image size, the flags and the version (<a href="https://docs.mcuboot.com/design.html">MCUboot design: image format</a>). Each field answers one question: is this an image at all, how big is it, which version is it, and where does it end?
+  </p>
+  <p>
+    A <em>magic value</em> is a constant that a valid image stores at a known place, so that a bootloader can tell an image from random flash contents. Erased flash reads as all ones, and an old image left behind by a previous firmware has a different magic, so the check is cheap and catches most mistakes. A magic value checks only that a slot looks like an image. It does not prove that the image is intact.
+  </p>
+  <p>
+    The header in this lesson follows that idea in a smaller form (<code>projects/0104-bootloader-and-app/solution/app_image.h</code>). It has a magic word <code>APP1</code>, which is 0x41505031 because <code>A</code> is 0x41, <code>P</code> is 0x50, and <code>1</code> is 0x31. It has a version, the address one past the end of the image, the vector table's offset from the header, and four reserved words. The header is 32 bytes: eight words of four bytes each. The reserved words are where a CRC or a signature would go. A real image needs one of them, because a magic word alone cannot tell an interrupted download from a complete one. This build leaves them zero, because it does not check a CRC or a signature yet.
+  </p>
+
+  <h2>Boot decision and rollback</h2>
+  <p>
+    An update that works must still be confirmed, because a new image can boot and then crash later. A common scheme keeps a trial counter in the metadata. After an update, the bootloader runs the new image in test mode and decrements the counter at each boot. If the application confirms itself (it sets a confirm flag once it has run correctly for a while), the bootloader keeps it. If the counter runs out without a confirm, the bootloader swaps back to the old image.
+  </p>
+  <p>
+    MCUboot's design names the swap types it can perform: test, permanent and revert, with the image-OK flag in the image trailer recording the confirmation (<a href="https://docs.mcuboot.com/design.html">MCUboot design: boot swap types</a>). A test swap runs the new image on trial. A permanent swap makes the new image the primary for good. A revert swaps the old image back. The confirmation is the step that turns a test into a permanent image.
+  </p>
+  <p>
+    The order matters because of what a bad image costs. If the bootloader erased the old image before it knew the new one worked, a new image with a bug in its startup code would brick the device, because there is no old image to fall back on and no way to reach the bootloader's update path without a debugger. So the rule is: never destroy the last known-good image until the new one has proven itself, and keep a way back until then.
+  </p>
+  <div class="note">
+    The course build does not implement the counter, because it has one slot and no metadata area. The concept is the important part: the device must know when an image has proven itself, and it must have a way back before it erases the old one.
+  </div>
+
+  <h2>Worked example: the header checks with real numbers</h2>
+  <p>
+    Take the slot in this project at its start address, 0x08004000. The bootloader reads eight words from there. Suppose the header holds <code>0x41505031</code> in its first word, which is the magic, and 0x200 in its fourth word, which is the vector offset. The bootloader checks the magic first. It matches, so the slot is at least an image. It then checks the vector offset against the constant 0x200, and that matches as well.
+  </p>
+  <p>
+    Next the bootloader reads the vector table, which is 0x200 bytes into the slot, so at 0x08004200. The table must start on a 512-byte boundary: PM0056 Rev 7, section 4.4.4, says the table offset is aligned to at least 128 words, and bits 8 to 0 of it are always zero, so an offset of 0x100 cannot be used. Word 0 of that table is the initial stack pointer. Suppose it holds 0x20005000. The RAM for this chip starts at 0x20000000 and is 20 KiB, which is 0x5000 bytes, so the top of RAM is 0x20005000. The check is that the stack pointer is greater than the RAM base and no greater than the RAM top. 0x20005000 passes, because a full-descending stack starts at the top and grows down (lesson 33).
+  </p>
+  <p>
+    Word 1 is the reset handler, the first instruction the application runs. Suppose it holds 0x08004201. The lowest bit is 1, so the Thumb check passes. Cortex-M cores run only Thumb code, and the lowest address bit of a function address is the Thumb flag, which is why a clean even address is always a mistake. The last check says the handler must lie inside the image, so 0x08004201 must be at least 0x08004000 and below the image end. Now change one value. If word 1 were 0x08004200, the lowest bit would be 0, and the Thumb check would reject the slot. A branch to that address would otherwise start executing in the wrong state and fault.
+  </p>
+
+  <h2>Jumping to the application</h2>
+  <p>
+    The hand-over is three register writes and a branch, and each one has a reason. The application's vector table is at <code>0x08004200</code>, and its word 0 is the initial stack pointer, word 1 the reset handler (lesson 42). The bootloader:
+  </p>
+  <ol>
+    <li>disables interrupts, so no bootloader interrupt runs half-way through the hand-over;</li>
+    <li>writes the application's table address into <code>SCB-&gt;VTOR</code>, so that exceptions now use the application's table (PM0056 Rev 7, section 4.4.4, Vector table offset register (SCB_VTOR), listed in RESOURCES.md);</li>
+    <li>loads the main stack pointer from word 0 with <code>__set_MSP()</code>;</li>
+    <li>branches to the reset handler in word 1. The branch never returns.</li>
+  </ol>
+  <pre><code class="language-c">/* from the solution's main.c: the hand-over, in order */
+__disable_irq();
+SCB-&gt;VTOR = APP_BASE_ADDR + APP_VECTOR_OFFSET;   /* exceptions use the app's table */
+__set_MSP(sp);                                     /* the app's stack starts at its top */
+((void (*)(void))(uintptr_t)reset)();              /* branch to the app's Reset_Handler */</code></pre>
+  <p>
+    Line by line: <code>__disable_irq()</code> sets the PRIMASK bit, which masks every configurable interrupt, so an interrupt cannot run while the vector table is half-replaced. <code>SCB-&gt;VTOR</code> is the Vector Table Offset Register, and writing it moves the table that exceptions use. <code>__set_MSP(sp)</code> writes the main stack pointer, the stack the bootloader was using, to the application's initial value. The last line casts the address of word 1 to a function pointer and calls it. The bootloader never uses the return address that the call leaves in LR, and the application never returns, so the bootloader never resumes.
+  </p>
+  <div class="warning">
+    Setting VTOR is not optional. If it still points at the bootloader's table, the application's first interrupt would enter the bootloader's handler. And if you forget to set MSP, the application starts with the bootloader's stack pointer, which may be in the middle of the bootloader's data.
+  </div>
+
+  <h2>The combined image: one link, two regions</h2>
+  <p>
+    A real product builds the bootloader and the application as two separate programs, and a flash tool joins them. Two options work for that: a tool such as <code>srec_cat</code> merges the two Intel HEX files, or MCUboot's <code>imgtool</code> signs the application and prepends its header. The Wokwi simulator loads one file (the <code>wokwi.toml</code> <code>firmware</code> key), and <code>arm-none-eabi-objcopy</code> reads one input file at a time, so it cannot merge two images on its own.
+  </p>
+  <p>
+    This project takes a simpler route that gives the same flash image: <strong>one link, two regions</strong>. The linker script <code>boot.ld</code> defines a <code>BOOT</code> region at <code>0x08000000</code>, 16 KiB, and an <code>APP</code> region at <code>0x08004000</code>, 48 KiB. The bootloader's code goes in the first region, and the application's header, vector table and code go in the second, with <code>ASSERT</code>s that check the header is first in its slot. The linker reports an error if the bootloader grows past 16 KiB. The result is one ELF and one <code>.hex</code>, and <code>wokwi.toml</code> loads that <code>.hex</code>. You can see the layout yourself: <code>arm-none-eabi-objdump -h build/boot_and_app.elf</code> lists <code>.app_header</code> at <code>08004000</code> and <code>.app_vectors</code> at <code>08004200</code>.
+  </p>
+  <div class="note">
+    The trade-off: in one link the application can call the bootloader's functions, such as <code>uart_puts</code>, and the two cannot be updated separately. A product that updates the application in the field keeps them as separate images, and the lesson's layout is the same picture with the join done by a tool.
+  </div>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>Mistake 1: VTOR left pointing at the bootloader.</strong> The application boots, prints its first line, and then an interrupt or fault enters the bootloader's handler instead of the application's. Symptom: the serial monitor shows <code>BOOT -> APP OK</code>, and then the output stops or repeats a bootloader message. Fix: write <code>SCB-&gt;VTOR</code> before you enable interrupts, and check the value in the debugger with <code>print/x SCB-&gt;VTOR</code>. It should read 0x08004200. An offset of 0x08004100 could never be read back, because bits 8 to 0 of VTOR read as zero (PM0056 Rev 7, section 4.4.4).
+  </p>
+  <p>
+    <strong>Mistake 2: MSP not set, or set after the branch.</strong> The application starts with the bootloader's stack pointer, so its first pushes land in the bootloader's data. Symptom: the application runs for a while and then fails in a strange place, often far from the code that changed, because a variable was overwritten. Fix: call <code>__set_MSP(sp)</code> from word 0 before the branch, and step through the first instruction of <code>app_reset</code> in GDB to confirm SP reads 0x20005000.
+  </p>
+  <p>
+    <strong>Mistake 3: the vector offset does not match.</strong> The header says one offset and the linker put the vector table at another. Symptom: the bootloader prints <code>BOOT: no valid image, staying in the bootloader</code> even though the application is in flash. Fix: check that <code>APP_VECTOR_OFFSET</code> in <code>app_image.h</code> matches the <code>ASSERT</code> in <code>boot.ld</code>. The linker enforces this for the project, which is why the ASSERT exists.
+  </p>
+  <p>
+    <strong>Mistake 4: a reset handler address without the Thumb bit.</strong> A hand-written image or a wrong symbol gives an even address for the handler. Symptom: the check rejects the image, so the bootloader stays silent, or, if you skip the check, the hand-over faults at once. Fix: keep the Thumb check in <code>slot_is_valid()</code>, and never bypass it to make a test pass.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    A professional bootloader is reviewed as a safety-critical component, because it is the one part that must always work. Teams keep it small, write its checks as unit tests on the host (lessons 80 and 81), and document the image format as a versioned interface, so the update tool and the device agree. They also design for power loss during an update: the bootloader must recover if the power fails halfway through writing slot B, which means the metadata that records progress is written last and read first.
+  </p>
+  <p>
+    In an interview, expect the question to be about the failure path. A strong answer says what is validated before the jump, what the hand-over does, and what happens after a bad update. Interviewers also ask why the old image is kept until the new one confirms. The answer is that a device with no working image cannot be updated again, so the design must never reach that state, even when the update itself is faulty.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A bootloader runs first after reset, validates an application image in its own slot, and jumps to it.</li>
+    <li>Slots are flash regions with fixed roles. Two slots let the device keep a known-good image while it writes a new one.</li>
+    <li>MCUboot's header is 32 bytes and starts with the magic value 0x96f3b83d. This course's header is 32 bytes and starts with APP1, 0x41505031.</li>
+    <li>The validation checks the magic, the vector offset, the image end, the stack pointer in RAM, and the reset handler's Thumb bit and address.</li>
+    <li>The hand-over disables interrupts, sets VTOR, sets MSP from word 0, and branches to the reset handler through a function pointer.</li>
+    <li>A test-then-confirm update runs the new image on trial, and reverts to the old one if it never confirms.</li>
+    <li>The old image is never erased before the new one has proven itself.</li>
+  </ul>
+
+  <div class="win">You validated an image header, handed the CPU to an application by setting VTOR, MSP and the reset branch, and you know how a rollback keeps a device recoverable after a bad update.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+  { "type": "mc",
+    "prompt": "After a successful update, the device prints <code>BOOT -> APP OK</code>. Then a button press raises an interrupt, and the bootloader's UART handler runs instead of the application's. What did the hand-over forget?",
+    "options": ["Point VTOR at the app's table", "Erase the bootloader region", "Reset the boot counter", "Start the watchdog timer"],
+    "answer": 0,
+    "feedback": [
+      "Right. VTOR still points at the bootloader's table, so the interrupt reads the bootloader's handler address. The fix is to write VTOR before interrupts are enabled, as the solution does.",
+      "Erasing the bootloader would stop the device from booting at all, so the app could not print its first line. The symptom here is an interrupt in the wrong handler.",
+      "The boot counter lives in the metadata area and only matters for a trial swap. It does not decide which handler an interrupt uses.",
+      "The watchdog resets a stuck chip. It does not choose a vector table, so it cannot redirect this interrupt."
+    ],
+    "hint": "Which register decides which table exceptions read?",
+    "why": "VTOR is the Vector Table Offset Register, and the core reads its exception addresses from whichever table VTOR points to. Mistake 1 in this lesson is this exact bug, and the check is to read VTOR in the debugger. It should read 0x08004200." },
+  { "type": "number",
+    "prompt": "A teammate grows the bootloader to 20 KiB, but the application slot stays at 0x08004000. How many bytes of the bootloader now sit where the application slot is?",
+    "answer": 4096, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 20480, "feedback": "That is the whole 20 KiB bootloader, not the part that overlaps. Only the bytes past 16 KiB reach the slot." },
+      { "answer": 16384, "feedback": "16 KiB is the region's allowed size. The overflow is what goes past it: 20 KiB minus 16 KiB." }
+    ],
+    "hint": "The bootloader starts at 0x08000000 and the slot at 0x08004000. Find the size of the gap between them.",
+    "why": "The gap is 16 KiB, or 16384 bytes, and the bootloader is 20 KiB, or 20480 bytes. Its last 4 KiB, 4096 bytes, lie in the slot. The linker in this lesson reports this as an error, because the BOOT region is limited to 16 KiB." },
+  { "type": "mc",
+    "prompt": "A new image boots, prints its line, and crashes two minutes later, before it sets the confirm flag. The trial counter runs out. What does the bootloader do?",
+    "options": ["Erases the old image to free space", "Halts until someone intervenes", "Reverts to the old image", "Keeps running the new image"],
+    "answer": 2,
+    "feedback": [
+      "Erasing the old image first is the bug this design prevents. A new image that fails then leaves no working image to fall back on.",
+      "A halt would leave a field device dead until a technician arrives. The design keeps a way back, so the device recovers by itself.",
+      "Right. The unconfirmed image is dropped in favour of the old one, which was kept until the new one proved itself. The device stays usable.",
+      "That is what happens without a confirm step, and it is the failure the trial counter exists to stop. An unconfirmed image has not proved it works."
+    ],
+    "hint": "Which image did the bootloader keep, and what did the trial counter decide?",
+    "why": "The trial counter and the confirm flag are the two halves of the test-then-confirm rule. The old image stays in place until the new one confirms, so running out of trials means returning to a known-good image, not losing the device." },
+  { "type": "mc",
+    "prompt": "A slot has been erased, and the bootloader reads its first word as 0xFFFFFFFF. What does it conclude?",
+    "options": ["No image: the magic does not match", "A valid image with an erased header", "The stack pointer is wrong", "The vector offset is too high"],
+    "answer": 0,
+    "feedback": [
+      "Right. Erased flash reads as all ones, so the first word is not the magic 0x41505031. The slot holds no image, and the bootloader must not trust it.",
+      "A valid image has the magic in its first word. 0xFFFFFFFF is erased flash, not a header.",
+      "The stack pointer is in word 0 of the vector table, which is read only after the magic check passes. An erased header never reaches that check.",
+      "The vector offset is in the header's fourth word, and that check never runs if the magic fails first."
+    ],
+    "hint": "What does erased flash read as, and where does the bootloader check first?",
+    "why": "The magic is the first check, and every later check is skipped when it fails. It is cheap, and it catches most mistakes, but it proves only that a slot looks like an image. The reserved words in the header are where a CRC or signature would give a stronger answer." },
+  { "type": "mc",
+    "prompt": "Your image's reset handler is at 0x08004200. The header magic and the vector offset are both correct, but the bootloader refuses the slot. Which check fails?",
+    "options": ["The magic word does not match", "Bit zero is clear: the Thumb check", "The stack pointer is too high", "The image is too big for slot"],
+    "answer": 1,
+    "feedback": [
+      "The magic is the header's first word, and it is correct here. The handler address is a separate value, so it cannot be the cause.",
+      "Right. Cortex-M runs only Thumb code, and an address with bit 0 clear is not a Thumb entry point. The check rejects it before the hand-over, so no branch lands in the wrong state.",
+      "The stack pointer is word 0 of the table, a different value. The handler address does not change it.",
+      "The size check compares the image end with the slot, and this address is inside the slot. The size is not what fails here."
+    ],
+    "hint": "Which bit of a function address marks Thumb code?",
+    "why": "The lowest bit of a function address is the Thumb flag, and a handler address with that bit clear would start the CPU in the wrong state. Lesson 104 treats a clean even address as always a mistake, and it is the check to keep, not to bypass." },
+  { "type": "number",
+    "prompt": "The application's image ends at 0x08008000, and its vector table starts at 0x08004200. How many bytes lie from the table to the end of the image?",
+    "answer": 15872, "tolerance": 0, "unit": "bytes",
+    "wrong": [
+      { "answer": 3584, "feedback": "That is 0xE00. It drops the leading 3 of 0x3E00, a digit lost in the hex subtraction. The whole difference is 0x3E00, which is 15872 bytes." },
+      { "answer": 16128, "feedback": "That is 0x3F00 in decimal. Recheck the subtraction: 0x08008000 minus 0x08004200 is 0x3E00." }
+    ],
+    "hint": "Subtract the table address from the end address in hex first. Then convert the result to decimal.",
+    "why": "0x08008000 minus 0x08004200 is 0x3E00, which is 3 × 4096 + 14 × 256 = 15872 bytes. Checking the length this way catches an image that overruns its slot, and a length that is too large is the first sign of one." },
+  { "type": "mc",
+    "prompt": "Which order is correct for the hand-over from the bootloader to the application?",
+    "options": ["Branch, then VTOR, MSP, interrupts off", "Set MSP, branch, then set VTOR", "VTOR, branch, then interrupts off", "Interrupts off, VTOR, MSP, then branch"],
+    "answer": 3,
+    "feedback": [
+      "A branch never returns, so anything after it never runs. Setting VTOR, MSP and the interrupts after the branch is too late.",
+      "Setting VTOR after the branch means the application's first interrupt can still use the bootloader's table.",
+      "Interrupts must be off before the table changes, or one can run half-way through the change.",
+      "Right. Interrupts are off first, so none runs during the change. VTOR moves the table, MSP sets the stack, and then the branch never returns."
+    ],
+    "hint": "A branch never returns. Which steps must be finished before it?",
+    "why": "The hand-over is a fixed order: mask interrupts, move the table, set the stack, then branch. Each step depends on the one before, and the branch is last because nothing after it runs." },
+  { "type": "reflect",
+    "prompt": "A power cut interrupts the update while slot B is being written. Explain how the device should recover, and which order of writes makes that possible.",
+    "hint": "Which write tells the bootloader that slot B is complete, and when should that write happen?",
+    "answer": "Slot B is a candidate only once the metadata says it is complete. The update writes the image first, checks it with its CRC or signature, and writes the metadata flag last. If power fails before that flag, the bootloader finds an incomplete slot B on the next boot, ignores it, and keeps running slot A. If power fails after the flag, the bootloader validates slot B again before it swaps. So the rule is: write the data, verify it, write the flag last, and read the flag first on boot."
+  }
+] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+  { "type": "mc",
+    "prompt": "A teammate's <code>boot.ld</code> places the vector table in a section called <code>.app_vectors</code>. In the link map the section is missing, so the application never boots. Which change fixes it?",
+    "options": ["Wrap .app_vectors in KEEP()", "Raise the BOOT region to 20 KiB", "Set VTOR to zero in the app", "Delete the ASSERT lines"],
+    "answer": 0,
+    "feedback": [
+      "Right. The linker discards a section that nothing refers to by name, and the vector table is never referred to that way. KEEP() tells it to keep the section in the image.",
+      "A bigger BOOT region gives the bootloader more room, but it does not stop the linker discarding the vector section.",
+      "Zeroing VTOR would point exceptions at address 0, which is the bootloader's table. That is the bug from Mistake 1, not a fix.",
+      "The ASSERT lines check the layout. Deleting them hides a mismatch, and they do not keep a section in the image."
+    ],
+    "hint": "Lesson 68 names the keyword that stops the linker discarding a section nothing refers to. What does it do?",
+    "why": "The vector table is read by the hardware, not by any code the linker can see, so the linker sees it as unused and may drop it. KEEP() is the fix that lesson 68 describes. The link map is where to look when a section is missing." },
+  { "type": "number",
+    "prompt": "A full 48 KiB application image is sent to the device over a UART at 115200 baud, 8N1, with no gaps. How long does the transfer take, in seconds?",
+    "answer": 4.267, "tolerance": 0.01, "unit": "s",
+    "wrong": [
+      { "answer": 3.413, "feedback": "That is 48 × 1024 × 8 ÷ 115200, which counts only the data bits. Each byte also has a start bit and a stop bit, so use 10 bits per byte." },
+      { "answer": 4267, "feedback": "That is in milliseconds. Divide by 1000 to get seconds." }
+    ],
+    "hint": "Work out the number of bytes, then the bit times for each byte, then divide by the baud rate.",
+    "why": "48 KiB is 49,152 bytes, and each byte is 10 bit times, so the image is 491,520 bit times. 491,520 ÷ 115200 = 4.267 s. The transfer alone takes over four seconds before the bootloader can check anything." }
+] }
+    </script>
+  </div>
+
+  <div class="interview">
+    <p><strong>"How does a bootloader hand over to an application safely, and how do you recover from a bad update?"</strong> Answer out loud in 60 seconds, then compare.</p>
+    <details><summary>Model answer</summary><p>The bootloader validates the image first: a magic value, the size, a CRC or signature, and the vector table's stack pointer and reset address. To hand over, it disables interrupts, sets VTOR to the application's table, loads the stack pointer from word 0 and branches to the reset handler. For a bad update, the new image runs in test mode with a trial counter. If it does not confirm itself before the counter runs out, the bootloader reverts to the old image, so the device stays usable.</p></details>
+  </div>
+
+  <div class="source">
+    <a href="https://docs.mcuboot.com/design.html">MCUboot design (docs.mcuboot.com)</a>: read the sections on the image format (the 32-byte header and its magic), image slots, and the boot swap types (test, permanent and revert, with the image-OK flag). It is the reference that the Zephyr project uses for its own bootloader.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through what the bootloader does if the image's reset address points one byte past the end of the slot, and which of my five checks catches it."
+    Related: <a href="0042-startup-code-and-the-vector.html">Lesson 42: Startup code and the vector table</a>, <a href="0068-writing-your-own-linker-script.html">Lesson 68: Writing your own linker script</a>, <a href="0084-robustness.html">Lesson 84: Robustness</a>, <a href="../reference/stm32-registers.html">STM32F1 register cheat sheet</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

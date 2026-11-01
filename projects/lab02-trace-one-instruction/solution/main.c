@@ -1,3 +1,4 @@
+// EXPECT: LED on
 /* Lab 2 solution: trace one instruction.
  * Same program as the starter, with the answers to the TODO(learner) questions
  * written as comments next to the lines they describe.

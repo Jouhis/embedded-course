@@ -2588,7 +2588,7 @@ _Avoid_: Thermal runaway (the general failure of a device that heats itself, whi
 
 **Hysteresis (control)**:
 A dead band in a switching controller: it turns on below the setpoint minus a band and off above the setpoint plus a band, so it does not chatter at the setpoint.
-_Avoid_: Deadband (the same idea in filters means something else, lesson 104)
+_Avoid_: Deadband (the same idea in filters means something else, lesson 106)
 
 **Derivative on measurement**:
 A PID derivative term computed from the measured value, not the error. A setpoint step then does not kick the output.

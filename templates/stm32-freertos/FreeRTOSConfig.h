@@ -29,7 +29,7 @@ extern uint32_t SystemCoreClock;
 #define configKERNEL_INTERRUPT_PRIORITY         (15 << 4)
 #define configMAX_SYSCALL_INTERRUPT_PRIORITY    (5 << 4)
 
-#define configASSERT(x) if ((x) == 0) { __asm volatile("cpsid i"); for (;;) {} }
+#define configASSERT(x) if ((x) == 0) { taskDISABLE_INTERRUPTS(); for (;;) {} }
 
 /* Route the Cortex-M exception handlers to the FreeRTOS port */
 #define vPortSVCHandler     SVC_Handler

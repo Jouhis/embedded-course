@@ -58,7 +58,7 @@ def main() -> int:
             title = clean_title(body)
             short = title.split(":")[0].strip()
             if re.match(r"^Capstone \d+$", short):
-                short = title  # "Capstone 2: drivers and unit tests" reads better whole
+                short = title  # "Capstone 3: drivers and unit tests" reads better whole
             paren = re.search(r"\s*\((.+)\)$", short)
             if paren:
                 short = short[: paren.start()].strip()

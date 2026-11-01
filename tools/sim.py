@@ -1,6 +1,6 @@
 """Run a course project headlessly in the Wokwi simulator and check its serial output.
 
-  python tools/sim.py <project-dir> [--expect TEXT] [--timeout MS] [--build]
+  python tools/sim.py <project-dir> [--expect TEXT] [--fail-text TEXT] [--scenario FILE] [--timeout MS] [--build]
   python tools/sim.py --all-templates
 
 Needs the WOKWI_CLI_TOKEN environment variable (create one at https://wokwi.com/dashboard/ci).
@@ -58,7 +58,7 @@ def sim_config(project: Path) -> Path:
     return out
 
 
-def simulate(project: Path, expect, timeout, build):
+def simulate(project: Path, expect, timeout, build, scenario=None, fail_text=None):
     if build:
         rc = subprocess.call([sys.executable, str(ROOT / "tools" / "build.py"), str(project)])
         if rc:
@@ -70,9 +70,14 @@ def simulate(project: Path, expect, timeout, build):
     cli = str(CLI) if CLI.exists() else shutil.which("wokwi-cli")
     run_dir = sim_config(project)
     cmd = [cli, str(run_dir), "--diagram-file", str(project / "diagram.json"), "--timeout", str(timeout)]
+    if scenario:
+        # A Wokwi automation scenario (YAML) presses buttons, sets inputs and waits for serial text.
+        cmd += ["--scenario", str(Path(scenario).resolve())]
+    if fail_text:
+        cmd += ["--fail-text", fail_text]
     if expect:
         cmd += ["--expect-text", expect]
-    else:
+    elif not scenario:
         cmd += ["--timeout-exit-code", "0"]   # no expectation: running until the timeout is a pass
     env = dict(os.environ, WOKWI_CLI_TOKEN=tok)
     print("$", " ".join(cmd), flush=True)
@@ -83,6 +88,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", nargs="?")
     ap.add_argument("--expect", help="text that must appear on the serial monitor")
+    ap.add_argument("--fail-text", help="fail as soon as this text appears (for example HardFault)")
+    ap.add_argument("--scenario", help="Wokwi scenario YAML that drives inputs, for example a button press")
     ap.add_argument("--timeout", type=int, default=10000, help="simulated milliseconds (default 10000)")
     ap.add_argument("--build", action="store_true", help="build before simulating")
     ap.add_argument("--all-templates", action="store_true", help="simulate every template in templates/")
@@ -96,7 +103,7 @@ def main():
         return 0 if all(rc == 0 for rc in results.values()) else 1
     if not a.project:
         ap.error("give a project directory or --all-templates")
-    return simulate(Path(a.project).resolve(), a.expect, a.timeout, a.build)
+    return simulate(Path(a.project).resolve(), a.expect, a.timeout, a.build, a.scenario, a.fail_text)
 
 
 if __name__ == "__main__":

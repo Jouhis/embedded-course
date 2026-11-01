@@ -1,3 +1,4 @@
+// EXPECT: g_initialised value: 0x1234ABCD
 
 /* Build pipeline: one object per section. Change the const, initialised and
  * zeroed globals below, rebuild, and run arm-none-eabi-size to see which

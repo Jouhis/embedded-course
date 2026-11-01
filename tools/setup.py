@@ -1,8 +1,8 @@
 """One-command setup for the course on Windows, macOS and Linux.
 
   python tools/setup.py              core tools: enough for every Pico and STM32 lesson
-  python tools/setup.py --zephyr     also the Zephyr workspace (lessons 92-96, lab 6; about 1-2 GB)
-  python tools/setup.py --rust       also Rust for lesson 108
+  python tools/setup.py --zephyr     also the Zephyr workspace (lessons 94-98, lab 6; about 1-2 GB)
+  python tools/setup.py --rust       also Rust for lesson 110
   python tools/setup.py --wokwi-cli  also the Wokwi CLI, for automated simulation checks
   python tools/setup.py --all        everything
   python tools/setup.py --portable   no package manager: download portable tools (no admin rights)
@@ -17,7 +17,8 @@ What it does (lesson 1 explains each tool):
      ~/.embedded-course-tools instead: no admin rights needed
   3. downloads Pico SDK 2.3.1 to ~/.pico-sdk/sdk/2.3.1
   4. installs the VS Code extensions (Wokwi, C/C++, Cortex-Debug) if VS Code's `code` command exists
-  5. runs `python tools/build.py --check` and test-builds the Pico and STM32 templates
+  5. downloads ST's RM0008 and PM0056 manuals into docs-local/ (git-ignored: ST's copyright)
+  6. runs `python tools/build.py --check` and test-builds the Pico and STM32 templates
 """
 import argparse
 import os
@@ -295,7 +296,7 @@ def vscode_extensions():
 
 
 def zephyr():
-    step("5. Zephyr workspace (optional, lessons 92-96)")
+    step("6. Zephyr workspace (optional, lessons 94-98)")
     venv = ZEPHYR_WS / ".venv"
     scripts = venv / ("Scripts" if WINDOWS else "bin")
     west = scripts / ("west.exe" if WINDOWS else "west")
@@ -325,7 +326,7 @@ def zephyr():
 
 
 def rust():
-    step("6. Rust (optional, lesson 108)")
+    step("7. Rust (optional, lesson 110)")
     if not shutil.which("rustup") and not (HOME / ".cargo" / "bin").exists():
         if WINDOWS and shutil.which("winget"):
             run(["winget", "install", "-e", "--id", "Rustlang.Rustup", "--accept-package-agreements",
@@ -337,7 +338,7 @@ def rust():
             problems.append("Rust: install rustup from https://rustup.rs, then run this again with --rust")
             return
     rustup = shutil.which("rustup") or str(HOME / ".cargo" / "bin" / ("rustup.exe" if WINDOWS else "rustup"))
-    # Windows: the GNU toolchain links with MinGW, so no Visual Studio is needed (see lesson 108).
+    # Windows: the GNU toolchain links with MinGW, so no Visual Studio is needed (see lesson 110).
     tc = ["--toolchain", "stable-x86_64-pc-windows-gnu"] if WINDOWS else []
     if WINDOWS:
         run([rustup, "toolchain", "install", "stable-x86_64-pc-windows-gnu", "--profile", "minimal"])
@@ -346,7 +347,7 @@ def rust():
 
 
 def wokwi_cli():
-    step("Wokwi CLI (optional: automated simulation checks with tools/sim.py)")
+    step("8. Wokwi CLI (optional: automated simulation checks with tools/sim.py)")
     exe = HOME / ".wokwi" / "bin" / ("wokwi-cli.exe" if WINDOWS else "wokwi-cli")
     if exe.exists() or shutil.which("wokwi-cli"):
         say(f"  present: {exe if exe.exists() else shutil.which('wokwi-cli')}")
@@ -373,8 +374,43 @@ def wokwi_cli():
         problems.append(f"Wokwi CLI: {e}  (download {url} and save it as {exe})")
 
 
+ST_DOCS = {
+    "RM0008.pdf": "https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-"
+                  "stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf",
+    "PM0056.pdf": "https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-"
+                  "cortexm3-programming-manual-stmicroelectronics.pdf",
+}
+
+
+def st_docs():
+    """The STM32F103 reference manual and the Cortex-M3 programming manual, which the STM32 lessons
+    cite by section. They are ST's copyright, so they live in docs-local/ (git-ignored), never in the repo."""
+    step("5. ST manuals: RM0008 and PM0056 into docs-local/")
+    folder = ROOT / "docs-local"
+    import urllib.request
+    for name, url in ST_DOCS.items():
+        target = folder / name
+        if target.exists() and target.read_bytes()[:5] == b"%PDF-":
+            say(f"  present: {target}")
+            continue
+        if DRY:
+            say(f"  would download {name} from {url}")
+            continue
+        try:
+            folder.mkdir(exist_ok=True)
+            say(f"  downloading {name} ...")
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/pdf"})
+            data = urllib.request.urlopen(req, timeout=120).read()
+            if data[:5] != b"%PDF-":
+                raise RuntimeError("the server sent a web page, not the PDF")
+            target.write_bytes(data)
+            say(f"  saved: {target}")
+        except Exception as e:
+            problems.append(f"{name}: {e}. Open {url} in a browser and save the PDF as {target}")
+
+
 def verify():
-    step("7. Check")
+    step("9. Check")
     py = [sys.executable, "-I", str(ROOT / "tools" / "build.py")]
     run(py + ["--check"], cwd=ROOT, check=False)
     for t in ("templates/pico-sdk", "templates/stm32-cmsis"):
@@ -391,7 +427,7 @@ def main():
     global DRY
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--zephyr", action="store_true", help="also set up the Zephyr workspace (~1-2 GB)")
-    ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 108")
+    ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 110")
     ap.add_argument("--wokwi-cli", action="store_true", help="also download the Wokwi CLI (automated checks)")
     ap.add_argument("--all", action="store_true", help="core tools plus Zephyr, Rust and the Wokwi CLI")
     ap.add_argument("--portable", action="store_true",
@@ -407,6 +443,7 @@ def main():
     system_tools(a.portable)
     pico_sdk()
     vscode_extensions()
+    st_docs()
     if a.zephyr or a.all:
         zephyr()
     if a.rust or a.all:

@@ -118,6 +118,16 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
   python -I tools/sim.py projects/<id>-<slug>/solution --expect "<text the solution prints>"
   ```
   Design solutions to print a recognisable line on the serial monitor so they can be auto-checked.
+- **Every solution needs a pass line**, a comment in `main.c` (or `src/main.rs`) at the top or on the
+  line that prints it, or `verify_projects.py` and CI report it:
+  ```
+  // EXPECT: <the serial text that means the run worked>
+  // SIM-SCENARIO: press-button.yaml    (optional: a Wokwi scenario that presses buttons or sets inputs)
+  // SIM: skip <reason>                 (instead of EXPECT, when the run can't be checked by its output)
+  ```
+  Print the pass line only once the result is right (for example `QUEUE OK` after the third item),
+  not at start-up. FreeRTOS projects on the STM32 are build-only without a `SIM` line, because
+  Wokwi's STM32 core cannot run FreeRTOS (CHANGELOG, 0.0.3 known issues).
 - In the lesson, tell the learner: open the `starter` folder in VS Code, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build, then <kbd>F1</kbd> → "Wokwi: Start Simulator". For debugging: start the simulator, then press <kbd>F5</kbd>.
 - Code style: C11, `stdint.h` types, `static` for file-local functions, named constants (no magic numbers), and comments that explain **why**. No Arduino APIs.
 
@@ -174,7 +184,7 @@ Several authors work in parallel. Before writing any file that might already exi
 - These projects have no wokwi.toml, so verify_projects.py skips them. Run `build.py --test` yourself and quote the real summary line in your report.
 - cppcheck: `"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet <files>`. CMock needs Ruby, which is not installed: teach it conceptually and use FFF hands-on.
 
-## 16. Embedded Rust projects (lesson 108)
+## 16. Embedded Rust projects (lesson 110)
 - Template `rust-pico`: rp2040-hal 0.11, cortex-m-rt 0.7, embedded-hal 1.0, rp2040-boot2 0.3, built with the GNU host toolchain pinned in rust-toolchain.toml (stable-x86_64-pc-windows-gnu + thumbv6m-none-eabi, already installed). Create with `python -I tools/new_project.py <id> <slug> rust-pico`.
 - `python -I tools/build.py <dir>` runs `cargo build --release` (release has debug info). The ELF is target/thumbv6m-none-eabi/release/blink, which wokwi.toml points at. If you rename the package in Cargo.toml, update wokwi.toml too.
 - Do not install extra cargo tools (probe-rs, flip-link, elf2uf2-rs): Wokwi runs the ELF directly.

@@ -7,7 +7,7 @@
  *   stats_task   priority 1, prints each task's stack high-water mark at start and at 5 s
  *
  * Shared resources:
- *   i2c_mutex    the I2C bus: the sensor task and the UI task both use it (mutex, lesson 90)
+ *   i2c_mutex    the I2C bus: the sensor task and the UI task both use it (mutex, lesson 91)
  *   ui_queue     events into the UI task: samples, sensor errors, and button presses from the ISR
  *   log_queue    text lines into the logger task */
 #include <stdbool.h>

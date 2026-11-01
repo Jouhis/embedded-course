@@ -1,3 +1,4 @@
+// EXPECT: USART1->DR address:   0x40013804
 
 /* Reference manual practice: compute register addresses from a base address and
  * an offset, then compare them with the register map in RM0008. The CMSIS structs
