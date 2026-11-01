@@ -2,7 +2,7 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
-## Unreleased
+## 0.0.2 (2026-11-01)
 
 ### Quizzes that teach
 
