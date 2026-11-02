@@ -1924,7 +1924,7 @@ window.COURSE_MANIFEST = {
    "kind": "bench",
    "number": 11,
    "title": "Bench lab 11: Stale DMA data",
-   "detail": "The CPU reads old values from a cached DMA buffer; fix with cache maintenance or an MPU region.",
+   "detail": "GPDMA1 copies a frame every millisecond while the CPU reads it: count torn and stale frames, fix them with double buffering and a transfer-complete handshake.",
    "file": "bench11-stale-dma-data.html",
    "after": "lesson 74",
    "afterId": "0074",
@@ -1933,10 +1933,10 @@ window.COURSE_MANIFEST = {
    "conceptOnly": false,
    "optional": true,
    "stretch": true,
-   "board": "Nucleo-H7",
+   "board": "Nucleo-U5",
    "needs": {
-    "board": "Nucleo-H7 (NUCLEO-H743ZI2, not in the budget: read-only without it)",
-    "tools": "none",
+    "board": "Nucleo-U5 (NUCLEO-U545RE-Q, ST-LINK on board)",
+    "tools": "logic analyzer with PulseView (optional)",
     "parts": "none"
    },
    "published": true

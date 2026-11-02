@@ -2,6 +2,20 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.4 (2026-11-03)
+
+### Bench labs need only the Pico 2 and the Nucleo-U5
+
+- Bench lab 11 (stale DMA data) moved from the NUCLEO-H743ZI2 to the NUCLEO-U545RE-Q, and from
+  concept-only to a real lab. GPDMA1 copies a 256-word frame every millisecond while the CPU reads
+  it; the starter counts torn and stale frames, and the solution fixes them with double buffering
+  and a transfer-complete handshake. The Cortex-M7 data-cache version of the bug stays on the page
+  as reading: the U5's DCACHE serves external memory only, so it can't show it.
+- The H7 is gone from the "What you need" table and the course plan. The whole bench kit is two
+  boards, two tools and a parts kit, about €83.
+- `projects/bench11-stale-dma-data` (starter and solution) builds for the U5; like the other U5
+  projects it is build-only and hasn't run on a board yet.
+
 ## 0.0.3 (2026-11-03)
 
 ### No career material; a clearer start page

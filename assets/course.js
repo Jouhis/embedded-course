@@ -777,12 +777,11 @@
       const KIT = [
         ["Boards", [
           ["Raspberry Pi Pico 2 with headers", "about €7", "0 to 8, 14, 16 to 18"],
-          ["NUCLEO-U545RE-Q (STM32U5, ST-LINK on board)", "about €30", "9, 10, 12, 13, 15"],
-          ["NUCLEO-H743ZI2 (STM32H7): not needed, lab 11 can be read without it", "about €45", "11"],
+          ["NUCLEO-U545RE-Q (STM32U5, ST-LINK on board)", "about €30", "9 to 13, 15"],
         ]],
         ["Tools", [
           ["Multimeter with a µA range", "about €15", "1, 5, 7, 12"],
-          ["Logic analyzer, 8 channels, 24 MHz (with the free PulseView)", "about €10", "3, 4, 6, 10, 15"],
+          ["Logic analyzer, 8 channels, 24 MHz (with the free PulseView)", "about €10", "3, 4, 6, 10, 11, 15"],
           ["USB cables: micro-USB (Pico 2) and USB-C (Nucleo), both with data lines", "", "all"],
         ]],
         ["Parts", [
@@ -808,7 +807,7 @@
       kit.appendChild(body);
       section.appendChild(kit);
       section.appendChild(el("p", { class: "bench-intro", text:
-        "Total about €83 without the H7. One starter kit usually covers the breadboard, wires, buttons, LEDs, " +
+        "Total about €83: two boards, two tools and a parts kit. One starter kit usually covers the breadboard, wires, buttons, LEDs, " +
         "resistors and potentiometer. Prices are approximate and change with the seller. Each lab below " +
         "lists exactly what it uses." }));
       section.appendChild(el("h3", { text: "The labs" }));

@@ -223,14 +223,13 @@ The bench labs are optional extras on real boards. The core course stays simulat
 | STM32U5 Nucleo (NUCLEO-U545RE-Q) | €30 | Not found in Wokwi docs; Renode or compile-only | 9, 10, 12, 13, 15 |
 | Parts kit: breadboard, jumper wires, LEDs, resistors, button, potentiometer, 10 kΩ NTC | €10 | | 1, 2, 4, 5, 8, 17, 18 |
 | SSD1306 I2C OLED | €5 | | 6, 8 |
-| Logic analyzer (8-channel, 24 MHz clone) | €10 | | 3, 4, 6, 10, 15 |
+| Logic analyzer (8-channel, 24 MHz clone) | €10 | | 3, 4, 6, 10, 11, 15 |
 | Multimeter (if the learner doesn't own one) | €15 | | 1, 5, 12 |
 | WS2812 strip and 74HCT125 level shifter | €6 | | 7 |
 | **Total** | **about €83** | | |
-| STM32H7 Nucleo (NUCLEO-H743ZI2), not in budget | €45 | Not found in Wokwi docs | 11 |
 | ESP32 DevKit, optional appendix | €8–10 | Yes | ESP32 extras 1 and 2 |
 
-The H7 would take the total to about €128, so bench lab 11 stays concept-only unless the learner already owns the board. Nucleo boards include an onboard ST-LINK debugger, so no extra probe is needed. No bench lab ever connects 5 V to an RP2350 or STM32 pin.
+Only two boards are needed: the Pico 2 and the Nucleo-U5. Nucleo boards include an onboard ST-LINK debugger, so no extra probe is needed. No bench lab ever connects 5 V to an RP2350 or STM32 pin.
 
 **Bench lab specs** (🔬 bench lab, ⭐ stretch; numbers are bench lab numbers; each lab can be done once the lesson in brackets is done, and the outline notes them at the end of each part. `tools/build_manifest.py` reads these lines.)
 
@@ -287,9 +286,9 @@ Part 5
   - Board: Nucleo-U5 (NUCLEO-U545RE-Q, ST-LINK on board)
   - Tools: logic analyzer with PulseView
   - Parts: pushbutton, jumper wires
-- 🔬⭐ **Bench lab 11: Stale DMA data** (after lesson 74; H7, concept-only within budget). The CPU reads old values from a cached DMA buffer; fix with cache maintenance or an MPU region.
-  - Board: Nucleo-H7 (NUCLEO-H743ZI2, not in the budget: read-only without it)
-  - Tools: none
+- 🔬⭐ **Bench lab 11: Stale DMA data** (after lesson 74). GPDMA1 copies a frame every millisecond while the CPU reads it: count torn and stale frames, fix them with double buffering and a transfer-complete handshake. The data-cache version of the bug (Cortex-M7) is explained, since the U5's DCACHE serves external memory only.
+  - Board: Nucleo-U5 (NUCLEO-U545RE-Q, ST-LINK on board)
+  - Tools: logic analyzer with PulseView (optional)
   - Parts: none
 - 🔬 **Bench lab 12: The sleep current hunt** (after lesson 75). Measure through the Nucleo's IDD jumper; find the clock or floating pin wasting power; get the sleep current down. Lesson 75 stays 💡 and complete without it.
   - Board: Nucleo-U5 (NUCLEO-U545RE-Q, ST-LINK on board)
@@ -334,15 +333,15 @@ ESP32 appendix (only if the ESP32 is included)
 - ⭐ **ESP32 extra 1:** A busy loop trips the task watchdog on the board.
 - ⭐ **ESP32 extra 2:** A button on GPIO0 blocks boot (strapping pin).
 
-Totals: 19 bench labs (15 core, 4 stretch) plus 2 in the ESP32 appendix. 13 on the Pico 2, 5 on the Nucleo-U5, 1 on the H7. Every part except Part 3 (pure C, fully covered in the sim) has at least one.
+Totals: 19 bench labs (15 core, 4 stretch) plus 2 in the ESP32 appendix. 13 on the Pico 2, 6 on the Nucleo-U5. Every part except Part 3 (pure C, fully covered in the sim) has at least one.
 
 **Rollout**
 1. Bench labs 0, 2, 4, 5 on the Pico 2 (cheapest, closest to the existing Pico lessons).
 2. Bench labs 3, 6, 14, 16, 17 (Pico 2, no new hardware beyond the kit).
-3. Bench labs 9, 10, 12 on the U5.
+3. Bench labs 9, 10, 11, 12 on the U5.
 4. Bench lab 15 once the U5 FreeRTOS starter exists.
 5. Bench labs 1, 7, 8, 13, 18.
-6. Bench lab 11 and the ESP32 appendix only if the hardware is added.
+6. The ESP32 appendix only if the hardware is added.
 
 **Maintenance:** CI compiles every bench board target; on-hardware steps are manual checks re-run each release.
 
@@ -391,5 +390,5 @@ Totals: 19 bench labs (15 core, 4 stretch) plus 2 in the ESP32 appendix. 13 on t
 1. Teach both FreeRTOS and Zephyr (recommended)
 2. Capstone RTOS: Zephyr (recommended) or FreeRTOS
 3. Wokwi license: free 30-day personal license first; Hobby+ (about €8/month) only if needed
-4. Bench track sim stage for the STM32U5: Renode (recommended) or compile-only. Wokwi docs list only Nucleo-32 L031K6, Nucleo-64 C031C6 and Blue Pill for STM32, so U5 and H7 aren't covered there.
+4. Bench track sim stage for the STM32U5: Renode (recommended) or compile-only. Wokwi docs list only Nucleo-32 L031K6, Nucleo-64 C031C6 and Blue Pill for STM32, so the U5 isn't covered there.
 5. Bench track: include the ESP32 (optional, separate ESP-IDF toolchain) or leave it out
