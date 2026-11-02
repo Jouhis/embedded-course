@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CLI = Path.home() / ".wokwi" / "bin" / ("wokwi-cli.exe" if os.name == "nt" else "wokwi-cli")
 TEMPLATE_EXPECT = {
     "pico-sdk": "LED on",
+    "pico2-sdk": "LED on",
     "stm32-cmsis": "LED on",
     "stm32-hal": "LED on",
     "stm32-freertos": "Hello from a FreeRTOS task",

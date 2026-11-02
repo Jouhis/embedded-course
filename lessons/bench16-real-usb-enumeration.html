@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 16: Real USB enumeration · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench16">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 16: Real USB enumeration</h1>
+  <p class="subtitle">Lesson 102 described enumeration on paper. Your Pico 2 has been enumerating as a USB serial port since bench lab 0. Now read its descriptors with your operating system's own tools, change them, and watch the device side of the conversation.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs only a Pico 2 and its USB cable. It doesn't count towards your progress. Time: about 40 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>find a USB device's vendor ID, product ID, strings and interfaces with OS tools, change the strings in firmware, and explain when a CDC device counts as "connected"</strong>.
+  </div>
+
+  <h2>What the host asks, and where the answers come from</h2>
+  <p>
+    Lesson <a href="0102-usb-fundamentals.html">102</a> walked through <a href="../reference/glossary.html#enumeration">enumeration</a>: when a device is plugged in, the host resets it, gives it an address, and asks for its <a href="../reference/glossary.html#descriptor">descriptors</a> with GET_DESCRIPTOR requests. The device descriptor carries the vendor ID (VID), the product ID (PID) and indexes of three strings: manufacturer, product and serial number. The configuration descriptor lists the interfaces, and a <a href="../reference/glossary.html#cdc-communications-device-class">CDC</a> serial port has two: a control interface and a data interface. The operating system picks a driver from those answers.
+  </p>
+  <p>
+    On the Pico 2, the SDK's <code>pico_stdio_usb</code> library answers all of it, with TinyUSB underneath. Its file <code>stdio_usb_descriptors.c</code> sets the defaults: VID 0x2E8A (Raspberry Pi), PID 0x0009 on the RP2350, manufacturer <code>"Raspberry Pi"</code>, product <code>"Pico"</code>, and a serial number made from the board's unique flash ID. The strings come from the macros <code>USBD_MANUFACTURER</code> and <code>USBD_PRODUCT</code>, which you can override from CMake.
+  </p>
+  <p>
+    The simulator can't take part in any of this. Wokwi's Pico 2 model supports USB CDC only in part, and nothing connects the simulated chip to your PC's USB stack, so no descriptor ever reaches your operating system. This lab exists only on the bench, so it has no simulator stage. The program in <code>projects/bench16-usb-enumeration</code> lights the LED while <code>stdio_usb_connected()</code> is true, and logs when that changes and how many milliseconds after boot.
+  </p>
+
+  <h2>On the board</h2>
+  <ol class="steps">
+    <li>Flash the starter (BOOTSEL as in bench lab 0). Don't open a terminal yet. The LED is off.</li>
+    <li><strong>Find the descriptors.</strong>
+      <ul>
+        <li>Windows: Device Manager → Ports (COM &amp; LPT) → the new port → Properties → Details → "Hardware Ids" shows <code>USB\VID_2E8A&amp;PID_0009</code>. For the full descriptors, Microsoft's USBView shows the device, configuration, interface and endpoint descriptors; it comes with the Windows SDK's Debugging Tools for Windows <a href="https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/usbview">(Microsoft Learn: USBView)</a>.</li>
+        <li>Linux: <code>lsusb</code> lists <code>2e8a:0009</code>; <code>lsusb -v -d 2e8a:0009</code> prints the whole tree. <code>dmesg</code> shows the enumeration as it happens.</li>
+        <li>macOS: <code>system_profiler SPUSBDataType</code>, or <code>ioreg -p IOUSB -l</code>.</li>
+      </ul>
+    </li>
+    <li>Write down: VID, PID, manufacturer, product, serial number, the number of interfaces and their class codes. The serial number matches the board's unique ID: two Pico 2 boards on one PC get different serial numbers, which is how the OS keeps their COM port names apart.</li>
+    <li><strong>Open the port.</strong> Start the Serial Monitor on the board's port. The LED lights and the log prints <code>BENCH16 host opened the port N ms after boot</code>. Close the port: the LED goes out.</li>
+    <li><strong>Task: your own strings.</strong> In <code>CMakeLists.txt</code>, add <code>target_compile_definitions(blink PRIVATE USBD_MANUFACTURER="Embedded Course" USBD_PRODUCT="Bench lab 16")</code>. Rebuild, flash, and look the device up again. On Windows, the device may keep its old name in Device Manager until you uninstall it, because Windows caches what it learned about a VID/PID/serial combination; Linux and macOS show the new strings at once.</li>
+  </ol>
+
+  <h2>When is a USB serial port "connected"?</h2>
+  <p>
+    The LED doesn't light at enumeration. It lights when a terminal opens the port. <code>stdio_usb_connected()</code> checks the DTR signal, a flag that the host's terminal program sets in a CDC control request when it opens the port. That's why the SDK's <code>printf</code> drops USB output until a terminal is listening, and why the template waits up to 3 s at start-up for one.
+  </p>
+  <p>
+    This trips people up: some terminal programs and libraries don't set DTR by default, and then the device thinks nobody is there and sends nothing. The SDK has a switch for that case, <code>PICO_STDIO_USB_CONNECTION_WITHOUT_DTR</code>, which treats an enumerated device as connected. It also means output goes out even when nobody reads it.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Reusing someone else's VID/PID in a product.</strong> 0x2E8A belongs to Raspberry Pi. For a product, you need your own VID (from the USB-IF) or a PID allocated under someone's VID, such as the ones Raspberry Pi assigns under its VID 0x2E8A through an application form <a href="https://github.com/raspberrypi/usb-pid">(raspberrypi/usb-pid on GitHub)</a>.</li>
+    <li><strong>Expecting output before a terminal opens the port.</strong> Without DTR, <code>stdio_usb</code> discards output. Log important start-up state again later, or wait for the connection.</li>
+    <li><strong>Trusting Windows' displayed name after changing strings.</strong> Windows caches device names; check with USBView or reinstall the device.</li>
+    <li><strong>Calling USB "a serial port with a baud rate".</strong> The baud rate in a CDC port is a setting the device may read, but the data moves in USB packets at USB speed.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The SDK's <code>pico_stdio_usb</code> enumerates the Pico 2 as a CDC serial device: VID 0x2E8A, PID 0x0009, two interfaces.</li>
+    <li>OS tools (Device Manager and USBView, <code>lsusb -v</code>, <code>system_profiler</code>) show every descriptor field.</li>
+    <li><code>USBD_MANUFACTURER</code> and <code>USBD_PRODUCT</code> set the strings; the serial number is the board's unique ID.</li>
+    <li>A CDC port counts as connected when the terminal sets DTR, not at enumeration.</li>
+    <li>Wokwi doesn't connect a simulated USB device to your PC, so enumeration is bench-only.</li>
+  </ul>
+
+  <div class="win">You've seen enumeration from both ends: the descriptors the host read and the moment the device saw the port open. When a USB device "doesn't show up", you now know which side to check first.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The board is plugged in and appears as COM7, but the LED (showing <code>stdio_usb_connected()</code>) stays off. What does that tell you?",
+        "options": [
+          "Enumeration worked, but no program has opened COM7",
+          "Enumeration failed, so the OS has no driver for it",
+          "The VID and PID clash with another device on the PC",
+          "The firmware crashed before USB was initialised"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A COM port exists only after enumeration and driver binding. Connected means a terminal has opened it and set DTR.",
+          "If enumeration had failed, there would be no COM7.",
+          "Two devices with the same VID/PID get separate ports through their serial numbers; there's no clash.",
+          "A device whose firmware crashed before USB start-up wouldn't enumerate, so there'd be no COM7."
+        ],
+        "hint": "What has to happen before a COM port appears, and what after?",
+        "why": "Enumeration and connection are separate steps. The port appears when the host has read the descriptors and bound the CDC driver; DTR is set later, when an application opens the port." },
+      { "type": "mc",
+        "prompt": "You changed <code>USBD_PRODUCT</code> to \"Bench lab 16\", reflashed, and Windows Device Manager still shows the old name. Linux shows the new one. Why?",
+        "options": [
+          "Windows caches what it learned about that device",
+          "The macro needs a rebuild of the whole Pico SDK",
+          "Product strings are fixed by the RP2350 boot ROM",
+          "Linux reads a different descriptor than Windows"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Windows stores device information per VID, PID and serial number, and reuses it. Uninstalling the device, or USBView, shows the new string.",
+          "Linux already shows the new string, so the build is fine.",
+          "The boot ROM's strings are used in BOOTSEL mode only; your firmware's USB stack sends its own.",
+          "Both read the same string descriptor; the difference is in what Windows displays."
+        ],
+        "hint": "The device sends the new string. Which side is out of date?",
+        "why": "When a device and a host disagree, check with a tool that reads the device live. USBView and lsusb -v issue fresh GET_DESCRIPTOR requests; Device Manager shows stored information." },
+      { "type": "mc",
+        "prompt": "A Python script opens the port with a serial library, but the board's <code>printf</code> output never arrives. A terminal program on the same port works. What is the most likely cause?",
+        "options": [
+          "The script's library doesn't set DTR on open",
+          "The script uses the wrong baud rate for the port",
+          "Python can't read from USB CDC devices at all",
+          "The board only sends to the first program it saw"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. stdio_usb treats the host as connected only when DTR is set. Set DTR in the script, or build with PICO_STDIO_USB_CONNECTION_WITHOUT_DTR.",
+          "On a CDC port the baud rate doesn't affect the bytes; any value works.",
+          "Python serial libraries read CDC ports like any other serial port.",
+          "The device has no idea which program opened the port; it only sees DTR."
+        ],
+        "hint": "What does stdio_usb_connected() actually check?",
+        "why": "The SDK checks DTR so it doesn't fill a buffer nobody reads. Most terminals set DTR on open; some libraries and configurations don't. Knowing the check lets you fix either side." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    The SDK source file <code>src/rp2_common/pico_stdio_usb/stdio_usb_descriptors.c</code> in your Pico SDK folder: about 200 lines that build the device, configuration and string descriptors you just read with the OS tools. Read it next to your <code>lsusb -v</code> or USBView output.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through the GET_DESCRIPTOR requests the host sends when I plug in the Pico 2, in order, and what each answer contains."
+    Related: <a href="0102-usb-fundamentals.html">Lesson 102: USB fundamentals</a>, <a href="bench00-blink-on-a-real-pico.html">Bench lab 0</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

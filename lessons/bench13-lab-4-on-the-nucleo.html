@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 13: Lab 4 on the Nucleo-U5 · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench13">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 13: Lab 4 on the Nucleo-U5</h1>
+  <p class="subtitle">Lab 4 promised that a new board means one new file under <code>hal.h</code> and no change above it. Here you test the promise on a board the application has never seen: a real STM32U5, with real parts on a breadboard.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional, and a stretch.</strong> It needs the NUCLEO-U545RE-Q from bench lab 9 and Lab 4's parts: an SSD1306 I2C OLED, two 4.7 kΩ resistors, two pushbuttons, a 10 kΩ NTC thermistor and a 10 kΩ resistor. It doesn't count towards your progress. It comes in three parts of under an hour each; stop after any of them.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>write a board layer for <code>hal.h</code> at register level on a new chip, bring up its I2C peripheral with timeouts, and run Lab 4's unchanged application on it</strong>.
+  </div>
+
+  <h2>What stays and what's new</h2>
+  <p>
+    The project <code>projects/bench13-lab4-on-the-nucleo</code> builds Lab 4's <code>app/</code> folder in place: <code>app.c</code>, <code>ui.c</code>, <code>display.c</code>, <code>ssd1306.c</code>, <code>format.c</code>, <code>font.c</code>. Not one of them is copied or edited. Next to them are two new files:
+  </p>
+  <ul>
+    <li><code>hal_nucleo_u5.c</code>, the board layer: <code>hal_init()</code>, the LED, the buttons, I2C, the millisecond clock and the log. It's register-level CMSIS, as in bench labs 9 to 12; ST's U5 HAL library isn't part of the course's build. The course's own <code>hal.h</code> is the abstraction (lesson <a href="0076-driver-design-and-hardware-abstraction.html">76</a>).</li>
+    <li><code>sensor_ntc_u5.c</code>, the sensor. Lab 4's <code>sensor.c</code> talks to the MYS-1, a custom chip that exists only in Wokwi. On the bench, a thermistor answers the same <code>sensor.h</code> interface, as it did on the Pico in bench lab 8.</li>
+  </ul>
+  <p>
+    Look at <code>CMakeLists.txt</code>: <code>sensor.c</code> is the only file of <code>app/</code> left out of the build, and it's replaced behind its header. That's the second abstraction in the project doing its job.
+  </p>
+
+  <h2>Wiring</h2>
+  <table>
+    <thead><tr><th>Signal</th><th>Nucleo pin</th><th>Header</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>LED</td><td>PA5</td><td>on board (LD2)</td><td>active high</td></tr>
+      <tr><td>Button A</td><td>PA8</td><td>Arduino D7</td><td>button to GND; internal pull-up</td></tr>
+      <tr><td>Button B</td><td>PB10</td><td>Arduino D6</td><td>button to GND; internal pull-up</td></tr>
+      <tr><td>I2C1 SCL</td><td>PB6</td><td>Arduino D15</td><td>4.7 kΩ to 3V3</td></tr>
+      <tr><td>I2C1 SDA</td><td>PB7</td><td>Arduino D14</td><td>4.7 kΩ to 3V3</td></tr>
+      <tr><td>NTC divider</td><td>PA0 (ADC1_IN5)</td><td>Arduino A0</td><td>10 kΩ from 3V3 to A0, NTC from A0 to GND</td></tr>
+      <tr><td>OLED VCC, GND</td><td>3V3, GND</td><td>Arduino power header</td><td></td></tr>
+    </tbody>
+  </table>
+  <p>
+    The pin assignments are from UM3062's Arduino connector tables <a href="https://www.st.com/resource/en/user_manual/um3062-stm32u3u5-nucleo64-boards-mb1841-stmicroelectronics.pdf">(ST UM3062)</a>. Many OLED modules already carry pull-up resistors; with those, leave out the 4.7 kΩ pair.
+  </p>
+
+  <h2>Part 1 on the board: the frame and the GPIO</h2>
+  <ol class="steps">
+    <li>Build and flash the starter (<code>build/monitor.bin</code> onto the ST-LINK drive). The VCP prints <code>LAB4 init failed</code>: the log and the millisecond clock already work, and the I2C functions return −1.</li>
+    <li>In <code>hal_init()</code>, make PA5 an output and the two button pins inputs with pull-ups. The helpers <code>pin_mode()</code> and <code>pin_pull()</code> are written; the register names are bench lab 9's.</li>
+    <li>Write <code>hal_gpio_write()</code> and <code>hal_gpio_read()</code>. Lab 4's contract: 1 means "on" and "pressed", whatever the wiring. LD2 is active high; the buttons pull their pins low.</li>
+  </ol>
+  <p>
+    To test Part 1 alone, put a temporary <code>hal_gpio_write(HAL_PIN_LED, hal_gpio_read(HAL_PIN_BTN_A));</code> loop at the top of <code>main()</code>. Remove it before Part 2.
+  </p>
+
+  <h2>Part 2 on the board: I2C</h2>
+  <p>
+    The U5's <a href="../reference/glossary.html#i2c">I2C</a> peripheral is a different design from the F1's. It runs a whole transfer in hardware: write the address, the byte count <code>NBYTES</code>, the direction <code>RD_WRN</code>, <code>AUTOEND</code> and <code>START</code> into <code>CR2</code> in one go, then feed <code>TXDR</code> each time <code>TXIS</code> is set, or read <code>RXDR</code> each time <code>RXNE</code> is set. <code>STOPF</code> marks the end, <code>NACKF</code> a device that didn't answer.
+  </p>
+  <ol class="steps">
+    <li>In <code>hal_init()</code>: clock I2C1 (<code>RCC_APB1ENR1_I2C1EN</code>), make PB6 and PB7 <a href="../reference/glossary.html#open-drain-output">open-drain</a> alternate-function pins with AF4, write <code>TIMINGR</code>, then set <code>PE</code>.</li>
+    <li><strong>TIMINGR for 100 kHz.</strong> The kernel clock is PCLK1, 4 MHz. With <code>PRESC</code> = 0 one step is 250 ns: <code>SCLL</code> = 19 gives a 5 µs low time and <code>SCLH</code> = 15 a 4 µs high time, and <code>SDADEL</code> = 2, <code>SCLDEL</code> = 4 set the data hold and setup times. Together with the rise time this is a period of about 10 µs.</li>
+    <li>Write <code>hal_i2c_write()</code> and <code>hal_i2c_read()</code>. Every wait needs a timeout (<code>I2C_TIMEOUT_MS</code>), or a missing OLED hangs the monitor: Lab 4's <code>hal.h</code> says the call "never waits forever".</li>
+  </ol>
+  <p>
+    With the OLED connected, the VCP prints <code>LAB4 OK</code> and the display shows Lab 4's screen, with the temperature as an error (the sensor is Part 3). Now test the timeouts: pull the OLED's SDA wire while the monitor runs. <code>display_flush()</code> fails and the app skips the frame, so the display freezes, but the log lines keep coming and the buttons still work. Plug the wire back in and the display normally catches up; a transfer cut in the middle can leave it showing garbage until you press reset. Without timeouts the first failed transfer would hang the whole monitor.
+  </p>
+
+  <h2>Part 3 on the board: the NTC on ADC1</h2>
+  <p>
+    The U5's ADC1 is a 14-bit converter, 0 to 16 383, and it starts switched off more deeply than the F1's (lesson <a href="0058-adc.html">58</a>). <code>sensor_ntc_u5.c</code> has the conversion; the bring-up is yours:
+  </p>
+  <ol class="steps">
+    <li>Clock the ADC (<code>RCC_AHB2ENR1_ADC12EN</code>) and the PWR block, and set <code>PWR_SVMCR_ASV</code>: the U5 keeps its analog supply domain isolated until the program says VDDA is present.</li>
+    <li>Clear <code>ADC_CR_DEEPPWD</code>, set <code>ADC_CR_ADVREGEN</code>, and wait for <code>ADC_ISR_LDORDY</code>: the ADC's own voltage regulator is up.</li>
+    <li>Calibrate: set <code>ADC_CR_ADCAL</code> and wait until it clears.</li>
+    <li>Select channel 5: on the U5's ADC1 a channel must be preselected in <code>PCSEL</code> as well as listed in <code>SQR1</code>. Give it the longest sampling time in <code>SMPR1</code>: the divider's source resistance is 5 kΩ.</li>
+    <li>Enable (<code>ADEN</code>), wait for <code>ADRDY</code>, and in <code>sensor_poll()</code> start 16 conversions with <code>ADSTART</code>, wait for <code>EOC</code> each time, and average.</li>
+  </ol>
+  <p>
+    The log now prints <code>LAB4 T=...</code> lines; hold the NTC between your fingers and watch the value climb. If <code>sensor_init()</code> fails, print which wait timed out: each step's flag tells you how far the bring-up got.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Editing a file in <code>app/</code> to make it work.</strong> Then the port is no longer a port. If the application needs something new from the board, the change belongs in <code>hal.h</code> and in every board's file.</li>
+    <li><strong>Push-pull I2C pins.</strong> With <code>OTYPER</code> left at push-pull, the pin drives the line high against a device pulling it low. Set both pins open-drain.</li>
+    <li><strong>No pull-ups.</strong> Open-drain lines with no pull-up never go high; every transfer times out. Check with the multimeter: SDA and SCL idle at 3.3 V.</li>
+    <li><strong>Forgetting <code>PCSEL</code>.</strong> The conversion runs and returns a value that has nothing to do with the voltage on the pin.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The Lab 4 application ran on a third board with one new board file and one replaced sensor file behind an unchanged header.</li>
+    <li>The U5's I2C runs a whole transfer from one write to <code>CR2</code>; the driver feeds or drains bytes and checks <code>NACKF</code>, <code>STOPF</code> and a timeout.</li>
+    <li><code>TIMINGR</code> encodes SCL's low and high times and the data setup and hold times in prescaled kernel-clock steps.</li>
+    <li>ADC1 on the U5 needs its analog domain declared valid, its regulator started, a calibration, and the channel preselected before it converts.</li>
+  </ul>
+
+  <div class="win">Lab 4's promise held on real hardware you've never targeted before. That's what a hardware abstraction layer is for, and now you have the evidence.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The OLED's SDA wire comes loose while the monitor runs. With your Part 2 driver, what happens?",
+        "options": [
+          "The display freezes, and the log and buttons keep working",
+          "The monitor stops inside hal_i2c_write() until SDA is back",
+          "The board layer resets the chip to restart the bus",
+          "The log stops too, because it shares the I2C bus"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The transfer fails with NACKF or a timeout, hal_i2c_write() returns −1, and app.c skips that frame and carries on.",
+          "That breaks hal.h's contract: the call must never wait forever.",
+          "A board layer doesn't reset the chip for a failed transfer; it reports and lets the application decide.",
+          "The log goes to USART1 and the ST-LINK's VCP, not I2C."
+        ],
+        "hint": "What does hal.h promise about hal_i2c_write()?",
+        "why": "A bounded, error-returning driver lets the application stay responsive and report the fault, which is what Lab 4's monitor does." },
+      { "type": "number",
+        "prompt": "I2C kernel clock 4 MHz, PRESC = 0, SCLL = 19. How long is SCL low, in microseconds? (The low time is (SCLL + 1) steps.)",
+        "answer": 5,
+        "tolerance": 0,
+        "hint": "One step at 4 MHz with no prescaler is 250 ns.",
+        "why": "(19 + 1) × 250 ns = 5 µs. The high time is (15 + 1) × 250 ns = 4 µs, and the rise and synchronisation times bring the period near 10 µs, about 100 kHz." },
+      { "type": "mc",
+        "prompt": "Why does this project replace <code>sensor.c</code> instead of adding a thermistor driver under <code>hal.h</code>?",
+        "options": [
+          "sensor.h is an interface too, and the app only uses that",
+          "hal.h can't contain any function that reads an ADC",
+          "The MYS-1 driver doesn't compile for a Cortex-M33",
+          "CMake can't build two files with the same function names"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. app.c calls sensor_init() and sensor_poll() through sensor.h. Any file that implements those two functions can stand in.",
+          "hal.h could grow an ADC function; it isn't needed here because sensor.h is already the seam.",
+          "sensor.c is portable C over hal.h; it compiles anywhere. It would just find no MYS-1 on the bus.",
+          "CMake builds whatever you list; the project lists only one of the two sensor files."
+        ],
+        "hint": "Which functions does app.c call to get the temperature?",
+        "why": "A header with two functions is a seam: on the simulator it's the MYS-1, on the bench an NTC, in a unit test a fake. Lesson 76's layers aren't only at the bottom." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    The <code>I2C_CR2_</code> definitions in <code>third_party/cmsis-device-u5/Include/stm32u545xx.h</code> (<code>grep -n "I2C_CR2_" ...</code>): about 30 lines that list every field you wrote in one go in Part 2. Compare with the F1's <code>I2C_CR1_START</code> and <code>I2C_SR1</code> sequence in the Blue Pill HAL.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Review my hal_nucleo_u5.c against hal.h: is every function bounded in time, and does it keep the logical levels hal.h promises?"
+    Related: <a href="lab04-port-lab-3-to-the.html">Lab 4</a>, <a href="bench08-lab-3-on-the-bench.html">Bench lab 8</a>, <a href="bench09-bring-up-the-nucleo-u5.html">Bench lab 9</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

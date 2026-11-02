@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 11: Stale DMA data · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench11" data-concept>
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 11: Stale DMA data</h1>
+  <p class="subtitle">On a Cortex-M7 with a data cache, the DMA writes fresh samples to RAM and the CPU keeps reading old ones. This concept lab explains why, and the two standard fixes: cache maintenance and a non-cacheable MPU region.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional, a stretch, and concept-only.</strong> It needs no hardware: an STM32H7 board is outside the bench track's budget, and no board in Wokwi has a data cache. If you do own an H7 (or F7) Nucleo, the last section tells you how to reproduce it. It doesn't count towards your progress. Time: about 30 minutes of reading and the quiz.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>explain why a CPU with a data cache can read stale DMA data, and fix it with cache invalidation or with an MPU region that makes the buffer non-cacheable</strong>.
+  </div>
+
+  <h2>Why the bug can't happen on the course's boards</h2>
+  <p>
+    Lesson <a href="0074-dma.html">74</a> let the DMA fill a buffer while the CPU did other work, then read the buffer when the transfer-complete interrupt fired. On the Blue Pill's Cortex-M3 and the Pico's cores, that's safe: the CPU reads SRAM directly, so it always sees what the DMA wrote. There's one copy of the data.
+  </p>
+  <p>
+    A Cortex-M7, as in the STM32H7 and F7, has a level-1 data cache between the core and memory. A cache keeps copies of recently used memory in fast storage inside the core, in lines of 32 bytes <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h">(CMSIS, cachel1_armv7.h: <code>__SCB_DCACHE_LINE_SIZE</code>)</a>. Now there can be two copies of the buffer: one in SRAM, one in the cache. The DMA controller isn't the CPU: it writes to SRAM and never goes through the core's cache. Nothing updates the CPU's copy.
+  </p>
+
+  <h2>The failure, step by step</h2>
+  <ol>
+    <li>The DMA fills <code>adc_buf</code> with the first block of samples. The CPU reads it to compute an average. The reads miss in the cache, so the core loads the buffer's lines from SRAM into the cache. The first average is right.</li>
+    <li>The DMA fills <code>adc_buf</code> again with new samples. It writes SRAM; the cached lines still hold the first block.</li>
+    <li>The CPU reads the buffer again. This time the reads hit in the cache, and return the first block's values. The average doesn't change, however the input changes, until something evicts those lines.</li>
+  </ol>
+  <p>
+    The other direction fails too. If the CPU fills a transmit buffer and starts a DMA transfer to a UART, the CPU's writes may still sit in the cache (a write-back cache writes memory later), and the DMA sends whatever was in SRAM before. Both bugs are timing-dependent: a busy program evicts lines sooner, so the bug can disappear when you add a <code>printf</code> to look for it.
+  </p>
+  <p>
+    It's a bench-only bug in the strongest sense: it lives in the cache hardware, and the Wokwi boards the course uses have no data cache at all.
+  </p>
+
+  <h2>Fix 1: cache maintenance</h2>
+  <p>
+    Tell the cache, at the right moments, that its copy is out of date. CMSIS provides the operations for a range of addresses <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h">(CMSIS, cachel1_armv7.h)</a>:
+  </p>
+  <ul>
+    <li><code>SCB_InvalidateDCache_by_Addr(addr, size)</code> discards the cached copies of those lines, so the next read loads fresh data from SRAM. Call it <strong>after the DMA has written the buffer, before the CPU reads it</strong>.</li>
+    <li><code>SCB_CleanDCache_by_Addr(addr, size)</code> writes any modified cached lines back to SRAM. Call it <strong>after the CPU has written a buffer, before the DMA reads it</strong>.</li>
+  </ul>
+  <pre><code class="language-c">/* 32-byte aligned and a whole number of lines: invalidate touches nothing else. */
+static uint16_t adc_buf[64] __attribute__((aligned(32)));   /* 128 bytes = 4 lines */
+
+void dma_complete(void) {
+    SCB_InvalidateDCache_by_Addr(adc_buf, sizeof adc_buf);   /* drop stale copies */
+    process(adc_buf, 64);                                    /* now reads SRAM */
+}</code></pre>
+  <p>
+    The alignment isn't decoration. Cache operations work on whole 32-byte lines. If <code>adc_buf</code> started in the middle of a line, invalidating it would also discard the cached copy of whatever variable shares that line, including changes the CPU hadn't yet written back. That variable silently reverts to an older value: a second, worse bug. So a DMA buffer that's maintained this way must start on a 32-byte boundary and occupy whole lines.
+  </p>
+
+  <h2>Fix 2: an MPU region that isn't cached</h2>
+  <p>
+    The other approach removes the second copy. The <a href="../reference/glossary.html#mpu-memory-protection-unit">MPU</a>, which lesson <a href="0039-the-mpu-and-how-faults.html">39</a> introduced for protection, also sets memory attributes per region, including whether a region may be cached. Put all DMA buffers in one section of RAM, and make that region non-cacheable:
+  </p>
+  <pre><code class="language-c">/* Region 1: 32 KB at the DMA buffer section, normal memory, not cacheable. */
+MPU-&gt;RBAR = ARM_MPU_RBAR(1, (uint32_t)&amp;__dma_buffers_start);
+MPU-&gt;RASR = ARM_MPU_RASR(1, ARM_MPU_AP_FULL, 1, 0, 0, 0, 0, ARM_MPU_REGION_SIZE_32KB);
+ARM_MPU_Enable(MPU_CTRL_PRIVDEFENA_Msk);</code></pre>
+  <p>
+    The arguments follow CMSIS's <code>ARM_MPU_RASR(DisableExec, AccessPermission, TypeExtField, IsShareable, IsCacheable, IsBufferable, SubRegionDisable, Size)</code> <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/mpu_armv7.h">(CMSIS, mpu_armv7.h)</a>: TEX = 1 with C = 0 and B = 0 is normal memory that isn't cached. An ARMv7-M region must be a power of two in size and aligned to its size, so the linker script (lesson <a href="0068-writing-your-own-linker-script.html">68</a>) has to place the section accordingly.
+  </p>
+  <p>
+    Every CPU access to those buffers now goes to SRAM, which is slower than a cache hit. For DMA buffers that's usually fine: the CPU reads each sample once, so the cache wasn't helping much anyway.
+  </p>
+
+  <h2>Choosing</h2>
+  <table>
+    <thead><tr><th></th><th>Cache maintenance</th><th>Non-cacheable region</th></tr></thead>
+    <tbody>
+      <tr><td>Where the rule lives</td><td>At every DMA start and completion</td><td>Once, in the MPU set-up and the linker script</td></tr>
+      <tr><td>Risk</td><td>One forgotten call, or a misaligned buffer</td><td>A buffer placed outside the section</td></tr>
+      <tr><td>CPU speed on the buffer</td><td>Cached after the first read</td><td>Every access goes to SRAM</td></tr>
+      <tr><td>Good for</td><td>Large buffers the CPU processes several times</td><td>Most DMA buffers, and teams</td></tr>
+    </tbody>
+  </table>
+
+  <h2>If you have an H7 or F7 board</h2>
+  <p>
+    Reproduce it with lesson 74's ADC-and-DMA design: enable the caches with <code>SCB_EnableICache()</code> and <code>SCB_EnableDCache()</code>, fill a buffer by DMA in a loop, and print the average while you turn a potentiometer. The average freezes. Add the invalidation, or the MPU region, and it follows the knob. Then misalign the buffer by 4 bytes and put a counter in the same cache line: watch the counter jump back. The STM32CubeH7 package's examples show the clock and DMA set-up for each Nucleo board.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Invalidating before the DMA finishes.</strong> The CPU may load lines again while the DMA is still writing. Invalidate after completion, right before reading.</li>
+    <li><strong>Cleaning when you should invalidate, or the reverse.</strong> DMA writes memory: invalidate. DMA reads memory: clean first.</li>
+    <li><strong>Unaligned DMA buffers.</strong> Invalidation discards whole 32-byte lines, including neighbours' unsaved changes. Align to 32 and round sizes up.</li>
+    <li><strong>"Fixing" it with <code>volatile</code>.</strong> <code>volatile</code> stops the compiler from caching a value in a register; it does nothing about the hardware data cache.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A Cortex-M7's data cache can hold a copy of a buffer that the DMA has since rewritten in SRAM.</li>
+    <li>DMA writes, CPU reads: invalidate the lines after the transfer. CPU writes, DMA reads: clean the lines before it.</li>
+    <li>Cache operations work on 32-byte lines; DMA buffers must be aligned and padded to whole lines.</li>
+    <li>An MPU region marked non-cacheable removes the problem for every buffer placed in it.</li>
+    <li><code>volatile</code> doesn't affect the hardware cache; the course's Wokwi boards have no data cache, so the bug never appears there.</li>
+  </ul>
+
+  <div class="win">You can now explain one of the classic bugs of moving to a faster chip, and fix it two ways. When you meet an H7 at work, you'll check the cache before you suspect the DMA.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "An H7 fills a receive buffer from a UART by DMA. Which cache operation goes where?",
+        "options": [
+          "Invalidate after the DMA completes, before the CPU reads",
+          "Clean after the DMA completes, before the CPU reads",
+          "Invalidate before the DMA starts, then read straight away",
+          "Clean before the DMA starts and never do anything after"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The DMA wrote SRAM; the cache may hold old lines. Invalidating them forces the next CPU read to load the new data.",
+          "Cleaning writes cached data back to SRAM, which would overwrite what the DMA just received with the CPU's stale copy.",
+          "If the CPU touches the buffer during the transfer, the lines come back into the cache with partial data. Invalidate after completion.",
+          "Cleaning protects data the CPU wrote, for a DMA that reads. Here the DMA writes, so the CPU's copy needs discarding afterwards."
+        ],
+        "hint": "Who wrote the data most recently, and where?",
+        "why": "Whoever wrote last owns the truth. DMA wrote SRAM, so the cache's copy must go: invalidate. When the CPU writes for a DMA to read, the cache holds the truth, so push it to SRAM: clean." },
+      { "type": "mc",
+        "prompt": "A 50-byte DMA buffer starts at address 0x24000010, and a counter lives at 0x24000008. After each <code>SCB_InvalidateDCache_by_Addr(buf, 50)</code>, the counter sometimes goes back to an older value. Why?",
+        "options": [
+          "The counter shares a 32-byte line with the buffer",
+          "The DMA controller writes past the end of the buffer",
+          "Invalidation also resets the CPU's general registers",
+          "The counter is missing the volatile qualifier"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The line 0x24000000 to 0x2400001F holds both. Invalidating it discards the counter's newer cached value, and the next read gets the older one from SRAM.",
+          "The DMA writes exactly the configured length; the corruption comes from the cache operation.",
+          "Cache operations affect cache lines only, never core registers.",
+          "volatile affects compiler register caching, not the hardware cache. The value is lost in the cache operation."
+        ],
+        "hint": "Which 32-byte lines does the buffer touch?",
+        "why": "Cache maintenance has 32-byte granularity. A buffer that starts or ends inside a line drags its neighbours into every invalidate. Align DMA buffers to 32 bytes and pad them to whole lines, or keep them in a non-cacheable region." },
+      { "type": "mc",
+        "prompt": "Why does adding a <code>printf</code> sometimes make the stale-data bug disappear?",
+        "options": [
+          "Its work evicts the buffer's lines from the cache",
+          "printf invalidates the whole data cache when it runs",
+          "The UART's DMA cleans the cache as a side effect",
+          "printf disables interrupts, so the DMA finishes first"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. printf touches plenty of other memory, which pushes the buffer's lines out of the cache, so the next read misses and loads fresh data. The bug hides; it isn't fixed.",
+          "printf performs no cache maintenance; the effect is ordinary eviction.",
+          "Peripheral DMA doesn't perform cache maintenance on the CPU's cache.",
+          "printf doesn't disable interrupts in general, and the timing of the DMA isn't the cause."
+        ],
+        "hint": "What happens to old cache lines when the CPU touches lots of other memory?",
+        "why": "Cache bugs depend on what else the program does, which makes them look random. A bug that changes when you add logging is a hint to suspect caching or timing, not a sign the logging fixed it." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h">CMSIS cachel1_armv7.h</a>: read the comments on <code>SCB_InvalidateDCache_by_Addr()</code> and <code>SCB_CleanDCache_by_Addr()</code>, which state the 32-byte granularity. ST's application note AN4839, "Level 1 cache on STM32F7 Series and STM32H7 Series", covers the same problem for those chips in depth.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Show me a linker script section and MPU set-up that put all my DMA buffers in one non-cacheable 32 KB region."
+    Related: <a href="0074-dma.html">Lesson 74: DMA</a>, <a href="0068-writing-your-own-linker-script.html">Lesson 68: Writing your own linker script</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

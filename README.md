@@ -1,8 +1,13 @@
-# Embedded Systems: From Electrons to Firmware Engineer
+# Embedded Systems: From Electrons to Firmware
 
-An introductory embedded-development course: 122 lessons, 6 labs and 8 checkpoints, from Ohm's law
+An introductory embedded-development course: 120 lessons, 6 labs and 8 checkpoints, from Ohm's law
 and computer architecture to bare-metal C, FreeRTOS, Zephyr and a capstone project. Raspberry Pi Pico
 and STM32 Blue Pill, simulated in [Wokwi](https://wokwi.com) inside VS Code. No hardware needed.
+
+Optional **bench labs** (19 of them, marked 🔬, in their own section of the course index) take one exercise at a time onto a real
+Raspberry Pi Pico 2 or a NUCLEO-U545RE-Q to show what the simulator can't: floating inputs,
+switch bounce, ADC noise, logic levels, clock changes. They need about €50 of parts and never count
+towards progress. See [`COURSE-PLAN.md`](COURSE-PLAN.md), section "Bench Track".
 
 Version: see [`VERSION`](VERSION). Known issues: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -59,7 +64,7 @@ cd embedded-course
 git submodule update --init
 ```
 
-The last line fetches the libraries in `third_party/` (CMSIS, ST HAL, FreeRTOS, Unity, fff); the
+The last line fetches the libraries in `third_party/` (CMSIS, ST HAL, ST's STM32U5 device headers, FreeRTOS, Unity, fff); the
 setup script does it for you too. Don't use `git clone --recurse-submodules`: it also tries FreeRTOS's own nested submodules, one
 of which fails to clone. The course doesn't need them.
 

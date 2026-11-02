@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 12: The sleep current hunt · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench12">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 12: The sleep current hunt</h1>
+  <p class="subtitle">Lesson 75 calculated battery life from a datasheet's sleep current. A real board rarely reaches that figure on the first try: one pin or one mode choice is enough to waste most of the battery. Here you put a meter in the supply and hunt the waste down.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs the NUCLEO-U545RE-Q from bench lab 9 and a multimeter with a µA range. It doesn't count towards your progress. Lesson 75 stays complete without it. Time: about 50 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>measure a microcontroller's own supply current on a Nucleo board, compare Run, Sleep and Stop 2, and find a floating input that leaks current</strong>.
+  </div>
+
+  <h2>Where to put the meter</h2>
+  <p>
+    The Nucleo powers the STM32 through a jumper labelled IDD, <strong>JP4</strong>. UM3062 section 6.4.6: remove the jumper and connect an ammeter in its place, and the meter carries the microcontroller's current and nothing else on the board <a href="https://www.st.com/resource/en/user_manual/um3062-stm32u3u5-nucleo64-boards-mb1841-stmicroelectronics.pdf">(ST UM3062)</a>. The ST-LINK, the power LED and the regulators are on the other side of it.
+  </p>
+  <ol class="steps">
+    <li>Unplug the USB cable. Pull JP4 off and keep it safe.</li>
+    <li>Set the meter to its <strong>mA</strong> range first and connect its leads to the two JP4 pins: red to one, black to the other. If the reading is negative, swap them.</li>
+    <li>Plug the USB cable back in. The chip starts through the meter.</li>
+  </ol>
+  <p>
+    Start on the mA range because a meter's µA range puts a larger resistor in series (its burden voltage). With a few mA flowing through it, the chip's supply can sag enough to reset it. Switch to µA only for the sleep readings, and back before you wake the chip. Some meters break the circuit for a moment when you switch ranges; if the board resets, put the meter on µA before plugging in, and read Stop 2 only.
+  </p>
+
+  <h2>Three modes</h2>
+  <p>
+    Lesson <a href="0075-low-power-modes.html">75</a> described the STM32F1's modes; the U5 has the same idea with more steps (<a href="../reference/glossary.html#sleep-stop-and-standby">Sleep, Stop and Standby</a>). This lab uses three:
+  </p>
+  <ul>
+    <li><strong>Run</strong>: the core spins in a loop at 4 MHz.</li>
+    <li><strong>Sleep</strong>: <code>__WFI()</code> with <code>SLEEPDEEP</code> clear (<a href="../reference/glossary.html#wfi-wait-for-interrupt">WFI</a>). The core's clock stops; the bus and the peripheral clocks keep running.</li>
+    <li><strong>Stop 2</strong>: <code>__WFI()</code> with <code>SLEEPDEEP</code> set and <code>PWR_CR1.LPMS = 010</code>. Almost every clock stops, SRAM and registers keep their contents, and an unmasked EXTI line (B1 on PC13 here) wakes the chip. It resumes at the instruction after <code>WFI</code>, running from MSIS again.</li>
+  </ul>
+  <p>
+    Expect Run in the hundreds of µA to a few mA at this clock, and Stop 2 in single-digit µA when nothing leaks. Your numbers are the result; the datasheet's typical figures are the target.
+  </p>
+
+  <h2>On the board: hunt</h2>
+  <ol class="steps">
+    <li>Build <code>projects/bench12-sleep-current/starter</code>, flash it, and open the VCP. Connect a jumper wire to <strong>PB0</strong> (ST morpho CN7 pin 34, Arduino A3) and leave its other end loose. The program reads PB0 at start-up as if it were a configuration jumper.</li>
+    <li>The VCP says <code>mode RUN</code>. Read the meter. Press B1: <code>mode LOW POWER</code>. Read again, and touch the loose wire with your finger while you watch the meter.</li>
+    <li>The starter's low-power mode is a plain <code>WFI</code>. Write down both readings. That's the "before" of your report.</li>
+  </ol>
+  <p>Now remove the waste, one change at a time, and measure after each one:</p>
+  <ol class="steps">
+    <li><strong>The mode.</strong> Set <code>LPMS</code> to Stop 2 and set <code>SCB-&gt;SCR</code>'s <code>SLEEPDEEP</code> bit before <code>WFI</code>; clear it after waking. The PWR registers need their clock: <code>RCC_AHB3ENR_PWREN</code>.</li>
+    <li><strong>The floating input.</strong> PB0 stays a digital input after it has been read. A loose wire picks up mains hum and your hand's charge, and holds the input buffer's voltage between the rails, where both of its transistors conduct a little (bench lab 2's <a href="../reference/glossary.html#floating-input">floating input</a>, now as a current). After reading it, put the pin back in analog mode: <code>MODER</code> = 11. Touch the wire again and compare.</li>
+    <li><strong>The LED.</strong> LD2 is lit during Run and stays lit in the starter's low-power mode. Turn it off before sleeping. LD2 is driven through a transistor (UM3062 section 6.5): measure how much this change saves, and explain the result from where the LED's current comes from.</li>
+  </ol>
+  <p>
+    <code>projects/bench12-sleep-current/solution</code> steps through Run, Sleep and Stop 2 with all three changes. Fill in a table: mode, before, after, and which change made the difference.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Leaving the debugger attached.</strong> A debug session can keep the debug clocks on in Stop (the <code>DBGMCU_CR</code> <code>DBG_STOP</code> bit), and the current stays high. Flash by drag-and-drop, then press the black reset button B2, so no debug session is running.</li>
+    <li><strong>Sleeping before the last UART byte is out.</strong> Stop 2 stops the USART's clock, and a character still in the shift register is cut off. Both programs' <code>_write()</code> wait for <code>USART_ISR_TC</code> (transmission complete) before returning.</li>
+    <li><strong>Measuring with the meter on the wrong range.</strong> On the 200 mA range a 3 µA current shows as 0.00; on the 200 µA range a 3 mA Run current resets the chip.</li>
+    <li><strong>Forgetting to put JP4 back.</strong> Without the jumper or the meter, the STM32 has no supply, and the board looks dead while the ST-LINK still enumerates.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>JP4 on the Nucleo-U5 isolates the microcontroller's supply: remove it and put an ammeter in its place.</li>
+    <li>Sleep stops only the core's clock; Stop 2 stops nearly every clock and keeps SRAM and registers, so it saves far more.</li>
+    <li>A digital input left floating draws current; analog mode turns its input buffer off.</li>
+    <li>Change one thing at a time and measure after each change; a table of before and after is the report.</li>
+  </ul>
+
+  <div class="win">You've measured the current your firmware costs, and you've cut it with changes you can name. That's lesson 75's battery calculation with your own numbers in it.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The low-power reading jumps up and down when you touch the loose wire on PB0. Why?",
+        "options": [
+          "The floating input sits between the rails and its buffer conducts",
+          "Your finger adds a resistor in parallel with JP4",
+          "PB0 is an ADC input and the ADC runs in Sleep",
+          "The wire acts as an antenna for the ST-LINK's USB signals"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. With both transistors of the input stage partly on, current flows from VDD to GND through the buffer, and the voltage your hand puts on the pin changes how much.",
+          "The wire isn't connected to JP4; the meter is in series with the supply.",
+          "The program never starts the ADC, and analog mode would be the fix, not the cause.",
+          "Pick-up is the reason the pin's voltage moves, but the current comes from the input buffer."
+        ],
+        "hint": "What does a CMOS input stage do when its input is halfway between 0 and 3.3 V?",
+        "why": "Every unused or floating pin should be in analog mode (or pulled to a rail) in a low-power design. On the U5 analog mode is the reset state, so code that reads a pin should put it back." },
+      { "type": "mc",
+        "prompt": "Sleep (WFI, SLEEPDEEP clear) saves less than Stop 2. What does Stop 2 stop that Sleep doesn't?",
+        "options": [
+          "The bus and peripheral clocks as well",
+          "The SRAM, which loses its contents",
+          "The EXTI, so only a reset wakes it",
+          "The flash, which needs reprogramming"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. In Sleep only the core is stopped; the clock tree keeps running. Stop 2 stops nearly all of it.",
+          "Stop 2 keeps SRAM and registers; that's why the program resumes after WFI.",
+          "EXTI still works in Stop: it is what wakes the chip in this lab.",
+          "Flash isn't erased by any low-power mode."
+        ],
+        "hint": "The program continues after WFI in both modes. What did it keep?",
+        "why": "Choosing a low-power mode means choosing what to keep running: the clocks you need for wake-up, the memory you need afterwards." },
+      { "type": "number",
+        "prompt": "A sensor node sleeps in Stop 2 at 4 µA and wakes for 10 ms every second at 2 mA. What is the average current in µA? (Lesson 75's duty-cycle formula.)",
+        "answer": 23.96,
+        "tolerance": 0.1,
+        "hint": "Weight each current by its share of the second: 0.01 and 0.99.",
+        "why": "0.01 × 2000 µA + 0.99 × 4 µA = 20 + 3.96 = 23.96 µA. The awake time dominates: halving it saves more than halving the sleep current." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    ST's <code>stm32u545xx.h</code>, the <code>PWR_CR1</code> bit definitions near the <code>LPMS</code> field: <code>grep -n "PWR_CR1_" third_party/cmsis-device-u5/Include/stm32u545xx.h</code>. The field is three bits wide; match the values to the mode names in the reference manual RM0456's PWR chapter.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Which STM32U5 peripherals can still run in Stop 2, and how would I wake the chip from the RTC instead of a button?"
+    Related: <a href="0075-low-power-modes.html">Lesson 75: Low-power modes</a>, <a href="bench02-the-floating-input.html">Bench lab 2</a>, <a href="bench09-bring-up-the-nucleo-u5.html">Bench lab 9</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

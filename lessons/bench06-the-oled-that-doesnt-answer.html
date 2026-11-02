@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 6: The OLED that doesn't answer · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench06">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 6: The OLED that doesn't answer</h1>
+  <p class="subtitle">Lesson 61's display code works in Wokwi every time. On the bench the screen can stay black, and the code doesn't tell you why. Make it scan the bus, check every acknowledge, and recover a bus that a device is holding low.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs a Pico 2, an SSD1306 128×64 I2C OLED module, two 4.7 kΩ resistors and the logic analyzer. It doesn't count towards your progress. Time: about 55 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>find a device's real I2C address with a bus scan, read address and acknowledge bits on a logic analyzer, and clear a stuck bus with nine clock pulses</strong>.
+  </div>
+
+  <h2>Three things the simulator gets right that a module might not</h2>
+  <p>
+    Lesson <a href="0061-an-i2c-oled-display-and.html">61</a>'s driver starts the panel at the fixed address 0x3C and never looks at whether a byte was <a href="../reference/glossary.html#ack-and-nack">acknowledged</a>. In Wokwi the panel is always at 0x3C, always powered and always listening, so that's fine. A real module can differ in three ways:
+  </p>
+  <ul>
+    <li><strong>The address.</strong> The SSD1306 has a pin, SA0, that sets the lowest bit of its address: 0x3C with SA0 low, 0x3D with SA0 high <a href="https://cdn-shop.adafruit.com/datasheets/SSD1306.pdf">(SSD1306 datasheet, section 8.1.5)</a>. Modules tie it one way or the other, often with a solder jumper or a resistor you can move.</li>
+    <li><strong>The silkscreen.</strong> Many modules print "0x78" and "0x7A". Those are the 7-bit addresses shifted left by one, the first byte on the wire with the read/write bit as 0. The SDK, like lesson <a href="0060-the-i2c-protocol.html">60</a>, takes the 7-bit form: 0x78 means 0x3C.</li>
+    <li><strong>A stuck bus.</strong> If the Pico resets in the middle of a transfer, a device may be in the middle of sending a 0 bit or an acknowledge, holding SDA low. It waits for clock pulses that never come. The new firmware's first START fails, and keeps failing.</li>
+  </ul>
+  <p>
+    The I2C specification gives the cure for the third: if SDA is stuck low, the controller sends nine clock pulses on SCL, after which the device should have released the line; if it hasn't, the device needs a hardware reset or a power cycle <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">(NXP UM10204 rev. 7, section 3.1.16 "Bus clear")</a>. Nine is enough because a byte is eight bits plus one acknowledge: whatever bit the device was in the middle of, it reaches the end of its byte within nine clocks.
+  </p>
+
+  <h2>Stage 1: in Wokwi</h2>
+  <ol class="steps">
+    <li>Open <code>projects/bench06-oled-scan/starter</code>. It's lesson 61's code on the Pico 2, with the pull-up resistors in the diagram. Build and run: the panel shows text.</li>
+    <li>In <code>diagram.json</code>, give the OLED part the attribute <code>"i2cAddress": "0x3d"</code> and run again. The panel stays black and the log shows no error at all. That's the fault you'll meet on the bench, and the starter can't tell you about it.</li>
+    <li>Put the attribute back to 0x3c (or remove it).</li>
+  </ol>
+
+  <h2>Stage 2: on the board</h2>
+  <p>
+    Wire the module: VCC to 3V3, GND to GND, SDA to GP4, SCL to GP5, with a 4.7 kΩ resistor from each of SDA and SCL to 3V3. Many modules already carry pull-ups; with both, you get about 2.4 kΩ, still fine at 400 kHz. Connect the analyzer: D0 to SCL, D1 to SDA, GND to GND.
+  </p>
+  <ol class="steps">
+    <li>Flash the starter. If your module is at 0x3C, it works; if it's at 0x3D, it stays black. Either way, read the address on the module's back.</li>
+    <li><strong>Task 1: scan.</strong> Write <code>bus_scan()</code>: for each address from 0x08 to 0x77, try a one-byte read and print the addresses that return a non-negative result. Addresses 0x00 to 0x07 and 0x78 to 0x7F are reserved <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">(UM10204, section 3.1.12)</a>.</li>
+    <li><strong>Task 2: check the acknowledges.</strong> The project's <code>ssd1306_init()</code> now takes the address and returns false on a NACK. Start the panel at the address the scan found, and print an error if it fails.</li>
+    <li><strong>Decode it.</strong> In PulseView add the I2C decoder (SCL = D0, SDA = D1) and capture the scan. You'll see a stream of address bytes each followed by NACK, and one followed by ACK: the panel. Look at the raw first byte for that one: 0x78 or 0x7A, the silkscreen's number.</li>
+    <li><strong>Task 3: bus recovery.</strong> Before <code>i2c_init()</code>, take SDA and SCL as plain GPIOs with pull-ups. If SDA reads low, pulse SCL low and high up to nine times, stopping as soon as SDA goes high, then send a STOP: SDA low, SCL released, SDA released. Release lines; never drive them high.</li>
+  </ol>
+  <p>
+    A stuck bus is hard to cause on purpose with a write-only device like the SSD1306, which only drives SDA while acknowledging. To exercise the code path, hold SDA to GND through a jumper while the board boots. Your recovery should print the pulses, find that SDA is still low (a jumper doesn't release), and print the power-cycle message instead of hanging. With a sensor that sends data, such as a temperature sensor read in a loop, resetting the board by shorting RUN (pin 30) to GND mid-read can leave a genuinely stuck bus, and then the nine pulses free it.
+  </p>
+  <p>
+    The solution's log on a working board reads <code>BENCH6 device at 0x3C</code>, <code>BENCH6 scan done: 1 device(s)</code>, <code>BENCH6 OLED at 0x3C</code>, and the panel shows the address it found.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Using the silkscreen number in code.</strong> 0x78 is the 8-bit form; the SDK wants 0x3C. If the scan finds the device but your code doesn't, compare the two.</li>
+    <li><strong>Driving SDA or SCL high during recovery.</strong> I2C lines are open-drain: if a device holds SDA low while you drive it high, that's a short between two outputs. Set the pin as an input and let the pull-up do it.</li>
+    <li><strong>No pull-ups at all.</strong> Without any resistor the lines can't go high, and the scan finds nothing. Wokwi doesn't need them; the bench does.</li>
+    <li><strong>Ignoring return values.</strong> Every <code>i2c_write_blocking()</code> returns the bytes written or a negative error. Code that throws it away can't tell a missing panel from a working one.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The SSD1306 answers at 0x3C or 0x3D depending on SA0; module silkscreens often print the shifted forms 0x78 and 0x7A.</li>
+    <li>A bus scan finds the real address in a second; do it first on any new I2C board.</li>
+    <li>Check every acknowledge, so a missing device is reported rather than silently ignored.</li>
+    <li>A device left holding SDA low is freed by up to nine SCL pulses and a STOP; if not, it needs a power cycle.</li>
+    <li>On open-drain lines, release to go high; never drive high.</li>
+  </ul>
+
+  <div class="win">Your I2C bring-up now tells you what is on the bus, at which address, and whether it answered. That turns "the screen is black" into one log line pointing at the cause.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A module's back is marked <code>IIC ADDRESS 0x7A</code>. What 7-bit address do you pass to <code>i2c_write_blocking()</code>?",
+        "options": [
+          "0x3D, because 0x7A is the address shifted left by one",
+          "0x7A, because the silkscreen shows the device address",
+          "0x3C, because every SSD1306 module answers at 0x3C",
+          "0xF4, because the SDK expects the address shifted left"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. 0x7A >> 1 = 0x3D. The silkscreen shows the first byte on the wire, with R/W = 0 in bit 0.",
+          "0x7A is out of the 7-bit range used by ordinary devices (0x78 to 0x7F is reserved). It's the 8-bit form.",
+          "SA0 selects 0x3C or 0x3D; this module is strapped high. The scan would show 0x3D.",
+          "The SDK takes the 7-bit address and shifts it itself. Shifting again would address a different device."
+        ],
+        "hint": "Bit 0 of the first byte on the wire is the read/write bit.",
+        "why": "Datasheets and module makers mix the 7-bit and 8-bit forms. The rule: if the number is above 0x77, it's almost certainly the 8-bit form; shift right by one. A bus scan settles it without guessing." },
+      { "type": "mc",
+        "prompt": "Why does the I2C specification say nine clock pulses, not eight?",
+        "options": [
+          "A byte has 8 data bits and an ACK bit: 9 clocks finish it",
+          "The ninth pulse is needed to generate the STOP condition",
+          "Devices count pulses and reset themselves after nine",
+          "Eight pulses are enough; nine is only a safety margin"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A device can be stuck anywhere inside a byte transfer. Nine clocks take it past the last bit of any byte, including the acknowledge, after which it releases SDA.",
+          "STOP isn't a clock pulse: it's SDA rising while SCL is high, sent after the pulses.",
+          "Devices don't count pulses towards a reset; they just shift out the rest of their byte.",
+          "A device stuck before its acknowledge bit needs the ninth clock to finish; eight would leave it holding SDA."
+        ],
+        "hint": "How many clock cycles does one byte take on I2C, including the acknowledge?",
+        "why": "Each byte is 8 data bits plus one ACK/NACK, 9 clocks in all. A stuck device is waiting for some of those; nine pulses guarantee it reaches the end, releases SDA, and the controller can send a STOP to reset every device's state." },
+      { "type": "mc",
+        "prompt": "The scan finds no device at all. The panel is powered and its LED-less screen is black. What do you check first with the logic analyzer?",
+        "options": [
+          "Whether SDA and SCL rise high between transfers",
+          "Whether the panel's address byte has the R/W bit set",
+          "Whether the baud rate matches the panel's datasheet",
+          "Whether the panel sends a NACK after its data bytes"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. No device answering usually means missing pull-ups, swapped SDA/SCL, or no common ground. Flat-low or slowly-rising lines show the first at a glance.",
+          "The scan uses reads with R/W = 1, and a working device ACKs its address either way. The scan found nothing, so look at the physical layer first.",
+          "I2C has a clock line, so there's no baud rate to match; the panel follows SCL up to its maximum.",
+          "No device was found, so the panel never got as far as data bytes."
+        ],
+        "hint": "Start at the physical layer.",
+        "why": "Debug from the bottom up: can the lines go high (pull-ups), are they the right lines (SDA/SCL swap), is there a shared ground? The analyzer shows all three in one capture." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf">NXP UM10204, I2C-bus specification and user manual, rev. 7</a>: section 3.1.16 "Bus clear", and section 3.1.12 on reserved addresses. Both are under a page.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Draw the SDA and SCL waveforms for a device stuck after sending bit 5 of a byte, and show which of the nine pulses frees it."
+    Related: <a href="0060-the-i2c-protocol.html">Lesson 60: The I2C protocol</a>, <a href="0061-an-i2c-oled-display-and.html">Lesson 61: An I2C OLED display</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

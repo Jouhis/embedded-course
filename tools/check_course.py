@@ -2,7 +2,7 @@
 
 Checks, per lesson file in lessons/:
   - data-lesson id and file name match assets/manifest.js
-  - required sections exist (goal, win, interview, source, ask, quiz)
+  - required sections exist (goal, win, source, ask, quiz)
   - quiz JSON parses; multiple-choice options have equal word counts and similar
     character lengths (the teach skill's "no clues from formatting" rule)
   - local links and project folders exist; no template placeholders remain
@@ -30,7 +30,7 @@ CODE_LANGUAGES = {"c", "armasm", "bash", "powershell", "cmake", "dts", "ini", "r
 def load_manifest():
     text = (ROOT / "assets" / "manifest.js").read_text(encoding="utf-8")
     data = json.loads(text[text.index("{"): text.rindex("}") + 1])
-    return {i["file"]: i for p in data["parts"] for i in p["items"]}
+    return {i["file"]: i for i in [i for p in data["parts"] for i in p["items"]] + data.get("bench", [])}
 
 
 class Scan(html.parser.HTMLParser):
@@ -335,15 +335,16 @@ def check_file(path, manifest):
         if p in text.replace("TODO(learner)", ""):
             errors.append(f"template placeholder left in: {p!r}")
 
-    required = {"lesson": ["goal", "win", "interview", "source", "ask", "quiz"],
+    required = {"lesson": ["goal", "win", "source", "ask", "quiz"],
                 "lab": ["goal", "win", "source", "ask", "quiz"],
+                "bench": ["goal", "win", "source", "ask", "quiz"],
                 "checkpoint": ["goal", "ask", "quiz"]}[item["kind"]]
     for cls in required:
         if cls not in s.classes:
             errors.append(f"missing required section .{cls}")
 
     total = sum(check_quiz(q, f"quiz {i + 1}", errors, warnings) for i, q in enumerate(s.quizzes))
-    minimum = {"lesson": 3, "lab": 3, "checkpoint": 10}[item["kind"]]
+    minimum = {"lesson": 3, "lab": 3, "bench": 3, "checkpoint": 10}[item["kind"]]
     if total < minimum:
         errors.append(f"only {total} scored quiz questions (minimum {minimum} for a {item['kind']})")
 
@@ -360,7 +361,7 @@ def check_file(path, manifest):
                           + (f" (got {m.group(1)!r})" if m.group(1) else ""))
 
     # Callout boxes are block elements; inside a <p> as a <span> they break mid-line.
-    for m in re.finditer(r'<span class="(goal|win|note|warning|source|ask|interview)"', text):
+    for m in re.finditer(r'<span class="(goal|win|note|warning|source|ask)"', text):
         line = text.count("\n", 0, m.start()) + 1
         errors.append(f"line {line}: .{m.group(1)} is a box: use <div class=\"{m.group(1)}\"> outside the paragraph, not a <span>")
 
@@ -375,7 +376,7 @@ def check_file(path, manifest):
             if f'id="{anchor}"' not in target.read_text(encoding="utf-8"):
                 errors.append(f"glossary anchor not found: #{anchor} (run build_reference.py, or fix the spelling)")
 
-    for proj in set(re.findall(r"projects/(\d{4}-[a-z0-9-]+)", text)):
+    for proj in set(re.findall(r"projects/((?:\d{4}|lab\d{2}|bench\d{2})-[a-z0-9-]+)", text)):
         if not (ROOT / "projects" / proj).exists():
             errors.append(f"referenced project folder missing: projects/{proj}")
 
@@ -384,6 +385,14 @@ def check_file(path, manifest):
                 or re.search(r"<body[^>]*\bdata-concept\b", text))
     if item["kind"] == "lesson" and not item["conceptOnly"] and not hands_on and item["number"] >= 2:
         warnings.append("hands-on lesson references no Wokwi project (fine only for pure-theory lessons)")
+    if item["kind"] == "bench":
+        # Bench labs: one hour on real hardware (COURSE-PLAN, Bench Track). They need a board-stage
+        # section and must say that they are optional.
+        low = text.lower()
+        if "optional" not in low:
+            errors.append("bench lab must say it is optional (COURSE-PLAN, Bench Track)")
+        if not re.search(r"<h2[^>]*>[^<]*(board|bench)", text, flags=re.I):
+            warnings.append("no <h2> for the board stage (a heading with 'board' or 'bench')")
     if item["kind"] in ("lesson", "lab"):
         import re as _re
         body = _re.sub(r"<script.*?</script>|<svg.*?</svg>|<pre.*?</pre>", " ", text, flags=_re.S)

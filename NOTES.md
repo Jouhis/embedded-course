@@ -5,7 +5,7 @@
 - Number everything with digits only (1, 2.1, 3); never use letters or Roman numerals for numbering.
 - Environment setup is the very first lesson.
 - Computer architecture helped them a lot at university, so lean on it: explain peripherals and C behaviour in terms of what the CPU and bus actually do.
-- Career focus: plain C with vendor SDKs, professional practice (testing, CI, code review), interview drills.
+- Practical focus: plain C with vendor SDKs, professional practice (testing, CI, code review). No career, portfolio or interview material (removed in 0.0.3 at the learner's request).
 - Can already program; new to electronics. Don't over-explain programming basics, but never skip electronics fundamentals.
 - Real-world examples come from common products. Klipper (open 3D-printer firmware) is a well-documented one: stepper drivers, thermistors, heater MOSFETs, the MCU-to-host link.
 
@@ -26,10 +26,31 @@
 - Wokwi is a digital simulator with only basic analog support, and its resistors don't combine with analog parts. Analog electronics hands-on uses Falstad CircuitJS instead (see LESSON-SPEC section 7.1).
 - A logic analyzer capture (`.vcd`) can be viewed in PulseView, which decodes I2C and UART.
 
+## Pico 2 / RP2350 facts for the bench labs (verified 2026-11-02 against the datasheets)
+- Wokwi `board-pi-pico-2`: one M33 core simulated; watchdog, ADC, DMA, UART simulated; PIO partial; USB CDC partial. GP0-22 and GP26-28 on the header, TP4 = GPIO23, TP5 = GPIO25. RUN, 3V3_EN and ADC_VREF are not simulated. Wokwi has no STM32U5 or H7 boards: the U5 bench projects are build-only.
+- CHIP_ID (SYSINFO, RP2350 datasheet 12.15.1): revision 31:28, part 27:12, manufacturer 11:1 (0x493), bit 0 = 1. Revision 2 = stepping A2; 3 = A3 or A4 (appendix C).
+- Erratum RP2350-E9 (appendix D.5.1): on A2 the input pad leaks ~120 uA in the undefined region and sits near 2.2 V; the internal pull-down can't hold it low. External pull-down <= 8.2 kOhm, or use a pull-up. Fixed in A3.
+- GPIO DC (14.9.4): VIH 2 V, VOH min 2.62 V at the drive-strength current (IOVDD 3.3 V), pull-up 32-86 kOhm, pull-down 36-113 kOhm, 100 mA total IOVDD. Digital pins 5 V tolerant only while IOVDD is powered; ADC pins (GPIO26-29) never (Pico 2 datasheet 5.2).
+- Watchdog scratch registers (12.9.5) survive a watchdog reset, cleared by power-on and RUN. The SDK uses scratch 4-7.
+- `set_sys_clock_khz()` moves clk_peri to the 48 MHz USB PLL by default (`PICO_CLOCK_ADJUST_PERI_CLOCK_WITH_SYS_CLOCK=0`), so UART baud divisors must be recomputed.
+- Pico 2 ADC (board datasheet 5.3): ADC_AVDD is the SMPS 3.3 V through 200 Ohm and 2.2 uF; ~30 mV offset; GPIO23 high = SMPS PWM mode, less ripple.
+- SDK USB defaults: VID 0x2E8A, PID 0x0009 (RP2350), strings from `USBD_MANUFACTURER` / `USBD_PRODUCT`, serial = unique board ID; `stdio_usb_connected()` checks DTR.
+- None of the bench projects has been simulated (Wokwi CI quota) or run on a real board yet. They build and lint.
+
+## NUCLEO-U545RE-Q facts for the bench labs (verified 2026-11-02 against UM3062 Rev 1)
+- LD2 green user LED on PA5 (SB10 on), driven through a transistor, active high (6.5). B1 user button on PC13, high while pressed; keep PC13 an input with pull-down, never output low (6.6). B2 = NRST.
+- IDD jumper JP4: remove it and put an ammeter in its place to measure VDD_MCU only (6.4.6). JP5 selects VDD 3V3/1V8.
+- STLINK-V3EC: mass storage (drag-and-drop `.bin`), VCP on USART1 PA9/PA10. Arduino D0/D1 are LPUART1 on PA2/PA3.
+- Arduino: A0 PA0 (ADC1_IN5), A1 PA1, A2 PA4, A3 PB0 (ADC1_IN15), A4 PC1, A5 PC0; D15 PB6 I2C1_SCL, D14 PB7 I2C1_SDA, D13 PA5, D7 PA8, D6 PB10. Morpho CN7-23 PC13, CN7-34 PB0, CN10-11 PA5, CN10-13 PA6, CN10-15 PA7, CN10-19 PC6, CN10-33 PC8.
+- STM32U545RE: Cortex-M33, 512 KB flash, 272 KB SRAM (linker script uses 256 KB at 0x20000000 + SRAM4), 160 MHz max; resets onto MSIS 4 MHz (system_stm32u5xx.c). GPIO resets to analog mode. USART1 is AF7, I2C1 AF4. `-Q` = internal SMPS.
+- Not verified: whether ADC1 has limits at the reset voltage range (VOS range 4). Bench lab 13 uses ADC1 at reset defaults; if ADRDY never sets on a real board, check RM0456 first.
+- Arm's zero-wait-state interrupt latency table lists M0 16, M0+ 15, M3/M4 12 cycles and has no M33 row; bench lab 10 measures it rather than quoting a number.
+
 ## Toolchain facts (verified)
 - Zephyr v4.5.0 at `~/zephyrproject`, using `ZEPHYR_TOOLCHAIN_VARIANT=gnuarmemb` with the Arm GNU 14.2 toolchain. The Zephyr SDK is not needed.
 - Zephyr board names: `rpi_pico` and `stm32_min_dev` (Blue Pill, "blue" revision, HSE plus PLL at 72 MHz).
 - Pico SDK 2.3.1 at `~/.pico-sdk/sdk/2.3.1`. Templates set `PICO_NO_PICOTOOL=1` because Wokwi runs the `.elf` directly.
+- Bench labs use `templates/pico2-sdk` (`PICO_BOARD pico2`, stdio on UART0 and USB, `pico_add_uf2_output`). The UF2 needs picotool: without an installed one the SDK fetches and builds it, and `tools/build.py` sets `PICOTOOL_FETCH_FROM_GIT_PATH=~/.pico-sdk/picotool-build` so this happens once. The first bench build needs the internet.
 - Rust (lesson 110): set up and building; see "Embedded Rust (verified 2026-10-31)" below.
 
 ## Shared components (verified with Node tests)

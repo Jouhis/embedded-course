@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 14: The crash that leaves a note · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench14">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 14: The crash that leaves a note</h1>
+  <p class="subtitle">A device in the field resets and nobody saw why. Make the firmware write a note as it dies, keep that note through the reset, and read it on the next boot, without ever mistaking power-on garbage for a crash.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs only a Pico 2 and its USB cable. It doesn't count towards your progress. Time: about 50 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>record the cause and location of a crash in RAM that survives a reset, and validate that record with a magic number and a CRC so a power-on never reads as a crash</strong>.
+  </div>
+
+  <h2>What survives a reset</h2>
+  <p>
+    Lesson <a href="0084-robustness.html">84</a> added a <a href="../reference/glossary.html#watchdog">watchdog</a> and a HardFault handler. Together they turn a hang or a fault into a reset, which keeps the device running. They also destroy the evidence: after the reset, the firmware starts from scratch and nobody knows what went wrong. A <strong>post-mortem record</strong> fixes that. The dying firmware writes what it knows to a place that survives the reset, and the next boot reads it, logs it and clears it.
+  </p>
+  <p>
+    Two places on the RP2350 survive a watchdog reset:
+  </p>
+  <ul>
+    <li><strong>The watchdog's scratch registers</strong>, eight 32-bit registers. A watchdog reset leaves them alone; a power-on or the RUN pin clears them <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">(RP2350 datasheet, section 12.9.5)</a>. The SDK uses scratch 4 to 7 for its own reboot handling, so this lab uses scratch 0 only, for a run counter.</li>
+    <li><strong>SRAM</strong>, as long as the start-up code doesn't clear it. The C start-up code zeroes every ordinary static variable (the <code>.bss</code> section) on every boot, reset or not. The SDK's <code>__uninitialized_ram(name)</code> places a variable in a section start-up leaves alone, a <a href="../reference/glossary.html#no-init-ram-noinit">no-init</a> region.</li>
+  </ul>
+  <p>
+    No-init RAM has a catch. After a power-on, nobody has written it, and SRAM powers up holding random bits. So the next boot must be able to tell "a crash note" from "garbage". This lab uses two checks: a <strong>magic number</strong>, a fixed 32-bit value that random data matches with a probability of one in four billion, and a <strong>CRC-32</strong> over the note's fields, which also catches a note that was only half written when the reset hit.
+  </p>
+
+  <h2>The program</h2>
+  <p>
+    <code>projects/bench14-crash-note</code> crashes on purpose, twice, and counts runs in scratch 0:
+  </p>
+  <ul>
+    <li><strong>Run 1</strong>: enables the watchdog with a 2 s timeout, then gets stuck in a loop that keeps writing its position into the note. The watchdog resets the chip.</li>
+    <li><strong>Run 2</strong>: reads the note, then calls a callback pointer that was never set. Calling address 0 means branching to an address with bit 0 clear, which on a Cortex-M is a switch to ARM state the core doesn't support: it takes a fault, and with no UsageFault handler enabled, that becomes a HardFault. The handler finds the stacked registers, as in lesson 84, writes the stacked PC and LR into the note and resets with <code>watchdog_reboot(0, 0, 0)</code>.</li>
+    <li><strong>Run 3</strong>: reads the second note, prints <code>BENCH14 both crashes recorded</code>, and stops crashing.</li>
+  </ul>
+
+  <h2>Stage 1: in Wokwi</h2>
+  <ol class="steps">
+    <li>Build and run the starter. Run 1 gets stuck and is reset; run 2 faults and is reset; run 3 finishes. But both runs 2 and 3 print <code>no valid note</code>.</li>
+    <li><strong>Task 1.</strong> The note is an ordinary <code>static</code>, which start-up zeroes on every boot. Declare it with <code>__uninitialized_ram(note)</code> instead. Run again: run 2 reports the stuck loop and run 3 the HardFault, with PC and LR.</li>
+    <li>Look up the reported LR in the build's disassembly (<code>arm-none-eabi-objdump -d build/blink.elf</code>) or the map file. It's in <code>main</code>, right after the call to the NULL callback. The stacked PC is 0: the address the code tried to run.</li>
+  </ol>
+  <p>
+    In the simulator, the starter's weak check, <code>note.cause != CAUSE_NONE</code>, looks fine. That's because simulated RAM starts as zeros, so a fresh start never shows a note.
+  </p>
+
+  <h2>Stage 2: on the board</h2>
+  <ol class="steps">
+    <li>Flash the version with Task 1 done but the weak check still in place. Open the serial port; it disconnects and reconnects at each reset (the board re-enumerates on USB), so reopen it if your terminal doesn't do so by itself. You get the same three runs.</li>
+    <li>Now unplug the board for ten seconds and plug it back in, without BOOTSEL. Look at run 1's first lines. With the weak check you may see a "note" with a random cause, PC and uptime: power-on garbage, read as a crash.</li>
+    <li><strong>Task 2.</strong> Replace <code>note_valid()</code> with the real check: the magic number matches and the stored CRC matches a CRC computed over the other fields. Flash, repeat the power cycle: <code>no valid note (power-on, or RAM held garbage)</code>, every time.</li>
+    <li>Note that <code>reset by watchdog: yes/no</code> agrees: <code>watchdog_caused_reboot()</code> reads the chip's reset reason, a second, independent source of truth.</li>
+  </ol>
+  <p>
+    Whether you see garbage at step 2 depends on the chip and on how long it was off. Very short power cuts can leave SRAM almost intact, so an old, valid-looking note comes back. That's a second reason the program clears the note after reading it: a note must be reported once, not on every boot after it.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>A note in ordinary static RAM.</strong> Start-up zeroes it, so it never survives. Use a no-init section.</li>
+    <li><strong>Trusting a single field.</strong> Random RAM often has a nonzero cause field. Use a magic number and a CRC.</li>
+    <li><strong>Not clearing the note after reading it.</strong> The same crash is reported on every later boot, and the crash statistics are wrong.</li>
+    <li><strong>Doing too much in the HardFault handler.</strong> <code>printf</code> there may fault again or never finish. Write a few words to RAM and reset; log on the next boot.</li>
+    <li><strong>Using the SDK's scratch registers.</strong> Scratch 4 to 7 belong to the SDK's reboot logic; writing them can change what happens on the next reset.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A post-mortem record keeps the cause of a reset: write it while dying, read and clear it on the next boot.</li>
+    <li>The watchdog scratch registers survive a watchdog reset; no-init RAM survives any reset that keeps power.</li>
+    <li>After power-on, SRAM is random; a magic number plus a CRC tells a real note from garbage, and catches half-written notes.</li>
+    <li>Calling a NULL function pointer on a Cortex-M faults because the target address has bit 0 clear; the stacked LR shows the caller.</li>
+    <li>Wokwi starts RAM at zero, so weak validity checks look fine in simulation and fail on a real power-up.</li>
+  </ul>
+
+  <div class="win">Your firmware now explains its own resets. In a product, this note plus a counter of resets by cause is often the first thing a support engineer asks for.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "A colleague stores the crash note in an ordinary <code>static</code> variable and says it works because the watchdog reset doesn't cut power. What actually happens?",
+        "options": [
+          "Start-up code zeroes the variable, so the note is lost",
+          "It works: SRAM keeps its contents across the reset",
+          "The watchdog reset clears all SRAM in hardware",
+          "The variable survives but its CRC is always wrong"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The SRAM keeps the bits, but the C start-up code clears .bss on every boot before main() runs, so the note is erased by software.",
+          "The SRAM does keep them; the start-up code then zeroes .bss before main(). The hardware isn't the problem.",
+          "The hardware leaves SRAM alone on a watchdog reset; the clearing is done by start-up code.",
+          "After zeroing, the magic is 0, so the note is simply absent; the CRC never comes into it."
+        ],
+        "hint": "What does the C runtime do before calling main()?",
+        "why": "C requires uninitialised statics to start at zero, so start-up clears .bss on every boot. A variable that must survive a reset has to live outside .bss, in a section start-up skips." },
+      { "type": "mc",
+        "prompt": "Why use both a magic number and a CRC, rather than the magic number alone?",
+        "options": [
+          "The CRC catches a note the reset interrupted mid-write",
+          "The magic number alone can't fit in a 32-bit word",
+          "The CRC makes the note impossible for an attacker to forge",
+          "The magic number is cleared by the watchdog reset"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The magic is written first; if the reset hits before the other fields are complete, the magic is valid but the content isn't. The CRC over the fields catches that.",
+          "The magic is one 32-bit word, written in one store.",
+          "A CRC detects accidental corruption, not tampering: anyone can compute it. Integrity against attackers needs a keyed MAC.",
+          "Watchdog resets don't touch SRAM; the magic survives along with the rest."
+        ],
+        "hint": "What if the reset happens between two of the stores in note_write()?",
+        "why": "The magic number says 'someone wrote a note here'; the CRC says 'the note is complete and intact'. Together they reject both power-on garbage and torn writes." },
+      { "type": "mc",
+        "prompt": "The HardFault note says <code>pc=0x00000000 lr=0x10000a47</code>. What do you look up first?",
+        "options": [
+          "The function containing 0x10000a46, the caller",
+          "The code at address 0, where the fault happened",
+          "The interrupt vector table at 0x10000000",
+          "Nothing: PC 0 means the note is power-on garbage"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. LR holds the return address (bit 0 set for Thumb), so 0x10000a46 is just after the call in the caller. That's where the NULL pointer was called.",
+          "Address 0 is where execution tried to go; nothing there tells you who sent it. The caller does.",
+          "The vector table doesn't say which code called a null pointer.",
+          "The note passed its magic and CRC checks, so it's genuine; PC 0 is the classic NULL call."
+        ],
+        "hint": "When code calls a function, where is the return address kept?",
+        "why": "A NULL function call jumps to 0, so the faulting PC is useless; LR, the return address, points straight at the bad call. Clear bit 0 (the Thumb bit) and find that address in the disassembly or map file." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">RP2350 datasheet</a>, section 12.9 (the watchdog), especially 12.9.5 on the scratch registers and which resets clear them. Then the SDK header <code>pico/platform/sections.h</code> for <code>__uninitialized_ram</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "How would I extend the note into a ring of the last eight crashes, and still survive a reset in the middle of writing one?"
+    Related: <a href="0084-robustness.html">Lesson 84: Robustness</a>, <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

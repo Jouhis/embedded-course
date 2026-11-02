@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 8: Lab 3 on the bench · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench08">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 8: Lab 3 on the bench</h1>
+  <p class="subtitle">Run your Lab 3 environment monitor on a real Pico 2 with a real OLED, real buttons and a real temperature sensor. The simulated MYS-1 doesn't exist as a part, so a thermistor takes its place behind the same interface, and nothing above that interface changes.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs a Pico 2, the SSD1306 OLED, two pushbuttons, a 10 kΩ NTC thermistor, a 10 kΩ resistor and two 4.7 kΩ resistors. It doesn't count towards your progress. It's split into three parts of under an hour each; stop after any part.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>replace a driver behind an existing interface without touching the code above it, and bring a multi-part project up on hardware one subsystem at a time</strong>.
+  </div>
+
+  <h2>The plan: swap one file</h2>
+  <p>
+    <a href="lab03-environment-monitor.html">Lab 3</a> read the MYS-1, the course's own I2C sensor from lesson <a href="0063-writing-a-driver-from-a.html">63</a>. It's a custom Wokwi chip: it exists only in the simulator, and you can't buy one. But Lab 3's <code>main.c</code> never talks to the MYS-1. It calls two functions from <code>sensor.h</code>:
+  </p>
+  <pre><code class="language-c">bool sensor_init(void);
+sensor_status_t sensor_poll(float *celsius);   /* SENSOR_IDLE, SENSOR_NEW_SAMPLE or SENSOR_ERROR */</code></pre>
+  <p>
+    Any sensor that can fill in those two functions can replace it. The bench version uses a 10 kΩ NTC thermistor in a divider on ADC0 (GP26), wired the way Wokwi's NTC part is: 10 kΩ from 3V3 to GP26, the NTC from GP26 to GND. Lesson <a href="0058-adc.html">58</a> converted that divider's reading to a temperature with the Beta equation. The new file is <code>sensor_ntc.c</code>; <code>main.c</code>, <code>ui.c</code>, <code>display.c</code>, <code>ssd1306.c</code> and <code>font.c</code> are Lab 3's, copied unchanged into <code>projects/bench08-lab3-on-the-bench</code>.
+  </p>
+  <p>
+    The contract has details worth keeping. <code>sensor_poll()</code> must return at once, never wait. It returns <code>SENSOR_NEW_SAMPLE</code> once per new reading, so the NTC version reports a new sample every 500 ms and <code>SENSOR_IDLE</code> in between. And a broken sensor must show as <code>SENSOR_ERROR</code>, not as a plausible wrong temperature, so the UI's error path still works.
+  </p>
+
+  <h2>Part 1: the board without the sensor (about 40 minutes)</h2>
+  <ol class="steps">
+    <li>Open the starter in Wokwi, build and run. Its <code>sensor_ntc.c</code> returns <code>SENSOR_ERROR</code>. The OLED, the menu and both buttons work; the screen reports a sensor error. That's the expected state: everything except the sensor.</li>
+    <li>On the bench, wire the OLED as in <a href="bench06-the-oled-that-doesnt-answer.html">bench lab 6</a> (GP4 SDA, GP5 SCL, 4.7 kΩ pull-ups) and the buttons from GP14 and GP15 to GND. Flash the starter and open the serial port.</li>
+    <li>Check each subsystem against what Wokwi did: the log prints <code>LAB3 OK</code> and <code>T=none</code>; the screen shows the error; button A changes screens, button B changes the setpoint.</li>
+    <li>Press each button 20 times and watch for double steps. Lab 3's debounce is a 30 ms lockout; check it against the bounce you measured in <a href="bench04-measure-the-bounce.html">bench lab 4</a>.</li>
+  </ol>
+  <p>
+    If the screen stays black, that's bench lab 6's fault: Lab 3's <code>display_init()</code> can't report a missing panel. Scan the bus with bench lab 6's program before you change anything here.
+  </p>
+
+  <h2>Part 2: the NTC driver (about 50 minutes)</h2>
+  <ol class="steps">
+    <li>Fill in <code>sensor_init()</code>: keep the I2C set-up (the OLED needs it), and add <code>adc_init()</code> and <code>adc_gpio_init(26)</code>.</li>
+    <li>Fill in <code>sensor_poll()</code>: if 500 ms haven't passed since the last sample, return <code>SENSOR_IDLE</code>. Otherwise read ADC0 16 times and average (<a href="bench05-the-noisy-adc.html">bench lab 5</a>), and convert with lesson 58's Beta equation.</li>
+    <li>Treat a raw average within 16 codes of 0 or 4095 as <code>SENSOR_ERROR</code>: near 0 the NTC is shorted, near full scale it's missing.</li>
+    <li>Build and run in Wokwi. The NTC part's default is 24 °C; the screen should show about that. Move its slider and the reading follows.</li>
+    <li>Wire the real divider: 10 kΩ from 3V3 (pin 36) to GP26, the NTC from GP26 to AGND (pin 33). Flash and compare the reading with a room thermometer. Hold the NTC between two fingers: it should climb towards 30 °C within half a minute.</li>
+    <li>Unplug the NTC: the screen must show the sensor error within a second, not a temperature.</li>
+  </ol>
+  <pre><code class="language-c">float inv_t = logf(1.0f / ((float)FULL_SCALE / (float)raw - 1.0f)) / BETA + 1.0f / T0_KELVIN;
+*celsius = 1.0f / inv_t - 273.15f;</code></pre>
+
+  <h2>Part 3: what the bench changed (about 30 minutes)</h2>
+  <p>
+    With everything working, compare your bench readings with the simulator's, and explain each difference. Typical findings:
+  </p>
+  <ul>
+    <li><strong>An offset of a degree or two.</strong> Your thermistor's Beta may not be 3950 (3380 is also common), and the 10 kΩ resistor and the NTC each have a tolerance. Find the Beta on your part's listing or datasheet and change <code>BETA</code>. A two-point check, room air and a glass of ice water stirred for a minute (0 °C), shows how far off you are.</li>
+    <li><strong>A last digit that flickers.</strong> ADC noise from bench lab 5. Without the 16-fold averaging it's worse; the alarm can chatter when the temperature sits at the setpoint. Lab 3's alarm has no hysteresis; consider adding 0.5 °C.</li>
+    <li><strong>The ADC's offset.</strong> The Pico 2's ADC carries an offset of about 30 mV, from its own current through the 200 Ω supply filter resistor <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">(Pico 2 datasheet, section 5.3)</a>; bench lab 5 measured it. At room temperature that is a fraction of a degree: small, but it explains part of the offset.</li>
+  </ul>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Editing <code>main.c</code> or <code>ui.c</code> to make the NTC fit.</strong> The point of the interface is that nothing above it changes. If you need to, the interface was wrong, and that's worth noting rather than hiding.</li>
+    <li><strong>Blocking in <code>sensor_poll()</code>.</strong> A <code>sleep_ms(500)</code> instead of the deadline check freezes the buttons and the screen for half a second each time.</li>
+    <li><strong>Reporting a temperature for an open sensor.</strong> A missing NTC reads near 4095, which the equation turns into a very cold reading. Range-check first.</li>
+    <li><strong>NTC to GND, not AGND.</strong> It works, but shares the digital ground's noise; AGND is the ADC's reference ground on the Pico 2.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A small interface (<code>sensor_init</code>, <code>sensor_poll</code>) let a different sensor replace a simulator-only one, with the rest of Lab 3 unchanged.</li>
+    <li>Bring a board up one subsystem at a time, checking each against what the simulator showed.</li>
+    <li>Keep the interface's contract: non-blocking, one sample reported once, faults as errors not values.</li>
+    <li>Real temperature readings carry Beta, tolerance, noise and offset errors; a two-point check measures them.</li>
+  </ul>
+
+  <div class="win">Your Lab 3 runs on real parts, and you changed exactly one file to get there. That's what the interface was for.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "Your first <code>sensor_poll()</code> on the bench reads the ADC, waits 500 ms with <code>sleep_ms()</code>, and returns a sample. What symptom do you see?",
+        "options": [
+          "Buttons and screen respond only twice a second",
+          "The temperature reads 500 ms behind the true one",
+          "The ADC returns 0 because sleep stops its clock",
+          "Nothing: Lab 3's loop already waits 200 ms anyway"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Lab 3's loop runs every task from one super-loop; a 500 ms wait in one task holds up all the others.",
+          "A half-second lag on a slowly changing temperature is invisible. The problem is what the rest of the loop does meanwhile.",
+          "<code>sleep_ms()</code> doesn't stop the ADC clock. The reading is fine; the waiting is the problem.",
+          "The loop doesn't wait 200 ms; it checks deadlines and returns at once. A blocking task breaks that."
+        ],
+        "hint": "What else runs in Lab 3's super-loop?",
+        "why": "A non-blocking interface is part of the contract, not a detail. Lab 3's main loop assumes every task returns quickly; one blocking call starves the buttons and the display." },
+      { "type": "mc",
+        "prompt": "The NTC is unplugged and the screen shows −40 °C instead of an error. What does the driver lack?",
+        "options": [
+          "A range check on the raw ADC value before converting",
+          "A higher OVERSAMPLE value to average out the noise",
+          "A pull-down resistor on GP26 to hold it at 0 V",
+          "A shorter 500 ms period between successive samples"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. With the NTC missing, the 10 kΩ pulls GP26 to 3.3 V, the code reads near 4095, and the Beta equation turns that into a very low temperature. Check the range first.",
+          "Averaging a reading of 4095 gives 4095. The value is wrong, not noisy.",
+          "With the 10 kΩ to 3V3 already in the divider, a pull-down would only change where the open-sensor reading lands, not detect it.",
+          "Sampling faster just reports the wrong value more often."
+        ],
+        "hint": "What does the ADC read when the lower half of the divider is gone?",
+        "why": "Physical faults usually produce extreme raw values: open circuit near full scale, short circuit near zero. Range-checking raw values before conversion is cheap and turns a dangerous plausible-looking number into an error the UI can show." },
+      { "type": "mc",
+        "prompt": "Room air reads 22.1 °C on your monitor and 22.0 °C on a reference thermometer, but stirred ice water reads 2.4 °C. What is the most likely main cause?",
+        "options": [
+          "BETA in the code doesn't match your thermistor",
+          "The OLED's I2C traffic heats the thermistor up",
+          "The ADC was not given enough time to warm up",
+          "The 500 ms poll period is too long for the NTC"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The equation is anchored at 25 °C, so a wrong Beta gives almost no error near room temperature and a growing error further away. A resistor tolerance would shift both points by a similar amount.",
+          "I2C traffic doesn't heat a thermistor on a separate wire.",
+          "The ADC has no warm-up period that would shift readings by degrees.",
+          "The poll period only sets how often you read. A slow temperature is the same either way."
+        ],
+        "hint": "Is the error the same at both temperatures?",
+        "why": "Two-point calibration separates offset (the same error everywhere) from slope (an error that changes with the measured value). Here it's 0.1 °C near 25 °C and 2.4 °C at 0 °C: an error that grows with distance from the Beta equation's anchor point, so check Beta first." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    Your thermistor's own datasheet or listing: find its resistance at 25 °C and its Beta value (often written B25/50 or B25/85). Compare it with the 3950 the code assumes.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "My NTC's datasheet gives B25/85 = 3435. How do I calibrate the code with my two measurements instead of trusting the datasheet value?"
+    Related: <a href="lab03-environment-monitor.html">Lab 3: Environment monitor</a>, <a href="0058-adc.html">Lesson 58: ADC</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

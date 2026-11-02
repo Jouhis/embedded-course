@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 0: Blink on a real Pico 2 · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench00">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 0: Blink on a real Pico 2</h1>
+  <p class="subtitle">Take the lesson 2 blink off the simulator and onto a real board: build a UF2 file, flash it over USB, and read the board's serial log on your PC. Every later bench lab starts from this setup.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> The course, its labs and its checkpoints are complete without real hardware, and bench labs don't count towards your progress. Do them if you have the board and want to see where a simulator and a real chip part ways. Time: about 45 minutes, most of it the first-time setup.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>build a Pico 2 project to a UF2 file, flash it with BOOTSEL, and read its serial output over USB on your PC</strong>.
+  </div>
+
+  <h2>Why a real board at all</h2>
+  <p>
+    Wokwi runs your firmware on a model of the chip. The model executes the same instructions, so the logic of your program behaves the same. What it doesn't model is the physics around the chip: contacts that bounce, wires that pick up noise, pins that float, supplies that ripple, and clocks that a peripheral divides wrongly. The bench labs each take one exercise from the course onto a Raspberry Pi Pico 2 and show one of those gaps. In each one, the code works in the simulator first, and then you find out what the board does differently.
+  </p>
+  <p>
+    The Pico 2 carries the RP2350, the successor of the RP2040 that the course simulates. Its Arm cores are Cortex-M33s at 150 MHz <a href="https://www.raspberrypi.com/products/raspberry-pi-pico-2/">(Raspberry Pi Pico 2 product page)</a>, and the Pico SDK you already use supports it: the only build change is <code>set(PICO_BOARD pico2)</code>. Wokwi simulates the Pico 2 as well, as the part <code>board-pi-pico-2</code> <a href="https://docs.wokwi.com/parts/board-pi-pico-2">(Wokwi docs)</a>, so every bench project opens in the simulator exactly like the course's other projects.
+  </p>
+
+  <h2>The bench kit</h2>
+  <p>
+    This is everything the Pico 2 bench labs use. Prices are rough and vary by shop; the course budget is under €100 for the whole bench track. You also need a USB cable that carries data, not only charge: the Pico 2 has a micro-USB socket <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">(Pico 2 datasheet, section 3.1)</a>.
+  </p>
+  <table>
+    <thead><tr><th>Item</th><th>About</th><th>Bench labs</th></tr></thead>
+    <tbody>
+      <tr><td>Raspberry Pi Pico 2 with soldered headers (Pico 2 H)</td><td>€7</td><td>all Pico labs</td></tr>
+      <tr><td>Breadboard, jumper wires, LEDs, 330 Ω and 10 kΩ resistors, 1 MΩ resistor, two pushbuttons, 10 kΩ potentiometer, 10 kΩ NTC thermistor</td><td>€10</td><td>1, 2, 4, 5, 8, 17, 18</td></tr>
+      <tr><td>SSD1306 128×64 I2C OLED module</td><td>€5</td><td>6, 8, 18</td></tr>
+      <tr><td>Logic analyzer, 8 channels, 24 MHz (an FX2 clone that PulseView supports through the fx2lafw driver)</td><td>€10</td><td>3, 4, 6</td></tr>
+      <tr><td>Multimeter, if you don't own one</td><td>€15</td><td>1, 5</td></tr>
+      <tr><td>A short WS2812B strip (8 LEDs) and one 74HCT125</td><td>€6</td><td>7 (stretch)</td></tr>
+      <tr><td>NUCLEO-U545RE-Q board (STM32U5)</td><td>€30</td><td>the STM32 bench labs</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The logic analyzer is the clone kind that lesson 120 described: it runs the open fx2lafw firmware, which PulseView loads on connect <a href="https://sigrok.org/wiki/Fx2lafw">(sigrok wiki: fx2lafw)</a>. On Windows, PulseView needs the WinUSB driver for it, which the sigrok wiki explains how to install.
+  </p>
+
+  <h2>How a program gets onto the board</h2>
+  <p>
+    In Wokwi, VS Code hands the simulator the <code>.elf</code> file directly. A real board has no simulator to hand it to: the program has to be written into the board's flash memory. The Pico 2 has 4 MB of QSPI flash, and the RP2350's boot ROM can write it for you over USB <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">(Pico 2 datasheet, section 5.1)</a>.
+  </p>
+  <p>
+    It works like this. If you hold the <strong>BOOTSEL</strong> button while the board powers up, the boot ROM doesn't start your program. It starts a USB mass-storage device instead: a drive named <code>RP2350</code> appears on your PC <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">(RP2350 datasheet, section 5.5.1)</a>. This is <a href="../reference/glossary.html#bootsel-mode">BOOTSEL mode</a>. You copy a <a href="../reference/glossary.html#uf2">UF2</a> file onto that drive. The boot ROM recognises the UF2 blocks, writes their data into flash, and reboots into your program when the whole file has arrived. The boot code is in ROM, so a bad download can never break this path: you can always go back to BOOTSEL and try again.
+  </p>
+  <p>
+    A UF2 file is your program cut into 512-byte blocks. Each block carries 256 bytes of data, the flash address they go to, and a family ID that says which chip the file is for. The RP2350 accepts only blocks with a family ID it knows <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">(RP2350 datasheet, section 5.5.2)</a>. That's why the build must know the board: the SDK picks the family ID from <code>PICO_BOARD</code>.
+  </p>
+  <div class="warning">
+    The datasheet warns that an invalid UF2 file may write only partly, and that not every operating system reports the failed write <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">(RP2350 datasheet, section 5.5.1)</a>. If the drive vanishes but nothing runs, rebuild and copy again before you suspect the code.
+  </div>
+
+  <h2>What changed in the build</h2>
+  <p>
+    The course's Wokwi projects set <code>PICO_NO_PICOTOOL</code>, because Wokwi needs only the <code>.elf</code>. The bench projects use the template <code>templates/pico2-sdk</code>, whose <code>CMakeLists.txt</code> differs in four lines:
+  </p>
+  <pre><code class="language-cmake">set(PICO_BOARD pico2)                 # RP2350, Pico 2 pin-out, LED on GPIO25
+pico_enable_stdio_usb(blink 1)        # printf also goes to a USB serial port
+target_compile_definitions(blink PRIVATE PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS=3000)
+pico_add_uf2_output(blink)            # build/blink.uf2, made by picotool</code></pre>
+  <p>
+    Line 1 selects the board, which selects the chip, its linker script and the UF2 family ID. Line 2 adds USB to the outputs of <code>printf</code>. The serial monitor in Wokwi listens on UART0 (GP0 and GP1), and the template keeps that. On the bench you have no USB-to-serial adapter, so the board itself becomes a USB serial port. Line 3 makes <code>stdio_init_all()</code> wait up to 3 s for a terminal to open that port, so the first lines your program prints aren't lost before you connect. Line 4 asks for the UF2 file.
+  </p>
+  <p>
+    The UF2 conversion is done by <strong>picotool</strong>. If it isn't installed, the SDK downloads its source and builds it the first time. <code>tools/build.py</code> points the SDK at a shared folder, <code>~/.pico-sdk/picotool-build</code>, so this happens once, not once per project. The first build of a bench project therefore takes a minute or two longer and needs the internet.
+  </p>
+
+  <h2>The program</h2>
+  <p>
+    Open <code>projects/bench00-first-board/solution/main.c</code>. It does two things worth a look. First, it reads the chip's identity register:
+  </p>
+  <pre><code class="language-c">uint32_t id = sysinfo_hw-&gt;chip_id;
+unsigned revision = (unsigned)(id &gt;&gt; 28);
+unsigned part = (unsigned)((id &gt;&gt; 12) &amp; 0xFFFFu);
+unsigned manufacturer = (unsigned)((id &gt;&gt; 1) &amp; 0x7FFu);</code></pre>
+  <p>
+    <code>SYSINFO</code> is a small block of read-only registers, and <code>CHIP_ID</code> at offset 0 holds a JEDEC identifier: bits 31:28 are the revision, 27:12 the part number and 11:1 the manufacturer, with bit 0 always 1 <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf">(RP2350 datasheet, section 12.15.1)</a>. The SDK's struct <code>sysinfo_hw</code> maps that block, the same struct-overlay idea as lesson <a href="0047-pointers-to-registers-and-struct.html">47</a>. The revision matters in <a href="bench02-the-floating-input.html">bench lab 2</a>: one of the RP2350's errata applies only to some revisions, and this is how firmware tells them apart.
+  </p>
+  <p>
+    Second, the LED doesn't blink evenly. It flashes for 100 ms once a second, a <strong>heartbeat</strong>. A 50 % blink and a stuck-on LED look alike at a glance across a room; a short flash once a second is unmistakably "running". Many products use this pattern on a status LED.
+  </p>
+
+  <h2>Stage 1: in Wokwi</h2>
+  <ol class="steps">
+    <li>Open <code>projects/bench00-first-board/starter</code> in VS Code. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The first build also builds picotool, so give it a few minutes.</li>
+    <li>Check that <code>build/blink.uf2</code> exists next to <code>build/blink.elf</code>.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor shows <code>BENCH0 chip id not read yet</code>, then <code>LED on</code> and <code>LED off</code>.</li>
+    <li><strong>Task 1:</strong> fill in <code>print_chip()</code> so it prints <code>CHIP_ID</code> in hex and its three fields.</li>
+    <li><strong>Task 2:</strong> turn the even blink into the heartbeat, and print <code>beat N</code> after each flash.</li>
+    <li>Rebuild and run in Wokwi. Write down the <code>CHIP_ID</code> the simulator reports.</li>
+  </ol>
+
+  <h2>Stage 2: on the board</h2>
+  <ol class="steps">
+    <li>Install Microsoft's <strong>Serial Monitor</strong> extension in VS Code (it opens as a tab in the terminal panel).</li>
+    <li>Unplug the Pico 2. Hold its BOOTSEL button, plug the USB cable in, then let go. A drive named <code>RP2350</code> appears.</li>
+    <li>Copy <code>build/blink.uf2</code> onto the drive. The drive disappears: the board has rebooted into your program, and the LED starts its heartbeat.</li>
+    <li>In the Serial Monitor, pick the new COM port (on Windows a new <code>COMn</code>; on Linux <code>/dev/ttyACM0</code>; on macOS <code>/dev/cu.usbmodem…</code>) and click <em>Start Monitoring</em>. The baud rate setting doesn't matter for a USB serial port: the data travels in USB packets.</li>
+    <li>The Pico 2 has no reset button. To see the start-up lines again, unplug and replug without BOOTSEL, and open the port within 3 s.</li>
+    <li>Compare the board's <code>CHIP_ID</code> with Wokwi's. Write the real revision field down: bench lab 2 needs it.</li>
+  </ol>
+
+  <h2>Diagnosis checklist</h2>
+  <details>
+    <summary>No <code>RP2350</code> drive appears</summary>
+    <p>The cable is the usual culprit: many micro-USB cables carry only power. Try a cable you know moves data, and a different USB port. BOOTSEL must be held at the moment the board powers up; pressing it later does nothing.</p>
+  </details>
+  <details>
+    <summary>The drive disappears but the LED does nothing</summary>
+    <p>Check that you copied the bench project's UF2, built with <code>PICO_BOARD pico2</code>. The course's Wokwi projects build for the RP2040 and make no UF2 at all. Rebuild and copy again: the datasheet says a failed write may go unreported.</p>
+  </details>
+  <details>
+    <summary>The LED beats but the Serial Monitor shows nothing</summary>
+    <p>You probably opened the port after the start-up lines had gone. The <code>beat N</code> lines keep coming once a second, so wait two seconds. If none come, check that you picked the right COM port: unplug the board and see which one disappears.</p>
+  </details>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Copying the <code>.elf</code> instead of the <code>.uf2</code>.</strong> The drive accepts any file and keeps nothing useful. Symptom: nothing happens, the drive stays. Fix: copy <code>build/blink.uf2</code>.</li>
+    <li><strong>A charge-only cable.</strong> Symptom: the board's LED may light from a previous program, but no drive and no serial port appear. Fix: a data cable.</li>
+    <li><strong>Expecting the start-up lines without waiting.</strong> Symptom: the log starts at <code>beat 3</code>. Fix: open the port within the 3 s window, or print important state again later.</li>
+    <li><strong>Building the starter with the old template.</strong> Symptom: no UF2 in <code>build/</code>. Fix: bench projects use <code>pico2-sdk</code>; check the first lines of <code>CMakeLists.txt</code>.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The same source runs in Wokwi (<code>board-pi-pico-2</code>) and on a Pico 2; only <code>PICO_BOARD</code> and the outputs differ.</li>
+    <li>Holding BOOTSEL at power-up starts the boot ROM's USB drive, <code>RP2350</code>. Copying a UF2 file onto it writes flash and reboots.</li>
+    <li>A UF2 block carries 256 bytes, an address and a family ID; the RP2350 accepts only its own families.</li>
+    <li>On the bench, <code>printf</code> reaches the PC as a USB serial port; the template waits up to 3 s for a terminal.</li>
+    <li><code>SYSINFO CHIP_ID</code> tells firmware which chip and revision it runs on.</li>
+    <li>A short heartbeat flash is a clearer "alive" signal than an even blink.</li>
+  </ul>
+
+  <div class="win">Your code runs on a real chip. From here on, each bench lab builds the same way, flashes the same way, and talks to you over the same serial port.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The board prints <code>CHIP_ID=0x20004927</code>. What is the revision field (bits 31:28)?",
+        "answer": 2, "tolerance": 0, "unit": "",
+        "wrong": [ { "answer": 4, "feedback": "4 is the part field (bits 27:12 give 0x0004). The revision is the top hex digit." } ],
+        "hint": "Each hex digit is four bits. Bits 31:28 are the leftmost digit.",
+        "why": "0x2 in the top four bits gives revision 2. The part field is 0x0004 and the manufacturer field, (0x927 >> 1) &amp; 0x7FF, is 0x493. Reading identity registers at boot and logging them is common practice: when a bug report comes in from the field, the log says which silicon it ran on." },
+      { "type": "mc",
+        "prompt": "You hold BOOTSEL, plug in, and copy <code>blink.uf2</code>. The drive disappears and the LED starts its heartbeat, but the Serial Monitor stays empty for ten seconds. What do you check first?",
+        "options": [
+          "That the Serial Monitor is open on the board's port",
+          "That the UF2 was built with PICO_BOARD pico2 set",
+          "That the baud rate in the monitor is 115200 baud",
+          "That BOOTSEL was released before the copy began"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The heartbeat proves the program runs, and it prints a beat every second, so an empty monitor is almost always the wrong port. Unplug the board and see which port vanishes.",
+          "A UF2 for the wrong chip would not run at all. The LED is beating, so the program on the board is yours.",
+          "The data arrives in USB packets, so the baud setting of a USB serial port has no effect on what you see.",
+          "Releasing BOOTSEL early or late only matters at power-up. The program is already running."
+        ],
+        "hint": "The LED already tells you the program is running.",
+        "why": "Split the problem: the LED says the firmware runs, so the fault is between the board and your screen. The heartbeat prints every second, so wrong port is the first suspect. On a USB CDC port the baud rate is a setting the device can read but the bytes don't depend on, which surprises people used to real UARTs." },
+      { "type": "mc",
+        "prompt": "Why does the bench template keep <code>pico_enable_stdio_uart(blink 1)</code> when you read the log over USB?",
+        "options": [
+          "Wokwi's serial monitor listens on UART0, GP0 and GP1",
+          "USB serial needs UART0 running to carry its own clock",
+          "The UF2 file is only produced when UART0 is enabled",
+          "Without the UART the board can't enter BOOTSEL mode"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Both outputs stay on, so the same build prints in Wokwi (UART0) and on the bench (USB).",
+          "USB has its own clock, clk_usb, from its own PLL. It doesn't use UART0.",
+          "picotool makes the UF2 from the ELF; stdio settings don't affect it.",
+          "BOOTSEL is handled by the boot ROM before your program runs; your stdio settings can't affect it."
+        ],
+        "hint": "Where does Wokwi's serial monitor connect in diagram.json?",
+        "why": "diagram.json wires GP0 and GP1 to $serialMonitor, so the simulator reads UART0. The board has no adapter on those pins, so the template also sends printf to USB. One build serves both, which keeps the bench and the simulator in step." },
+      { "type": "mc",
+        "prompt": "A colleague's status LED blinks 500 ms on, 500 ms off. In a field test, the firmware hung with the LED on, and nobody noticed for an hour. What design change helps most?",
+        "options": [
+          "A 100 ms flash once a second, so on is never steady",
+          "A brighter LED with a lower series resistor value",
+          "Blink faster, 50 ms on and 50 ms off, so it flickers",
+          "Log every blink to the serial port as well as the LED"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A heartbeat is mostly off, so a steady on (or steady off) is visibly wrong at a glance.",
+          "Brightness doesn't tell running from hung: a hung firmware can leave a bright LED on.",
+          "A fast flicker looks like a dim steady light from a distance, which is even harder to tell from hung.",
+          "Nobody watches a serial port in the field. The LED is the only thing a person sees."
+        ],
+        "hint": "Ask what a person across the room sees when the firmware hangs.",
+        "why": "An even blink hangs into one of two states that are both 'half the time' normal. A short periodic flash makes any steady state abnormal. Pair it with a watchdog (lesson 84) so a hang also recovers, not only shows." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">Raspberry Pi Pico 2 datasheet</a>: read section 3.1 (the pin-out and the pins used on the board: GPIO23, 24, 25 and 29) and section 5.1 (programming the flash). Both are short and you'll use the pin-out in every bench lab.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through what the RP2350 boot ROM does between power-up and my main(), with and without BOOTSEL held."
+    Related: <a href="0002-first-blink-in-wokwi.html">Lesson 2: First blink in Wokwi</a>, <a href="0120-next-steps.html">Lesson 120: Next steps</a>, <a href="../reference/glossary.html">Glossary</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

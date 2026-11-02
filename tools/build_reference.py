@@ -23,7 +23,6 @@ SHEETS = [
     ("freertos.html", "FreeRTOS API", "Tasks, queues, semaphores, mutexes, timers and configuration."),
     ("zephyr.html", "Zephyr cheat sheet", "west, devicetree, Kconfig, kernel and driver APIs."),
     ("misra.html", "MISRA C quick list", "The rules that matter most day to day, with examples."),
-    ("interview-questions.html", "Interview question bank", "Every interview drill from the course in one place."),
 ]
 
 PAGE = """<!DOCTYPE html>

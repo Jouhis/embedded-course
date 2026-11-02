@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 10: Measure interrupt latency · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench10">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 10: Measure interrupt latency</h1>
+  <p class="subtitle">Lesson 34 gave a number: twelve cycles from an interrupt request to the first instruction of the handler. Lesson 72 wired a button to the NVIC. Here you put both ends of that path on a logic analyzer and count what your own code adds.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs the NUCLEO-U545RE-Q from bench lab 9 and a logic analyzer with PulseView. It doesn't count towards your progress. Time: about 50 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>measure the time from a pin edge to an ISR's first output, convert it to CPU cycles, and say which part is the hardware and which part is your handler</strong>.
+  </div>
+
+  <h2>What the analyzer can see</h2>
+  <p>
+    Lesson <a href="0034-exceptions-and-interrupt-entry.html">34</a>'s twelve cycles come from the Cortex-M3 Technical Reference Manual, and they assume memory with no wait states. Arm's own table of zero-wait-state <a href="../reference/glossary.html#interrupt">interrupt</a> latencies lists 12 cycles for the Cortex-M3 and M4, 15 for the M0+ and 16 for the M0 <a href="https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/beginner-guide-on-interrupt-latency-and-interrupt-latency-of-the-arm-cortex-m-processors">(Arm community blog: interrupt latency of the Cortex-M processors)</a>. The table doesn't include the Cortex-M33 in your Nucleo. This lab measures it, together with everything around it.
+  </p>
+  <p>
+    A logic analyzer can't see "the first instruction of the handler". It sees pins. So the measurement runs from the edge that causes the interrupt to the edge your handler makes, and that path has more in it than the core's entry sequence:
+  </p>
+  <ol>
+    <li>the GPIO input synchroniser and the <a href="../reference/glossary.html#exti-external-interrupt-controller">EXTI</a> edge detector, a few clock cycles;</li>
+    <li>the <a href="../reference/glossary.html#nvic-nested-vectored-interrupt-controller">NVIC</a> and exception entry: stacking eight registers and fetching the vector;</li>
+    <li>the handler's instructions up to and including the store to <code>GPIOA-&gt;BSRR</code>;</li>
+    <li>the bus write reaching the GPIO port and the output driver switching.</li>
+  </ol>
+  <p>
+    The core runs from MSIS at 4 MHz, its reset clock, so one cycle is 250 ns. A 24 MS/s analyzer samples every 41.7 ns: about six samples per cycle, enough to count cycles.
+  </p>
+
+  <h2>Wiring</h2>
+  <ul>
+    <li>Analyzer D0 to <strong>PC13</strong> (ST morpho CN7 pin 23): the B1 button, high while pressed.</li>
+    <li>Analyzer D1 to <strong>PA5</strong> (CN10 pin 11, also Arduino D13): the response pin, which also lights LD2.</li>
+    <li>Analyzer GND to any GND pin of the Nucleo.</li>
+  </ul>
+  <p>
+    The on-board button is enough. A pushbutton from a 3.3 V pin to PC13 works the same way if B1 is hard to reach with the probes on. Keep PC13 an input with its pull-down: UM3062 warns against driving it low, because pressing B1 then shorts 3.3 V to the pin.
+  </p>
+
+  <h2>On the board: measure the starter</h2>
+  <ol class="steps">
+    <li>Build <code>projects/bench10-irq-latency/starter</code> and copy <code>build/blink.bin</code> to the ST-LINK drive, as in bench lab 9. The VCP prints <code>BENCH10 ready at 4000000 Hz</code>.</li>
+    <li>In PulseView, sample at 24 MHz (or the highest your analyzer offers), trigger on a rising edge of D0, and press B1.</li>
+    <li>Put cursors on the PC13 rising edge and the PA5 rising edge. Write down the time. Repeat for ten presses. A button bounces (bench lab 4), so use the first edge of each press only.</li>
+    <li>Convert to cycles: time / 250 ns.</li>
+  </ol>
+  <p>
+    The starter is written the way a generic driver layer often is. The handler loops over all sixteen EXTI lines to find the pending one, calls a callback through a function pointer, and the callback formats a log entry with <code>snprintf()</code> before it drives the pin. Every one of those steps runs before the edge you measure.
+  </p>
+
+  <h2>On the board: make the response fast</h2>
+  <p>
+    Change the handler so that the pin write is its first statement, and do the bookkeeping afterwards. <code>projects/bench10-irq-latency/solution</code> shows one way:
+  </p>
+<pre><code class="language-c">void EXTI13_IRQHandler(void) {
+    GPIOA-&gt;BSRR = 1U &lt;&lt; LED_PIN;                     /* respond first */
+    EXTI-&gt;RPR1 = EXTI_RPR1_RPIF13;                   /* then clear: writing 1 clears the flag */
+    presses++;
+}</code></pre>
+  <p>
+    Measure again. Then account for the result in a table: the measured cycles, the cycles you expect for exception entry, the instructions before the store (look at them with <code>arm-none-eabi-objdump -d build/blink.elf</code> and find <code>EXTI13_IRQHandler</code>), and the remainder, which is the synchroniser, EXTI and output path. Lesson 34 gave the M3's entry; your remainder tells you how close the M33 is to it.
+  </p>
+  <p>
+    Two experiments to finish:
+  </p>
+  <ul>
+    <li><strong>Jitter.</strong> Over ten presses, the delay isn't constant. The main loop is in the middle of some instruction when the request arrives, and the core finishes or abandons it first. Note the spread in cycles.</li>
+    <li><strong>The instruction cache.</strong> The U5's ICACHE is off after reset. Add <code>ICACHE-&gt;CR |= ICACHE_CR_EN;</code> at the start of <code>main()</code> and measure again. At 4 MHz the flash needs no wait states, so expect the effect to be small, and see whether your numbers agree.</li>
+  </ul>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Calling the measurement "the interrupt latency".</strong> The pin-to-pin time includes the input path and your handler's first instructions. Say what you measured.</li>
+    <li><strong>Measuring a bounce edge.</strong> A later bounce edge can land in the middle of the handler and look like a shorter delay. Use the first rising edge after a long low.</li>
+    <li><strong>Clearing the pending flag as the handler's very last instruction.</strong> The write can still be on its way through the bus when the handler returns; the NVIC sees the request still asserted and runs the handler a second time. Clear it early, as the solution does, right after the response.</li>
+    <li><strong>Sampling too slowly.</strong> At 1 MS/s the analyzer resolves 4 cycles; you'd see the starter's slowness but not count the solution's cycles.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A pin-to-pin measurement contains the input synchroniser, EXTI, the NVIC, exception entry, the handler's first instructions and the output path.</li>
+    <li>At 4 MHz one cycle is 250 ns; a 24 MS/s analyzer resolves about a sixth of that.</li>
+    <li>A generic dispatcher and logging before the response cost far more than the hardware does; respond first, then do the bookkeeping.</li>
+    <li>Arm's twelve-cycle figure is for the M3 and M4 with zero-wait-state memory; the M33's figure is what you measured minus your accounted extras.</li>
+  </ul>
+
+  <div class="win">You've timed an interrupt to the cycle on real silicon, and you can tell which part of the delay is yours to fix.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The analyzer shows 5.0 µs from the PC13 edge to the PA5 edge. The core clock is 4 MHz. How many CPU cycles is that?",
+        "answer": 20,
+        "tolerance": 0,
+        "hint": "One cycle at 4 MHz lasts 250 ns.",
+        "why": "5.0 µs / 0.25 µs = 20 cycles. With about twelve for entry, the rest is the input path and the instructions before the store." },
+      { "type": "mc",
+        "prompt": "In the starter, the callback calls <code>snprintf()</code> before it drives PA5. Which change shortens the measured delay the most?",
+        "options": [
+          "Drive the pin first and log afterwards",
+          "Raise the EXTI13 priority from 0 to 15",
+          "Use a falling edge instead of a rising edge",
+          "Clear the pending flag before the loop over the lines"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Formatting a string at 4 MHz takes many microseconds. Moving the response before it removes all of that from the measured path.",
+          "On a Cortex-M a larger number is a lower priority. And with no other interrupt active, priority doesn't change the delay.",
+          "B1 drives PC13 high when pressed; the press is the rising edge. Changing the edge measures the release instead.",
+          "Clearing earlier saves a few instructions, not the snprintf() time."
+        ],
+        "hint": "Which step in the starter takes the longest?",
+        "why": "Interrupt response time is set by what runs before the response. Hardware latency is fixed; software latency is a design choice." },
+      { "type": "mc",
+        "prompt": "Over ten presses, the delay varies by two or three cycles. What is the most likely cause?",
+        "options": [
+          "Which instruction the main loop is in",
+          "The analyzer's ground lead is too long",
+          "The button bounces between presses",
+          "The flash memory adds a random wait state"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. Exception entry starts at an instruction boundary, and some instructions take several cycles. Where the request lands sets the extra delay.",
+          "A long ground lead causes ringing on edges, not a delay that changes from press to press by whole cycles.",
+          "You measure the first edge of each press; bounces come later.",
+          "At 4 MHz the flash runs with no wait states, and wait states aren't random."
+        ],
+        "hint": "When can the core start the exception entry?",
+        "why": "Interrupt jitter is part of a real-time budget. For a hard deadline you plan for the worst case, not the average." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    The disassembly of your handler: <code>arm-none-eabi-objdump -d build/blink.elf</code>, then search for <code>&lt;EXTI13_IRQHandler&gt;:</code>. In the solution it's a handful of instructions; in the starter, follow the call into the callback and count how much runs before the store to <code>BSRR</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "What does the Cortex-M33 do, cycle by cycle, between an interrupt request and the first instruction of my handler?"
+    Related: <a href="0072-the-nvic.html">Lesson 72: The NVIC</a>, <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34: Exceptions and interrupt entry</a>, <a href="bench09-bring-up-the-nucleo-u5.html">Bench lab 9</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 5: The noisy ADC · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench05">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 5: The noisy ADC</h1>
+  <p class="subtitle">In Wokwi a potentiometer reads the same code every time. On a Pico 2 the readings jitter by several codes. Measure the spread, then shrink it with the three remedies the board's datasheet gives.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs a Pico 2, a 10 kΩ potentiometer, jumper wires and a multimeter. It doesn't count towards your progress. Time: about 45 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>measure an ADC's noise as a standard deviation in codes, and reduce it with supply-mode control, oversampling and offset correction, recording what each step gained</strong>.
+  </div>
+
+  <h2>Where the noise comes from on a Pico 2</h2>
+  <p>
+    Lesson <a href="0058-adc.html">58</a> converted ADC codes to volts with a 3.3 V reference. The RP2350's ADC has no reference of its own: it uses its supply, ADC_AVDD. On the Pico 2 that supply is the board's 3.3 V switch-mode regulator output through a 200 Ω and 2.2 µF R-C filter. The datasheet lists what that costs: the 3.3 V rail's accuracy isn't great, ADC_AVDD is "somewhat noisy", and the ADC's own current through the 200 Ω resistor gives an offset of about 30 mV <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">(Pico 2 datasheet, section 5.3)</a>.
+  </p>
+  <p>
+    The same section gives three remedies, and this lab tries each:
+  </p>
+  <ol>
+    <li><strong>Force the regulator into PWM mode</strong> by driving GPIO23 high. At light load the regulator otherwise runs in a power-saving mode with more ripple, and that ripple reaches the ADC supply. PWM mode costs some efficiency at light load.</li>
+    <li><strong>Average several conversions</strong> (<a href="../reference/glossary.html#oversampling">oversampling</a>). For random noise, averaging N readings shrinks the spread by about √N.</li>
+    <li><strong>Measure a grounded channel</strong> and use its reading as an estimate of the offset.</li>
+  </ol>
+  <p>
+    The datasheet also offers the stronger fix, an external 3.0 V shunt reference on ADC_VREF, which limits the input range to 0 to 3.0 V. That's a hardware change beyond this lab.
+  </p>
+
+  <h2>The program</h2>
+  <p>
+    <code>projects/bench05-noisy-adc</code> reads the potentiometer's wiper on GP27 (ADC1) in blocks of 256 values, every 2 s, and prints the mean, minimum, maximum and standard deviation of each block in ADC codes. It also reads GP28 (ADC2), which you wire to AGND, the "zero channel". The starter has <code>OVERSAMPLE</code> 1 and leaves GPIO23 alone.
+  </p>
+
+  <h2>Stage 1: in Wokwi</h2>
+  <ol class="steps">
+    <li>Build and run the starter. The log shows <code>sd=0.00</code> and <code>min</code> equal to <code>max</code>: the simulated ADC returns a perfect, noiseless code.</li>
+    <li>Turn the knob in the diagram. The mean follows it, still with no spread. Every averaging decision you'd make from this simulation would be "not needed".</li>
+  </ol>
+
+  <h2>Stage 2: on the board</h2>
+  <p>
+    Wire the potentiometer's ends to 3V3 (pin 36) and AGND (pin 33), and its wiper to GP27. Wire GP28 to AGND too. Use AGND rather than any GND pin: it's the ground return the ADC reference is measured against. Flash the starter and open the serial port. Set the knob somewhere near the middle and don't touch it during a run.
+  </p>
+  <ol class="steps">
+    <li><strong>Baseline.</strong> Record sd, min and max for three blocks. Measure the wiper voltage with the multimeter and compute the code you'd expect: V × 4095 / 3.3.</li>
+    <li><strong>Remedy 1.</strong> Where the starter marks remedy 1, add code that sets GPIO23 as an output and drives it high. Rebuild, flash, record three blocks.</li>
+    <li><strong>Remedy 2.</strong> Set <code>OVERSAMPLE</code> to 4, then 16. Record three blocks each. Compare the sd with √4 = 2 and √16 = 4 times smaller.</li>
+    <li><strong>Remedy 3.</strong> Look at the <code>zero channel</code> figure and the <code>corrected</code> value. Is corrected closer to the multimeter's code than mean is?</li>
+  </ol>
+  <table>
+    <thead><tr><th>Setting</th><th>sd (codes)</th><th>max − min</th><th>Mean vs meter</th></tr></thead>
+    <tbody>
+      <tr><td>Baseline, ×1</td><td></td><td></td><td></td></tr>
+      <tr><td>GPIO23 high, ×1</td><td></td><td></td><td></td></tr>
+      <tr><td>GPIO23 high, ×4</td><td></td><td></td><td></td></tr>
+      <tr><td>GPIO23 high, ×16</td><td></td><td></td><td></td></tr>
+    </tbody>
+  </table>
+  <p>
+    Two things to notice when you compare the rows. First, the gain from averaging is usually close to √N but not exactly: noise that's slow compared with the 16 conversions (about 32 µs at the ADC's 500 kS/s) isn't random within one average, so averaging can't remove it. Second, averaging improves <em>repeatability</em>, the spread, but not <em>accuracy</em>, the gap to the meter. The offset and the 3.3 V rail's error stay in every average. The zero channel tackles the offset; only a better reference fixes the gain.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Touching the knob or the wires during a block.</strong> Your hand moves the wiper and couples noise in. Set it, let go, then read.</li>
+    <li><strong>Using the ADC channel number as the GPIO number.</strong> <code>adc_select_input(1)</code> selects GP27; <code>adc_gpio_init()</code> takes the GPIO, 27. Mixing them reads the wrong pin.</li>
+    <li><strong>Expecting averaging to fix accuracy.</strong> It reduces random spread only; a constant offset survives any amount of averaging.</li>
+    <li><strong>Feeding 5 V into an ADC pin.</strong> GPIO26 to 29 have a diode to IOVDD and aren't 5 V tolerant <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">(Pico 2 datasheet, section 5.2)</a>. Keep the pot on 3V3.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The Pico 2's ADC uses its filtered 3.3 V supply as the reference, so supply noise and offset show in every reading.</li>
+    <li>Wokwi's ADC is noiseless; noise is a bench-only effect.</li>
+    <li>Driving GPIO23 high puts the regulator in PWM mode, lowering ripple at some efficiency cost.</li>
+    <li>Averaging N conversions reduces random noise by about √N, and doesn't reduce offset or gain error.</li>
+    <li>A grounded channel estimates the offset; a precise external reference fixes the gain.</li>
+  </ul>
+
+  <div class="win">You turned "the readings jitter" into a table of numbers, and every change you made has a measured effect next to it. That's the difference between tuning and guessing.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "With no averaging the sd is 4.0 codes. If the noise is random, what sd do you expect with OVERSAMPLE = 16?",
+        "answer": 1.0, "tolerance": 0.05, "unit": "codes",
+        "wrong": [ { "answer": 0.25, "feedback": "That divides by 16. Random noise falls with the square root of N, so divide by 4." } ],
+        "hint": "The spread falls by √N.",
+        "why": "√16 = 4, so 4.0 / 4 = 1.0 code. If you measure noticeably more than that, part of the noise is slow or correlated, and averaging over 32 µs can't reach it." },
+      { "type": "mc",
+        "prompt": "After averaging ×16 the sd is under 1 code, but the mean is still 37 codes above the value the multimeter predicts. Which remedy targets that?",
+        "options": [
+          "Subtracting the reading of a grounded ADC channel",
+          "Raising OVERSAMPLE further, to 64 or more",
+          "Driving GPIO23 low to save power at light loads",
+          "Sampling the pot more often within each block"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. A constant shift is an offset, and the grounded channel measures it so you can subtract it. The datasheet gives about 30 mV, roughly 37 codes.",
+          "More averaging only narrows the spread around the same wrong mean.",
+          "GPIO23 low returns the regulator to power-save mode, which adds ripple. It doesn't change the offset.",
+          "More samples per block also only refine the estimate of the same mean."
+        ],
+        "hint": "Is the error random or constant?",
+        "why": "Averaging attacks random error; constant error needs calibration. 30 mV × 4095 / 3.3 V ≈ 37 codes, the offset the Pico 2 datasheet predicts from the ADC's current through the 200 Ω filter resistor." },
+      { "type": "mc",
+        "prompt": "Why does the Pico 2 datasheet say driving GPIO23 high reduces ADC noise?",
+        "options": [
+          "It forces the SMPS into PWM mode, with less ripple",
+          "It connects a precise voltage reference to the ADC",
+          "It disables the on-chip temperature sensor input",
+          "It raises the ADC's clock for faster conversions"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. GPIO23 is the regulator's power-save pin on the Pico 2. High selects PWM mode, which ripples less at light load, so ADC_AVDD, filtered from that rail, is cleaner.",
+          "The Pico 2 has no switchable reference; an external one goes on ADC_VREF as a hardware change.",
+          "The temperature sensor is a separate ADC input and is enabled in software, not by GPIO23.",
+          "The ADC clock is clk_adc, set by the clock tree; GPIO23 doesn't touch it."
+        ],
+        "hint": "Look at what GPIO23 connects to on the Pico 2 board.",
+        "why": "GPIO23 isn't on the header; the board uses it to control the regulator. It's a board-level remedy, which is why it's in the board datasheet and not the chip's." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://datasheets.raspberrypi.com/pico/pico-2-datasheet.pdf">Raspberry Pi Pico 2 datasheet</a>, section 5.3, "Using the ADC". It's one page, and it explains every remedy in this lab with the board's actual component values.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "If I add an LM4040 3.0 V reference to ADC_VREF, how do I change the code-to-volts formula, and how much current does it waste?"
+    Related: <a href="0058-adc.html">Lesson 58: ADC</a>, <a href="0106-digital-filtering.html">Lesson 106: Digital filtering</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>

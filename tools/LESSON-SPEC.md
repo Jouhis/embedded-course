@@ -17,7 +17,7 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 ## 2. The learner
 - Already programs (doesn't need loops, functions, variables or basic C syntax explained), but is **new to electronics and new to embedded**. Assume nothing else: no prior knowledge of registers, buses, interrupts, RTOSes, datasheets, voltages or toolchains beyond what earlier lessons in this course taught. A lesson must work for someone meeting the topic for the first time, not only as a refresher. See section 17.
 - Studied computer architecture at university and found it very helpful. Connect explanations to what the CPU, the bus and memory actually do.
-- Career-focused: wants industry practice (plain C, vendor SDKs, testing), not Arduino.
+- Practice-focused: wants industry practice (plain C, vendor SDKs, testing), not Arduino. No career, portfolio or interview material.
 - Number everything with **digits only** (1, 2, 2.1). Never use letters (A, B) or Roman numerals.
 
 ## 3. What a lesson is
@@ -38,7 +38,6 @@ File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/ma
 | `.win` | required | required | none |
 | Quiz "Check your understanding" | ≥ 4 questions | ≥ 3 | ≥ 15, mixed across the whole part |
 | Quiz "Spaced review" (2–3 questions from **earlier** lessons) | required from lesson 5 on | optional | none |
-| `.interview` drill with a `<details>` model answer | required | optional | optional |
 | `.source` (one best primary source, with sections or timestamps) | required | required | optional |
 | `.ask` (remind the learner to ask the agent, with a suggested question) | required | required | required |
 
@@ -135,7 +134,7 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
 Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, transistor bias, capacitor charging and so on, and its resistors can't be combined with analog parts ([docs](https://docs.wokwi.com/parts/wokwi-resistor)). For analog electronics (Part 1, and the analog parts of later lessons) use **Falstad CircuitJS** (free, GPL, in the browser, with built-in voltmeter, ammeter and scope):
 - **Built-in examples:** link `https://www.falstad.com/circuit/circuitjs.html?startCircuit=<file>`. Pick file names **only** from `tools/circuitjs/setuplist.txt`, e.g. `ohms.txt`, `voltdivide.txt`, `res-series.txt`, `res-par.txt`, `npn.txt`, `nmosfet.txt`, `cap.txt`, `induct.txt`, `inductkick.txt`, `inductkick-snub.txt`, `diodecurve.txt`, `ledflasher.txt`.
 - **Custom circuits:** embed a netlist in `<pre class="circuitjs" data-title="...">…</pre>`; course.js adds an "Open in CircuitJS" button. Only write netlists by **editing values in a verified example** from `tools/circuitjs/` (`ohms.txt`, `voltdivide.txt`, `npn.txt`, `nmosfet.txt`); never invent element lines. Fetch other examples from `https://raw.githubusercontent.com/sharpie7/circuitjs1/master/src/com/lushprojects/circuitjs1/public/circuits/<file>` if needed.
-- **Best practice:** have the learner *build* a small circuit themselves, following numbered steps (drawing schematics is a job skill). Then they measure, and type the measured value into a `number` quiz question, which gives them feedback.
+- **Best practice:** have the learner *build* a small circuit themselves, following numbered steps (drawing schematics is a core skill). Then they measure, and type the measured value into a `number` quiz question, which gives them feedback.
 - Use Wokwi only where the behaviour is digital: GPIO levels, pull-ups on buttons, logic levels, the ADC reading a potentiometer.
 
 ## 8. Concept-only (💡) and optional (⭐) lessons
@@ -192,18 +191,18 @@ Several authors work in parallel. Before writing any file that might already exi
 ## 17. Depth standard: explain from the ground up
 A learner who has never seen the topic must be able to follow the lesson without looking anything up. Every lesson's explainer covers, in this order (use these as `<h2>` sections, with your own wording for the headings):
 
-1. **Where we are and why it matters.** One or two paragraphs linking to the earlier lessons this builds on (with links), and the concrete problem this lesson solves. Name a real product or job situation where it comes up.
+1. **Where we are and why it matters.** One or two paragraphs linking to the earlier lessons this builds on (with links), and the concrete problem this lesson solves. Name a real product or project situation where it comes up.
 2. **The concepts, one at a time.** Introduce each idea separately before combining them. **Define every term on first use**, in plain words, before using its abbreviation (for example "the Nested Vectored Interrupt Controller (NVIC), the part of the CPU that ..."). Link the term to `../reference/glossary.html#<anchor>` the first time. Explain *why* the hardware or software works this way, not only *what* to do: connect it to what the CPU, the bus and memory physically do.
 3. **A worked example, step by step.** Walk through one concrete case with real numbers: a calculation, a register value built bit by bit, a timeline, or a trace of what happens cycle by cycle or event by event. Show intermediate steps; never jump to the answer.
 4. **The code, explained line by line.** Every code snippet is followed (or preceded) by an explanation of each line or small group of lines: what it does, which register or API it touches, and why it is written that way. For register writes, name each field and the value written to it, with the reference-manual or datasheet section.
 5. **Common mistakes and how to spot them.** At least three realistic mistakes beginners make with this topic, each with its symptom (what you see in Wokwi or on the serial monitor) and the fix.
-6. **In real projects.** How professionals use this: typical industry practice, what code review or a senior engineer would expect, and where it shows up in interviews.
+6. **In real projects.** How professionals use this: typical industry practice, and what code review or a senior engineer would expect.
 7. **Summary.** 5–8 bullet points with the key facts to remember.
 
-Then the hands-on task, `.win`, quizzes, `.interview`, `.source` and `.ask` as in section 4. Hands-on instructions are numbered steps that say exactly what to open, what to change and what output to expect.
+Then the hands-on task, `.win`, quizzes, `.source` and `.ask` as in section 4. Hands-on instructions are numbered steps that say exactly what to open, what to change and what output to expect.
 
 Rules:
-- Keep everything already correct in the lesson: facts, citations, links, project references, quizzes, diagrams and the interview drill. You are expanding and improving, not replacing. Fix anything wrong you find, and verify every new fact (section 6).
+- Keep everything already correct in the lesson: facts, citations, links, project references, quizzes and diagrams. You are expanding and improving, not replacing. Fix anything wrong you find, and verify every new fact (section 6).
 - Quizzes follow section 5: questions that make the learner use the new material, with feedback that teaches.
 - Every new fact, number, register name, bit position or API signature must come from a source you checked (section 6), not from memory. If you cannot verify something, leave it out.
 - Diagrams: add one when it explains something better than words (timing, memory layout, signal flow). Follow the style of the existing diagrams: `currentColor` strokes and text, `font-family="JetBrains Mono, monospace"`, `role="img"` and an `aria-label`. Check them by rendering (see the diagram notes in NOTES.md if any); never add a diagram you have not looked at.

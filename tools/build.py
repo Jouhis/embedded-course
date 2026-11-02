@@ -65,6 +65,10 @@ def environment():
     # The host compiler goes last: WinLibs also ships cmake and ninja, and an installed CMake should win.
     env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")] + ([str(host)] if host else []))
     env.setdefault("PICO_SDK_PATH", str(DEFAULTS["pico_sdk"]))
+    # Bench labs (real Pico 2 boards) need a UF2 file, which the SDK makes with picotool. Without an
+    # installed picotool the SDK downloads and builds one; this shared folder makes that happen once,
+    # not once per project. Wokwi projects set PICO_NO_PICOTOOL and never touch it.
+    env.setdefault("PICOTOOL_FETCH_FROM_GIT_PATH", str(DEFAULTS["pico_sdk"].parent.parent / "picotool-build"))
     if gcc:
         env.setdefault("ZEPHYR_TOOLCHAIN_VARIANT", "gnuarmemb")
         env.setdefault("GNUARMEMB_TOOLCHAIN_PATH", str(gcc.parent))

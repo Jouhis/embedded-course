@@ -155,7 +155,7 @@
 - [_Digital Design and Computer Architecture: ARM Edition_, Harris & Harris (Morgan Kaufmann)](https://www.sciencedirect.com/book/9780128000564/digital-design-and-computer-architecture)
   From gates to a pipelined ARM processor. Use for: Parts 2.1 and 2.2.
 - [_Making Embedded Systems_, 2nd ed., Elecia White (O'Reilly)](https://www.oreilly.com/library/view/making-embedded-systems/9781098151539/)
-  The best practical overview of the profession. Use for: architecture, debugging, power, and career context.
+  The best practical overview of the profession. Use for: architecture, debugging and power.
 - [_Test-Driven Development for Embedded C_, James Grenning (Pragmatic)](https://pragprog.com/titles/jgade/test-driven-development-for-embedded-c/)
   The reference for unit-testing firmware. Use for: lessons 80 and 81.
 - [_The Art of Electronics_, Horowitz & Hill](https://artofelectronics.net/)
@@ -206,9 +206,6 @@
 
 - [Ferrocene (Ferrous Systems)](https://www.ferrous-systems.com/ferrocene)
   A Rust toolchain from Ferrous Systems that is offered for safety-critical projects (ISO 26262 and IEC 61508). Its qualification scope changes by release; check the vendor's current statement before use. Use for: lesson 110, the balance section. Vendor source: mark as secondary.
-
-- [Interrupt (Memfault): Embedded Systems Roadmap, Bridging the Gap](https://interrupt.memfault.com/blog/embedded-systems-roadmap-bridging-the-gap)
-  A practitioner roadmap for software developers entering embedded work. It notes that software engineers often struggle with the hardware side, advises simple hands-on projects first, and recommends checking job postings for skills that appear consistently. Use for: lesson 120 (what hiring managers look for). Opened in this build.
 
 - [Wokwi license](https://wokwi.com/license)
   Personal 30-day license for Wokwi VS Code, free for open-source projects, and paid for commercial use. The page does not state renewal. Use for: lesson 1 (license terms).
@@ -427,47 +424,44 @@
   Official docs, plus the best practical PCB design channel. Use for: lesson 108.
 
 - [Raspberry Pi Debug Probe](https://www.raspberrypi.com/products/debug-probe/)
-  The product page: a complete debug hardware solution for Arm microcontrollers, a USB-to-SWD and USB-to-UART bridge, powered by RP2040. Use for: lesson 122 (the starter kit and the probe wiring). The page gives no price.
+  The product page: a complete debug hardware solution for Arm microcontrollers, a USB-to-SWD and USB-to-UART bridge, powered by RP2040. Use for: lesson 120 (the starter kit and the probe wiring). The page gives no price.
 
 - [Raspberry Pi: Debug Probe documentation](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html)
-  The SWD wiring (three-pin JST-SH and the header pins), and OpenOCD with GDB on port 3333 using interface/cmsis-dap.cfg and target/rp2040.cfg. Use for: lesson 122, moving a Wokwi project to a board. Opened in this build.
+  The SWD wiring (three-pin JST-SH and the header pins), and OpenOCD with GDB on port 3333 using interface/cmsis-dap.cfg and target/rp2040.cfg. Use for: lesson 120, moving a Wokwi project to a board. Opened in this build.
 
 - [Raspberry Pi: Pico series documentation](https://www.raspberrypi.com/documentation/microcontrollers/pico-series.html)
-  BOOTSEL mode (held while plugging in), drag-and-drop UF2 programming, and picotool. Use for: lesson 122 and the UF2 and BOOTSEL glossary entries. Opened in this build.
+  BOOTSEL mode (held while plugging in), drag-and-drop UF2 programming, and picotool. Use for: lesson 120 and the UF2 and BOOTSEL glossary entries. Opened in this build.
 
 - [picotool (Raspberry Pi, GitHub)](https://github.com/raspberrypi/picotool)
-  The command-line tool: `picotool info`, `picotool load blink.uf2`, and erase. Use for: lesson 122. Read in this build (the README's usage examples).
+  The command-line tool: `picotool info`, `picotool load blink.uf2`, and erase. Use for: lesson 120. Read in this build (the README's usage examples).
 
 - [Raspberry Pi Pico 2 product page](https://www.raspberrypi.com/products/raspberry-pi-pico-2/)
-  The RP2350 with dual Cortex-M33 or Hazard3 RISC-V cores at 150 MHz, and "available now from $5" (the price was seen when the lesson was written, 31 October 2026). Use for: lesson 122 (the starter kit). Opened in this build.
+  The RP2350 with dual Cortex-M33 or Hazard3 RISC-V cores at 150 MHz, and "available now from $5" (the price was seen when the lesson was written, 31 October 2026). Use for: lesson 120 (the starter kit). Opened in this build.
 
 - [NUCLEO-F411RE (STMicroelectronics)](https://www.st.com/en/evaluation-tools/nucleo-f411re.html)
-  The STM32 Nucleo-64 board with the STM32F411RE, Arduino and ST morpho connectivity, and the on-board ST-LINK debugger. Use for: lesson 122 (the starter kit). The page timed out in this build; the facts came from a search snippet of the same page.
+  The STM32 Nucleo-64 board with the STM32F411RE, Arduino and ST morpho connectivity, and the on-board ST-LINK debugger. Use for: lesson 120 (the starter kit). The page timed out in this build; the facts came from a search snippet of the same page.
 
 - [sigrok wiki: fx2lafw](https://sigrok.org/wiki/Fx2lafw)
-  The open firmware for FX2 and FX2LP logic analyzer clones: which devices are supported, and the 8-probe pin mapping (PB0 to PB7). Use for: lesson 122 (the logic analyzer). The wiki gives no sample rate; check the clone's listing. Opened in this build.
-
-- [GitHub Docs: workflow status badges](https://docs.github.com/en/actions/how-tos/monitor-workflows/add-a-status-badge)
-  The badge URL pattern, `https://github.com/OWNER/REPOSITORY/actions/workflows/WORKFLOW-FILE/badge.svg`. Use for: lesson 120 (the README template). Opened in this build.
+  The open firmware for FX2 and FX2LP logic analyzer clones: which devices are supported, and the 8-probe pin mapping (PB0 to PB7). Use for: lesson 120 (the logic analyzer). The wiki gives no sample rate; check the clone's listing. Opened in this build.
 
 - [Espressif: ESP-IDF Get Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html)
-  The official ESP32 framework (ESP-IDF), built with CMake and Ninja. Use for: lesson 122 (next topics: ESP32). Opened in this build.
+  The official ESP32 framework (ESP-IDF), built with CMake and Ninja. Use for: lesson 120 (next topics: ESP32). Opened in this build.
 
 - [Nordic: nRF54L15 development kit](https://www.nordicsemi.com/Products/Development-hardware/nRF54L15-DK)
-  The nRF54L15 is a Bluetooth LE SoC with a 128 MHz Arm Cortex-M33 core. Use for: lesson 122 (next topics: BLE). Opened in this build; no price shown.
+  The nRF54L15 is a Bluetooth LE SoC with a 128 MHz Arm Cortex-M33 core. Use for: lesson 120 (next topics: BLE). Opened in this build; no price shown.
 
 - [Embassy: async framework for embedded Rust](https://embassy.dev/)
-  Embassy supports STM32 (embassy-stm32), RP2040 (embassy-rp) and the nRF52, nRF53 and nRF91 series. Use for: lesson 122 and lesson 110. Opened in this build.
+  Embassy supports STM32 (embassy-stm32), RP2040 (embassy-rp) and the nRF52, nRF53 and nRF91 series. Use for: lesson 120 and lesson 110. Opened in this build.
 
 - [CNX Software: CS32 MCU clone of STM32 in a Blue Pill board](https://cnx-software.com/?p=63676)
-  Describes the CS32F103 as compatible with the STM32F103, notes the inconsistent flash size in its datasheet, and quotes readers who had debugging problems (anecdotes, not tests). Use for: lesson 122 (the Blue Pill clone warning). Secondary source.
+  Describes the CS32F103 as compatible with the STM32F103, notes the inconsistent flash size in its datasheet, and quotes readers who had debugging problems (anecdotes, not tests). Use for: lesson 120 (the Blue Pill clone warning). Secondary source.
 
 - [Wokwi for VS Code: getting started](https://docs.wokwi.com/vscode/getting-started)
   Installing the Wokwi extension and requesting a license with F1, then Wokwi: Request a new License. Use for: lesson 1 (license steps).
 
 ## Wisdom (Communities)
 - [r/embedded](https://www.reddit.com/r/embedded/)
-  A large, active subreddit with practitioners and frequent career threads. Use for: career questions, code critique, "how is this done in industry".
+  A large, active subreddit with practitioners. Use for: beginner questions, code critique, "how is this done in industry".
 - [Electronics Stack Exchange](https://electronics.stackexchange.com/)
   Strict, high-quality Q&A. Use for: specific circuit and firmware questions.
 - [EEVblog forum](https://www.eevblog.com/forum/)
@@ -475,13 +469,13 @@
 - [Interrupt community (Slack, linked from the blog)](https://interrupt.memfault.com/)
   Firmware professionals, often including Memfault engineers. Use for: professional practice, debugging, tooling.
 - [Zephyr Project community (Discord, mailing lists)](https://www.zephyrproject.org/community/)
-  Use for: Zephyr questions and contributing upstream (a strong portfolio signal).
+  Use for: Zephyr questions and contributing upstream.
 - [Raspberry Pi forums: Pico section](https://forums.raspberrypi.com/viewforum.php?f=143)
   Use for: RP2040 and Pico SDK specifics.
 - [ST Community](https://community.st.com/)
   Use for: STM32 peripheral and HAL quirks.
 - [Embedded.fm podcast](https://embedded.fm/)
-  Interviews with embedded engineers. Use for: absorbing how the profession thinks.
+  Conversations with embedded engineers. Use for: hearing how practitioners work.
 
 ## Gaps
 - No high-trust, free, MCU-focused **functional safety** primer found yet (lesson 111). Look for one before writing it.

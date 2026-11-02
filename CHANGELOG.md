@@ -2,7 +2,49 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
-## 0.0.3 (unreleased)
+## 0.0.3 (2026-11-03)
+
+### No career material; a clearer start page
+
+- Removed the career material: lesson 120 (portfolio and CV), lesson 121 (interview preparation),
+  the interview question bank in `reference/`, the "interview drill" box at the end of every lesson,
+  the "explain out loud" sections in the checkpoints, and the remarks about interviews, hiring and
+  portfolios in the lesson text. Content that sat in those remarks was kept where it taught something.
+  Part 10 is now "Capstone", and the course title is "Embedded Systems: From Electrons to Firmware".
+- "Next steps" is now lesson 120 (was 122). The course has 120 lessons.
+- Saved progress follows: a "done" mark on the old lesson 122 moves to 120, and marks on the removed
+  lessons are dropped (`assets/course.js`, numbering 3).
+- `check_course.py` no longer requires an interview box, and `LESSON-SPEC.md` no longer asks for one.
+- The index page starts with what the course is, how to use it and what is in each folder. The
+  bench-lab note moved into the bench section, which now has a "What you need" table: every board,
+  tool and part, its approximate cost, and the bench labs that use it.
+
+
+### Bench track: optional labs on real hardware
+
+- 19 bench labs (🔬) in a section of their own, after the course (COURSE-PLAN.md, Bench Track:
+  hardware for about €83 without an H7, the specs and the rollout). A short note at the end of each
+  part lists the bench labs its lessons unlock. They are optional: they don't count towards
+  progress, the pager skips them, and each page says so.
+- Each bench lab's name shows its board (Pico 2, Nucleo-U5, Nucleo-H7), and the bench section on the
+  index lists the board, tools and parts for each lab in its own block. COURSE-PLAN.md holds them as
+  Board, Tools and Parts lines under each lab.
+- Pages for bench labs 0 to 8, 11, 14, 16, 17 and 18 (Pico 2, plus the concept-only H7 cache lab).
+  Projects for the Pico 2 labs (`projects/bench*`), on the new template `templates/pico2-sdk`
+  (RP2350, UF2 output, stdio on UART and USB). They build and pass lint; none has been simulated or
+  run on a board yet.
+- Pages and projects for bench labs 9, 10, 12, 13 and 15 (NUCLEO-U545RE-Q): bring-up, interrupt
+  latency, sleep current through the IDD jumper, Lab 4 on the U5 (register-level board layer, I2C,
+  ADC1 with an NTC), and FreeRTOS deadlines on the analyzer. New submodule
+  `third_party/cmsis-device-u5` (ST's CMSIS device headers, startup and linker script) and
+  `templates/common/stm32u5.cmake` (Cortex-M33, hard float, `.bin` for ST-LINK drag-and-drop,
+  FreeRTOS port `ARM_CM33_NTZ`). Wokwi has no STM32U5, so these projects have no diagram:
+  `verify_projects.py` builds them and reports them as build-only. They have not run on a board.
+- Bench labs 1 and 16 lost their Wokwi stage: an ideal simulated LED and a USB device that never
+  reaches the PC had nothing to show.
+- `build_manifest.py`, `check_course.py`, `new_project.py`, `build.py` and `sim.py` know about bench
+  labs; the manifest keeps them in their own list (`bench`). The index page links the GitHub
+  repository and this changelog in its header.
 
 ### Shorter lessons: five long lessons split, 116 lessons became 122
 
@@ -12,7 +54,7 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   architecture, tasks and pin map; the NTC driver and tests; PWM, buttons, display and safety;
   RTOS threads and PID; Modbus RTU; the bootloader; CI and the finished capstone. Projects were
   renamed to the lesson that uses them (`0113-dryer-skeleton` to `0119-dryer-host-tests`).
-- Every lesson from 89 on moved up (old 89 is now 90, ..., old 116 is now 122). Lesson files,
+- Every lesson from 89 on moved up (old 89 is now 90, ..., old 116 became 122, and is 120 since the career lessons were removed). Lesson files,
   project folders and cross-references were renumbered by script. Labs and checkpoints keep their
   numbers.
 - Saved progress moves to the new numbers on the first visit (`assets/course.js`). A split

@@ -112,19 +112,23 @@
   // Version 0.0.3 split lessons 88, 91, 110, 111 and 113 and renumbered everything after 87.
   // Progress saved under the old numbers moves to the new ones once; a split lesson's "done"
   // carries to every part (its quiz scores stay with the first part).
+  // Numbering "2" is that split. Numbering "3" then removed the portfolio and interview lessons
+  // (120 and 121 under numbering 2) and moved "Next steps" from 122 to 120.
   const NUMBERING_KEY = "embedded-course-numbering";
-  const RENUMBER_0_0_3 = (() => {
+  const NUMBERING_NOW = "3";
+  const RENUMBER_TO_2 = (() => {
     const map = { 88: [88, 89], 89: [90], 90: [91], 91: [92, 93], 110: [112, 113], 111: [114, 115],
                   112: [116], 113: [117, 118, 119], 114: [120], 115: [121], 116: [122] };
     for (let n = 92; n <= 109; n++) map[n] = [n + 2];
     return map;
   })();
-  function migrateNumbering(p) {
+  const RENUMBER_TO_3 = { 120: [], 121: [], 122: [120] };   // [] drops the lesson's progress
+  function migrateNumbering(p, map) {
     const out = {};
     for (const [id, rec] of Object.entries(p)) {
       const n = /^\d{4}$/.test(id) ? parseInt(id, 10) : NaN;
-      const targets = RENUMBER_0_0_3[n];
-      if (!targets) { out[id] = rec; continue; }
+      const targets = map[n];
+      if (!targets) { if (!(id in out)) out[id] = rec; continue; }
       targets.forEach((t, i) => {
         const key = String(t).padStart(4, "0");
         out[key] = i === 0 ? rec : { done: rec.done, updatedAt: rec.updatedAt };
@@ -138,9 +142,14 @@
     try { p = JSON.parse(localStorage.getItem(STORE_KEY)) || {}; }
     catch (e) { return {}; }
     try {
-      if (localStorage.getItem(NUMBERING_KEY) !== "2") {
-        if (Object.keys(p).length) { p = migrateNumbering(p); saveProgress(p); }
-        localStorage.setItem(NUMBERING_KEY, "2");
+      const was = localStorage.getItem(NUMBERING_KEY);
+      if (was !== NUMBERING_NOW) {
+        if (Object.keys(p).length) {
+          if (was !== "2") p = migrateNumbering(p, RENUMBER_TO_2);
+          p = migrateNumbering(p, RENUMBER_TO_3);
+          saveProgress(p);
+        }
+        localStorage.setItem(NUMBERING_KEY, NUMBERING_NOW);
       }
     } catch (e) { /* storage disabled */ }
     return p;
@@ -535,17 +544,22 @@
     document.querySelectorAll("[data-lesson-link]").forEach(li => {
       li.classList.toggle("done", !!(p[li.dataset.lessonLink] || {}).done);
     });
+    // Bench labs are optional extras on real hardware: they never count towards course progress.
+    const CORE = "[data-lesson-link]:not([data-bench])";
     document.querySelectorAll(".part").forEach(part => {
-      const items = part.querySelectorAll("[data-lesson-link]");
-      const done = part.querySelectorAll("[data-lesson-link].done").length;
+      const items = part.querySelectorAll(CORE);
+      const done = part.querySelectorAll(CORE + ".done").length;
       const label = part.querySelector(".progress");
       if (label && items.length) label.textContent = `${done} / ${items.length} done`;
     });
     const overall = document.getElementById("overall-progress");
     if (overall) {
-      const all = document.querySelectorAll("[data-lesson-link]").length;
-      const done = document.querySelectorAll("[data-lesson-link].done").length;
-      overall.querySelector(".count").textContent = `${done} / ${all} complete`;
+      const all = document.querySelectorAll(CORE).length;
+      const done = document.querySelectorAll(CORE + ".done").length;
+      const benches = document.querySelectorAll("[data-bench]").length;
+      const benchDone = document.querySelectorAll("[data-bench].done").length;
+      overall.querySelector(".count").textContent = `${done} / ${all} complete` +
+        (benchDone ? ` · plus ${benchDone} / ${benches} optional bench labs` : "");
       overall.querySelector(".bar-fill").style.width = all ? `${(100 * done / all).toFixed(1)}%` : "0";
     }
   }
@@ -645,7 +659,15 @@
   function flatItems() {
     const m = window.COURSE_MANIFEST;
     if (!m) return [];
-    return m.parts.flatMap(p => p.items.map(i => Object.assign({ part: p }, i)));
+    const items = m.parts.flatMap(p => p.items.map(i => Object.assign({ part: p }, i)));
+    // Bench labs are kept out of the parts (manifest.bench). Each goes right after the lesson or lab
+    // that unlocks it, so a bench page's pager leads back to the main path at the right place.
+    (m.bench || []).forEach(b => {
+      const at = items.findIndex(i => i.id === b.afterId);
+      const part = m.parts.find(p => p.number === b.afterPart) || (at >= 0 ? items[at].part : m.parts[0]);
+      items.splice(at >= 0 ? at + 1 : items.length, 0, Object.assign({ part }, b));
+    });
+    return items;
   }
 
   /* Top bar and prev/next pager for a lesson page (body[data-lesson]). */
@@ -660,20 +682,26 @@
 
     const nav = el("nav", { class: "course-nav" }, [
       el("a", { href: "../index.html", text: "← Course index" }),
-      el("span", { text: `Part ${item.part.number}: ${item.part.title}` }),
+      el("span", { text: item.kind === "bench" ? `Bench labs (optional) · ${item.board} · after ${item.after}`
+                                               : `Part ${item.part.number}: ${item.part.title}` }),
     ]);
     document.body.insertBefore(nav, document.body.firstChild);
 
     const meta = main.querySelector(".lesson-meta");
     if (meta && !meta.textContent.trim()) {
-      const label = item.kind === "lesson" ? `Lesson ${item.number}` : item.kind === "lab" ? "Lab" : "Checkpoint";
-      meta.textContent = [label, item.conceptOnly ? "concept lesson" : "", item.optional ? "optional" : ""]
-        .filter(Boolean).join(" · ");
+      const label = item.kind === "lesson" ? `Lesson ${item.number}` : item.kind === "lab" ? "Lab"
+        : item.kind === "bench" ? `Bench lab ${item.number}` : "Checkpoint";
+      const tags = item.kind === "bench" ? ["optional, not required", "board: " + item.board, item.stretch ? "stretch" : ""]
+        : [item.conceptOnly ? "concept lesson" : "", item.optional ? "optional" : ""];
+      meta.textContent = [label].concat(tags).filter(Boolean).join(" · ");
     }
 
-    // Prev/next skip lessons that are not written yet.
-    const prev = items.slice(0, idx).reverse().find(i => i.published);
-    const next = items.slice(idx + 1).find(i => i.published);
+    // Prev/next skip lessons that are not written yet, and the optional bench labs: the main path
+    // never sends a learner to a lab that needs hardware.
+    const onPath = i => i.published && i.kind !== "bench";
+    const prev = items.slice(0, idx).reverse().find(onPath);
+    const next = items.slice(idx + 1).find(onPath);
+
     if (!main.querySelector(".pager")) {
       const pager = el("div", { class: "pager" }, [
         prev ? el("a", { href: prev.file, text: `← ${prev.title}` }) : el("span"),
@@ -688,6 +716,12 @@
     const root = document.getElementById("course-index");
     const m = window.COURSE_MANIFEST;
     if (!root || !m) return;
+    const bench = m.bench || [];
+    // A bench lab's name carries its board, so it's clear at a glance what hardware it needs.
+    const benchLink = b => el("span", { class: "bench-name" }, [
+      b.published ? el("a", { href: "lessons/" + b.file, text: b.title }) : el("span", { text: b.title }),
+      " ", el("span", { class: "board-badge", text: b.board }),
+    ]);
     m.parts.forEach(p => {
       const section = el("section", { class: "part" });
       section.appendChild(el("h2", {}, [
@@ -707,8 +741,99 @@
         list.appendChild(li);
       });
       section.appendChild(list);
+      // A short note after each part: the optional bench labs its lessons unlock.
+      const now = bench.filter(b => b.afterPart === p.number);
+      if (now.length) {
+        const note = el("p", { class: "bench-note" }, [el("span", { text: "🔬 Bench labs you can do now (optional): " })]);
+        now.forEach((b, n) => {
+          if (n) note.appendChild(document.createTextNode(", "));
+          note.appendChild(benchLink(b));
+        });
+        section.appendChild(note);
+      }
       root.appendChild(section);
     });
+
+    // All bench labs in one section of their own, after the course. They never count towards progress.
+    if (bench.length) {
+      const section = el("section", { class: "part bench-part", id: "bench-labs" });
+      section.appendChild(el("h2", {}, [el("span", { text: "Hands-on bench labs (🔬, optional)" })]));
+      section.appendChild(el("p", { class: "bench-intro", text:
+        "If you have real hardware, the bench labs take the simulated exercises onto a real board, where they " +
+        "meet the problems a simulator hides: bouncing buttons, noisy readings, floating pins, real clocks and " +
+        "real current draw." }));
+      section.appendChild(el("ul", { class: "bench-facts" }, [
+        el("li", { text: "Each one takes an hour or less. Longer ones are split into parts." }),
+        el("li", { text: "None is required. The course, its labs and its checkpoints are complete without them, " +
+                         "and they don't count towards your progress." }),
+        el("li", { text: "The note at the end of each part above says which ones you can do by then." }),
+        el("li", {}, [document.createTextNode("Start with "),
+          el("a", { href: "lessons/bench00-blink-on-a-real-pico.html", text: "Bench lab 0" }),
+          document.createTextNode(", which sets up the Pico 2 and the tools.")]),
+      ]));
+
+      // The whole kit, so a learner can buy once. Prices are approximate (COURSE-PLAN.md, Bench Track).
+      section.appendChild(el("h3", { text: "What you need" }));
+      const KIT = [
+        ["Boards", [
+          ["Raspberry Pi Pico 2 with headers", "about €7", "0 to 8, 14, 16 to 18"],
+          ["NUCLEO-U545RE-Q (STM32U5, ST-LINK on board)", "about €30", "9, 10, 12, 13, 15"],
+          ["NUCLEO-H743ZI2 (STM32H7): not needed, lab 11 can be read without it", "about €45", "11"],
+        ]],
+        ["Tools", [
+          ["Multimeter with a µA range", "about €15", "1, 5, 7, 12"],
+          ["Logic analyzer, 8 channels, 24 MHz (with the free PulseView)", "about €10", "3, 4, 6, 10, 15"],
+          ["USB cables: micro-USB (Pico 2) and USB-C (Nucleo), both with data lines", "", "all"],
+        ]],
+        ["Parts", [
+          ["Breadboard and jumper wires", "about €10 for all parts", "most labs"],
+          ["Pushbuttons (two)", "", "2, 4, 8, 10, 13, 18"],
+          ["Red LEDs and 330 Ω resistors", "", "1, 7, 18"],
+          ["Resistors: two 4.7 kΩ, 10 kΩ, 100 Ω, 1 MΩ", "", "2, 6, 8, 13, 17, 18"],
+          ["10 kΩ potentiometer", "", "5"],
+          ["10 kΩ NTC thermistor", "", "8, 13, 18"],
+          ["SSD1306 I2C OLED display", "about €5", "6, 8, 13, 18"],
+          ["WS2812B LED strip (8 LEDs), 74HCT125 level shifter, 100 µF capacitor", "about €6", "7"],
+          ["Logic-level N-channel MOSFET and a 22 Ω 5 W resistor", "", "18"],
+        ]],
+      ];
+      const kit = el("table", { class: "bench-kit" }, [
+        el("thead", {}, [el("tr", {}, ["Item", "Cost", "Bench labs"].map(h => el("th", { text: h })))]),
+      ]);
+      const body = el("tbody");
+      KIT.forEach(([group, rows]) => {
+        body.appendChild(el("tr", { class: "bench-kit-group" }, [el("th", { colspan: "3", text: group })]));
+        rows.forEach(r => body.appendChild(el("tr", {}, r.map(c => el("td", { text: c })))));
+      });
+      kit.appendChild(body);
+      section.appendChild(kit);
+      section.appendChild(el("p", { class: "bench-intro", text:
+        "Total about €83 without the H7. One starter kit usually covers the breadboard, wires, buttons, LEDs, " +
+        "resistors and potentiometer. Prices are approximate and change with the seller. Each lab below " +
+        "lists exactly what it uses." }));
+      section.appendChild(el("h3", { text: "The labs" }));
+      const list = el("div", { class: "bench-list" });
+      bench.forEach(b => {
+        const tags = ["after " + b.after, b.stretch ? "stretch" : "", b.published ? "" : "not written yet"]
+          .filter(Boolean).join(" · ");
+        const need = (label, value) => el("div", { class: "bench-need" }, [
+          el("span", { class: "bench-need-label", text: label }), el("span", { text: value }),
+        ]);
+        list.appendChild(el("div", { "data-lesson-link": b.id, "data-bench": "",
+                                     class: "bench-card" + (b.published ? "" : " pending") }, [
+          el("div", { class: "bench-card-head" }, [
+            el("span", { class: "num", text: "🔬" }),
+            benchLink(b),
+            el("span", { class: "tag", text: tags }),
+          ]),
+          need("Board", b.needs.board),
+          need("Tools", b.needs.tools),
+          need("Parts", b.needs.parts),
+        ]));
+      });
+      section.appendChild(list);
+      root.appendChild(section);
+    }
   }
 
   // ---------- Falstad CircuitJS links ----------

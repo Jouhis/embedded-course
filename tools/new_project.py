@@ -4,7 +4,8 @@
 
   lesson-id  e.g. 0051
   slug       e.g. gpio-output        -> projects/0051-gpio-output/
-  template   one of: pico-sdk, stm32-cmsis, stm32-hal, stm32-freertos, zephyr-pico, zephyr-bluepill
+  template   one of: pico-sdk, pico2-sdk (bench labs: real Pico 2, also writes a UF2), stm32-cmsis,
+             stm32-hal, stm32-freertos, zephyr-pico, zephyr-bluepill
   --single   create one folder (no starter/solution split), e.g. for demos
 
 Each created folder is a complete Wokwi project: sources, diagram.json, wokwi.toml and
@@ -93,8 +94,8 @@ def main(argv):
         print(f"Unknown template {tmpl!r}. Choose from: " +
               ", ".join(p.name for p in TEMPLATES.iterdir() if p.is_dir() and p.name != "common"))
         return 1
-    if not re.fullmatch(r"(\d{4}|lab\d{2}|cp\d{2})", lesson):
-        print("lesson-id must look like 0051, lab03 or cp02")
+    if not re.fullmatch(r"(\d{4}|lab\d{2}|cp\d{2}|bench\d{2})", lesson):
+        print("lesson-id must look like 0051, lab03, cp02 or bench04")
         return 1
     base = ROOT / "projects" / f"{lesson}-{slug}"
     if base.exists():

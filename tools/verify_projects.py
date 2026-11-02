@@ -40,10 +40,19 @@ from sim import TEMPLATE_EXPECT  # noqa: E402  (templates keep their pass lines 
 FREERTOS_STM32_REASON = "FreeRTOS cannot run on Wokwi's STM32 core (CHANGELOG 0.0.3, known issues)"
 
 
+def board_only(d: Path) -> bool:
+    """Bench-lab projects for boards Wokwi can't model (the Nucleo-U5): built, never linted or run."""
+    cml = d / "CMakeLists.txt"
+    return (not (d / "wokwi.toml").exists() and cml.exists()
+            and "stm32u5.cmake" in cml.read_text(encoding="utf-8"))
+
+
 def project_dirs():
-    for toml in sorted((ROOT / "projects").rglob("wokwi.toml")):
-        if "build" not in toml.parts and "target" not in toml.parts:
-            yield toml.parent
+    dirs = [t.parent for t in (ROOT / "projects").rglob("wokwi.toml")]
+    dirs += [c.parent for c in (ROOT / "projects").rglob("CMakeLists.txt") if board_only(c.parent)]
+    for d in sorted(set(dirs)):
+        if "build" not in d.parts and "target" not in d.parts:
+            yield d
     for toml in sorted((ROOT / "templates").glob("*/wokwi.toml")):
         yield toml.parent
 
@@ -52,7 +61,7 @@ def host_test_dirs():
     """Host unit-test projects: a CMakeLists.txt and no wokwi.toml. Only solutions: the starters
     have failing tests on purpose, for the learner to fix."""
     for cml in sorted((ROOT / "projects").glob("*/solution/CMakeLists.txt")):
-        if not (cml.parent / "wokwi.toml").exists():
+        if not (cml.parent / "wokwi.toml").exists() and not board_only(cml.parent):
             yield cml.parent
     yield ROOT / "templates" / "host-test"
 
@@ -144,12 +153,13 @@ def main(argv):
         cmd = [sys.executable, "-I", str(ROOT / "tools" / "build.py"), str(d)] + (["--clean"] if clean else [])
         rc = subprocess.call(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         problems = [] if rc == 0 else [f"build failed (rc {rc}); run: python tools/build.py {rel}"]
-        toml = (d / "wokwi.toml").read_text(encoding="utf-8")
-        for key in ("firmware", "elf"):
-            m = re.search(rf"^{key}\s*=\s*['\"]([^'\"]+)['\"]", toml, re.M)
-            if m and rc == 0 and not (d / m.group(1)).exists():
-                problems.append(f"{key} file missing: {m.group(1)}")
-        problems += lint(d)
+        if not board_only(d):
+            toml = (d / "wokwi.toml").read_text(encoding="utf-8")
+            for key in ("firmware", "elf"):
+                m = re.search(rf"^{key}\s*=\s*['\"]([^'\"]+)['\"]", toml, re.M)
+                if m and rc == 0 and not (d / m.group(1)).exists():
+                    problems.append(f"{key} file missing: {m.group(1)}")
+            problems += lint(d)
 
         notes = []
         runnable = d.name != "starter"

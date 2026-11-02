@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bench lab 9: Bring up the Nucleo-U5 · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<body data-lesson="bench09">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Bench lab 9: Bring up the Nucleo-U5</h1>
+  <p class="subtitle">Lesson 67's blink ran on a simulated Blue Pill. Here it moves to a real STM32U5 board, a newer chip with a different core, a different RCC, a different GPIO block and a programmer built into the board. Half the code carries over. This lab finds the other half.</p>
+
+  <div class="note">
+    <strong>This bench lab is optional.</strong> It needs a NUCLEO-U545RE-Q and a USB-C cable. It doesn't count towards your progress. Time: about 50 minutes.
+  </div>
+
+  <div class="goal">
+    By the end of this lab you can <strong>flash a Nucleo board over its ST-LINK, port register-level code from the STM32F1 to the STM32U5, and read the chip's ID and clock over the virtual COM port</strong>.
+  </div>
+
+  <h2>The board</h2>
+  <p>
+    The NUCLEO-U545RE-Q carries an STM32U545RE: a Cortex-M33 with 512 KB of flash and 272 KB of SRAM, running up to 160 MHz (<a href="https://wiki.kewl.org/boards:u545">kewl.org board notes</a>). The "-Q" means the chip's internal SMPS supplies its core. The board manual, UM3062, gives the pins this lab needs <a href="https://www.st.com/resource/en/user_manual/um3062-stm32u3u5-nucleo64-boards-mb1841-stmicroelectronics.pdf">(ST UM3062, Nucleo-64 boards MB1841)</a>:
+  </p>
+  <ul>
+    <li><strong>LD2</strong>, the green user LED, on <strong>PA5</strong>, driven through a transistor: active high (section 6.5).</li>
+    <li><strong>B1</strong>, the blue user button, on <strong>PC13</strong>: high while pressed (section 6.6).</li>
+    <li>The <strong>STLINK-V3EC</strong> on the top of the board: a debugger, a USB drive for drag-and-drop flashing, and a virtual COM port (VCP) wired to <strong>USART1 on PA9 (TX) and PA10 (RX)</strong>.</li>
+  </ul>
+  <p>
+    The ST-LINK is the Blue Pill's missing piece. On the Blue Pill you needed a separate programmer and a USB-to-serial adapter; here one USB-C cable powers the board, flashes it and carries the serial log.
+  </p>
+
+  <h2>What changes between the F1 and the U5</h2>
+  <p>
+    The <a href="../reference/glossary.html#cmsis-cortex-microcontroller-software-interface-standard">CMSIS</a> core header is the same idea on both chips: <code>SysTick</code>, <code>NVIC_EnableIRQ()</code> and <code>__WFI()</code> work unchanged. The device header changes. The course now builds the U5 projects against ST's <code>cmsis-device-u5</code> package in <code>third_party/</code> <a href="https://github.com/STMicroelectronics/cmsis-device-u5">(STMicroelectronics/cmsis-device-u5 on GitHub)</a>, and its <code>stm32u545xx.h</code> is where every name in this lab comes from.
+  </p>
+  <table>
+    <thead><tr><th>Job</th><th>Blue Pill (STM32F103)</th><th>Nucleo-U5 (STM32U545)</th></tr></thead>
+    <tbody>
+      <tr><td>Clock to GPIOA</td><td><code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPAEN</code></td><td><code>RCC-&gt;AHB2ENR1 |= RCC_AHB2ENR1_GPIOAEN</code></td></tr>
+      <tr><td>Pin mode</td><td><code>CRL</code>/<code>CRH</code>, 4 bits per pin (CNF and MODE)</td><td><code>MODER</code>, 2 bits per pin; type, speed and pull in their own registers</td></tr>
+      <tr><td>Reset state of a pin</td><td>floating input</td><td>analog (input buffer off)</td></tr>
+      <tr><td>Alternate function</td><td>fixed per peripheral (AFIO remaps)</td><td>chosen per pin in <code>AFR[0]</code>/<code>AFR[1]</code>; USART1 is AF7</td></tr>
+      <tr><td>USART data and status</td><td><code>DR</code>, <code>SR</code></td><td><code>TDR</code>/<code>RDR</code>, <code>ISR</code> (<code>USART_ISR_TXE_TXFNF</code>)</td></tr>
+      <tr><td>Clock after reset</td><td>HSI, 8 MHz</td><td>MSIS, 4 MHz</td></tr>
+      <tr><td>Core</td><td>Cortex-M3</td><td>Cortex-M33 (ARMv8-M, FPU, TrustZone off on this board)</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The 4 MHz figure is in ST's <code>system_stm32u5xx.c</code>: "After each device reset the MSI (4 MHz) is used as system clock source". A baud-rate divisor written for 8 MHz gives half the baud rate, and the terminal shows garbage or nothing.
+  </p>
+
+  <h2>Build and flash</h2>
+  <ol class="steps">
+    <li>Build the starter: <code>python tools/build.py projects/bench09-nucleo-u5-bringup/starter</code>. The build writes <code>build/blink.elf</code> and <code>build/blink.bin</code>. There is no Wokwi stage: Wokwi has no STM32U5 model.</li>
+    <li>Plug the board in. A USB drive appears (the ST-LINK's mass storage), and a new serial port (the VCP). Copy <code>blink.bin</code> onto the drive. The ST-LINK's COM LED flickers while it programs the flash, the drive reconnects, and the chip runs the new program. STM32CubeProgrammer or OpenOCD over SWD do the same job if you prefer a tool.</li>
+    <li>Open the Serial Monitor on the VCP at 115200 baud. With the starter: no LED, no text. The program runs, but every write goes to a port with no clock, a pin in analog mode, or a USART at the wrong speed.</li>
+  </ol>
+
+  <h2>On the board: port the four places</h2>
+  <p>The starter's <code>main.c</code> marks four places. Fix them one at a time, rebuild, copy the <code>.bin</code> again, and watch what changes.</p>
+  <ol class="steps">
+    <li><strong>Clock gating.</strong> Find the GPIOA enable in <code>RCC_AHB2ENR1</code>. Without it, writes to <code>GPIOA</code> are ignored (lesson 67's <a href="../reference/glossary.html#clock-gating">clock gating</a>, same rule, different register).</li>
+    <li><strong>PA5 as an output.</strong> <code>MODER5 = 01</code>. Push-pull and low speed are the reset values. The LED now flashes once a second.</li>
+    <li><strong>PA9 as USART1_TX.</strong> <code>MODER9 = 10</code> (alternate function) and <code>AFSEL9 = 7</code> in <code>AFR[1]</code>.</li>
+    <li><strong>The baud rate.</strong> Use <code>SystemCoreClock</code> instead of a constant. 4 000 000 / 115 200 = 34.7, so <code>BRR</code> = 35: 114 286 baud, 0.8 % slow, well inside the few percent a UART tolerates.</li>
+  </ol>
+  <p>
+    The VCP now prints <code>BENCH9 OK: STM32 DEV_ID=0x... REV_ID=0x..., 4000000 Hz</code> and one <code>beat</code> line per flash. The device ID is read from <code>DBGMCU-&gt;IDCODE</code>, the same register the debugger reads to tell which chip it is talking to. Compare yours with the "Device ID" STM32CubeProgrammer shows when it connects.
+  </p>
+
+  <h2>Common mistakes</h2>
+  <ol>
+    <li><strong>Copying the F1 register names.</strong> Most of them don't exist in the U5 header, so the compiler stops you. The dangerous ones are names that exist on both chips with a different meaning or position. Look every name up in <code>stm32u545xx.h</code>.</li>
+    <li><strong>Forgetting that U5 pins start in analog mode.</strong> A pin you never configured reads 0, whatever the voltage on it.</li>
+    <li><strong>Driving PC13 low.</strong> UM3062 warns that B1 connects PC13 to 3.3 V when pressed. Keep PC13 an input with a pull-down; an output driving low shorts the supply through the button.</li>
+    <li><strong>Hard-coding the clock.</strong> Use <code>SystemCoreClock</code> after <code>SystemCoreClockUpdate()</code>, so the divisors follow when you change the clock later.</li>
+  </ol>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>The NUCLEO-U545RE-Q has LD2 on PA5, B1 on PC13 and an STLINK-V3EC with drag-and-drop flashing and a VCP on USART1 (PA9/PA10).</li>
+    <li>Porting from the F1 to the U5 changes the RCC enable registers, the GPIO configuration (MODER, AFR) and the USART register names; the CMSIS core API stays the same.</li>
+    <li>The U5 starts on MSIS at 4 MHz, and its pins start in analog mode.</li>
+    <li>The build writes a <code>.bin</code> for the ST-LINK drive; this board has no Wokwi model, so the bench is the only test.</li>
+  </ul>
+
+  <div class="win">You've brought up a second ARM family from its registers and your own build. Every later Nucleo lab starts from this blink.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The LED code is ported, the UART code isn't, and the program sets <code>BRR = 8000000 / 115200</code>. What does the terminal at 115200 baud show?",
+        "options": [
+          "Garbage or nothing: the U5 sends at about half the baud rate",
+          "The right text, because the ST-LINK converts the baud rate",
+          "The right text, because BRR is ignored until the clock is set",
+          "Twice as many characters, because the bits are sent twice"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. The USART divides its 4 MHz clock by 69, so it sends at about 58 000 baud. The receiver samples at the wrong times.",
+          "The VCP receives at the rate the PC's terminal sets; it doesn't fix the target's rate.",
+          "BRR is used as written; the peripheral has no idea which clock you meant.",
+          "Each bit is sent once, only too slowly."
+        ],
+        "hint": "What clock does the U5 run at after reset?",
+        "why": "Baud rate = clock / BRR. A divisor computed for the wrong clock scales the baud rate by the ratio of the two clocks: here 4/8." },
+      { "type": "mc",
+        "prompt": "On the U5 you read <code>GPIOA-&gt;IDR</code> bit 0 with a wire from PA0 to 3.3 V, and you never configured PA0. What do you read?",
+        "options": [
+          "0, because analog mode turns the input off",
+          "1, because the wire pulls the pin high",
+          "A random value, as the pin is floating",
+          "A bus fault, as GPIOA has no clock"
+        ],
+        "answer": 0,
+        "feedback": [
+          "Right. MODER resets to analog on the U5 GPIO ports used here, and in analog mode the digital input reads 0.",
+          "On the F1 (floating input at reset) it would. The U5 starts in analog mode.",
+          "The pin isn't floating in the digital sense: the Schmitt trigger is disabled.",
+          "The question's program is the ported one, where GPIOA's clock is on."
+        ],
+        "hint": "Look at the reset state row in the table.",
+        "why": "Starting in analog mode saves power: an input buffer on a floating pin draws current (bench lab 2 and bench lab 12). It also means you must configure every pin you read." },
+      { "type": "number",
+        "prompt": "With a 4 MHz kernel clock and 16× oversampling, what <code>BRR</code> value gives 115200 baud? Round to the nearest integer.",
+        "answer": 35,
+        "tolerance": 0,
+        "hint": "BRR = f_ck / baud.",
+        "why": "4 000 000 / 115 200 = 34.72, which rounds to 35. The real rate is 114 286 baud, 0.8 % slow, and a UART tolerates a few percent." }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    ST's <code>system_stm32u5xx.c</code> in <code>third_party/cmsis-device-u5/Source/Templates/</code>: read <code>SystemInit()</code> and <code>SystemCoreClockUpdate()</code>, about 150 lines, and find where the 4 MHz comes from and how the function decodes the RCC registers to compute <code>SystemCoreClock</code>.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Walk me through what happens from reset to main() on the STM32U5: the vector table, Reset_Handler, SystemInit and the C runtime."
+    Related: <a href="0067-bare-metal-blink-with-cmsis.html">Lesson 67: Bare-metal blink with CMSIS</a>, <a href="bench10-measure-interrupt-latency.html">Bench lab 10</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>
