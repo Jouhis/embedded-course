@@ -70,7 +70,8 @@ int main(void) {
         Error_Handler();
     }
 
-    uart_print("HAL OK\r\n");
+    uart_print("HAL starter: serial link works\r\n");
+    /* TODO(learner) 5: when PB0 blinks and the button prints, print "HAL OK\r\n" here, after the line above. */
 
     /* Deadlines use the wrap-safe form: (now - deadline) is correct across the 32-bit wrap. */
     uint32_t now;

@@ -66,7 +66,8 @@ int main(void) {
     GPIOC->BSRR = 1U << LED_ONBOARD_PIN;                      /* PC13 high: LED off (active low) */
     /* TODO(learner) 3: the PB0 LED should start off. Write its BSRR reset bit here. */
 
-    uart_puts("TWO LED OK\r\n");
+    uart_puts("TWO LED starter: serial link works\r\n");
+    /* TODO(learner) 5: when both LEDs blink, print "TWO LED OK\r\n" here, after the line above. */
 
     systick_start_1ms();
 

@@ -101,7 +101,6 @@ int main(void)
         return 0;
     }
     /* TODO(learner): start tick_timer with k_timer_start(), first expiry after 1 s, then
-     * every 1 s (K_SECONDS(1) for both arguments). */
-    printk("THREADS OK\n");
+     * every 1 s (K_SECONDS(1) for both arguments). Then printk "THREADS OK" once, here. */
     return 0;
 }

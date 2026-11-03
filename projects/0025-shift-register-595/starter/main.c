@@ -59,6 +59,6 @@ int main(void) {
         sleep_ms(STEP_MS * 4);
         show(0x00);
         sleep_ms(STEP_MS * 2);
-        printf("SHIFT OK\n");
+        // TODO(learner): once the LEDs show the chase, then 0xA5, then all off, print "SHIFT OK" here.
     }
 }

@@ -65,9 +65,9 @@ int main(void) {
     gpio_set_dir(PIN_COUT, GPIO_IN);
 
     while (true) {
-        // The expected results above are complete, and so is the circuit in diagram.json.
-        // The task (see the lesson): check that every row prints OK, then delete one wire
-        // and read which rows the test bench reports as WRONG.
+        // TODO(learner): the expected results above are complete, but the circuit in
+        // diagram.json is missing one wire. Run the test bench, read which rows print WRONG
+        // and which output (SUM or COUT) is wrong on them, then find and add the missing wire.
         run_truth_table();
         sleep_ms(REPEAT_MS);
     }
