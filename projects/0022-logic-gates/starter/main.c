@@ -17,10 +17,10 @@
 
 // The function the circuit must implement. Exclusive OR is 1 when the inputs differ.
 static bool expected_out(bool a, bool b) {
-    // TODO(learner): return the exclusive-OR of a and b. Until you do, every row is marked WRONG.
+    // TODO(learner): return the exclusive-OR of a and b. Until you do, rows are marked WRONG.
     (void)a;
     (void)b;
-    return false;
+    return true;      // a placeholder that is wrong for half the rows
 }
 
 // Drive one row, read the output and print the result. Returns true if the row matches.
