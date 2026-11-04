@@ -102,6 +102,23 @@ static uint32_t capture_pulse_us(void) {
     return (uint16_t)(fall - rise);
 }
 
+/* A second way to measure the same pulse, without input capture: poll the PB0 pin and
+ * read TIM3's counter at each edge. It is a few microseconds less exact than a capture,
+ * because the loop has to notice the edge first. Wokwi's STM32 model does not simulate
+ * input capture (CCR3 and CCR4 stay 0), so this is the check that works in the simulator.
+ * Returns 0 if no pulse arrives, for example when TIM3 is not running. */
+static uint32_t poll_pulse_us(void) {
+    uint32_t guard = 200000U;                     /* about 0.15 s at 8 MHz */
+    while ((GPIOB->IDR & 1U) && --guard) { }             /* let a pulse in progress end */
+    while (!(GPIOB->IDR & 1U) && --guard) { }            /* wait for the rising edge */
+    uint32_t rise = TIM3->CNT;
+    while ((GPIOB->IDR & 1U) && --guard) { }             /* wait for the falling edge */
+    uint32_t fall = TIM3->CNT;
+    if (guard == 0U) return 0U;
+    if (fall < rise) fall += TIM3->ARR + 1U;             /* the counter wrapped at ARR */
+    return fall - rise;
+}
+
 /* ---- Encoder mode on TIM4 (KY-040) ---------------------------------------- */
 
 static void encoder_start(void) {
@@ -141,6 +158,11 @@ int main(void) {
 
     uart_puts("PWM LED 1000 Hz duty 25%\r\n");
     uart_puts("SERVO 50 Hz pulse 1500 us\r\n");
+
+    uint32_t polled = poll_pulse_us();
+    uart_puts("POLL pulse_us=");
+    uart_put_int((int32_t)polled);
+    uart_puts(polled >= 1490U && polled <= 1510U ? " SERVO OK\r\n" : " SERVO FAIL\r\n");
 
     while (1) {
         /* The capture reads the servo output. Wire PA6 to PB0 on the diagram. */

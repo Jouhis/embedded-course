@@ -1,4 +1,5 @@
-// EXPECT: APB2ENR:    0x00004014
+// EXPECT: RCC base:   0x40021000
+// (Not the APB2ENR line: Wokwi reads RCC_APB2ENR back as 0, see the lesson.)
 
 /* The bus delivers each access to the right block. This demo prints the base
  * addresses that the bus fabric routes to (APB1, APB2 and AHB) and the GPIOC

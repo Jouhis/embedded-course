@@ -2,7 +2,8 @@
  * Sensor (an NTC on the ADC, sensor_ntc.c), OLED (SSD1306), two buttons with interrupts, a menu state machine,
  * non-blocking timing and UART logging. Every task runs from one super-loop with
  * deadlines, and no call waits for hardware except the bounded I2C transfers. */
-// EXPECT: LAB3 OK
+// EXPECT: MIN=
+// (MIN= is logged only once the NTC driver delivers a sample; "LAB3 OK" only means init passed.)
 #include <stdio.h>
 
 #include "pico/stdlib.h"

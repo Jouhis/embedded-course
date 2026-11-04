@@ -5,6 +5,7 @@
 use core::cell::{Cell, RefCell};
 
 use critical_section::Mutex;
+use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::{OutputPin, StatefulOutputPin};
 use panic_halt as _;
 use rp2040_hal::{
@@ -12,7 +13,7 @@ use rp2040_hal::{
     clocks::init_clocks_and_plls,
     gpio::{bank0::Gpio14, FunctionSio, Interrupt as PinInterrupt, PullUp, SioInput},
     pac::{self, interrupt},
-    Clock, Sio, Watchdog,
+    Sio, Watchdog,
 };
 
 // The RP2040 boot ROM reads this 256-byte second-stage bootloader from flash (lesson 42, datasheet
@@ -55,11 +56,13 @@ fn IO_IRQ_BANK0() {
 #[hal::entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let clocks = init_clocks_and_plls(XOSC_HZ, pac.XOSC, pac.CLOCKS, pac.PLL_SYS, pac.PLL_USB,
                                       &mut pac.RESETS, &mut watchdog).ok().unwrap();
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    // The RP2040's TIMER peripheral counts microseconds, whatever the system clock is, and it
+    // implements embedded-hal's DelayNs. (The Cortex-M SysTick delay, cortex_m::delay::Delay,
+    // would also work on the chip, but it hangs in the Wokwi simulator.)
+    let mut delay = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let sio = Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
 
@@ -68,7 +71,10 @@ fn main() -> ! {
 
     // The button is a pulled-up input: it reads high until the switch connects GP14 to ground.
     // Pressing it makes a falling edge, which is the interrupt we enable here.
-    let button = pins.gpio14.into_pull_up_input();
+    let mut button = pins.gpio14.into_pull_up_input();
+    // Clear any edge latched while the pin was being set up (it starts with a pull-down), or
+    // the handler runs as soon as the line is unmasked and pauses the blink with no press.
+    button.clear_interrupt(PinInterrupt::EdgeLow);
     button.set_interrupt_enabled(PinInterrupt::EdgeLow, true);
 
     // Moving the pin into the Mutex transfers ownership: main can no longer touch it, and only the

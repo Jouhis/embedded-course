@@ -90,7 +90,13 @@ int main(void) {
     bangbang_init(&heater_ctl);
     runaway_reset(&runaway);
     bool display_ok = display_init();
-    hal_log(display_ok ? "DRYER DRIVERS OK" : "DRYER DRIVERS: display missing");
+    /* The pass line needs both drivers: the display answered, and one NTC reading converts. */
+    uint16_t raw0 = 0u;
+    int32_t centi0 = 0;
+    bool sensor_ok = sensor_read(&raw0, &centi0);
+    hal_log(!display_ok ? "DRYER DRIVERS: display missing"
+            : !sensor_ok ? "DRYER DRIVERS: no valid NTC reading"
+            : "DRYER DRIVERS OK");
 
     uint32_t next_btn = hal_millis();
     uint32_t next_ctl = hal_millis();

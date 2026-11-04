@@ -4,7 +4,7 @@
  *
  * Serial: USART1 TX on PA9, 115200 baud (lesson 70).
  */
-// EXPECT: HardFault PC=0x
+// SIM: skip Wokwi's STM32 core raises no fault exceptions; on a real board it prints "HardFault PC=0x..."
 #include <stdint.h>
 #include "stm32f1xx.h"
 

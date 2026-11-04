@@ -14,9 +14,10 @@ Files in this skill:
 | File | What it does |
 |---|---|
 | `scripts/browser-helpers.js` | Paste into the page once per load. Defines `__run`, `__setDiagram`, `__wires`, `__pinPos`. |
+| `scripts/firmware-helpers.js` | Paste after browser-helpers.js. Runs firmware built on this machine (STM32, Zephyr, Rust, Pico 2, multi-file labs): see section 2b. |
 | `scripts/payload.py` | Prints a ready `__run(...)` call for a project folder (main.c, diagram.json, EXPECT line). |
 | `scripts/route.py` | Applies a layout file to a diagram.json: part positions plus explicit wire routes. Holds the pin table. |
-| `layouts/*.py` | The layouts of 0002–0025 and 0051–0065, 0106. `leds_row.py` and `button_gp14.py` are shared pieces (an LED row left of the Pico, a button on GP14) that layouts `exec` from `LAYOUT_DIR`. Copy the closest one as a start. |
+| `layouts/*.py` | The layouts of 0002–0025, 0051–0072, 0090, 0096–0098, 0106, 0110, 0113 (also 0115–0117), lab03 (also lab04/pico, lab06), lab04bp (lab04/bluepill, lab05) and the Pico 2 bench labs. Shared pieces that layouts `exec` from `LAYOUT_DIR`: `leds_row.py` (an LED row left of the Pico), `button_gp14.py` and `btn_gp14_gnd4.py` (a button on GP14), `i2c_chip_left.py` (mystery chip left of the Pico), `bp_led_b0.py`, `bp_button_a0.py`, `bp_buttons_top.py` (Blue Pill LED, button, two buttons), `bench_small.py`. Copy the closest one as a start. |
 
 Paths below are relative to the repo root. Run Python with `-I`.
 
@@ -62,6 +63,65 @@ Projects with more files: inline the local headers and append the other `.c` fil
 main.c (`src/` too). Generated headers such as `pattern.pio.h` are in the project's `build/`.
 A lab that needs a button press (0057): start the run, screenshot, then `left_click` the
 button on the canvas.
+
+## 2b. Run locally built firmware (STM32, FreeRTOS, Zephyr, Rust, Pico 2, multi-file labs)
+
+The editor can't compile these, but it runs any firmware file: build it here
+(`python -I tools/build.py <project>`) and hand Wokwi the `.hex`/`.elf` named in the
+project's `wokwi.toml`. Any editor page works (the Pico SDK one is fine): the board comes from
+the diagram you load, so a Blue Pill diagram runs STM32 firmware.
+
+1. Open the editor and paste `browser-helpers.js` as in section 1, then paste
+   `scripts/firmware-helpers.js`. It adds a file input labelled "firmware stand-in".
+2. `find` "file input labelled 'firmware stand-in'" once; its ref stays valid until the page
+   reloads.
+3. Custom-chip labs (0063, 0098, lab03–lab06, bench08): add the chip files once per page
+   load. Click the dropdown next to the file tabs (about (160, 29)), click "Upload file(s)..."
+   (about (200, 95)), then `file_upload` `mystery.chip.c` and `mystery.chip.json` to the input
+   labelled "project file stand-in". They show up as file tabs; the chip compiles in the
+   cloud and answers uploaded firmware. Its first reading can take a second (`T=none`).
+4. One `browser_batch` per run (or two or three runs; keep a batch under ~40 s of waiting, a
+   longer one times out and can hang Chrome):
+   ```
+   file_upload      ref=<stand-in>, paths=[<abs dir>/diagram.json, <abs dir>/build/blink.hex]
+   javascript_tool  await __fwWait('EXPECT TEXT', 10)
+   ```
+   The stand-in stops the run, loads the diagram, then triggers Wokwi's "Upload Firmware and
+   Start Simulation" with the file. `__fwWait` returns `{started, passed, secs, tail}`, plus
+   `error` when the diagram couldn't load (open the diagram.json tab once). A starter that
+   prints the same text as the run before shows `started: false`.
+5. A lab that waits for a button (0072, 0096, 0097): press it from the same call, before the
+   wait:
+   ```js
+   setTimeout(() => { const b = document.querySelector('wokwi-pushbutton');
+     b.dispatchEvent(new Event('button-press'));
+     setTimeout(() => b.dispatchEvent(new Event('button-release')), 200); }, 3000);
+   await __fwWait('EXPECT TEXT', 12)
+   ```
+6. `tail` holds only the last 300 characters. A lab that prints its pass line and then floods
+   the monitor (bench03) can report `passed: false` while the line is there: check
+   `__serial().includes('...')`.
+
+file_upload accepts repo paths. Wokwi picks the firmware type from the file extension, and a
+Rust ELF (0110, `target/thumbv6m-none-eabi/release/blink`) has none: copy it to
+`.wokwi-tmp/blink-solution.elf` in the repo root first, and delete that folder afterwards.
+
+Never `await` Wokwi's `uploadFirmware` editor action: it only resolves once a file is chosen,
+and the tool call hangs.
+
+What Wokwi's STM32 (Blue Pill) core can't do, measured this way:
+- No fault exceptions: unaligned loads with UNALIGN_TRP, `udf`, divide by zero with DIV_0_TRP
+  and loads from unmapped addresses all just run on; a call to an even address resets the
+  chip. `svc` does reach SVC_Handler. Fault-handler labs (0084) are `SIM: skip`.
+- RCC_APB2ENR reads back as 0 (0037).
+- FreeRTOS: see CHANGELOG 0.0.3 known issues (no interrupt masking, PendSV loops). The FreeRTOS
+  labs (0087–0093, lab05, 0116, 0117) can be laid out, but their runs say nothing.
+
+And on the RP2040/RP2350:
+- Zephyr's RP2040 I2C driver gets no answer from a custom chip (timeout -116), while the Pico
+  SDK driver works with the same chip and wiring (0098 and lab06 are `SIM: skip`).
+- The RP2350 doesn't reset on the watchdog (bench14 is `SIM: skip`).
+- USB CDC isn't simulated (0102).
 
 ## 3. What to check for each lab
 
@@ -134,10 +194,20 @@ net's wire, signals flowing one way.
    circuit. Fix overlaps by moving parts or lanes; repeat.
 4. Run the solution and starter again (section 2). A layout change must not change results.
 
-**Pin positions.** `route.py`'s `PINS` table has the Pico, LED (and `@90`), resistor (`@90`,
-`@180`), AND/OR/XOR/NOT gates, D flip-flop, pushbutton, 74HC595, potentiometer (`@90`, `@270`),
-NTC (`@180`), servo (`@180`), buzzer (`@90`, `@270`), MPU6050 (`@180`) and logic analyzer
-(`@180`, but its label then reads upside down: keep it upright). For any other part, measure it:
+**Pin positions.** `route.py`'s `PINS` table has the Pico, Pico 2, Blue Pill, LED (and `@90`,
+`@180`), resistor (`@90`, `@180`, `@270`), AND/OR/XOR/NOT gates, D flip-flop, pushbutton (and
+`@90`), 74HC595, potentiometer (`@90`, `@270`), NTC (`@90`, `@180`), servo (`@90`, `@180`,
+`@270`), buzzer (`@90`, `@270`), MPU6050 (`@180`), SSD1306 (`@90`, `@180`), KY-040 encoder
+(`@90`, `@270`), LED ring, mystery chip (`@180`, `@270`) and logic analyzer (`@180`). Keep
+labelled parts upright where you can: at 180 the logic analyzer's and the mystery chip's
+labels read upside down. The chip at 180 is still used in lab03/lab04bp, because no other
+rotation turns SCL/SDA towards the board.
+
+Pin order on the boards: the Pico has GP4 (SDA) above GP5 (SCL), but the SSD1306 and the
+mystery chip list SCL first in every rotation, so each I2C part left of a Pico costs one
+crossing. The Blue Pill has PB6 (SCL) above PB7 (SDA), so its I2C wires run straight.
+Pushbutton pins 1.l/1.r are one contact and 2.l/2.r the other: pick whichever side avoids a
+crossing. For any other part, measure it:
 ```js
 JSON.stringify(await __pinPos([{type: 'wokwi-flip-flop-d', id: 'p', top: 0, left: 0, attrs: {}}], ['p:D', 'p:Q']))
 ```
@@ -145,6 +215,12 @@ Offsets come out relative to the part's top-left. Add them to `PINS`. A rotated 
 its own entry, `"<type>@<degrees>"`, measured with the rotation set.
 
 ## Pitfalls
+
+- Write layout files with the file tool, not one big bash command with several heredocs: that
+  failed to parse ("unexpected EOF") and nothing ran. Heredocs also turn a doubled backslash into a single one.
+- A script that does string replacements in several diagram.json files and then runs
+  route.py sometimes reported a replacement as missing on its first run. Grep the files
+  afterwards rather than trusting the report.
 
 - **Stale serial output gives false passes.** The monitor keeps the old text until the new run
   starts after the compile. `__run` stops the sim first and waits for the text to change. Keep

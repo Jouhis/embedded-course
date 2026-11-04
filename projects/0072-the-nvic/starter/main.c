@@ -118,9 +118,12 @@ static void tim2_tick_start(void) {
     RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
     TIM2->PSC  = TIM2_PSC_1KHZ;
     TIM2->ARR  = TIM2_ARR_100HZ;
-    TIM2->DIER = TIM_DIER_UIE;      /* raise an interrupt on each update event */
     TIM2->EGR  = TIM_EGR_UG;        /* load PSC and ARR now */
     TIM2->SR   = 0U;                /* clear the update flag from the EGR write */
+    /* Enable the interrupt only now. With UIE already set, the UG write itself would
+     * raise one, a tick that never happened. (In Wokwi it is worse: an interrupt raised
+     * by a store returns to that store and runs it again, so the program hangs here.) */
+    TIM2->DIER = TIM_DIER_UIE;      /* raise an interrupt on each update event */
     TIM2->CR1  = TIM_CR1_CEN;
 }
 

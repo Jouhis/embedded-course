@@ -1,4 +1,5 @@
 // EXPECT: LAB6 OK
+// SIM: skip Zephyr's RP2040 I2C driver gets no answer from the chip in Wokwi (timeout -116); the Pico SDK version (0063) runs
 /* Lab 6: the Lab 4 monitor on Zephyr, split into threads. The application code in
  * ../../lab04-port-lab3-to-stm32/app is unchanged. Its app_run() is one super-loop, so this
  * file runs the same jobs as separate threads, and each thread calls the app's public functions:

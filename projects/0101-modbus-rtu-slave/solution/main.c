@@ -9,6 +9,7 @@
  * The protocol code is in modbus.c and crc16.c, which have no hardware in them. This file
  * only does the framing: it collects bytes from the UART and decides when a frame has ended. */
 // EXPECT: MODBUS SLAVE READY
+#include <stdbool.h>
 #include "pico/stdlib.h"
 #include "hardware/uart.h"
 #include "modbus.h"
@@ -61,6 +62,21 @@ static void bus_poll(void) {
     }
 }
 
+/* Boot self-test: answer one known request before going on the bus. Read holding register 2
+ * (the sensor, 2250 = 0x08CA) from slave 1. Both frames are fixed bytes with their CRC, so a
+ * wrong CRC routine or a missing function 03 fails here, not later on the bus. */
+static bool self_test(void) {
+    static const uint8_t req[] = { 0x01, 0x03, 0x00, 0x02, 0x00, 0x01, 0x25, 0xCA };
+    static const uint8_t want[] = { 0x01, 0x03, 0x02, 0x08, 0xCA, 0x3F, 0xD3 };
+    uint8_t rsp[MODBUS_MAX_FRAME];
+    size_t n = modbus_process(&slave, req, sizeof req, rsp);
+    if (n != sizeof want) return false;
+    for (size_t i = 0; i < n; i++) {
+        if (rsp[i] != want[i]) return false;
+    }
+    return true;
+}
+
 int main(void) {
     uart_init(BUS_UART, BUS_BAUD);
     gpio_set_function(BUS_TX_PIN, GPIO_FUNC_UART);
@@ -70,7 +86,8 @@ int main(void) {
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
     regs[REG_SENSOR] = SENSOR_CENTI_C;
-    uart_puts(BUS_UART, "MODBUS SLAVE READY\r\n");   // stdio is off: UART0 is the Modbus bus
+    // stdio is off: UART0 is the Modbus bus
+    uart_puts(BUS_UART, self_test() ? "MODBUS SLAVE READY\r\n" : "MODBUS SELF-TEST FAILED\r\n");
 
     uint32_t last_tick_us = time_us_32();
     while (true) {

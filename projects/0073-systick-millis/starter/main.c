@@ -111,8 +111,11 @@ int main(void) {
 
         if (!reported && timed_out(start, TIMEOUT_MS)) {
             reported = 1U;
+            /* Read the time before printing: sending "TIMEOUT elapsed=" takes about
+             * 1.4 ms at 115200 baud, so a read after it would show 2001. */
+            uint32_t elapsed = millis() - start;   /* 2000 even across the wrap */
             uart_puts("TIMEOUT elapsed=");
-            uart_put_uint(millis() - start);     /* 2000 even across the wrap */
+            uart_put_uint(elapsed);
             uart_puts(" ms\r\n");
         }
     }

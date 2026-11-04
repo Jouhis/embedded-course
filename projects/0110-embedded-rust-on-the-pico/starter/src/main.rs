@@ -1,9 +1,10 @@
 #![no_std]
 #![no_main]
 
+use embedded_hal::delay::DelayNs;
 use embedded_hal::digital::OutputPin;
 use panic_halt as _;
-use rp2040_hal::{self as hal, clocks::init_clocks_and_plls, pac, Clock, Sio, Watchdog};
+use rp2040_hal::{self as hal, clocks::init_clocks_and_plls, pac, Sio, Watchdog};
 
 // The RP2040 boot ROM reads this 256-byte second-stage bootloader from flash (lesson 42).
 #[link_section = ".boot2"]
@@ -15,11 +16,13 @@ const XOSC_HZ: u32 = 12_000_000;
 #[hal::entry]
 fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
-    let core = pac::CorePeripherals::take().unwrap();
     let mut watchdog = Watchdog::new(pac.WATCHDOG);
     let clocks = init_clocks_and_plls(XOSC_HZ, pac.XOSC, pac.CLOCKS, pac.PLL_SYS, pac.PLL_USB,
                                       &mut pac.RESETS, &mut watchdog).ok().unwrap();
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    // The RP2040's TIMER peripheral counts microseconds, whatever the system clock is, and it
+    // implements embedded-hal's DelayNs. (The Cortex-M SysTick delay, cortex_m::delay::Delay,
+    // would also work on the chip, but it hangs in the Wokwi simulator.)
+    let mut delay = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
     let sio = Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
     let mut led = pins.gpio25.into_push_pull_output();

@@ -14,6 +14,7 @@
  * 12.9.5; the SDK itself uses scratch 4 to 7, so this program uses 0 only).
  */
 // EXPECT: BENCH14 both crashes recorded
+// SIM: skip Wokwi's RP2350 does not reset on the watchdog, so run 2 never starts
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -106,6 +107,13 @@ int main(void) {
     } else {
         printf("BENCH14 no valid note (power-on, or RAM held garbage)\n");
     }
+    // Scratch 1 remembers which notes came back: bit 0 the stuck loop's (read in run 2),
+    // bit 1 the HardFault's (read in run 3). Like scratch 0, it survives the watchdog reset.
+    if (run == 1) {
+        watchdog_hw->scratch[1] = 0;
+    } else if (note_valid()) {
+        watchdog_hw->scratch[1] |= 1u << (run - 2u);
+    }
     memset(&note, 0, sizeof note);          // a note is read once
 
     if (run == 1) {
@@ -118,7 +126,11 @@ int main(void) {
         sleep_ms(100);
         on_event();
     }
-    printf("BENCH14 both crashes recorded\n");
+    if ((watchdog_hw->scratch[1] & 3u) == 3u) {
+        printf("BENCH14 both crashes recorded\n");
+    } else {
+        printf("BENCH14 a note was lost (got 0x%lx of 0x3)\n", (unsigned long)(watchdog_hw->scratch[1] & 3u));
+    }
     watchdog_hw->scratch[0] = 0;            // next reset starts the sequence again
     while (true) {
         sleep_ms(1000);

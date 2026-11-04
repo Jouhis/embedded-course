@@ -50,7 +50,10 @@ int main(void) {
         }
         printf("BENCH2 highs=%u/%u changes=%u\n", highs, SAMPLES, changes);
         if (changes == 0 && highs == SAMPLES) {
-            printf("BENCH2 stable high\n");     // button up and pulled up: the defined idle level
+            // Button up and pulled up: the defined idle level. The pull is in the line because
+            // the simulator reads a floating pin as a steady high, which a real pin is not.
+            printf("BENCH2 stable high pull=%s\n",
+                   INPUT_PULL == PULL_UP ? "up" : INPUT_PULL == PULL_DOWN ? "down" : "none");
         } else if (changes == 0 && highs == 0) {
             printf("BENCH2 stable low\n");      // button held, or pulled down
         }

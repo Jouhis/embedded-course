@@ -2,6 +2,54 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.5 (2026-11-04)
+
+### Every Wokwi lab after lesson 25 checked in the browser
+
+The Wokwi CLI's minutes ran out, so the labs were run in the Wokwi browser editor instead
+(the `wokwi-browser` skill): Pico SDK labs compiled there, everything else (STM32, Zephyr, Rust,
+Pico 2, custom chips) built locally and uploaded as firmware.
+
+Fixes found that way:
+- 0037: EXPECT is the RCC base line; Wokwi reads RCC_APB2ENR back as 0.
+- 0071: Wokwi doesn't simulate input capture or encoder mode. The lab also measures the servo
+  pulse by polling PB0 against TIM3 and prints `POLL pulse_us=1500 SERVO OK`; the lesson says why
+  the CAPTURE line reads 0 in the simulator.
+- 0072: TIM2's update interrupt is enabled after the UG write, so it no longer fires a tick that
+  never happened (in Wokwi it hung the program). A button scenario presses the button.
+- 0073: the elapsed time is read before printing, so it shows 2000 ms, not 2001.
+- 0101: a boot self-test answers one known Modbus request before the slave goes on the bus.
+- 0110 (Rust): the delay uses the RP2040 TIMER instead of SysTick (which hangs in Wokwi), and a
+  button edge latched during pin setup is cleared before the interrupt is enabled.
+- `templates/rust-pico`: the same TIMER delay as 0110, and `SIM: skip` (it only blinks), so
+  `verify_projects.py` passes again.
+- 0115 and bench18: `DRYER DRIVERS OK` needs a valid NTC reading as well as the display.
+- bench02: the pass line names the pull (`pull=up`), because the simulator reads a floating pin
+  as a steady high. bench08 waits for `MIN=` (a real sample), not just `LAB3 OK`.
+- bench14: run 3 reports which crash notes came back instead of claiming both.
+- `SIM: skip` with the reason in the code and the lesson: 0084 (Wokwi's STM32 core raises no
+  fault exceptions), 0098 and lab06 (Zephyr's RP2040 I2C driver gets no answer from the custom
+  chip; the Pico SDK version in 0063 works), 0110 (no serial output), bench14 (the RP2350 doesn't
+  reset on the watchdog).
+
+Diagrams: parts placed and wires routed explicitly for 0059, 0061, 0063, 0067, 0069, 0070, 0071,
+0072, 0090, 0096, 0097, 0098, 0110, the dryer (0113, 0115, 0116, 0117), lab03, lab04 (both
+boards), lab05, lab06 and the Pico 2 bench labs 1–8, 17 and 18. No wire crosses a part. Only
+same-net pin swaps changed the connections (another GND or 3V3 pin, a button's other contact).
+Crossings that pin order forces are one right angle each (an I2C part left of a Pico has SCL and
+SDA in the opposite order to GP4/GP5).
+
+Checked on the new diagrams: the solutions of 0059, 0061, 0063, 0067, 0069, 0070, 0071, 0072,
+0096, 0097, 0113, 0115, lab03, lab04 (Blue Pill) and bench02–08, 17 and 18 print their EXPECT
+line; the starters checked still don't. The lab04 Pico folder is the worked example, so its
+starter passes by design.
+
+Known issues:
+- The FreeRTOS labs (0087–0093, lab05, 0116, 0117) still can't run in Wokwi (see 0.0.3). Their
+  diagrams are laid out but not run.
+- The Wokwi CLI checks (`verify_projects.py --sim`) still wait for minutes; the browser runs above
+  are by hand.
+
 ## 0.0.4 (2026-11-03)
 
 ### Bench labs need only the Pico 2 and the Nucleo-U5
@@ -117,7 +165,7 @@ Known issues:
   (lessons 87 to 93, Lab 5, the capstone's RTOS, Modbus and bootloader projects) are build-checked
   only until Wokwi fixes its core. A report with a minimal repro is ready to send to Wokwi.
 - The same simulator bugs probably explain some bare-metal failures (`__enable_irq()` sets PRIMASK
-  in Wokwi). Still to check:
+  in Wokwi). Still to check (all fixed or explained in 0.0.5):
   - 0057 (`presses=1`) and 0098 wait for a button press, so they cannot pass unattended as written.
   - 0071: input capture reads `pulse_us=0` (expected 1500).
   - 0072: prints nothing at all, not even the line before the interrupts start.
@@ -128,7 +176,7 @@ Known issues:
   debugging used up. Automated simulation checks (`verify_projects.py --sim`) wait for the next
   month or a paid plan.
 - The Zephyr projects that were renamed still have build folders from their old paths; build them
-  once with `--clean`.
+  once with `--clean`. (Done in 0.0.5.)
 
 ## 0.0.2 (2026-11-01)
 

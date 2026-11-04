@@ -1,4 +1,5 @@
 // EXPECT: MYSTERY WHO_AM_I 0xa7
+// SIM: skip Zephyr's RP2040 I2C driver gets no answer from the chip in Wokwi (timeout -116); the Pico SDK version (0063) runs
 /* Read the MYS-1 sensor over I2C through the driver model, and count button presses with a
  * GPIO interrupt. Both devices are described in boards/rpi_pico.overlay. */
 #include <zephyr/kernel.h>
