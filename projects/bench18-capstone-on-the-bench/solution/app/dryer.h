@@ -1,4 +1,4 @@
-/* dryer.h: the drying cycle state machine (lesson 114). Pure logic: inputs and outputs are structs.
+/* dryer.h: the drying cycle state machine (lesson 115). Pure logic: inputs and outputs are structs.
  *
  *   IDLE --start--> HEATING --within 1 C of setpoint--> HOLDING --time done--> COOLDOWN --below 40 C--> IDLE
  *   HEATING or HOLDING --start (stop)--> COOLDOWN

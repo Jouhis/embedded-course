@@ -1,4 +1,4 @@
-/* buttons.c: debounced button events (lesson 115). The debounce is the lesson 80 module. */
+/* buttons.c: debounced button events (lesson 116). The debounce is the lesson 80 module. */
 #include "buttons.h"
 #include "hal.h"
 

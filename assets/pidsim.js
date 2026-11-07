@@ -1,8 +1,8 @@
-/* PID tuner on the lesson 107 heater. Load after course.js and plot.js.
+/* PID tuner on the lesson 108 heater. Load after course.js and plot.js.
  *
  *   <div class="widget pidsim"></div>
  *
- * Same model and controller as projects/0107-pid-host/solution:
+ * Same model and controller as projects/0108-pid-host/solution:
  *   plant  T <- T + dt * (P * 80 - (T - 25)) / 60, dt = 1 s, 1200 steps
  *   PID    e = sp - meas; P = kp e; I += ki e dt, clamped to 0..1 (anti-windup);
  *          D = -kd (meas - last_meas) / dt, zero on the first sample; u = clamp(P + I + D, 0, 1)

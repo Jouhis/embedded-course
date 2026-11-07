@@ -135,10 +135,16 @@
   Application report giving the buck loss sources and an efficiency procedure. Use for: lesson 15. Verified from a search summary only; check before the next revision.
 
 - [pico-sdk watchdog.c (Raspberry Pi, GitHub)](https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_watchdog/watchdog.c)
-  The SDK's watchdog code, pico-sdk 2.3.1: _watchdog_enable() multiplies the delay by WATCHDOG_XFACTOR, which is 2 on the RP2040 (errata RP2040-E1). Use for: lesson 0044 (the code, line by line). The file was read from the local SDK 2.3.1 copy in this pass; the GitHub URL is the same file on the master branch.
+  The SDK's watchdog code, pico-sdk 2.3.1: _watchdog_enable() multiplies the delay by WATCHDOG_XFACTOR, which is 2 on the RP2040 (errata RP2040-E1). Use for: lesson 44 (the code, line by line). The file was read from the local SDK 2.3.1 copy in this pass; the GitHub URL is the same file on the master branch.
+
+- [W25Q16JV-DTR datasheet, Rev I (Winbond)](https://www.winbond.com/resource-files/W25Q16JV_DTR%20RevI%2005252026%20Plus.pdf)
+  The Pico's 2 MB flash chip (Pico datasheet, chapter 1). Section 1: 8,192 pages of 256 bytes, erased in 4 KB sectors (512 of them). Section 2: at least 100K program-erase cycles, more than 20 years of retention. Section 9.6: sector erase 45 ms typical, 400 ms maximum. Page Program (02h) writes previously erased (FFh) locations. Use for: lesson 105.
+
+- [Pico SDK 2.3.1, hardware/flash.h (GitHub)](https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_flash/include/hardware/flash.h)
+  flash_range_erase() and flash_range_program(): sector- and page-aligned offsets, erase sets bits to one and program only clears them, interrupts off and the other core stopped during the call. pico/flash.h adds flash_safe_execute(). Use for: lesson 105.
 
 - [STM32F1 medium-density errata sheet (ST, DocID 14574)](https://www.st.com/en/microcontrollers-microprocessors/stm32f1-series/documentation.html)
-  The errata for STM32F101x8/B, STM32F102x8/B and STM32F103x8/B medium-density parts. The title comes from a search result, not from an opened copy. The page link is the ST F1 documentation index; open it and confirm the exact sheet and current revision before the link is used as a primary source. Use for: lesson 0044 (which errata sheet a Blue Pill needs). Not yet verified in this pass.
+  The errata for STM32F101x8/B, STM32F102x8/B and STM32F103x8/B medium-density parts. The title comes from a search result, not from an opened copy. The page link is the ST F1 documentation index; open it and confirm the exact sheet and current revision before the link is used as a primary source. Use for: lesson 44 (which errata sheet a Blue Pill needs). Not yet verified in this pass.
 
 - [Pico SDK: hardware APIs (hardware_gpio, hardware_i2c, hardware_sync, hardware_dma)](https://www.raspberrypi.com/documentation/pico-sdk/hardware.html)
   The GPIO interrupt callback, the I2C blocking calls and their return values (PICO_ERROR_GENERIC on no acknowledge), and the spinlock and interrupt-state helpers in hardware_sync. Use for: lesson 64, lesson 65 and lab 3. Already cited by lessons 60 to 63, and not yet listed here.
@@ -147,7 +153,7 @@
   How Twister finds test description files, the platform and harness options, and the native_sim Linux requirement. Use for: lesson 99.
 
 - [Pico SDK 2.3.1 source, pico_divider/divider_hardware.S (GitHub)](https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/pico_divider/divider_hardware.S)
-  The SDK's __aeabi_idiv wrapper, which runs integer division on the RP2040 hardware divider in the SIO block. Use for: lesson 106 (why a divide by a power of two is still worth a shift on the Pico) and lesson 21.
+  The SDK's __aeabi_idiv wrapper, which runs integer division on the RP2040 hardware divider in the SIO block. Use for: lesson 107 (why a divide by a power of two is still worth a shift on the Pico) and lesson 21.
 
 ### Books (the canonical texts)
 - [_The Definitive Guide to ARM Cortex-M3 and Cortex-M4 Processors_, Joseph Yiu (Newnes)](https://www.sciencedirect.com/book/9780124080829/the-definitive-guide-to-arm-cortex-m3-and-cortex-m4-processors)
@@ -186,7 +192,7 @@
 - [Nordic DevAcademy: nRF Connect SDK Fundamentals](https://academy.nordicsemi.com/courses/nrf-connect-sdk-fundamentals/)
   An excellent free Zephyr course (Nordic's SDK is built on Zephyr). Use for: Part 7.2.
 - [The Embedded Rust Book](https://docs.rust-embedded.org/book/)
-  Official Rust embedded working group book. Use for: lesson 110.
+  Official Rust embedded working group book. Use for: lesson 111.
 - [Embedded Artistry](https://embeddedartistry.com/)
   Articles on embedded architecture, process and C/C++. Use for: Part 6.
 - [Unity test framework (Throw The Switch)](https://www.throwtheswitch.org/unity)
@@ -199,13 +205,13 @@
   Which Cortex-M cores have hardware SDIV and UDIV, with a table of M0, M0+, M1, M3 and M4. Use for: lesson 21, the reason a software divide is slow on the M0+.
 
 - [rp2040-hal 0.11.0 documentation (docs.rs)](https://docs.rs/rp2040-hal/0.11.0/rp2040_hal/)
-  The rp2040-hal crate: GPIO, clocks, UART and interrupts. The docs.rs gpio page does not show the interrupt methods; read them in the crate source (src/gpio/mod.rs, set_interrupt_enabled, interrupt_status and clear_interrupt). Use for: lesson 110.
+  The rp2040-hal crate: GPIO, clocks, UART and interrupts. The docs.rs gpio page does not show the interrupt methods; read them in the crate source (src/gpio/mod.rs, set_interrupt_enabled, interrupt_status and clear_interrupt). Use for: lesson 111.
 
 - [The Embedded Rust Book, Singletons](https://docs.rust-embedded.org/book/peripherals/singletons.html)
-  Peripherals::take() and why the singleton gives one owner per peripheral. Use for: lesson 110. Secondary to the book's root page already listed above.
+  Peripherals::take() and why the singleton gives one owner per peripheral. Use for: lesson 111. Secondary to the book's root page already listed above.
 
 - [Ferrocene (Ferrous Systems)](https://www.ferrous-systems.com/ferrocene)
-  A Rust toolchain from Ferrous Systems that is offered for safety-critical projects (ISO 26262 and IEC 61508). Its qualification scope changes by release; check the vendor's current statement before use. Use for: lesson 110, the balance section. Vendor source: mark as secondary.
+  A Rust toolchain from Ferrous Systems that is offered for safety-critical projects (ISO 26262 and IEC 61508). Its qualification scope changes by release; check the vendor's current statement before use. Use for: lesson 111, the balance section. Vendor source: mark as secondary.
 
 - [Wokwi license](https://wokwi.com/license)
   Personal 30-day license for Wokwi VS Code, free for open-source projects, and paid for commercial use. The page does not state renewal. Use for: lesson 1 (license terms).
@@ -226,10 +232,10 @@
   The page that says secrets are not passed to a workflow triggered from a forked repository (GITHUB_TOKEN is still passed). Use for: lesson 82, the simulate job's if line. Opened in this pass.
 
 - [KiCad 9.0 documentation: Pcbnew (docs.kicad.org)](https://docs.kicad.org/9.0/en/pcbnew/pcbnew.html)
-  The board editor: the design rules checker (copper clearance, minimum width, and that every pad is connected as the netlist says), the board setup dialog that holds the design rules, and the fabrication outputs and drill files. Verified as the KiCad 9.0 manual in this build. Use for: lesson 108.
+  The board editor: the design rules checker (copper clearance, minimum width, and that every pad is connected as the netlist says), the board setup dialog that holds the design rules, and the fabrication outputs and drill files. Verified as the KiCad 9.0 manual in this build. Use for: lesson 109.
 
 - [RFC 2217: Telnet COM Port Control Option (rfc-editor.org)](https://www.rfc-editor.org/rfc/rfc2217)
-  Not fetched in this pass. Lesson 0117 mentions RFC 2217 in one sentence and does not link it yet.
+  Not fetched in this pass. Lesson 118 mentions RFC 2217 in one sentence and does not link it yet.
 
 ### Protocol and topic specifications
 - [UM10204: I2C-bus Specification (NXP)](https://www.nxp.com/docs/en/user-guide/UM10204.pdf)
@@ -241,11 +247,11 @@
 - [USB in a NutShell (Beyond Logic)](https://www.beyondlogic.org/usbnutshell/usb1.shtml)
   The classic USB primer. Use for: lesson 102.
 - [Improving the Beginner's PID, Brett Beauregard](http://brettbeauregard.com/blog/2011/04/improving-the-beginners-pid-introduction/)
-  A practical PID implementation series. Use for: lesson 107 and the capstone.
+  A practical PID implementation series. Use for: lesson 108 and the capstone.
 - [The Scientist and Engineer's Guide to DSP, Steven W. Smith](https://www.dspguide.com/)
-  A free DSP textbook. Use for: lesson 106.
+  A free DSP textbook. Use for: lesson 107.
 - [Bootlin embedded Linux training materials](https://bootlin.com/training/embedded-linux/)
-  Free, professional training slides and labs. Use for: lesson 109.
+  Free, professional training slides and labs. Use for: lesson 110.
 
 - [Liu and Layland, "Scheduling Algorithms for Multiprogramming in a Hard-Real-Time Environment", Journal of the ACM 20(1), 1973](https://doi.org/10.1145/321738.321743)
   The utilisation bound n(2^(1/n) − 1) for rate-monotonic scheduling. Use for: lesson 93. Check the DOI before merging; it was not opened during this build.
@@ -254,7 +260,7 @@
   The primary account of the Mars Pathfinder priority inversion, the mutex with priority inheritance disabled, and Glenn Reeves's reply in the same thread. Use for: lesson 91, the Mars Pathfinder story.
 
 - [RP2350 Datasheet (Raspberry Pi)](https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf)
-  The RP2350 datasheet. Use for: section 10.1.1 (secure boot: SHA-256, secp256k1 ECDSA, OTP key fingerprint, anti-rollback, glitch detectors, debug note), section 5.10.1 (enable steps) and section 10.5 (the enable procedure). Lesson 105. Opened and read in this build.
+  The RP2350 datasheet. Use for: section 10.1.1 (secure boot: SHA-256, secp256k1 ECDSA, OTP key fingerprint, anti-rollback, glitch detectors, debug note), section 5.10.1 (enable steps) and section 10.5 (the enable procedure). Lesson 106. Opened and read in this build.
 
 - [MCUboot design (docs.mcuboot.com)](https://docs.mcuboot.com/design.html)
   The MCUboot design document, which is the reference bootloader for Zephyr. Use for: the 32-byte image header and its magic value, the primary and secondary slots, and the test, confirm and revert swap types. Lesson 104. Opened and read in this build.
@@ -272,40 +278,40 @@
   The Bosch CAN 2.0 protocol specification, Part A (11-bit identifiers) and Part B (29-bit identifiers). Use for: the frame format, the error counters and the error-state thresholds. Lesson 100. Found by search, not opened: confirm the URL and the copy before merging.
 
 - [Regulation (EU) 2024/2847, Cyber Resilience Act (EUR-Lex)](https://eur-lex.europa.eu/eli/reg/2024/2847/oj/eng)
-  The official text of the EU Cyber Resilience Act. Use for: the obligations and the application dates in Article 71. Lesson 105. Not opened in this build: the fetch returned no content, and secondary sites disagree on the application dates, so check Article 71 before quoting a date.
+  The official text of the EU Cyber Resilience Act. Use for: the obligations and the application dates in Article 71. Lesson 106. Not opened in this build: the fetch returned no content, and secondary sites disagree on the application dates, so check Article 71 before quoting a date.
 
 - [RFC 1055: A Nonstandard for Transmission of IP Datagrams over Serial Lines (SLIP)](https://www.rfc-editor.org/rfc/rfc1055)
   The SLIP framing specification, with its END and ESC escaping. Use for: the comparison in lesson 103. Not opened in this build.
 
 - [The Scientist and Engineer's Guide to DSP, chapter 15 (dspguide.com)](https://www.dspguide.com/ch15.htm)
-  The chapter on digital filters, including the moving average. The fetch confirmed the PDF name Chapter15.pdf but not the chapter title; check the title in the book. Use for: lesson 106.
+  The chapter on digital filters, including the moving average. The fetch confirmed the PDF name Chapter15.pdf but not the chapter title; check the title in the book. Use for: lesson 107.
 
 - [The Scientist and Engineer's Guide to DSP, chapter 19 (dspguide.com)](https://www.dspguide.com/ch19.htm)
-  The chapter on recursive (IIR) filters. The fetch confirmed the PDF name Chapter19.pdf but not the chapter title; check the title in the book. Use for: lesson 106.
+  The chapter on recursive (IIR) filters. The fetch confirmed the PDF name Chapter19.pdf but not the chapter title; check the title in the book. Use for: lesson 107.
 
 - [Klipper Code Overview (klipper3d.org)](https://www.klipper3d.org/Code_Overview.html)
-  The Klipper host and MCU split: the host plans moves and sends queue_step commands, and the MCU fires steps from hardware timers. Use for: lesson 109 (the hybrid pattern) and the host and MCU split glossary entry.
+  The Klipper host and MCU split: the host plans moves and sends queue_step commands, and the MCU fires steps from hardware timers. Use for: lesson 110 (the hybrid pattern) and the host and MCU split glossary entry.
 
 - [Klipper Protocol (klipper3d.org)](https://www.klipper3d.org/Protocol.html)
-  The host-to-MCU message protocol, with the clock value in each command and the window of messages in flight. Use for: lesson 109.
+  The host-to-MCU message protocol, with the clock value in each command and the window of messages in flight. Use for: lesson 110.
 
 - [Buildroot (buildroot.org)](https://buildroot.org/)
-  The Buildroot project page: a tool for generating embedded Linux systems through cross-compilation. Use for: lesson 109.
+  The Buildroot project page: a tool for generating embedded Linux systems through cross-compilation. Use for: lesson 110.
 
 - [Yocto Project overview manual (docs.yoctoproject.org)](https://docs.yoctoproject.org/overview-manual/yp-intro.html)
-  The introduction to the Yocto Project for custom embedded Linux systems. Its comparison with Buildroot is not on this page, so cite Bootlin for the trade-off. Use for: lesson 109.
+  The introduction to the Yocto Project for custom embedded Linux systems. Its comparison with Buildroot is not on this page, so cite Bootlin for the trade-off. Use for: lesson 110.
 
 - [NXP, Functional safety white paper: IEC 61508 and ISO 26262 (2013, vendor)](https://nxp.com/docs/en/white-paper/FCTNLSFTYWP.pdf)
-  A vendor overview of both standards, with the SIL and ASIL levels and the comparison table. A 2013 vendor document: read the numbers as an overview. Use for: lesson 111. This is the only free functional safety primer fetched, so it fills the Gap noted below, partly.
+  A vendor overview of both standards, with the SIL and ASIL levels and the comparison table. A 2013 vendor document: read the numbers as an overview. Use for: lesson 112. This is the only free functional safety primer fetched, so it fills the Gap noted below, partly.
 
 - [Microchip SRAM self-test documentation: DIAG_SRAM_MarchCMinus](https://onlinedocs.microchip.com/oxy/GUID-CA566412-3E3C-467B-98AF-9F1D156615B7-en-US-3/GUID-4236B5E8-131B-4198-BED7-A31CE5426ACD.html)
-  The vendor's March C- SRAM test, which describes it as detecting stuck-at faults among others. The page was seen in a search result, not opened in full. Use for: lesson 111.
+  The vendor's March C- SRAM test, which describes it as detecting stuck-at faults among others. The page was seen in a search result, not opened in full. Use for: lesson 112.
 
 - [IEC 60063 (EN 60063:2015): preferred number series for resistors and capacitors (DIN publication page)](https://www.din.de/en/getting-involved/standards-committees/dke/publications/wdc-beuth:din21:240741276)
   The standard that defines the E12 and E24 series. Use for: lesson 9, the E12 rounding rule. The publication page does not show the table; the values are the ones in the E12 section of the sheet in `reference/electronics-formulas.html`.
 
 - [RISKS Digest 19.50: reply by Bob Rahe, "Mars Pathfinder priority inversion" (catless.ncl.ac.uk, December 1997)](https://catless.ncl.ac.uk/Risks/19/50)
-  A reply that dates the CMU priority inheritance paper to 1990 and notes earlier prior art in a mainframe locking scheme. Use for: lesson 0091, the note on prior art. The date is the replier's, not independently checked.
+  A reply that dates the CMU priority inheritance paper to 1990 and notes earlier prior art in a mainframe locking scheme. Use for: lesson 91, the note on prior art. The date is the replier's, not independently checked.
 
 ### Language and build references
 - [cppreference: Fixed-width integer types](https://en.cppreference.com/w/c/types/integer)
@@ -352,7 +358,7 @@
   Every GCC warning flag, and the group that enables it (-Wall, -Wextra, or none). Use for: lesson 83 and the MISRA quick list.
 
 - [Doxygen manual: usage (doxygen.nl)](https://www.doxygen.nl/manual/doxygen_usage.html)
-  The command-line options of doxygen, including -g, which writes a template configuration file, and the rule that a run without a configuration argument looks for a file named Doxyfile. Use for: lesson 0079.
+  The command-line options of doxygen, including -g, which writes a template configuration file, and the rule that a run without a configuration argument looks for a file named Doxyfile. Use for: lesson 79.
 
 ### Tools
 - [PulseView (sigrok)](https://sigrok.org/wiki/PulseView)
@@ -418,46 +424,49 @@
   How CMock generates a mock from a header, and the _ExpectAndReturn, _IgnoreAndReturn and _Verify functions. Use for: lesson 81. CMock needs Ruby, which the course does not install.
 
 - [KiCad 9.0 documentation: Eeschema (docs.kicad.org)](https://docs.kicad.org/9.0/en/eeschema/eeschema.html)
-  The schematic editor: choosing symbols, assigning footprints, the electrical rules check, the netlist and annotation. Verified as the KiCad 9.0.9 manual. Use for: lesson 108.
+  The schematic editor: choosing symbols, assigning footprints, the electrical rules check, the netlist and annotation. Verified as the KiCad 9.0.9 manual. Use for: lesson 109.
 
 - [KiCad documentation](https://docs.kicad.org/) and [Phil's Lab (YouTube)](https://www.youtube.com/@PhilsLab)
-  Official docs, plus the best practical PCB design channel. Use for: lesson 108.
+  Official docs, plus the best practical PCB design channel. Use for: lesson 109.
 
 - [Raspberry Pi Debug Probe](https://www.raspberrypi.com/products/debug-probe/)
-  The product page: a complete debug hardware solution for Arm microcontrollers, a USB-to-SWD and USB-to-UART bridge, powered by RP2040. Use for: lesson 120 (the starter kit and the probe wiring). The page gives no price.
+  The product page: a complete debug hardware solution for Arm microcontrollers, a USB-to-SWD and USB-to-UART bridge, powered by RP2040. Use for: lesson 121 (the starter kit and the probe wiring). The page gives no price.
 
 - [Raspberry Pi: Debug Probe documentation](https://www.raspberrypi.com/documentation/microcontrollers/debug-probe.html)
-  The SWD wiring (three-pin JST-SH and the header pins), and OpenOCD with GDB on port 3333 using interface/cmsis-dap.cfg and target/rp2040.cfg. Use for: lesson 120, moving a Wokwi project to a board. Opened in this build.
+  The SWD wiring (three-pin JST-SH and the header pins), and OpenOCD with GDB on port 3333 using interface/cmsis-dap.cfg and target/rp2040.cfg. Use for: lesson 121, moving a Wokwi project to a board. Opened in this build.
 
 - [Raspberry Pi: Pico series documentation](https://www.raspberrypi.com/documentation/microcontrollers/pico-series.html)
-  BOOTSEL mode (held while plugging in), drag-and-drop UF2 programming, and picotool. Use for: lesson 120 and the UF2 and BOOTSEL glossary entries. Opened in this build.
+  BOOTSEL mode (held while plugging in), drag-and-drop UF2 programming, and picotool. Use for: lesson 121 and the UF2 and BOOTSEL glossary entries. Opened in this build.
 
 - [picotool (Raspberry Pi, GitHub)](https://github.com/raspberrypi/picotool)
-  The command-line tool: `picotool info`, `picotool load blink.uf2`, and erase. Use for: lesson 120. Read in this build (the README's usage examples).
+  The command-line tool: `picotool info`, `picotool load blink.uf2`, and erase. Use for: lesson 121. Read in this build (the README's usage examples).
 
 - [Raspberry Pi Pico 2 product page](https://www.raspberrypi.com/products/raspberry-pi-pico-2/)
-  The RP2350 with dual Cortex-M33 or Hazard3 RISC-V cores at 150 MHz, and "available now from $5" (the price was seen when the lesson was written, 31 October 2026). Use for: lesson 120 (the starter kit). Opened in this build.
+  The RP2350 with dual Cortex-M33 or Hazard3 RISC-V cores at 150 MHz, and "available now from $5" (the price was seen when the lesson was written, 31 October 2026). Use for: lesson 121 (the starter kit). Opened in this build.
 
 - [NUCLEO-F411RE (STMicroelectronics)](https://www.st.com/en/evaluation-tools/nucleo-f411re.html)
-  The STM32 Nucleo-64 board with the STM32F411RE, Arduino and ST morpho connectivity, and the on-board ST-LINK debugger. Use for: lesson 120 (the starter kit). The page timed out in this build; the facts came from a search snippet of the same page.
+  The STM32 Nucleo-64 board with the STM32F411RE, Arduino and ST morpho connectivity, and the on-board ST-LINK debugger. Use for: lesson 121 (the starter kit). The page timed out in this build; the facts came from a search snippet of the same page.
 
 - [sigrok wiki: fx2lafw](https://sigrok.org/wiki/Fx2lafw)
-  The open firmware for FX2 and FX2LP logic analyzer clones: which devices are supported, and the 8-probe pin mapping (PB0 to PB7). Use for: lesson 120 (the logic analyzer). The wiki gives no sample rate; check the clone's listing. Opened in this build.
+  The open firmware for FX2 and FX2LP logic analyzer clones: which devices are supported, and the 8-probe pin mapping (PB0 to PB7). Use for: lesson 121 (the logic analyzer). The wiki gives no sample rate; check the clone's listing. Opened in this build.
 
 - [Espressif: ESP-IDF Get Started](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/index.html)
-  The official ESP32 framework (ESP-IDF), built with CMake and Ninja. Use for: lesson 120 (next topics: ESP32). Opened in this build.
+  The official ESP32 framework (ESP-IDF), built with CMake and Ninja. Use for: lesson 121 (next topics: ESP32). Opened in this build.
 
 - [Nordic: nRF54L15 development kit](https://www.nordicsemi.com/Products/Development-hardware/nRF54L15-DK)
-  The nRF54L15 is a Bluetooth LE SoC with a 128 MHz Arm Cortex-M33 core. Use for: lesson 120 (next topics: BLE). Opened in this build; no price shown.
+  The nRF54L15 is a Bluetooth LE SoC with a 128 MHz Arm Cortex-M33 core. Use for: lesson 121 (next topics: BLE). Opened in this build; no price shown.
 
 - [Embassy: async framework for embedded Rust](https://embassy.dev/)
-  Embassy supports STM32 (embassy-stm32), RP2040 (embassy-rp) and the nRF52, nRF53 and nRF91 series. Use for: lesson 120 and lesson 110. Opened in this build.
+  Embassy supports STM32 (embassy-stm32), RP2040 (embassy-rp) and the nRF52, nRF53 and nRF91 series. Use for: lesson 121 and lesson 111. Opened in this build.
 
 - [CNX Software: CS32 MCU clone of STM32 in a Blue Pill board](https://cnx-software.com/?p=63676)
-  Describes the CS32F103 as compatible with the STM32F103, notes the inconsistent flash size in its datasheet, and quotes readers who had debugging problems (anecdotes, not tests). Use for: lesson 120 (the Blue Pill clone warning). Secondary source.
+  Describes the CS32F103 as compatible with the STM32F103, notes the inconsistent flash size in its datasheet, and quotes readers who had debugging problems (anecdotes, not tests). Use for: lesson 121 (the Blue Pill clone warning). Secondary source.
 
 - [Wokwi for VS Code: getting started](https://docs.wokwi.com/vscode/getting-started)
   Installing the Wokwi extension and requesting a license with F1, then Wokwi: Request a new License. Use for: lesson 1 (license steps).
+
+- [littlefs (GitHub)](https://github.com/littlefs-project/littlefs)
+  A small file system for microcontroller flash. Its README: "designed to handle random power failures", with wear leveling over dynamic blocks. Use for: lesson 105 (In real projects).
 
 ## Wisdom (Communities)
 - [r/embedded](https://www.reddit.com/r/embedded/)
@@ -478,5 +487,5 @@
   Conversations with embedded engineers. Use for: hearing how practitioners work.
 
 ## Gaps
-- No high-trust, free, MCU-focused **functional safety** primer found yet (lesson 111). Look for one before writing it.
-- The **embedded security** source (lesson 105) still needs to be chosen. Candidates: Arm PSA Certified docs, the Interrupt articles on secure boot.
+- No high-trust, free, MCU-focused **functional safety** primer found yet (lesson 112). Look for one before writing it.
+- The **embedded security** source (lesson 106) still needs to be chosen. Candidates: Arm PSA Certified docs, the Interrupt articles on secure boot.

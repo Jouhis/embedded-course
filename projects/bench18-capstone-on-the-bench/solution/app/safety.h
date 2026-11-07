@@ -1,4 +1,4 @@
-/* safety.h: the safety checks of the dryer (lesson 115). Pure logic: each check takes its inputs
+/* safety.h: the safety checks of the dryer (lesson 116). Pure logic: each check takes its inputs
  * as a struct, so a test can feed in any temperature, time or sensor state.
  *
  * A check returns the first fault it finds. The state machine (dryer.c) latches it in FAULT.
@@ -17,7 +17,7 @@ typedef enum {
     FAULT_STALE = 4,      /* the control loop has not produced a new sample in time */
 } fault_t;
 
-#define SAFETY_CUTOFF_CENTI        9000    /* hard cutoff: 90.00 C (spec, lesson 112) */
+#define SAFETY_CUTOFF_CENTI        9000    /* hard cutoff: 90.00 C (spec, lesson 113) */
 #define SAFETY_RUNAWAY_MS          60000u  /* time allowed at full power for the gain below */
 #define SAFETY_RUNAWAY_GAIN_CENTI  200     /* the minimum rise in that time: 2.00 C (Klipper heating_gain) */
 #define SAFETY_RUNAWAY_BAND_CENTI  500     /* within 5.00 C of the setpoint the check is off (Klipper hysteresis) */

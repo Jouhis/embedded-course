@@ -1,6 +1,6 @@
 # Embedded Systems: From Electrons to Firmware
 
-An introductory embedded-development course: 120 lessons, 6 labs and 8 checkpoints, from Ohm's law
+An introductory embedded-development course: 121 lessons, 6 labs and 8 checkpoints, from Ohm's law
 and computer architecture to bare-metal C, FreeRTOS, Zephyr and a capstone project. Raspberry Pi Pico
 and STM32 Blue Pill, simulated in [Wokwi](https://wokwi.com) inside VS Code. No hardware needed.
 
@@ -87,7 +87,7 @@ No package manager, or not allowed to install software? It then downloads the of
 archives into `~/.embedded-course-tools` instead, with no admin rights needed (add `--portable` to
 choose this yourself). `tools/build.py` finds tools there automatically.
 
-Optional parts: add `--zephyr` (lessons 94-98, about 1-2 GB), `--rust` (lesson 110), `--wokwi-cli`
+Optional parts: add `--zephyr` (lessons 94-98, about 1-2 GB), `--rust` (lesson 111), `--wokwi-cli`
 (automated simulation checks) or `--all`, for
 example `./setup.sh --all`. `--dry-run` shows what it would do. It is safe to run again: it skips
 what is already there, so run it again with `--zephyr` when you reach lesson 94.

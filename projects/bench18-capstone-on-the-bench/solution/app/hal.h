@@ -1,4 +1,4 @@
-/* hal.h: the hardware abstraction layer of the filament dryer (lesson 113).
+/* hal.h: the hardware abstraction layer of the filament dryer (lesson 114).
  *
  * Every module in app/ includes only this header. None of them names a register, a HAL handle,
  * a port or a pin number. The board file hw/hal_bluepill.c implements these functions for the
@@ -13,8 +13,8 @@
  *   PB13  GPIO in     material button, to GND, internal pull-up (active low)
  *   PB6   I2C1_SCL    SSD1306 OLED (external 4.7 kOhm pull-ups)
  *   PB7   I2C1_SDA    SSD1306 OLED
- *   PA9   USART1_TX   serial log (115200 baud), later the Modbus bus (lesson 117)
- *   PA10  USART1_RX   serial receive, used from lesson 117
+ *   PA9   USART1_TX   serial log (115200 baud), later the Modbus bus (lesson 118)
+ *   PA10  USART1_RX   serial receive, used from lesson 118
  *   PC13  GPIO out    on-board LED, active low
  */
 #ifndef HAL_H

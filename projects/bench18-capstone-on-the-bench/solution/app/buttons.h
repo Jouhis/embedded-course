@@ -1,4 +1,4 @@
-/* buttons.h: the two buttons with debouncing (lesson 115). Each press produces one event. */
+/* buttons.h: the two buttons with debouncing (lesson 116). Each press produces one event. */
 #ifndef BUTTONS_H
 #define BUTTONS_H
 
@@ -13,7 +13,7 @@ typedef struct {
 } buttons_t;
 
 void buttons_init(buttons_t *b);
-/* Sample both buttons once. Call at a fixed rate (20 ms in the superloop: lesson 115). */
+/* Sample both buttons once. Call at a fixed rate (20 ms in the superloop: lesson 116). */
 void buttons_sample(buttons_t *b);
 bool buttons_take_start(buttons_t *b);      /* true once per press */
 bool buttons_take_material(buttons_t *b);

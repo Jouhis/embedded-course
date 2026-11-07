@@ -2,7 +2,7 @@
 
   python tools/setup.py              core tools: enough for every Pico and STM32 lesson
   python tools/setup.py --zephyr     also the Zephyr workspace (lessons 94-98, lab 6; about 1-2 GB)
-  python tools/setup.py --rust       also Rust for lesson 110
+  python tools/setup.py --rust       also Rust for lesson 111
   python tools/setup.py --wokwi-cli  also the Wokwi CLI, for automated simulation checks
   python tools/setup.py --all        everything
   python tools/setup.py --portable   no package manager: download portable tools (no admin rights)
@@ -326,7 +326,7 @@ def zephyr():
 
 
 def rust():
-    step("7. Rust (optional, lesson 110)")
+    step("7. Rust (optional, lesson 111)")
     if not shutil.which("rustup") and not (HOME / ".cargo" / "bin").exists():
         if WINDOWS and shutil.which("winget"):
             run(["winget", "install", "-e", "--id", "Rustlang.Rustup", "--accept-package-agreements",
@@ -338,7 +338,7 @@ def rust():
             problems.append("Rust: install rustup from https://rustup.rs, then run this again with --rust")
             return
     rustup = shutil.which("rustup") or str(HOME / ".cargo" / "bin" / ("rustup.exe" if WINDOWS else "rustup"))
-    # Windows: the GNU toolchain links with MinGW, so no Visual Studio is needed (see lesson 110).
+    # Windows: the GNU toolchain links with MinGW, so no Visual Studio is needed (see lesson 111).
     tc = ["--toolchain", "stable-x86_64-pc-windows-gnu"] if WINDOWS else []
     if WINDOWS:
         run([rustup, "toolchain", "install", "stable-x86_64-pc-windows-gnu", "--profile", "minimal"])
@@ -427,7 +427,7 @@ def main():
     global DRY
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--zephyr", action="store_true", help="also set up the Zephyr workspace (~1-2 GB)")
-    ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 110")
+    ap.add_argument("--rust", action="store_true", help="also install Rust for lesson 111")
     ap.add_argument("--wokwi-cli", action="store_true", help="also download the Wokwi CLI (automated checks)")
     ap.add_argument("--all", action="store_true", help="core tools plus Zephyr, Rust and the Wokwi CLI")
     ap.add_argument("--portable", action="store_true",

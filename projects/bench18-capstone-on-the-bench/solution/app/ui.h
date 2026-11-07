@@ -1,4 +1,4 @@
-/* ui.h: the text on the 128 x 64 OLED (lesson 115). Pure: it builds the lines, the driver draws them.
+/* ui.h: the text on the 128 x 64 OLED (lesson 116). Pure: it builds the lines, the driver draws them.
  * Four lines of up to 21 characters (5x7 glyphs plus one blank column, 6 pixels each: 128 / 6 = 21). */
 #ifndef UI_H
 #define UI_H

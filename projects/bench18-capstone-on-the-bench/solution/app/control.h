@@ -1,5 +1,5 @@
-/* control.h: the heater controller of lesson 115, a bang-bang (on/off) controller with hysteresis.
- * Lesson 116 replaces it with the PID controller. Keeping the same call shape makes the swap small. */
+/* control.h: the heater controller of lesson 116, a bang-bang (on/off) controller with hysteresis.
+ * Lesson 117 replaces it with the PID controller. Keeping the same call shape makes the swap small. */
 #ifndef CONTROL_H
 #define CONTROL_H
 

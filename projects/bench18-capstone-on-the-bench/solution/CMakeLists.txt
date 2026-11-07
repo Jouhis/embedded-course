@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
-# Bench lab 18: the capstone (lesson 115's build) on a real Raspberry Pi Pico 2.
-# app/ and main.c are lesson 115's, unchanged; only the board file is new: hw/hal_pico2.c.
+# Bench lab 18: the capstone (lesson 116's build) on a real Raspberry Pi Pico 2.
+# app/ and main.c are lesson 116's, unchanged; only the board file is new: hw/hal_pico2.c.
 set(PICO_BOARD pico2)
 include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
 project(dryer C CXX ASM)

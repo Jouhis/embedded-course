@@ -1,7 +1,7 @@
 """Build any course project: Pico SDK, STM32 (CMSIS/HAL/FreeRTOS) or Zephyr.
 
 The project type is detected automatically:
-  Cargo.toml present                   -> embedded Rust (cargo, lesson 110)
+  Cargo.toml present                   -> embedded Rust (cargo, lesson 111)
   prj.conf present                     -> Zephyr   (board from wokwi diagram: pico -> rpi_pico, bluepill -> stm32_min_dev)
   CMakeLists.txt calls pico_sdk_init() -> Pico SDK
   otherwise                            -> plain CMake with the ARM toolchain (STM32)
@@ -127,7 +127,7 @@ def build(project: Path, clean: bool, build_type: str = "Debug", test: bool = Fa
                    cwd=DEFAULTS["zephyr_ws"], env=env)
 
     if kind == "rust":
-        # Embedded Rust (lesson 110): cargo builds for thumbv6m-none-eabi; the toolchain comes from
+        # Embedded Rust (lesson 111): cargo builds for thumbv6m-none-eabi; the toolchain comes from
         # rust-toolchain.toml (stable-x86_64-pc-windows-gnu, which needs no Visual Studio linker).
         env["PATH"] = str(HOME / ".cargo" / "bin") + os.pathsep + env["PATH"]
         cargo = shutil.which("cargo", path=env["PATH"]) or "cargo"
@@ -135,7 +135,7 @@ def build(project: Path, clean: bool, build_type: str = "Debug", test: bool = Fa
             run([cargo, "clean"], cwd=project, env=env)
         rc = run([cargo, "build", "--release"], cwd=project, env=env)
         if rc == 0 and test:
-            print("(no host tests for Rust projects here; see lesson 110)")
+            print("(no host tests for Rust projects here; see lesson 111)")
         return rc
 
     if kind in ("pico", "cmake"):
@@ -170,7 +170,7 @@ def check() -> int:
         ("cppcheck (needed from lesson 83)", shutil.which("cppcheck", path=env["PATH"]) or (Path(r"C:\Program Files\Cppcheck\cppcheck.exe") if Path(r"C:\Program Files\Cppcheck\cppcheck.exe").exists() else None)),
         ("Pico SDK", env["PICO_SDK_PATH"] if Path(env["PICO_SDK_PATH"], "pico_sdk_init.cmake").exists() else None),
         ("Wokwi CLI (optional, for automated checks)", next((p for p in (HOME / ".wokwi" / "bin" / "wokwi-cli.exe", HOME / ".wokwi" / "bin" / "wokwi-cli") if p.exists()), None) or shutil.which("wokwi-cli")),
-        ("Rust (cargo, needed for lesson 110; optional)", (HOME / ".cargo" / "bin") if any((HOME / ".cargo" / "bin" / c).exists() for c in ("cargo.exe", "cargo")) else shutil.which("cargo")),
+        ("Rust (cargo, needed for lesson 111; optional)", (HOME / ".cargo" / "bin") if any((HOME / ".cargo" / "bin" / c).exists() for c in ("cargo.exe", "cargo")) else shutil.which("cargo")),
         ("Zephyr workspace (needed from lesson 94)", DEFAULTS["zephyr_ws"] if (DEFAULTS["zephyr_ws"] / "zephyr").exists() else None),
     ]
     ok = True

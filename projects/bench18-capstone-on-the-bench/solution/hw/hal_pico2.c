@@ -1,6 +1,6 @@
 /* hal_pico2.c: the Raspberry Pi Pico 2 board file for hal.h (bench lab 18).
  *
- * It implements the same functions as hw/hal_bluepill.c of lesson 115, so app/ and main.c
+ * It implements the same functions as hw/hal_bluepill.c of lesson 116, so app/ and main.c
  * build unchanged. The pin map in hal.h is the Blue Pill's; this is the Pico 2's:
  *   GP26  ADC0        NTC divider (10 kOhm to 3V3, NTC to GND), 12-bit
  *   GP15  PWM7 B      heater: 1 kHz PWM to the gate of a logic-level MOSFET (or to an LED in Wokwi)

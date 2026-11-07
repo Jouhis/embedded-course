@@ -1,4 +1,4 @@
-/* dryer.c: the drying cycle state machine (lesson 114). See dryer.h for the transition diagram. */
+/* dryer.c: the drying cycle state machine (lesson 115). See dryer.h for the transition diagram. */
 #include "dryer.h"
 
 void dryer_init(dryer_t *d) {

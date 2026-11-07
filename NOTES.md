@@ -22,6 +22,7 @@
 - Pico: single core only (no multicore); DMA only in combination with PIO; I2C and SPI in master mode only; USB CDC partial; the ADC temperature sensor reads 0.
 - Blue Pill (STM32F103C8): DMA, IWDG, PWR and RTC are not simulated; ADC has basic ADC1 conversion only. TIM1–4, EXTI, I2C, SPI, USART, CRC and WWDG all work.
 - No CAN or USB device on STM32. Lessons 64, 74, 75, 100 and 102 are concept-only.
+- Pico flash writes (`flash_range_erase`/`flash_range_program`) work in the Wokwi browser editor (verified 2026-11-07: a record read back byte-exact). No reset keeps the flash: `watchdog_reboot()`, `watchdog_enable()` and AIRCR SYSRESETREQ do not reset the simulated Pico (RP2040), and Restart reloads the firmware. So a power-cut test can't run in Wokwi; lesson 105 tests it on the host with a fake flash, and `0105-flash-settings-pico` checks the store within one run. (Upstream rp2040js 1.4.1 has no flash erase or program at all; Wokwi adds it.)
 - Custom chips (C compiled to WASM) are supported. Used for the "mystery sensor" in lesson 63.
 - Wokwi is a digital simulator with only basic analog support, and its resistors don't combine with analog parts. Analog electronics hands-on uses Falstad CircuitJS instead (see LESSON-SPEC section 7.1).
 - A logic analyzer capture (`.vcd`) can be viewed in PulseView, which decodes I2C and UART.
@@ -51,7 +52,7 @@
 - Zephyr board names: `rpi_pico` and `stm32_min_dev` (Blue Pill, "blue" revision, HSE plus PLL at 72 MHz).
 - Pico SDK 2.3.1 at `~/.pico-sdk/sdk/2.3.1`. Templates set `PICO_NO_PICOTOOL=1` because Wokwi runs the `.elf` directly.
 - Bench labs use `templates/pico2-sdk` (`PICO_BOARD pico2`, stdio on UART0 and USB, `pico_add_uf2_output`). The UF2 needs picotool: without an installed one the SDK fetches and builds it, and `tools/build.py` sets `PICOTOOL_FETCH_FROM_GIT_PATH=~/.pico-sdk/picotool-build` so this happens once. The first bench build needs the internet.
-- Rust (lesson 110): set up and building; see "Embedded Rust (verified 2026-10-31)" below.
+- Rust (lesson 111): set up and building; see "Embedded Rust (verified 2026-10-31)" below.
 
 ## Shared components (verified with Node tests)
 - `assets/cpusim.js`: a teaching CPU with MSP/PSP, CONTROL, MRS/MSR, SVC, IRQ entry and return (EXC_RETURN F9/FD) and a pipeline view. A working two-task context switch via SVC (each task on its own PSP stack, the handler swaps PSPs) was verified; lesson 88 should build on it. Not modelled: nested exceptions, PendSV priority, real instruction encodings (all instructions are 2 bytes; MOV accepts 32-bit constants).

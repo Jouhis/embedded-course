@@ -1,4 +1,4 @@
-/* safety.c: the safety checks (lesson 115). */
+/* safety.c: the safety checks (lesson 116). */
 #include "safety.h"
 
 void runaway_reset(runaway_t *r) {

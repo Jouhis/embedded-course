@@ -1,4 +1,4 @@
-/* materials.h: the filament presets (lesson 112). Each material has a drying temperature and a
+/* materials.h: the filament presets (lesson 113). Each material has a drying temperature and a
  * drying time. The table is plain data, so changing a preset does not touch any logic. */
 #ifndef MATERIALS_H
 #define MATERIALS_H

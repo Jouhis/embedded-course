@@ -29,7 +29,7 @@ void uart_puts(const char *s) {
  *
  * What it does not check: a CRC or a signature. The header has room for them (reserved[]),
  * but computing a CRC needs the image's final bytes, which a linker script alone cannot give
- * us. A signing tool does that step in real projects (lesson 105). */
+ * us. A signing tool does that step in real projects (lesson 106). */
 static int slot_is_valid(const app_header_t *h) {
     if (h->magic != APP_IMAGE_MAGIC) {
         return 0;

@@ -1,4 +1,4 @@
-/* control.c: bang-bang heater control with hysteresis (lesson 115). */
+/* control.c: bang-bang heater control with hysteresis (lesson 116). */
 #include "control.h"
 
 void bangbang_init(bangbang_t *b) {

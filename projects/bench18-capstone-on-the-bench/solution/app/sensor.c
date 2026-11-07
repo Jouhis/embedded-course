@@ -1,4 +1,4 @@
-/* sensor.c: the NTC service: ADC code in, temperature out (lesson 114). Filtering comes in lesson 116. */
+/* sensor.c: the NTC service: ADC code in, temperature out (lesson 115). Filtering comes in lesson 117. */
 #include "hal.h"
 #include "ntc.h"
 #include "sensor.h"

@@ -1,4 +1,4 @@
-/* sensor.h: the NTC sensor service (lesson 114). Reads the ADC through hal.h and converts. */
+/* sensor.h: the NTC sensor service (lesson 115). Reads the ADC through hal.h and converts. */
 #ifndef SENSOR_H
 #define SENSOR_H
 

@@ -664,6 +664,18 @@ _Avoid_: Preemption (the broader term)
 Running code directly from external flash, mapped into the address space, through a cache. The RP2040 maps a 16 MB flash window at 0x10000000.
 _Avoid_: Running from flash (too vague: an STM32 runs from its own flash without XIP)
 
+**Flash sector**:
+The smallest part of NOR flash that can be erased, 4 KB on the Pico's W25Q16JV. An erase sets every bit in it to 1; a program, one 256-byte page at a time, can only clear bits.
+_Avoid_: Flash block (on the W25Q16JV a block is 32 or 64 KB)
+
+**Endurance**:
+How many program-erase cycles a flash sector is rated for before it may stop holding data: at least 100,000 for the W25Q16JV.
+_Avoid_: Flash lifetime (says nothing about what is counted)
+
+**Torn write**:
+A write cut short by a power failure, which leaves a record partly written. A CRC over the record detects it.
+_Avoid_: Partial write (also means a deliberate write of part of a page)
+
 **Wait state**:
 An extra clock cycle the bus or memory makes the core wait for, so a slower memory can keep up with a faster core. On the STM32F1, flash wait states are set by the LATENCY field of FLASH_ACR.
 _Avoid_: Stall (a stall is the core waiting for any reason, including a bus conflict)
@@ -2588,7 +2600,7 @@ _Avoid_: Thermal runaway (the general failure of a device that heats itself, whi
 
 **Hysteresis (control)**:
 A dead band in a switching controller: it turns on below the setpoint minus a band and off above the setpoint plus a band, so it does not chatter at the setpoint.
-_Avoid_: Deadband (the same idea in filters means something else, lesson 106)
+_Avoid_: Deadband (the same idea in filters means something else, lesson 107)
 
 **Derivative on measurement**:
 A PID derivative term computed from the measured value, not the error. A setpoint step then does not kick the output.

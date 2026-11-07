@@ -27,7 +27,7 @@ typedef struct {
     uint32_t version;        /* (major << 16) | minor */
     uint32_t image_end;      /* address one past the last byte of the image */
     uint32_t vector_offset;  /* the vector table, as an offset from this header */
-    uint32_t reserved[4];    /* room for a CRC, a signature and flags (lesson 105); zero here */
+    uint32_t reserved[4];    /* room for a CRC, a signature and flags (lesson 106); zero here */
 } app_header_t;
 
 _Static_assert(sizeof(app_header_t) == 32u, "the image header is 32 bytes");

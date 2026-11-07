@@ -1,4 +1,4 @@
-/* ntc.h: the NTC thermistor conversion (lesson 114). Pure C: no hardware, so the host tests
+/* ntc.h: the NTC thermistor conversion (lesson 115). Pure C: no hardware, so the host tests
  * run the same code as the Blue Pill.
  *
  * The circuit (Wokwi's NTC part, and the real divider in lesson 58): 3.3 V through a 10 kOhm

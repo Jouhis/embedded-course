@@ -1,10 +1,10 @@
-/* main.c: the filament dryer with its drivers, run as a superloop (lesson 115).
+/* main.c: the filament dryer with its drivers, run as a superloop (lesson 116).
  *
  * The superloop has no RTOS yet. Three jobs run at their own rate, using the millisecond clock:
  *   every 20 ms   read and debounce the buttons
  *   every 100 ms  read the NTC, run the state machine, the safety checks and the heater control
  *   every 200 ms  redraw the OLED
- * Lesson 116 turns these three jobs into FreeRTOS tasks with vTaskDelayUntil(). */
+ * Lesson 117 turns these three jobs into FreeRTOS tasks with vTaskDelayUntil(). */
 #include <stdbool.h>
 #include "buttons.h"
 #include "control.h"

@@ -8,7 +8,7 @@
  *    Temperature → NTC resistance (beta 3950, 10 kΩ at 25 °C) → divider (10 kΩ fixed on the supply side)
  *    → pin voltage → 12-bit code (ratio × 4095) → back to °C with the lesson's formula. Noise on each
  *    sample, and averaging of N samples, which shrinks the noise by about √N.
- * 3. Filter lab (lesson 106):           <div class="widget filterlab"></div>
+ * 3. Filter lab (lesson 107):           <div class="widget filterlab"></div>
  *    The lesson's three filters on the same input: moving average with a running sum, the fixed-point
  *    EMA (state × 256, α = 1/2^k, primed with the first sample, rounded output) and the median of three.
  *    Inputs: a step, a noisy step, a spike, a slow wave with noise, and an undersampled sine (aliasing).

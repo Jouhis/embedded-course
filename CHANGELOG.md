@@ -2,6 +2,40 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.10 (2026-11-07)
+
+### New lesson 105: storing data in flash
+
+- A setpoint that survives resets and power cuts: NOR flash rules (erase a 4 KB sector to 0xFF,
+  program a 256-byte page by clearing bits), wear (100,000 cycles: 69 days at one save a minute),
+  and a two-sector log of records with a sequence number and a CRC that keeps the last good copy
+  through a cut at any moment. Sources: the W25Q16JV datasheet (Rev I) and the SDK's
+  hardware/flash.h.
+- The exercise `projects/0105-flash-settings` is a host-test project with a fake flash that
+  follows the rules and can cut the power after an erase or halfway through a write. The starter
+  saves in one place and fails 5 of 9 tests; each part of the solution is caught by a test when
+  removed. `projects/0105-flash-settings-pico` runs the same `settings.c` on the Pico.
+- Glossary: flash sector, endurance, torn write.
+
+### Lessons 105 to 120 are now 106 to 121
+
+- Lesson files, project folders and cross-references were renumbered by script; bare numbers in
+  tables and link texts were fixed by hand. Saved progress moves to the new numbers on the first
+  visit (numbering "4" in `assets/course.js`).
+- Progress exports now record their numbering, and importing an older export moves it to the new
+  numbers.
+
+### A shorter core path
+
+- The Zephyr part (lessons 94 to 99, Lab 6 and Checkpoint 7) is now optional. It teaches the same
+  RTOS ideas as the FreeRTOS part on a second kernel, and nothing later depends on it.
+- Optional items no longer count towards course progress. The index counts them separately
+  ("plus 1 / 13 optional"), tags them, and explains the tag.
+
+- Checked in the Wokwi browser editor: the Pico demo saves 21 times on the simulated flash and
+  reads the last value back. Wokwi's Pico simulates no reset that keeps the flash (watchdog and
+  SYSRESETREQ do nothing), so the power-cut tests run on the host (see NOTES.md).
+
 ## 0.0.9 (2026-11-07)
 
 ### Interactive widgets in the later lessons

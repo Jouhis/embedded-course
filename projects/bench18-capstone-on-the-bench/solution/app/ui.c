@@ -1,4 +1,4 @@
-/* ui.c: composes the four OLED lines from the state (lesson 115). */
+/* ui.c: composes the four OLED lines from the state (lesson 116). */
 #include "format.h"
 #include "materials.h"
 #include "ui.h"

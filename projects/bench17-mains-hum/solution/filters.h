@@ -1,4 +1,4 @@
-/* Digital filters for sampled sensor data (lesson 106).
+/* Digital filters for sampled sensor data (lesson 107).
  *
  * Each filter keeps its own state in a struct, so one program can run several filters on
  * several signals. No filter allocates memory or calls a library, so the same C runs on the
@@ -10,7 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MA_MAX_WINDOW   32u   /* ring-buffer capacity (bench lab 17: 16 in lesson 106; one mains period needs 20) */
+#define MA_MAX_WINDOW   32u   /* ring-buffer capacity (bench lab 17: 16 in lesson 107; one mains period needs 20) */
 #define EMA_FRAC_BITS   8u    /* extra fractional bits in the EMA state (2^8 = 256 steps per unit) */
 
 /* Moving average: the mean of the last `window` samples. */

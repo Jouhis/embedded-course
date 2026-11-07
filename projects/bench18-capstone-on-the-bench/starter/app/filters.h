@@ -1,4 +1,4 @@
-/* Digital filters for sampled sensor data (lesson 106).
+/* Digital filters for sampled sensor data (lesson 107).
  *
  * Each filter keeps its own state in a struct, so one program can run several filters on
  * several signals. No filter allocates memory or calls a library, so the same C runs on the

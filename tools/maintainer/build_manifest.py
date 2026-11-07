@@ -123,7 +123,7 @@ def main() -> int:
                 "id": f"lab{lab_n:02d}", "kind": "lab", "number": lab_n,
                 "title": f"Lab {lab_n}: {name[0].upper() + name[1:]}", "detail": desc,
                 "file": f"lab{lab_n:02d}-{slugify(name)}.html",
-                "section": current_section, "conceptOnly": False, "optional": False,
+                "section": current_section, "conceptOnly": False, "optional": "⭐" in line,
             })
             continue
 
@@ -134,7 +134,7 @@ def main() -> int:
                 "id": f"cp{cp_n:02d}", "kind": "checkpoint", "number": cp_n,
                 "title": f"Checkpoint {cp_n}", "detail": f"Mixed review exam for Part {current_part['number']}",
                 "file": f"checkpoint{cp_n:02d}.html",
-                "section": None, "conceptOnly": False, "optional": False,
+                "section": None, "conceptOnly": False, "optional": "⭐" in line,
             })
 
     for item in [i for p in parts for i in p["items"]] + benches:

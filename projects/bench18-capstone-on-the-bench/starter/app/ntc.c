@@ -1,4 +1,4 @@
-/* ntc.c: the NTC conversion with the Beta equation (lesson 114).
+/* ntc.c: the NTC conversion with the Beta equation (lesson 115).
  *
  * Wokwi's docs give this formula with a 10-bit constant (1023). The Blue Pill's ADC is 12-bit, so
  * the constant becomes 4095. The rest is unchanged: with R_series = 10 kOhm, the NTC resistance is

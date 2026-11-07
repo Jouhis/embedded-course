@@ -174,7 +174,7 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
   - `rtossim.js`: a fixed-priority scheduler timeline with semaphore and mutex (priority inheritance) and the rate-monotonic bound (`data-preset`, optionally `data-presets`).
   - `crcframe.js`: Modbus RTU frames with CRC-16/MODBUS, a shift-by-shift trace and bit flips on the wire.
   - `fsm.js`: the lesson 56 traffic light, table-driven, with an editable table.
-  - `pidsim.js`: the lesson 107 heater and PID controller; it reproduces the lesson's tuning table.
+  - `pidsim.js`: the lesson 108 heater and PID controller; it reproduces the lesson's tuning table.
   - `levels.js`: `logiclevel` (input thresholds, hysteresis on a noisy edge, an open-drain line with its pull-up current and rise time).
   - `race.js`: `racestep`, two contexts sharing memory, stepped in the reader's order (`data-preset` cores, isr-flag, odr, volatile), with the lesson's fix as an option.
   - `wrap.js`: `wraptime`, a timeout across the counter wrap, checked three ways (`data-preset` systick, blink, small; `data-unit`).
@@ -216,7 +216,7 @@ Several authors work in parallel. Before writing any file that might already exi
 - These projects have no wokwi.toml, so verify_projects.py skips them. Run `build.py --test` yourself and quote the real summary line in your report.
 - cppcheck: `"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet <files>`. CMock needs Ruby, which is not installed: teach it conceptually and use FFF hands-on.
 
-## 16. Embedded Rust projects (lesson 110)
+## 16. Embedded Rust projects (lesson 111)
 - Template `rust-pico`: rp2040-hal 0.11, cortex-m-rt 0.7, embedded-hal 1.0, rp2040-boot2 0.3, built with the GNU host toolchain pinned in rust-toolchain.toml (stable-x86_64-pc-windows-gnu + thumbv6m-none-eabi, already installed). Create with `python -I tools/new_project.py <id> <slug> rust-pico`.
 - `python -I tools/build.py <dir>` runs `cargo build --release` (release has debug info). The ELF is target/thumbv6m-none-eabi/release/blink, which wokwi.toml points at. If you rename the package in Cargo.toml, update wokwi.toml too.
 - Do not install extra cargo tools (probe-rs, flip-link, elf2uf2-rs): Wokwi runs the ELF directly.

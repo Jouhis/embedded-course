@@ -63,8 +63,9 @@
   // carries to every part (its quiz scores stay with the first part).
   // Numbering "2" is that split. Numbering "3" then removed the portfolio and interview lessons
   // (120 and 121 under numbering 2) and moved "Next steps" from 122 to 120.
+  // Numbering "4" (version 0.0.10) added lesson 105 (storing data in flash), so 105 to 120 moved up one.
   const NUMBERING_KEY = "embedded-course-numbering";
-  const NUMBERING_NOW = "3";
+  const NUMBERING_NOW = "4";
   const RENUMBER_TO_2 = (() => {
     const map = { 88: [88, 89], 89: [90], 90: [91], 91: [92, 93], 110: [112, 113], 111: [114, 115],
                   112: [116], 113: [117, 118, 119], 114: [120], 115: [121], 116: [122] };
@@ -72,6 +73,18 @@
     return map;
   })();
   const RENUMBER_TO_3 = { 120: [], 121: [], 122: [120] };   // [] drops the lesson's progress
+  const RENUMBER_TO_4 = (() => {
+    const map = {};
+    for (let n = 120; n >= 105; n--) map[n] = [n + 1];
+    return map;
+  })();
+  // Moves progress saved under numbering `was` (null: before numbering 2) to the current one.
+  function migrateFrom(p, was) {
+    if (was === NUMBERING_NOW) return p;
+    if (was !== "2" && was !== "3") p = migrateNumbering(p, RENUMBER_TO_2);
+    if (was !== "3") p = migrateNumbering(p, RENUMBER_TO_3);
+    return migrateNumbering(p, RENUMBER_TO_4);
+  }
   function migrateNumbering(p, map) {
     const out = {};
     for (const [id, rec] of Object.entries(p)) {
@@ -94,8 +107,7 @@
       const was = localStorage.getItem(NUMBERING_KEY);
       if (was !== NUMBERING_NOW) {
         if (Object.keys(p).length) {
-          if (was !== "2") p = migrateNumbering(p, RENUMBER_TO_2);
-          p = migrateNumbering(p, RENUMBER_TO_3);
+          p = migrateFrom(p, was);
           saveProgress(p);
         }
         localStorage.setItem(NUMBERING_KEY, NUMBERING_NOW);
@@ -493,22 +505,24 @@
     document.querySelectorAll("[data-lesson-link]").forEach(li => {
       li.classList.toggle("done", !!(p[li.dataset.lessonLink] || {}).done);
     });
-    // Bench labs are optional extras on real hardware: they never count towards course progress.
-    const CORE = "[data-lesson-link]:not([data-bench])";
+    // Only the core path counts towards course progress. Optional lessons and the bench labs on
+    // real hardware are counted on their own.
+    const CORE = "[data-lesson-link]:not([data-bench]):not([data-optional])";
+    const OPT = "[data-lesson-link][data-optional]";
+    const count = (root, sel) => [root.querySelectorAll(sel).length, root.querySelectorAll(sel + ".done").length];
     document.querySelectorAll(".part").forEach(part => {
-      const items = part.querySelectorAll(CORE);
-      const done = part.querySelectorAll(CORE + ".done").length;
+      const [all, done] = count(part, CORE), [opt, optDone] = count(part, OPT);
       const label = part.querySelector(".progress");
-      if (label && items.length) label.textContent = `${done} / ${items.length} done`;
+      if (label && all + opt) label.textContent = (all ? `${done} / ${all} done` : "") +
+        (opt ? `${all ? " · " : ""}${optDone} / ${opt} optional` : "");
     });
     const overall = document.getElementById("overall-progress");
     if (overall) {
-      const all = document.querySelectorAll(CORE).length;
-      const done = document.querySelectorAll(CORE + ".done").length;
-      const benches = document.querySelectorAll("[data-bench]").length;
-      const benchDone = document.querySelectorAll("[data-bench].done").length;
+      const [all, done] = count(document, CORE), [opt, optDone] = count(document, OPT);
+      const [benches, benchDone] = count(document, "[data-bench]");
       overall.querySelector(".count").textContent = `${done} / ${all} complete` +
-        (benchDone ? ` · plus ${benchDone} / ${benches} optional bench labs` : "");
+        (optDone ? ` · plus ${optDone} / ${opt} optional` : "") +
+        (benchDone ? ` · plus ${benchDone} / ${benches} bench labs` : "");
       overall.querySelector(".bar-fill").style.width = all ? `${(100 * done / all).toFixed(1)}%` : "0";
     }
   }
@@ -552,7 +566,7 @@
     exportBtn.addEventListener("click", () => {
       const stamp = new Date().toISOString().slice(0, 10);
       downloadJson(`embedded-course-progress-${stamp}.json`,
-                   { format: "embedded-course-progress", version: 1, exportedAt: new Date().toISOString(), progress: loadProgress() });
+                   { format: "embedded-course-progress", version: 1, numbering: NUMBERING_NOW, exportedAt: new Date().toISOString(), progress: loadProgress() });
       msg.textContent = "Saved a progress file to your downloads.";
     });
     importBtn.addEventListener("click", () => file.click());
@@ -561,8 +575,11 @@
       if (!f) return;
       f.text().then(text => {
         const data = JSON.parse(text);
-        const incoming = data && data.format === "embedded-course-progress" ? data.progress : data;
+        const wrapped = data && data.format === "embedded-course-progress";
+        let incoming = wrapped ? data.progress : data;
         if (!incoming || typeof incoming !== "object") throw new Error("not a progress file");
+        // Files exported before numbering 4 carry no numbering: they are from numbering 3.
+        incoming = migrateFrom(incoming, (wrapped && data.numbering) || "3");
         saveProgress(mergeProgress(loadProgress(), incoming));
         renderIndexProgress();
         msg.textContent = `Imported ${f.name}.`;
@@ -671,7 +688,8 @@
         const num = i.kind === "lesson" ? String(i.number) : i.kind === "lab" ? "🔧" : "📝";
         const tags = [i.conceptOnly ? "concept" : "", i.optional ? "optional" : "", i.published ? "" : "coming"]
           .filter(Boolean).join(" · ");
-        const li = el("li", { "data-lesson-link": i.id, class: i.published ? "" : "pending" }, [
+        const li = el("li", Object.assign({ "data-lesson-link": i.id, class: i.published ? "" : "pending" },
+                                          i.optional ? { "data-optional": "" } : {}), [
           el("span", { class: "num", text: num }),
           i.published ? el("a", { href: "lessons/" + i.file, text: i.title }) : el("span", { text: i.title }),
           el("span", { class: "tag", text: tags }),

@@ -3,7 +3,7 @@
 **Mission (draft):** Learn embedded development from the electronics up, and finish with a complete, tested capstone project.
 **Learner:** Already programs; new to electronics.
 **Platforms:** Raspberry Pi Pico (RP2040, Pico SDK, C) and STM32 Blue Pill (STM32F103, CMSIS + HAL), simulated with Wokwi in VS Code.
-**Size:** 120 lessons, 6 labs, 8 checkpoint exams.
+**Size:** 121 lessons, 6 labs, 8 checkpoint exams. The optional (⭐) items are lessons 65, 94 to 99 and 109 to 112, Lab 6 and Checkpoint 7.
 
 **Legend**
 - 🔧 lab
@@ -163,16 +163,16 @@
 
 - 🔧 **Lab 5:** Move Lab 4 onto FreeRTOS
 
-### 7.2 Zephyr
-94. Zephyr setup: west, the SDK, and a first app on the Pico
-95. Kconfig and the build system
-96. Devicetree: describing hardware
-97. Threads and kernel services: message queues, semaphores, mutexes, work queues
-98. The device driver model and the GPIO and I2C APIs
-99. Logging, the shell, and testing with ztest and Twister
+### 7.2 Zephyr (optional: the same RTOS ideas on a second kernel)
+94. ⭐ Zephyr setup: west, the SDK, and a first app on the Pico
+95. ⭐ Kconfig and the build system
+96. ⭐ Devicetree: describing hardware
+97. ⭐ Threads and kernel services: message queues, semaphores, mutexes, work queues
+98. ⭐ The device driver model and the GPIO and I2C APIs
+99. ⭐ Logging, the shell, and testing with ztest and Twister
 
-- 🔧 **Lab 6:** Port Lab 5 to Zephyr and compare the two RTOSes
-- 📝 **Checkpoint 7**
+- 🔧 **Lab 6:** ⭐ Port Lab 5 to Zephyr and compare the two RTOSes
+- 📝 **Checkpoint 7** ⭐ (Zephyr)
 
 > 🔬 Bench labs you can do now (optional, real board): 15 (Measure your deadlines).
 
@@ -182,32 +182,33 @@
 102. 💡 USB fundamentals (plus a USB CDC serial demo on the Pico)
 103. Designing a serial protocol: framing, checksums, CRC
 104. Bootloaders and firmware updates: A/B slots, OTA
-105. Embedded security: secure boot, debug port lockdown, attack surfaces
+105. Storing data in flash: erase, write, wear, and surviving a power cut
+106. Embedded security: secure boot, debug port lockdown, attack surfaces
 
 - 📝 **Checkpoint 8**
 
 > 🔬 Bench labs you can do now (optional, real board): 16 (Real USB enumeration).
 
 ## Part 9: Signal Processing, Control, and Beyond
-106. Digital filtering: moving average and IIR filters
-107. PID control
-108. ⭐ PCB design in KiCad: from schematic to board
-109. ⭐ Embedded Linux: when to use it instead of an MCU
-110. ⭐ Embedded Rust on the Pico (including setup)
-111. ⭐ Functional safety: IEC 61508 and ISO 26262
+107. Digital filtering: moving average and IIR filters
+108. PID control
+109. ⭐ PCB design in KiCad: from schematic to board
+110. ⭐ Embedded Linux: when to use it instead of an MCU
+111. ⭐ Embedded Rust on the Pico (including setup)
+112. ⭐ Functional safety: IEC 61508 and ISO 26262
 
 > 🔬 Bench labs you can do now (optional, real board): 17 (Mains hum on the ADC).
 
 ## Part 10: Capstone
-112. Capstone 1: requirements and the state machine for a filament-dryer controller
-113. Capstone 2: layered architecture, tasks, and the pin map
-114. Capstone 3: the NTC driver and unit tests
-115. Capstone 4: heater PWM, buttons, display, and safety checks
-116. Capstone 5: RTOS threads and PID heater control
-117. Capstone 6: Modbus RTU interface and the host master
-118. Capstone 7: the bootloader and the image layout
-119. Capstone 8: CI and the finished capstone
-120. Next steps: real hardware to buy, communities
+113. Capstone 1: requirements and the state machine for a filament-dryer controller
+114. Capstone 2: layered architecture, tasks, and the pin map
+115. Capstone 3: the NTC driver and unit tests
+116. Capstone 4: heater PWM, buttons, display, and safety checks
+117. Capstone 5: RTOS threads and PID heater control
+118. Capstone 6: Modbus RTU interface and the host master
+119. Capstone 7: the bootloader and the image layout
+120. Capstone 8: CI and the finished capstone
+121. Next steps: real hardware to buy, communities
 
 > 🔬 Bench labs you can do now (optional, real board): 18 (The capstone on the bench).
 
@@ -318,13 +319,13 @@ Part 8
   - Parts: none
 
 Part 9
-- 🔬 **Bench lab 17: Mains hum on the ADC** (after lesson 106). A 30 cm wire on an ADC pin picks up 50 Hz hum. Stream samples over UART, plot them, measure the frequency, cancel it with a 20 ms moving average, compare with the lesson's IIR filter.
+- 🔬 **Bench lab 17: Mains hum on the ADC** (after lesson 107). A 30 cm wire on an ADC pin picks up 50 Hz hum. Stream samples over UART, plot them, measure the frequency, cancel it with a 20 ms moving average, compare with the lesson's IIR filter.
   - Board: Pico 2 (Raspberry Pi Pico 2 with headers)
   - Tools: none
   - Parts: 30 cm jumper wire, 1 MΩ resistor
 
 Part 10
-- 🔬⭐ **Bench lab 18: The capstone on the bench** (after lesson 119). Real NTC; a low-voltage power resistor stands in for the heater. Low voltage only, never mains. Split into parts of 1 hour or less.
+- 🔬⭐ **Bench lab 18: The capstone on the bench** (after lesson 120). Real NTC; a low-voltage power resistor stands in for the heater. Low voltage only, never mains. Split into parts of 1 hour or less.
   - Board: Pico 2 (Raspberry Pi Pico 2 with headers)
   - Tools: heat-resistant tape
   - Parts: SSD1306 I2C OLED, two 4.7 kΩ resistors, two pushbuttons, 10 kΩ NTC, 10 kΩ, 22 Ω 5 W resistor, logic-level N-MOSFET, 100 Ω, LED and 330 Ω

@@ -7,7 +7,7 @@
  * The program samples at 20 samples per mains period (1000 Hz for 50 Hz mains), and once a
  * second prints the peak-to-peak size of three signals:
  *   raw    the ADC codes as read;
- *   iir    lesson 106's exponential moving average, k = 3 (a time constant of about 8 samples);
+ *   iir    lesson 107's exponential moving average, k = 3 (a time constant of about 8 samples);
  *   ma20   a moving average over exactly 20 samples, one mains period. A sine averaged over one
  *          whole period is zero, so the hum (and its harmonics) cancel, whatever their phase.
  * It also counts upward crossings of the block's mean, an estimate of the hum frequency.

@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capstone 2: layered architecture, tasks, and the pin map · Embedded Systems Course</title>
+  <link rel="stylesheet" href="../assets/course.css">
+</head>
+<!-- data-lesson must match the lesson id in assets/manifest.js -->
+<body data-lesson="0114">
+<main>
+  <p class="lesson-meta"></p>
+  <h1>Capstone 2: layered architecture, tasks, and the pin map</h1>
+  <p class="subtitle">The state machine from lesson 113 has to run on a chip, with five jobs at different rates and ten pins that each do one thing. This lesson sorts the code into layers so that the logic never touches a register, sets the task priorities from the periods, and maps every pin before the first board is built.</p>
+
+  <div class="goal">
+    By the end of this lesson you can draw a layered architecture and check its dependency rule, assign rate-monotonic priorities and test a utilisation sum, read a pin map with its alternate functions, and build the skeleton that prints <code>DRYER SKELETON OK</code>.
+  </div>
+
+  <h2>Where we are and why it matters</h2>
+  <p>
+    <a href="0113-capstone-1-requirements-and-the.html">Lesson 113</a> gave you the requirements, the failure table and the state machine. This lesson turns them into a structure. <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76</a> introduced the hardware abstraction layer (HAL) for one driver (if you did the optional Zephyr part, <a href="0098-the-device-driver-model-and.html">lesson 98</a> showed the same idea as a driver model). Here the same idea is applied to the whole product. <a href="0087-freertos-setup-tasks-and-scheduling.html">Lesson 87</a> set up FreeRTOS tasks, and <a href="0093-timing-analysis.html">lesson 93</a> gave the deadline and rate-monotonic rules that you use below.
+  </p>
+  <p>
+    The pins come from the GPIO lessons. <a href="0052-gpio-input-and-debouncing.html">Lesson 52</a> covered buttons and debouncing, <a href="0012-mosfets.html">lesson 12</a> covered the MOSFET that switches the heater, and <a href="0016-logic-levels-pull-ups-open.html">lesson 16</a> covered pull-up resistors and open-drain outputs. Each pin has one function that the schematic and the code must agree on.
+  </p>
+  <p>
+    The skeleton at the end of this lesson has the layers and the start-up sequence but no behaviour. It builds, it links every module, and it prints one banner. <a href="0115-capstone-3-the-ntc-driver.html">Lesson 115</a> writes the NTC driver and the first unit tests, lesson 116 adds the heater PWM, buttons, display and safety checks, and lesson 117 adds the RTOS threads and PID control.
+  </p>
+
+  <h2>The layered architecture</h2>
+  <p>
+    A layer is a group of files with one job, and each layer calls only the layer below it. From the CPU's side, a peripheral is a set of addresses on the bus. If application code writes those addresses directly, it depends on one chip and one board. A layer in between means that only one file changes when the chip changes, and the rest can be compiled and tested on a PC.
+  </p>
+  <p>
+    Figure 2 shows the five layers of the dryer, from the application at the top to the board file at the bottom. The arrows point down. A layer never calls up, and that rule is the one the rest of the lesson depends on.
+  </p>
+  <figure>
+    <svg viewBox="0 0 560 290" role="img" aria-label="Layered architecture: application, services, drivers, HAL, board" style="max-width:728px">
+      <defs><marker id="ah73" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor" stroke="none"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
+        <rect x="20" y="20" width="520" height="50" rx="3"/>
+        <rect x="20" y="84" width="520" height="50" rx="3"/>
+        <rect x="20" y="148" width="520" height="40" rx="3"/>
+        <rect x="20" y="202" width="520" height="32" rx="3"/>
+        <rect x="20" y="246" width="520" height="32" rx="3"/>
+      </g>
+      <g fill="currentColor" font-family="JetBrains Mono, monospace">
+        <text x="280" y="41.85" text-anchor="middle" font-size="11">Application: state machine, PID, safety checks,</text>
+        <text x="280" y="55.85" text-anchor="middle" font-size="11">OLED text (portable C, host-tested)</text>
+        <text x="280" y="105.85" text-anchor="middle" font-size="11">Services: sensor filter, debounced buttons,</text>
+        <text x="280" y="119.85" text-anchor="middle" font-size="11">Modbus register map, watchdog kicks</text>
+        <text x="280" y="171.85" text-anchor="middle" font-size="11">Drivers: NTC conversion, SSD1306 display, Modbus RTU frames, CRC-16</text>
+        <text x="280" y="221.85" text-anchor="middle" font-size="11">HAL (hal.h): ADC, heater PWM, fan, buttons, I2C, UART, watchdog, clock</text>
+        <text x="280" y="265.85" text-anchor="middle" font-size="11">Board (hw/hal_bluepill.c): the only file with registers; FreeRTOS on top</text>
+      </g>
+    </svg>
+    <figcaption>Figure 2. Layers, top to bottom. An arrow always points down: a layer never calls up.</figcaption>
+  </figure>
+
+  <h3>What each layer owns</h3>
+  <p>
+    The figure names what each layer contains. The table adds the rule that a reviewer checks when a file is added: what each layer must not contain.
+  </p>
+  <table>
+    <thead><tr><th>Layer</th><th>Owns</th><th>Must not contain</th></tr></thead>
+    <tbody>
+      <tr><td>Application</td><td>The state machine, the PID, the safety checks, the OLED text</td><td>Register addresses, vendor headers, pin numbers</td></tr>
+      <tr><td>Services</td><td>Sensor filtering, debounced buttons, the Modbus register map, watchdog kicks</td><td>Register addresses, vendor headers</td></tr>
+      <tr><td>Drivers</td><td>NTC conversion, display commands, Modbus frames, CRC-16</td><td>Register addresses, vendor headers, dryer rules such as thresholds</td></tr>
+      <tr><td>HAL (<code>hal.h</code>)</td><td>The functions the layers above may call</td><td>Dryer rules, and anything that is specific to one board</td></tr>
+      <tr><td>Board (<code>hw/</code>)</td><td>Register addresses, clock setup, pin setup</td><td>Dryer rules, states and thresholds</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The HAL is an interface, not a vendor library. The application calls <code>hal_heater_set_permille()</code>, not a timer register, so the same logic runs in the simulator, on a Blue Pill, or on the PC with a fake HAL (lesson 81). The rule that matters most is the dependency direction: nothing in the application may include a register header.
+  </p>
+
+  <h3>Calls go one way: a button, end to end</h3>
+  <p>
+    A <a href="../reference/glossary.html#hal-hardware-abstraction-layer">HAL</a> is the set of functions a layer exposes to the layer above it. A <strong>driver</strong> is the code that talks to one piece of hardware and turns it into plain values: an ADC code, a debounced button level, a duty cycle. The <strong>board file</strong> is the lowest layer, the only place that knows the register addresses of one chip on one board. Follow one button press down through the layers and back up.
+  </p>
+  <p>
+    The Start button is wired from PB12 to ground, and the chip's internal pull-up holds the pin high while the button is open. The board file reads the pin and returns 1 when it is low, which is what a press means. The button service samples that value through a <a href="../reference/glossary.html#debounce">debounce</a> (lesson 52) and sets an event flag when the debounced level goes from released to pressed. The control code reads the flag once, and only then does the state change. Nothing reaches up.
+  </p>
+  <p>
+    This is why the same state machine can run in the simulator, on the Blue Pill and on the PC. The PC build swaps the board file for a fake that returns scripted values (lesson 81), and the rest of the code does not notice. The rule to remember is the dependency direction: no file in the application may include a register header.
+  </p>
+
+  <h2>Tasks and priorities with rate-monotonic reasoning</h2>
+  <p>
+    The product runs five jobs in parallel: the safety monitor, the control loop, the Modbus comms, the user interface, and the logger. In FreeRTOS each is a task with a priority (lesson 87). Rate-monotonic scheduling (lesson 93) gives the rule for periodic tasks: the shorter the period, the higher the priority. With that rule and the execution times, you can check that every deadline holds before you write any task code.
+  </p>
+  <h3>Words for scheduling</h3>
+  <p>
+    A <a href="../reference/glossary.html#task">task</a> is a function that the RTOS runs as if it had its own processor, with its own stack. The scheduler decides which ready task runs. In FreeRTOS each task has a number priority, and the higher number wins: when a higher-priority task becomes ready, it <strong>preempts</strong> the running task, which means the CPU is taken away at once. A <strong>period</strong> is the time between two starts of a periodic task. The <strong>execution time</strong> is the CPU time one run needs, and a <strong>deadline</strong> is the time by which a run must finish. The <strong>utilisation</strong> of a task is its execution time divided by its period. The total utilisation is the sum over all periodic tasks. A utilisation of 0.5 means that half the processor is busy with that task, on average.
+  </p>
+  <table>
+    <thead><tr><th>Task</th><th>Priority</th><th>Period</th><th>Job</th><th>Why this priority</th></tr></thead>
+    <tbody>
+      <tr><td>safety</td><td>4</td><td>50 ms</td><td>Check the published state, cut the heater on a trip, kick the watchdog</td><td>Shortest period, and it must preempt the control loop</td></tr>
+      <tr><td>control</td><td>3</td><td>100 ms</td><td>Read the NTC, filter, state machine, PID, outputs</td><td>Second-shortest period</td></tr>
+      <tr><td>comms (117)</td><td>2</td><td>on each byte, 2 ms gap</td><td>Modbus RTU frames</td><td>Event-driven: it is not periodic, so it sits with the UI</td></tr>
+      <tr><td>ui</td><td>2</td><td>20 ms (buttons), 200 ms (redraw)</td><td>Debounce buttons, post presses, draw the OLED</td><td>Human timescale; it may be late without harm</td></tr>
+      <tr><td>logger</td><td>1</td><td>100 ms check-in, 1 s line</td><td>Check in with the watchdog, print one status line a second</td><td>Least urgent</td></tr>
+    </tbody>
+  </table>
+  <p>
+    The rate-monotonic test is a sum. For <em>n</em> periodic tasks, the utilisation sum of execution time ÷ period stays below <em>n</em>(2<sup>1/n</sup> − 1) if deadlines are guaranteed. For four tasks that bound is 0.757. Your estimates go into the sum. The display flush is the big term: a 1 KB frame at 100 kHz I2C takes about 90 ms, and the UI task spends it every 200 ms, so about 0.45 of the processor goes to drawing. That is high, and it is the first thing to measure on real hardware: lesson 117 has to schedule around it.
+  </p>
+  <h3>A worked example of the sum</h3>
+  <p>
+    Take estimates for the four periodic tasks and add them up step by step. These numbers are examples chosen for practice, not measurements from the project. The safety check takes 1 ms every 50 ms, giving 1 ÷ 50 = 0.02. The control cycle takes 5 ms every 100 ms, giving 5 ÷ 100 = 0.05. The UI task has two periods, so it contributes two terms: the button scan takes 0.5 ms every 20 ms, giving 0.025, and the redraw takes 90 ms every 200 ms, giving 0.45. The logger takes 1 ms every 100 ms, giving 0.01. The total is 0.02 + 0.05 + 0.025 + 0.45 + 0.01 = 0.555. That is below the bound of 0.757 for four tasks, so the rule says every deadline holds.
+  </p>
+  <p>
+    Treating the UI task as one task with two periods is a simplification. A stricter analysis splits it into two jobs, which makes five periodic jobs and a bound of 5 × (2<sup>1/5</sup> − 1) = 0.743. The total of 0.555 still passes. The design lesson is that the display flush uses most of the headroom, so it is the first thing to measure and reduce. The bound is a sufficient test: a sum below it guarantees the deadlines, provided the estimates are right. A sum above it does not prove a miss; it only means the test cannot promise anything, and you must measure.
+  </p>
+  <h3>Why the shortest period gets the highest priority</h3>
+  <p>
+    A task with a short period has the tightest deadline, and it runs most often. If it had a low priority, a long task that was already running could delay it past its deadline, and the delay grows with the length of that task. Giving it the highest priority lets it preempt the others, so the running task is paused at once and resumed later. The rule is not a guess about importance. Lesson 93 gives the result behind it: for independent periodic tasks whose deadlines equal their periods, rate-monotonic priorities are optimal among fixed-priority schemes.
+  </p>
+  <h3>What the sum leaves out</h3>
+  <p>
+    The sum assumes that the estimates are right and that no task blocks. A polled I2C transfer, a blocking delay or a mutex held too long adds time that the sum does not see. The display flush is such a job, and lesson 117 must schedule around it.
+  </p>
+  <div class="warning">
+    <strong>Estimates, not measurements.</strong> The execution times above are rough figures from reading the code, marked as estimates. A real design measures them with a GPIO toggle around each task, or a trace tool, and puts the measured numbers in the README.
+  </div>
+
+  <h2>The pin map</h2>
+  <p>
+    Pins are the first thing a schematic review checks. The table lists every pin the design uses, with its alternate function, which is the built-in peripheral that the pin can be handed to. The alternate functions were checked against a community pin table that agrees with the vendor's pin definitions, because the ST server refused the datasheet download while this lesson was prepared. Before you build a board, confirm each row in the <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf" target="_blank" rel="noopener">STM32F103x8/xB datasheet (ST)</a>, in its pin definitions table. Lesson 43 shows how to read such a table, and the <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf" target="_blank" rel="noopener">RM0008 reference manual</a> describes the registers that set each pin's function.
+  </p>
+  <h3>What a pin does</h3>
+  <p>
+    A <strong>pin</strong> is a leg of the chip that connects a signal inside it to the outside world. Each general-purpose pin (a <a href="../reference/glossary.html#gpio-general-purpose-input-output">GPIO</a>, for general-purpose input and output) can be an input, an output, or handed over to a built-in peripheral such as a timer or a serial port. That handover is the <strong>alternate function</strong>, and the table gives it for each pin. On the STM32F103, the setup of each pin is four bits in the port's configuration registers, CRL for pins 0 to 7 and CRH for pins 8 to 15: two bits choose the direction and speed, and two bits choose the kind of pin, such as push-pull output, open-drain output, or input with a pull-up. Chapter 9 of RM0008 describes these fields. The skeleton's code writes those bits by hand, so that you can find them again in the reference manual.
+  </p>
+  <p>
+    Reading the table means asking three questions for each row: which pin, which peripheral, and what electrical condition. PA6 is TIM3_CH1, the timer channel that makes the heater PWM. The timer can drive the pin only when the pin is configured for the alternate function. A pin set up as a plain GPIO output still switches, but the timer no longer controls it, so the heater would not follow the PWM at all.
+  </p>
+  <p>
+    An <strong>input with a pull-up</strong> is a pin that the chip holds high through a weak internal resistor. A button wired from the pin to ground pulls the pin low when it is pressed, so the pin reads 0 when pressed and 1 when released. This is <strong>active low</strong>: the active state is the low level. Active-low inputs are the normal case for buttons. The board file inverts the reading, so the rest of the code sees 1 for "pressed". Forgetting that inversion is one of the common mistakes below.
+  </p>
+  <p>
+    The OLED's I2C pins work differently. In open-drain mode a pin can only pull the line low, and a resistor on the board pulls it high. Lesson 60 explains why the I2C bus is built that way. That is why the table says 4.7 kΩ external pull-ups on PB6 and PB7.
+  </p>
+  <table>
+    <thead><tr><th>Pin</th><th>Function</th><th>Peripheral</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>PA0</td><td>NTC divider output</td><td>ADC1_IN0</td><td>Analog input, 12-bit, single conversion</td></tr>
+      <tr><td>PA6</td><td>Heater PWM</td><td>TIM3_CH1</td><td>1 kHz, alternate-function push-pull</td></tr>
+      <tr><td>PB0</td><td>Fan</td><td>GPIO output</td><td>Drives the fan's MOSFET gate</td></tr>
+      <tr><td>PB12</td><td>Start/stop button</td><td>GPIO input</td><td>Internal pull-up, active low</td></tr>
+      <tr><td>PB13</td><td>Material button</td><td>GPIO input</td><td>Internal pull-up, active low</td></tr>
+      <tr><td>PB6</td><td>OLED SCL</td><td>I2C1_SCL</td><td>External 4.7 kΩ pull-up</td></tr>
+      <tr><td>PB7</td><td>OLED SDA</td><td>I2C1_SDA</td><td>External 4.7 kΩ pull-up</td></tr>
+      <tr><td>PA9</td><td>Serial TX</td><td>USART1_TX</td><td>Log now, Modbus in lesson 118</td></tr>
+      <tr><td>PA10</td><td>Serial RX</td><td>USART1_RX</td><td>Used from lesson 118</td></tr>
+      <tr><td>PC13</td><td>Status LED</td><td>GPIO output</td><td>On the board, active low</td></tr>
+    </tbody>
+  </table>
+
+  <h2>The real circuit behind the LED</h2>
+  <p>
+    In Wokwi the heater is a red LED, and the fan is a green one. On the real dryer, the microcontroller never drives a heater: it switches a power <a href="../reference/glossary.html#mosfet">MOSFET</a>. The gate is driven from PA6 through a series resistor of about 100 Ω, with a pull-down of about 10 kΩ so the heater stays off while the chip resets. The MOSFET's drain feeds the 24 V heater, and a logic-level N-channel part is chosen so its gate turns fully on at 3.3 V (lesson 12 and lesson 109 cover the parts and the layout). The fan is a motor, which is inductive, so it gets a <a href="../reference/glossary.html#flyback-diode">flyback diode</a> across its terminals (lesson 14).
+  </p>
+  <p>
+    A MOSFET (metal-oxide-semiconductor field-effect transistor) is a switch that the chip controls with voltage. Between its drain and source it either conducts well or almost not at all, and the gate voltage decides which. The part you choose must be specified to be fully on when its gate sees the 3.3 V that the pin produces. The gate resistor and pull-down values above are a starting point. Check them against the MOSFET's datasheet before you build anything.
+  </p>
+  <p>
+    Each component has a reason to be there. The gate resistor limits the current that the pin must supply when it charges the gate, and it slows the edge so that the switch does not ring. The pull-down matters in the window before the firmware runs. Until the firmware configures PA6, the pin is an input and its level is not defined, so the pull-down holds the gate low and keeps the heater off. Software cannot protect the heater before software starts, so this part of the circuit does that job.
+  </p>
+
+  <h2>The code, line by line</h2>
+  <p>
+    The skeleton's <code>main.c</code> is short, and it follows the architecture's rule: it calls only <code>hal.h</code> and the application modules. Read it as the start-up sequence of the product. These are the lines that matter.
+  </p>
+  <pre><code class="language-c">hal_init();                               /* board: clock, serial log, pins, timers, ADC, I2C */
+dryer_init();                             /* application: the state machine starts in IDLE */
+const material_t *m = materials_get(0);   /* the first preset: PLA */
+(void)m;                                  /* linked in, not used yet */
+hal_log("DRYER SKELETON OK");
+for (;;) { }                              /* the RTOS tasks of lesson 117 do the work later */</code></pre>
+  <p>
+    <code>hal_init()</code> is the only call that touches registers, and it runs first, because everything after it assumes a configured clock and configured pins. <code>dryer_init()</code> puts the state machine in IDLE. <code>materials_get(0)</code> returns a pointer to the first row of a constant table, so the skeleton proves that the materials module is linked. The <code>(void)m;</code> line tells the compiler that the unused variable is deliberate, so it does not warn. <code>hal_log()</code> writes the banner. The final loop never ends, because a bare-metal program must not return from <code>main()</code>: returning would jump into whatever the start-up code left on the stack.
+  </p>
+  <p>
+    The serial log is the only real hardware in the skeleton, so it shows what a register write does. In <code>hw/hal_bluepill.c</code>, the line <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_USART1EN;</code> switches on the clocks of port A and of USART1. Without a clock, a peripheral's registers do nothing. The line <code>GPIOA-&gt;CRH = (GPIOA-&gt;CRH &amp; ~(0xFU &lt;&lt; 4)) | (0xBU &lt;&lt; 4);</code> clears the four configuration bits of PA9 and writes 0xB in their place: configuration 10 (alternate-function push-pull) and mode 11 (output at up to 50 MHz). The mask keeps the other seven pins of CRH unchanged, which is why the code reads the register, changes four bits, and writes it back, instead of assigning a whole value.
+  </p>
+  <p>
+    The baud rate comes from <code>USART1-&gt;BRR = SystemCoreClock / LOG_BAUD;</code>. The clock is the default 8 MHz internal oscillator, which the template's <code>main.c</code> states (lesson 67 explains that oscillator). The divider is 8 000 000 ÷ 115 200 = 69.4, and the register takes the whole number, 69. The baud rate that results is 8 000 000 ÷ 69 = 115 942, which is 0.6 % faster than 115 200. A UART tolerates a few per cent of error, so the log works, and you can check that number with a calculator. The last line of setup, <code>USART1-&gt;CR1 = USART_CR1_TE | USART_CR1_UE;</code>, turns on the transmitter and the peripheral. In <code>hal_log()</code>, each byte waits until the transmit-data-empty flag (TXE) is set before the next byte is written to the data register, so the loop never overwrites a byte that has not left yet.
+  </p>
+
+  <h2>Common mistakes and how to spot them</h2>
+  <p>
+    <strong>1. Priorities chosen by importance instead of period.</strong> Symptom: the display looks right, but when the control loop slows, the temperature is sampled late and the overshoot grows. The serial log shows the control cycle at 130 ms instead of 100 ms. Fix: give the shortest period the highest priority, measure each task's execution time with a GPIO pin that you toggle around it, and add the utilisations again.
+  </p>
+  <p>
+    <strong>2. Active-low input read as active-high.</strong> Symptom: the Start button appears to start a cycle when it is released and does nothing when it is pressed. The debug view shows the raw pin at 1 while the button is held down. Fix: check the wiring (button to ground, pin with pull-up), then make the board file return 1 for a low pin, as <code>hal_button_pressed()</code> does. A unit test with a fake that returns 1 for "pressed" catches the inversion on the PC.
+  </p>
+  <p>
+    <strong>3. A register include in the application.</strong> Symptom: the PC build of the state machine fails with a missing header, or it compiles only because a copy of the chip's header is on the PC's include path. Either way, the test no longer runs on the PC alone. Fix: move the register access behind a <code>hal.h</code> function, as <code>hal_heater_set_permille()</code> does, and treat an <code>app/</code> file that includes a vendor header as a defect in review.
+  </p>
+  <p>
+    <strong>4. The serial log prints garbage or nothing.</strong> Symptom: the monitor shows no text, or random symbols. Cause: PA9 was left as an input (its CRH bits were not written), the port or USART clock was not enabled, or the baud divider is wrong. Fix: check <code>IOPAEN</code> and <code>USART1EN</code> in the clock register, then the 0xB nibble for PA9 in CRH, then the value of BRR.
+  </p>
+  <p>
+    <strong>5. A pin configured in the wrong place.</strong> Symptom: a second file writes to PA6 directly, and the heater PWM jitters whenever that file runs. Cause: two owners for one pin, and no single place that shows which function the pin has. Fix: keep every pin setup in the board file, and keep the pin map as one table next to it, so a review can compare the two.
+  </p>
+
+  <h2>In real projects</h2>
+  <p>
+    Teams settle the layers before the first driver is written. The rule that the application never includes a register header is easy to state and easy to break under deadline pressure, so reviewers check the include lines first. A search of the application folder for vendor headers finds most violations, and a continuous integration job can run that search on every change.
+  </p>
+  <p>
+    Pin maps are reviewed twice: against the schematic, and against the datasheet's pin definitions. Priorities are reviewed as a table too. A new task adds a row, and the sum is recomputed before the code is merged. Teams that use an RTOS usually measure execution times on the target, because the estimates are the first numbers to change once the code runs on hardware.
+  </p>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>Each layer calls only the layer below it. Only the board file contains register addresses, so the logic also runs on a PC.</li>
+    <li>The HAL is the interface between the application and the chip. A driver turns hardware into plain values.</li>
+    <li>Rate-monotonic priorities give the shortest period the highest priority.</li>
+    <li>A utilisation sum below n(2<sup>1/n</sup> − 1) guarantees every deadline, provided the estimates are right and no task blocks for long.</li>
+    <li>Each pin's configuration bits choose its function, and a timer drives a pin only in alternate-function mode.</li>
+    <li>An active-low input needs its reading inverted in the board file.</li>
+    <li>Check a UART baud rate with arithmetic: 8 MHz ÷ 69 gives 115 942 baud, which is 0.6 % above 115 200.</li>
+  </ul>
+
+  <h2>Try it: the skeleton</h2>
+  <p>
+    The skeleton is the architecture with empty modules. It builds, it wires the parts in the diagram, and it prints the banner. The later lessons fill it in: the drivers in lesson 115, the outputs and buttons in lesson 116, and the RTOS tasks in lesson 117.
+  </p>
+  <ol class="steps">
+    <li>Open <code>projects/0114-dryer-skeleton/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
+    <li>Build: press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run <code>python -I tools/build.py projects/0114-dryer-skeleton/starter</code> from the workspace root. Expect no errors. The build finishes by writing an ELF file in the project's <code>build</code> folder, which the simulator loads.</li>
+    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Open <code>diagram.json</code> and check the wiring against the pin table: the NTC output on PA0, the heater LED through a resistor on PA6, the fan through a resistor on PB0, the two buttons on PB12 and PB13, and the OLED on PB6 and PB7.</li>
+    <li>Your task: in <code>main.c</code>, replace the <code>TODO(learner)</code> comment with a call to <code>materials_get(0)</code> that keeps the result in a variable, then the line <code>hal_log("DRYER SKELETON OK");</code>. Expect the serial monitor to show <code>DRYER SKELETON OK</code> on its own line, once, with no garbage characters. If you see garbage, read mistake 4 above.</li>
+  </ol>
+  <details>
+    <summary>Hint</summary>
+    <p>The layers already exist: <code>hal_log()</code> is in <code>hw/hal_bluepill.c</code>, and the banner is one call. The preset is only read to show that the materials module links in; the skeleton does nothing with it yet.</p>
+  </details>
+  <p>The reference solution is in <code>projects/0114-dryer-skeleton/solution</code>. Try first, compare after.</p>
+
+  <div class="win">You drew the layers and checked their dependency rule, set the task priorities with a utilisation sum, mapped the pins with their alternate functions, and proved that the skeleton links and prints the banner. The next lesson writes the NTC driver and the first unit tests.</div>
+
+  <div class="widget quiz" data-title="Check your understanding">
+    <script type="application/json">
+    { "questions": [
+      { "type": "number",
+        "prompt": "The team adds a new 2 ms job that runs every 25 ms. Using the worked example's total of 0.555 (with the UI task split into its own job), what is the new total utilisation?",
+        "answer": 0.635, "tolerance": 0.01,
+        "wrong": [
+          { "answer": 0.08, "feedback": "That is only the new job. The test adds it to the existing total of 0.555." },
+          { "answer": 0.555, "feedback": "That is the old total. The new job's 0.08 must be added to it." }
+        ],
+        "hint": "Add the new job's utilisation (2 ms ÷ 25 ms) to 0.555.",
+        "why": "0.555 + 0.08 = 0.635. With six periodic jobs the bound is 6 × (2^(1/6) − 1) = 0.735, so 0.635 still passes and the deadlines are guaranteed. The margin shrinks, though, and the display flush is still the largest term to measure."
+      },
+      { "type": "mc",
+        "prompt": "The control task (every 100 ms) and the UI redraw (every 200 ms) both become ready at the same moment. Which one gets the CPU first, and why?",
+        "options": ["The UI task, because it has waited longer", "The control task, because its period is shorter", "The logger, because it prints the status line"],
+        "answer": 1,
+        "feedback": [
+          "Waiting longer is first-come thinking. A preemptive FreeRTOS scheduler runs the highest-priority ready task, not the one that has waited longest.",
+          "Right. Control has priority 3 and the UI has priority 2, so control runs first. Its shorter period is why it has the higher priority (lesson 93).",
+          "The logger has the lowest priority (1), so it waits behind both. Printing a line does not make it urgent."
+        ],
+        "hint": "Which two numbers in the priority table decide this?",
+        "why": "Under priority scheduling, priority decides and arrival time does not. Rate-monotonic reasoning gives the shorter period the higher priority, which is why the control loop sits above the UI."
+      },
+      { "type": "number",
+        "prompt": "A control cycle takes 5 ms of CPU time every 100 ms. How many seconds of CPU does the control task use in one minute?",
+        "answer": 3, "tolerance": 0, "unit": "s",
+        "wrong": [
+          { "answer": 0.3, "feedback": "That counts one cycle per second. A 100 ms period gives 10 cycles per second, so one minute has 600." }
+        ],
+        "hint": "How many 100 ms periods fit in a minute, and what does each one cost?",
+        "why": "600 periods × 5 ms = 3000 ms = 3 s, which is a utilisation of 3 ÷ 60 = 0.05, the control share in the worked example. Most timing slips are unit slips, so write the unit at every step."
+      },
+      { "type": "mc",
+        "prompt": "Your firmware reads the Start pin (PB12, button to ground, internal pull-up). The cycle starts when the button is released and does nothing when it is pressed. Which fix is right?",
+        "options": ["Remove the internal pull-up from PB12", "Invert the reading in the board file", "Connect the button to 3.3 V instead of ground", "Swap the PB12 and PB13 numbers in code"],
+        "answer": 1,
+        "feedback": [
+          "The pull-up holds the pin high while the button is open. Removing it leaves the pin floating and does not fix the reading.",
+          "Right. The button pulls the pin low when pressed, so the board file must return 1 for a low pin. That is the active-low inversion (mistake 2).",
+          "Wiring to 3.3 V makes a press read high, but it changes the hardware and needs a pull-down. It is not the software fix for this wiring.",
+          "Swapping pins moves the fault to the other button, and Start would still read inverted. The problem is in the reading, not the pin number."
+        ],
+        "hint": "What level does the pin show when the button is held down?",
+        "why": "Active-low inputs are normal for buttons, and forgetting the inversion is the most common mistake here. A host unit test with a fake pin that returns 0 for pressed catches it on the PC (lesson 81)."
+      },
+      { "type": "mc",
+        "prompt": "A reviewer finds this line in <code>app/dryer.c</code>: <code>#include \"stm32f1xx.h\"</code>, followed by a write to <code>GPIOA-&gt;ODR</code> that turns the fan on. Which change keeps the layer rule?",
+        "options": ["Move the write into <code>hw/hal_bluepill.c</code> and call it through <code>hal.h</code>", "Keep the include, but add a comment that says the write is intended", "Copy the header into <code>app/</code> so the PC build finds it", "Move the fan write into the main loop, which is outside the layers"],
+        "answer": 0,
+        "feedback": [
+          "Right. The board file is the only layer that knows the register addresses. The application calls a HAL function, and the PC build can replace that function with a fake.",
+          "A comment does not change the dependency. The PC build still needs the vendor header, so the test still cannot run on its own.",
+          "Copying the header hides the problem. The application still depends on one chip, and the PC build now carries a copy of a vendor file that can drift.",
+          "The main loop is still application code, so the register write stays in the wrong layer. The layer rule applies to every file in <code>app/</code>."
+        ],
+        "hint": "Which layer is allowed to know the register addresses?",
+        "why": "The dependency direction is the rule that makes the logic testable on a PC. A review should reject any register include in the application, and the fix is always to move the access down into the board file behind a HAL function."
+      },
+      { "type": "number",
+        "prompt": "The UART runs at 115 200 baud with a 8 MHz clock, and the divider register holds 69. By what percentage is the resulting baud rate higher than 115 200? Give two decimal places.",
+        "answer": 0.64, "tolerance": 0.02, "unit": "%",
+        "wrong": [
+          { "answer": 0.0064, "feedback": "That is a fraction, not a percentage. Multiply by 100 to get per cent." }
+        ],
+        "hint": "The actual baud rate is 8 000 000 ÷ 69. Find how far it is above 115 200, then divide by 115 200.",
+        "why": "8 000 000 ÷ 69 = 115 942, which is 742 above 115 200. 742 ÷ 115 200 = 0.0064, or 0.64 %. A UART tolerates errors of this size, so the log works, but the arithmetic is worth checking because a wrong clock value shifts every baud rate."
+      },
+      { "type": "reflect",
+        "prompt": "Why should the pull-down resistor on the MOSFET gate be on the board, and not left to the firmware? Explain what happens during reset.",
+        "hint": "When does the firmware first configure PA6, and what is the pin doing before that?",
+        "answer": "The firmware cannot protect the heater before it runs. Until the start-up code configures PA6, the pin is an input and its level is not defined, so the gate could float high and switch the heater on during reset. A pull-down resistor on the board holds the gate low from the moment power is applied, independent of software. The firmware can then take over the pin, and the protection that the board gives is still there if the firmware fails at start-up."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="widget quiz" data-title="Spaced review (earlier lessons)">
+    <script type="application/json">
+    { "questions": [
+      { "type": "mc",
+        "prompt": "The OLED's SDA pin (PB7) is an open-drain output with a 4.7 kΩ pull-up. The firmware writes 1 to the output register. What does the line do?",
+        "options": ["The pin drives 3.3 V actively, through its output stage", "The pin releases the line, and the pull-up raises it to the high level", "The pin drives 5 V onto the bus to speed up the rise", "The pin connects the line to ground, so the bus reads 0"],
+        "answer": 1,
+        "feedback": [
+          "An open-drain pin has no active high driver. Only the pull-up raises the line, which is why the bus can be shared safely.",
+          "Right. Writing 1 turns off the pin's pull-down, and the external resistor pulls the line high. Lesson 16 explains why this is the only high level an open-drain pin can give.",
+          "There is no 5 V on this bus, and an open-drain pin does not drive the line high in any case.",
+          "Writing 0 is the case that connects the line to ground. Writing 1 releases it."
+        ],
+        "hint": "What can an open-drain pin do on its own, and what provides the high level?",
+        "why": "A bus with several open-drain devices only works because nothing actively drives the line high. Lesson 60 uses the same rule for the ACK bit, and the 4.7 kΩ value sets how fast the line rises."
+      },
+      { "type": "number",
+        "prompt": "A relay coil of 0.1 H carries 50 mA. The MOSFET turns the coil off in 10 µs, and there is no flyback diode. What voltage does the coil produce at the switch (lesson 14)?",
+        "answer": 500, "tolerance": 0, "unit": "V",
+        "wrong": [
+          { "answer": 0.0005, "feedback": "That divides by 10 seconds, not 10 microseconds. Convert µs to seconds before you divide." }
+        ],
+        "hint": "V = L × ΔI ÷ Δt. Write the time in seconds first.",
+        "why": "0.1 H × 0.05 A ÷ 10 × 10⁻⁶ s = 500 V. That spike is why the fan motor in this design gets a flyback diode, which gives the coil current a path to decay through."
+      }
+    ] }
+    </script>
+  </div>
+
+  <div class="source">
+    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf" target="_blank" rel="noopener">RM0008, STM32F101/102/103/105/107 Reference Manual (ST)</a>: read chapter 9 (general-purpose and alternate-function I/Os) for the CRL and CRH bit fields, CNF and MODE, and the alternate-function notes. Then read the RCC chapter for the APB2 clock enable bits IOPAEN and USART1EN.
+  </div>
+
+  <div class="ask">
+    Ask your teacher (the AI agent in this workspace) about anything unclear. Try: "Which pin would I move if the fan needed a PWM output, and what would change in <code>hal.h</code>?"
+    Related: <a href="0113-capstone-1-requirements-and-the.html">Lesson 113: Capstone 1</a>, <a href="0076-driver-design-and-hardware-abstraction.html">Lesson 76: Driver design and HAL</a>, and <a href="0093-timing-analysis.html">Lesson 93: Timing analysis: execution time, deadlines, and rate-monotonic priorities</a>.
+  </div>
+</main>
+<script src="../assets/manifest.js"></script>
+<script src="../assets/course.js"></script>
+</body>
+</html>
