@@ -7,7 +7,7 @@
  * - Keyword search (always): BM25 over assets/search/index.json, which tools/maintainer/build_search.py
  *   builds. One entry per section (<h2>/<h3>) and per glossary term; quizzes are not indexed.
  *   Words in a heading count more; a word being typed matches as a prefix ("debounc").
- * - Smart search (opt-in, remembered per browser): also embeds the question with a small
+ * - Smart search (on by default, switched off with the brain button, remembered per browser): also embeds the question with a small
  *   sentence model and ranks sections by meaning, so "button registers twice" finds debouncing.
  *   Needs assets/search/vectors.bin (build_search.py --semantic). The model (about 23 MB) comes
  *   from Hugging Face and the runtime (about 27 MB) from jsDelivr, once; the browser caches them.
@@ -143,7 +143,7 @@
 
   let smart = null;    // { meta, vectors, embed } once loaded
   let smartPromise = null;
-  function smartWanted() { try { return localStorage.getItem(SMART_KEY) === "1"; } catch (e) { return false; } }
+  function smartWanted() { try { return localStorage.getItem(SMART_KEY) !== "0"; } catch (e) { return true; } }
   function setSmartWanted(on) { try { localStorage.setItem(SMART_KEY, on ? "1" : "0"); } catch (e) { /* ignore */ } }
 
   let metaPromise = null;

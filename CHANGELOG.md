@@ -11,6 +11,11 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.12 (2026-11-07)
+
+- Smart search is on by default. When it is off, a line crosses the brain button. The first search
+  with it on downloads the model (about 50 MB) once. A choice to switch it off is remembered.
+
 ## 0.0.11 (2026-11-07)
 
 - Smart search is now a brain button inside the search bar. Tap it to switch smart search on or
