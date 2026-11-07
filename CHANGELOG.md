@@ -2,6 +2,28 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.8 (2026-11-07)
+
+### More interactive lessons
+
+- The CPU simulator can draw the CPU as blocks (PC, code memory, decoder, registers, ALU, flags,
+  data memory). After each phase the wires it used light up and show their values. It is on in
+  lessons 26, 28, 30, 31 and 33.
+- Colour coding in every CPU simulator: each flag has its own colour, chips at the end of a program
+  line show which flags it writes (filled) or reads (outlined), and after each instruction a line
+  says why each flag has its value. Instructions are coloured by kind: data processing, memory,
+  branch, system.
+- `LDR Rd, =value` no longer changes the flags in the simulator, as on the real core.
+- Logic sandbox (`assets/logicsim.js`): gates you click, with a truth table that fills in as you
+  try rows, or a timing diagram for latches and flip-flops. Lessons 22 (XOR), 23 (multiplexer,
+  full adder), 24 (latch against flip-flop) and 25 (2-bit counter, 4-stage shift register).
+- The CircuitJS circuits run inside the lessons (5 to 18 and lab 1), with a link to the full-size
+  simulator.
+- New widgets: a float explorer (lesson 21), a cache simulator (36), a memory map explorer with a
+  drill (37, 38), a fault status decoder and an MPU checker (39), and a clock tree configurator for
+  the STM32F103 and the RP2040 (40).
+- Buttons keep their size when they switch between the filled and the outlined style.
+
 ## 0.0.7 (2026-11-07)
 
 - Search: a box in the top bar of every lesson and reference sheet, and on the index (`/` focuses

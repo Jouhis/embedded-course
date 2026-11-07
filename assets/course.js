@@ -778,8 +778,35 @@
      gets an "Open in CircuitJS" button that loads the netlist via ?cct=. Built-in examples
      need no helper: link to https://www.falstad.com/circuit/circuitjs.html?startCircuit=ohms.txt */
   const CIRCUITJS = "https://www.falstad.com/circuit/circuitjs.html";
+  /* Live circuits, running inside the page (the iframe loads when it scrolls into view):
+       <div class="circuitjs-live" data-start="cap.txt" data-title="RC charging"></div>   built-in example
+       <pre class="circuitjs" data-live data-title="Divider">$ 1 5.0E-6 ...netlist...</pre>   own netlist */
+  function liveCircuit(title, query) {
+    const full = CIRCUITJS + "?" + query;
+    const frame = el("iframe", { class: "circuitjs-frame", src: full + "&hideSidebar=true&hideMenu=true&running=true",
+      title: `Circuit simulator: ${title}`, loading: "lazy", allow: "fullscreen" });
+    return el("div", { class: "widget circuitjs-box" }, [
+      el("h3", { text: `Circuit: ${title}` }),
+      frame,
+      el("p", { class: "circuitjs-hint" }, [
+        "Click a switch to flip it, double-click a part to change its value. ",
+        el("a", { href: full, target: "_blank", rel: "noopener", text: "Open full size with menus ↗" }),
+      ]),
+    ]);
+  }
+
   function renderCircuitLinks() {
-    document.querySelectorAll("pre.circuitjs").forEach(pre => {
+    document.querySelectorAll(".circuitjs-live").forEach(div => {
+      div.replaceWith(liveCircuit(div.dataset.title || div.dataset.start, "startCircuit=" + encodeURIComponent(div.dataset.start)));
+    });
+    document.querySelectorAll("pre.circuitjs[data-live]").forEach(pre => {
+      const box = liveCircuit(pre.dataset.title || "circuit", "cct=" + encodeURIComponent(pre.textContent.trim() + "\n"));
+      pre.parentNode.insertBefore(box, pre);
+      box.appendChild(el("details", {}, [el("summary", { text: "Netlist (File → Import From Text in CircuitJS)" })]));
+      box.querySelector("details").appendChild(pre);
+    });
+    document.querySelectorAll("pre.circuitjs:not([data-live])").forEach(pre => {
+      if (pre.closest(".circuitjs-box")) return;
       const netlist = pre.textContent.trim() + "\n";
       const url = CIRCUITJS + "?cct=" + encodeURIComponent(netlist);
       const title = pre.dataset.title || "circuit";

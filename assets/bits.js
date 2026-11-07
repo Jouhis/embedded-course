@@ -15,6 +15,10 @@
  *      mask               the hex mask for bits a..b
  *      field              extract (reg >> lo) & mask
  *    Answers are typed in hex (0x..), binary (0b..) or decimal; all are accepted.
+ *
+ * 3. Float explorer: the 32 bits of an IEEE 754 float, coloured by field, decoded step by step, with the
+ *    rounding error of what was typed and the same value in Q15.
+ *      <div class="widget floatbits" data-value="0x3F800000" data-title="Inside a float"></div>
  */
 (function () {
   "use strict";
@@ -30,7 +34,23 @@
   .bitreg .fields{display:flex;gap:2px;font-size:.7rem;font-family:var(--sans);color:var(--muted)}
   .bitreg .fields span{border-top:2px solid var(--accent);text-align:center}
   .bitdrill .task{font-family:var(--mono);font-size:1rem;margin:.5rem 0}
-  .bitdrill .streak{font-family:var(--sans);color:var(--muted);font-size:.85rem}`;
+  .bitdrill .streak,.floatbits .streak{font-family:var(--sans);color:var(--muted);font-size:.85rem}
+  .floatbits .bits{display:flex;flex-wrap:wrap;gap:1px;margin:.75rem 0 .25rem}
+  .floatbits .bit{display:flex;flex-direction:column;align-items:center}
+  .floatbits .bit.nib{margin-left:.45rem}
+  .floatbits .bit button{font-family:var(--mono);font-size:.8rem;width:1.15rem;height:1.8rem;padding:0;border:1px solid var(--rule);border-radius:3px;cursor:pointer;color:var(--fg)}
+  .floatbits .bit small{font-family:var(--mono);font-size:.6rem;color:var(--muted)}
+  .floatbits button.fs{background:var(--bad-soft)} .floatbits button.fs.one{background:var(--bad);color:var(--bg)}
+  .floatbits button.fe{background:var(--warn-soft)} .floatbits button.fe.one{background:var(--warn);color:var(--bg)}
+  .floatbits button.fm{background:var(--accent-soft)} .floatbits button.fm.one{background:var(--accent);color:var(--bg)}
+  .floatbits .flegend{display:flex;flex-wrap:wrap;gap:.4rem 1rem;font-family:var(--sans);font-size:.75rem;margin-bottom:.6rem}
+  .floatbits .flegend span::before{content:"";display:inline-block;width:.8rem;height:.8rem;border-radius:2px;margin-right:.3rem;vertical-align:-1px}
+  .floatbits .flegend .fs::before{background:var(--bad)} .floatbits .flegend .fe::before{background:var(--warn)} .floatbits .flegend .fm::before{background:var(--accent)}
+  .floatbits .presets{display:flex;flex-wrap:wrap;gap:.3rem;margin:.4rem 0}
+  .floatbits .presets .btn{padding:.15rem .5rem;font-size:.8rem}
+  .floatbits .vals{font-family:var(--mono);font-size:.85rem;display:grid;grid-template-columns:auto 1fr;gap:.2rem 1rem}
+  .floatbits .vals span{font-family:var(--sans);color:var(--muted)}
+  .floatbits .vals code{word-break:break-word}`;
 
   function injectCss() {
     if (document.getElementById("bits-css")) return;
@@ -162,12 +182,94 @@
     newTask();
   }
 
-  window.Bits = { makeTask, parseAnswer, toHex, toBin, signed };
+  // ------------------------------------------------------------ float explorer
+
+  const f32 = new DataView(new ArrayBuffer(4));
+  const bitsToFloat = b => { f32.setUint32(0, b >>> 0); return f32.getFloat32(0); };
+  const floatToBits = x => { f32.setFloat32(0, x); return f32.getUint32(0); };
+  const fmt = x => (Number.isFinite(x) ? String(x) : String(x));
+
+  function mountFloat(box) {
+    let v = parseAnswer(box.dataset.value || "0x3F800000") >>> 0;
+    let typed = null;            // the decimal the learner typed, to show the rounding error
+    box.appendChild(el("h3", { text: box.dataset.title || "Inside a 32-bit float" }));
+    const input = el("input", { type: "text", autocomplete: "off", spellcheck: "false", placeholder: "a number, e.g. 0.37, or 0x3F800000" });
+    const go = el("button", { class: "btn", type: "button", text: "Store it" });
+    const presets = el("div", { class: "presets" });
+    ["1.0", "0.37", "0.1", "-2.5", "16777217", "1e-40", "Infinity"].forEach(p => {
+      const b = el("button", { class: "btn secondary", type: "button", text: p });
+      b.addEventListener("click", () => { input.value = p; store(); });
+      presets.appendChild(b);
+    });
+    const bits = el("div", { class: "bits fbits" });
+    const legend = el("div", { class: "flegend" }, [
+      el("span", { class: "fs", text: "sign" }), el("span", { class: "fe", text: "exponent (8 bits, bias 127)" }),
+      el("span", { class: "fm", text: "mantissa (23 bits, leading 1 implied)" })]);
+    const out = el("div", { class: "vals fvals" });
+    box.append(el("div", { class: "q-input-row" }, [input, go]), presets, bits, legend, out,
+      el("p", { class: "streak", text: "Click any bit to flip it, or type a number and press Store it." }));
+
+    function store() {
+      const t = input.value.trim();
+      if (!t) return;
+      if (/^0x[0-9a-f]{1,8}$/i.test(t)) { v = parseInt(t, 16) >>> 0; typed = null; }
+      else {
+        const x = Number(t);
+        if (Number.isNaN(x) && !/^nan$/i.test(t)) return;
+        v = floatToBits(x); typed = { text: t, x };
+      }
+      render();
+    }
+    go.addEventListener("click", store);
+    input.addEventListener("keydown", e => { if (e.key === "Enter") store(); });
+
+    function render() {
+      bits.innerHTML = "";
+      for (let b = 31; b >= 0; b--) {
+        const one = (v >>> b) & 1;
+        const field = b === 31 ? "fs" : b >= 23 ? "fe" : "fm";
+        const btn = el("button", { type: "button", class: field + (one ? " one" : ""), text: String(one), title: `bit ${b}` });
+        btn.addEventListener("click", () => { v = (v ^ (1 << b)) >>> 0; typed = null; render(); });
+        bits.appendChild(el("div", { class: "bit" + (b === 30 || b === 22 ? " nib" : "") }, [btn, el("small", { text: String(b) })]));
+      }
+      const s = v >>> 31, e = (v >>> 23) & 0xFF, m = v & 0x7FFFFF;
+      const x = bitsToFloat(v);
+      const rows = [["Bits", toHex(v, 32)], ["Sign", `${s} → ${s ? "negative" : "positive"}`]];
+      if (e === 255) {
+        rows.push(["Exponent", `${toBin(e, 8).replace(/ /g, "")} = 255: the special value`]);
+        rows.push(["Value", m ? "NaN (not a number): mantissa ≠ 0" : (s ? "−" : "+") + "infinity: mantissa = 0"]);
+      } else if (e === 0) {
+        rows.push(["Exponent", "00000000 = 0: zero or subnormal, no implied 1, power fixed at 2^−126"]);
+        rows.push(["Mantissa", `0.${toBin(m, 23).replace(/ /g, "")}₂ = ${m / 2 ** 23}`]);
+        rows.push(["Value", `${s ? "−" : "+"}${m / 2 ** 23} × 2^−126 = ${fmt(x)}`]);
+      } else {
+        rows.push(["Exponent", `${toBin(e, 8).replace(/ /g, "")} = ${e}, minus 127 = ${e - 127} → × 2^${e - 127} = ${2 ** (e - 127)}`]);
+        rows.push(["Mantissa", `1 + ${m} ÷ 2^23 = ${1 + m / 2 ** 23}`]);
+        rows.push(["Value", `${s ? "−" : "+"}${1 + m / 2 ** 23} × ${2 ** (e - 127)} = ${fmt(x)}`]);
+        rows.push(["Bits + 1", `${fmt(bitsToFloat(v + 1))}: the neighbouring float, a gap of ${Math.abs(bitsToFloat(v + 1) - x)}`]);
+      }
+      if (typed && Number.isFinite(typed.x) && Number.isFinite(x)) {
+        const err = x - typed.x;
+        rows.push(["You typed", `${typed.text}: stored ${err === 0 ? "exactly" : `with an error of ${err.toPrecision(3)}`}`]);
+      }
+      if (Number.isFinite(x) && x >= -1 && x < 1) {
+        const q = Math.max(-32768, Math.min(32767, Math.round(x * 32768)));
+        const qv = q / 32768, ref = typed ? typed.x : x;
+        rows.push(["Same in Q15", `round(${fmt(ref === x ? x : ref)} × 32768) = ${q} (${toHex(q & 0xFFFF, 16)}) → ${qv}, error ${(qv - ref).toPrecision(3)}`]);
+      } else rows.push(["Same in Q15", "outside the Q15 range (−1 up to just below +1)"]);
+      out.innerHTML = "";
+      rows.forEach(([k, val]) => { out.append(el("span", { text: k })); out.append(el("code", { text: val })); });
+    }
+    render();
+  }
+
+  window.Bits = { makeTask, parseAnswer, toHex, toBin, signed, bitsToFloat, floatToBits };
 
   function init() {
     injectCss();
     document.querySelectorAll(".bitreg").forEach(mountReg);
     document.querySelectorAll(".bitdrill").forEach(mountDrill);
+    document.querySelectorAll(".floatbits").forEach(mountFloat);
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

@@ -371,12 +371,13 @@ Totals: 19 bench labs (15 core, 4 stretch) plus 2 in the ESP32 appendix. 13 on t
 ## Shared Components (./assets/)
 1. Stylesheet
 2. Quiz widget
-3. In-browser CPU simulator
-4. Bitwise drill widget
-5. Circuit calculators
-6. Lesson template
-7. "Mystery sensor" custom Wokwi chip
-8. Wokwi project templates: Pico SDK, STM32 CMSIS, STM32 HAL, FreeRTOS, Zephyr
+3. In-browser CPU simulator, with a datapath view
+4. Bitwise drill widget and float explorer
+5. Circuit calculators, and CircuitJS circuits running inside the lessons
+6. Logic sandbox (gates, latches, flip-flops), cache simulator, memory map explorer, fault decoder and MPU checker, clock tree configurator
+7. Lesson template
+8. "Mystery sensor" custom Wokwi chip
+9. Wokwi project templates: Pico SDK, STM32 CMSIS, STM32 HAL, FreeRTOS, Zephyr
 
 ## Build Process
 1. **Environment:** Install the Part 0 tools and verify them by following lesson 1 myself.

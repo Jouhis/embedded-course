@@ -381,7 +381,7 @@ def check_file(path, manifest):
             errors.append(f"referenced project folder missing: projects/{proj}")
 
     hands_on = ("projects/" in text or "falstad.com/circuit" in text
-                or re.search(r'class="widget (cpusim|bitreg|bitdrill|calc)', text)
+                or re.search(r'class="widget (cpusim|bitreg|bitdrill|calc|floatbits|logicsim|cachesim|memmap|faultdecode|mpusim|clocktree)', text)
                 or re.search(r"<body[^>]*\bdata-concept\b", text))
     if item["kind"] == "lesson" and not item["conceptOnly"] and not hands_on and item["number"] >= 2:
         warnings.append("hands-on lesson references no Wokwi project (fine only for pure-theory lessons)")

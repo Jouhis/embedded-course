@@ -135,7 +135,8 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
 ## 7.1 Electronics hands-on: Falstad CircuitJS, not Wokwi
 Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, transistor bias, capacitor charging and so on, and its resistors can't be combined with analog parts ([docs](https://docs.wokwi.com/parts/wokwi-resistor)). For analog electronics (Part 1, and the analog parts of later lessons) use **Falstad CircuitJS** (free, GPL, in the browser, with built-in voltmeter, ammeter and scope):
 - **Built-in examples:** link `https://www.falstad.com/circuit/circuitjs.html?startCircuit=<file>`. Pick file names **only** from `tools/maintainer/circuitjs/setuplist.txt`, e.g. `ohms.txt`, `voltdivide.txt`, `res-series.txt`, `res-par.txt`, `npn.txt`, `nmosfet.txt`, `cap.txt`, `induct.txt`, `inductkick.txt`, `inductkick-snub.txt`, `diodecurve.txt`, `ledflasher.txt`.
-- **Custom circuits:** embed a netlist in `<pre class="circuitjs" data-title="...">…</pre>`; course.js adds an "Open in CircuitJS" button. Only write netlists by **editing values in a verified example** from `tools/maintainer/circuitjs/` (`ohms.txt`, `voltdivide.txt`, `npn.txt`, `nmosfet.txt`); never invent element lines. Fetch other examples from `https://raw.githubusercontent.com/sharpie7/circuitjs1/master/src/com/lushprojects/circuitjs1/public/circuits/<file>` if needed.
+- **Run it in the page:** put `<div class="circuitjs-live" data-start="<file>" data-title="..."></div>` next to the steps that use a built-in example, and keep the link in the steps as the full-size fallback. The simulator loads when it scrolls into view.
+- **Custom circuits:** embed a netlist in `<pre class="circuitjs" data-live data-title="...">…</pre>`; `data-live` runs it in the page, and without it course.js adds only an "Open in CircuitJS" button. A solution netlist goes inside `<details>`, so its simulator loads only when opened. Only write netlists by **editing values in a verified example** from `tools/maintainer/circuitjs/` (`ohms.txt`, `voltdivide.txt`, `npn.txt`, `nmosfet.txt`); never invent element lines. Fetch other examples from `https://raw.githubusercontent.com/sharpie7/circuitjs1/master/src/com/lushprojects/circuitjs1/public/circuits/<file>` if needed.
 - **Best practice:** have the learner *build* a small circuit themselves, following numbered steps (drawing schematics is a core skill). Then they measure, and type the measured value into a `number` quiz question, which gives them feedback.
 - Use Wokwi only where the behaviour is digital: GPIO levels, pull-ups on buttons, logic levels, the ADC reading a potentiometer.
 
@@ -156,6 +157,16 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
 - Link lessons to reference sheets and glossary anchors (`../reference/glossary.html#interrupt`), and to earlier lessons by file name.
 
 ## 11. Shared components
+- Interactive widgets in `assets/` (each file's header comment gives the markup):
+  - `cpusim.js`: the CPU simulator. `data-show` picks panels; `datapath` draws the CPU as blocks and lights up the wires each phase uses. Flags and instruction kinds have fixed colours.
+  - `logicsim.js`: clickable gates, latches and flip-flops, with a truth table (combinational) or a timing diagram (sequential).
+  - `bits.js`: `bitreg`, `bitdrill`, and `floatbits` (the fields of an IEEE 754 float, with Q15 beside it).
+  - `cachesim.js`: a set-associative cache, stepped one access at a time.
+  - `memmap.js`: decodes an address into region, block, base and offset (STM32F103 and RP2040), with a drill.
+  - `faults.js`: `faultdecode` (CFSR and HFSR, Cortex-M3) and `mpusim` (the RP2040 MPU and its HardFault).
+  - `clocktree.js`: the STM32F103 and RP2040 clock trees, with the limits checked.
+  - `circuit-calc.js`: Ohm's law, power, divider and LED calculators.
+  A widget's numbers come from the lesson's sources: when a lesson's value changes, change the widget's table too.
 - Before writing any interactive widget, check `assets/` for an existing one. If you need something reusable, make it a new file in `assets/` with a header comment explaining its usage. Don't inline code a future lesson would duplicate. Keep component code dependency-free (vanilla JS) so it works offline from `file://`.
 
 ## 12. Finish checklist (do all of these before reporting)

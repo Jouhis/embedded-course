@@ -12,7 +12,8 @@
  *     </script>
  *   </div>
  *
- * data-show (optional, comma list): regs, flags, mem, io, stack, pipeline, phases. Default: regs,flags,io,phases.
+ * data-show (optional, comma list): regs, flags, mem, io, stack, pipeline, phases, datapath.
+ * Default: regs,flags,io,phases. "datapath" draws the CPU as blocks and lights up the wires each phase uses.
  *
  * Machine model (deliberately Cortex-M-like, simplified):
  *   Registers R0–R12, SP (R13), LR (R14), PC (R15); flags N Z C V; PRIMASK (I); mode Thread/Handler.
@@ -167,7 +168,7 @@
         const lit = ops[1].slice(1).trim();
         // LDR Rd, =label loads the label's address (as in GNU as); LDR Rd, =number loads the number.
         const value = /^[A-Za-z_]\w*$/.test(lit) ? target(lit) : immValue(lit);
-        return Object.assign(ins, { op: "MOV", rd, imm: value });
+        return Object.assign(ins, { op: "MOV", rd, imm: value, nf: true });   // a load: flags untouched
       }
       const mm = ops[1].match(/^\[\s*(\w+)\s*(?:,\s*(#?[-\w]+))?\s*\]$/);
       if (!mm) throw new Error("expected [Rn] or [Rn, #offset]");
@@ -361,7 +362,7 @@
         case "WFI": this.waiting = true; msg = "wait for interrupt."; break;
         case "CPSID": if (this.mode === "Thread" && (this.control & 1)) { msg = "ignored: unprivileged code cannot mask interrupts."; break; } this.primask = true; msg = "interrupts disabled (PRIMASK = 1)."; break;
         case "CPSIE": this.primask = false; msg = "interrupts enabled (PRIMASK = 0)."; break;
-        case "MOV": r[ins.rd] = src2(); this.setNZ(r[ins.rd]); msg = `${REG_NAMES[ins.rd]} = ${hex(r[ins.rd])}`; break;
+        case "MOV": r[ins.rd] = src2(); if (!ins.nf) this.setNZ(r[ins.rd]); msg = `${REG_NAMES[ins.rd]} = ${hex(r[ins.rd])}`; break;
         case "MVN": r[ins.rd] = u32(~src2()); this.setNZ(r[ins.rd]); msg = `${REG_NAMES[ins.rd]} = ${hex(r[ins.rd])}`; break;
         case "ADD": r[ins.rd] = this.addFlags(r[ins.rn], src2()); msg = `${REG_NAMES[ins.rd]} = ${hex(r[ins.rd])}`; break;
         case "SUB": r[ins.rd] = this.addFlags(r[ins.rn], u32(~src2()), 1); msg = `${REG_NAMES[ins.rd]} = ${hex(r[ins.rd])}`; break;
@@ -391,7 +392,7 @@
           } else msg = `condition ${ins.cond} is false: branch not taken.`;
           break;
         case "BL": r[14] = u32(pc + 2) | 1; next = ins.target; taken = true; msg = `call: LR = return address ${hex(pc + 2)} (+1 Thumb bit), jump to ${hex(ins.target)}.`; break;
-        case "BX": taken = true; next = null; { const v = r[ins.rm]; this.branchTo(v); msg = v === EXC_RETURN ? "BX with EXC_RETURN: exception return." : `return/jump to ${hex(v & ~1)}.`; } break;
+        case "BX": taken = true; next = null; { const v = r[ins.rm]; this.branchTo(v); msg = [EXC_RETURN, EXC_RETURN_PSP, EXC_RETURN_HANDLER].includes(u32(v)) ? `BX with EXC_RETURN ${hex(v)}: exception return.` : `return/jump to ${hex(v & ~1)}.`; } break;
         default: throw new Error("unimplemented " + ins.op);
       }
       if (next !== null) r[15] = u32(next);
@@ -447,21 +448,330 @@
   .cpusim .leds{display:flex;gap:.35rem;align-items:center;flex-wrap:wrap}
   .cpusim .led{width:1.1rem;height:1.1rem;border-radius:50%;border:1px solid var(--rule);background:var(--code-bg)}
   .cpusim .led.on{background:#e53935;box-shadow:0 0 8px #e53935;border-color:#e53935}
-  .cpusim .sw{font-family:var(--mono);font-size:.75rem;padding:.1rem .35rem;cursor:pointer}
+  .cpusim .sw{font-family:var(--mono);font-size:.75rem;padding:.1rem .35rem;cursor:pointer;min-width:1.6rem}
   .cpusim .flag{display:inline-block;width:1.6rem;text-align:center;border:1px solid var(--rule);border-radius:3px;margin-right:.2rem;font-family:var(--mono);font-size:.8rem}
-  .cpusim .flag.set{background:var(--good);color:var(--bg);border-color:var(--good)}
+  .cpusim{--fN:#c2255c;--fZ:#7048e8;--fC:#d9480f;--fV:#0b7285;--k-alu:var(--accent);--k-mem:var(--good);--k-br:var(--warn);--k-sys:var(--bad)}
+  @media(prefers-color-scheme:dark){.cpusim{--fN:#f06595;--fZ:#9775fa;--fC:#ff922b;--fV:#3bc9db}}
+  .cpusim .fN{--fc:var(--fN)} .cpusim .fZ{--fc:var(--fZ)} .cpusim .fC{--fc:var(--fC)} .cpusim .fV{--fc:var(--fV)} .cpusim .fI{--fc:var(--muted)}
+  .cpusim .flag{border-color:var(--fc);color:var(--fc);font-weight:700}
+  .cpusim .flag.set{background:var(--fc);color:#fff}
+  .cpusim .flag{margin-right:.4rem}
+  .cpusim .flag.chgf{animation:cs-pop .9s ease-out;outline:2px solid var(--fc);outline-offset:2px}
+  @keyframes cs-pop{0%{transform:scale(1.4)}100%{transform:scale(1)}}
+  .cpusim .cs-why{font-family:var(--sans);font-size:.8rem;margin:.35rem 0 .7rem;display:grid;gap:.25rem}
+  .cpusim .cs-why div{display:flex;gap:.5rem;align-items:baseline}
+  .cpusim .cs-why code{font-size:.78rem}
+  .cpusim .chip{display:inline-block;white-space:nowrap;text-align:center;font-family:var(--mono);font-size:.72rem;font-weight:700;border-radius:3px;padding:0 .3rem;color:#fff;background:var(--fc);border:1px solid var(--fc)}
+  .cpusim .chip.zero{background:transparent;color:var(--fc)}
+  .cpusim .cs-code div{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
+  .cpusim .k-alu{color:var(--k-alu);font-weight:700} .cpusim .k-mem{color:var(--k-mem);font-weight:700}
+  .cpusim .k-br{color:var(--k-br);font-weight:700} .cpusim .k-sys{color:var(--k-sys);font-weight:700}
+  .cpusim .k-imm{color:var(--muted)}
+  .cpusim .cond{color:var(--fc);font-weight:700;text-decoration:underline;text-decoration-thickness:2px}
+  .cpusim .cs-code div.pc span{color:inherit}
+  .cpusim .cs-code div.pc .cond{text-decoration-color:var(--bg)}
+  .cpusim .fx{display:inline-flex;gap:2px}
+  .cpusim .fx i{font-style:normal;font-size:.62rem;font-weight:700;line-height:1.1rem;width:1rem;text-align:center;border-radius:2px;background:var(--fc);color:#fff}
+  .cpusim .fx i.rd{background:var(--bg);color:var(--fc);box-shadow:inset 0 0 0 1.5px var(--fc)}
+  .cpusim .cs-legend{display:flex;flex-wrap:wrap;gap:.2rem .9rem;font-family:var(--sans);font-size:.72rem;color:var(--muted);margin:.35rem 0 .5rem}
+  .cpusim .cs-legend span{display:inline-flex;align-items:center;gap:.25rem}
+  .cpusim .cs-legend b{display:inline-block;width:.7rem;height:.7rem;border-radius:2px;background:currentColor}
+  .cpusim .cs-legend .fx i{width:.9rem}
   .cpusim .cs-err{color:var(--bad);font-family:var(--mono);font-size:.85rem}
   .cpusim .pipe td{text-align:center;min-width:1.6rem;border:1px solid var(--rule)}
   .cpusim .pipe td.F{background:var(--accent-soft)} .cpusim .pipe td.D{background:var(--warn-soft)} .cpusim .pipe td.E{background:var(--good-soft)}
   .cpusim .pipe td.X{background:var(--bad-soft);color:var(--bad)}
   .cpusim .pipe td.lbl{text-align:left;white-space:nowrap;border:none;font-size:.72rem}
-  .cpusim h4{font-family:var(--sans);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:.5rem 0 .2rem}`;
+  .cpusim h4{font-family:var(--sans);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:.5rem 0 .2rem}
+  .cpusim .dp svg{width:100%;min-width:600px;height:auto;display:block;margin:.25rem 0 .5rem}
+  .cpusim .dp-scroll{overflow-x:auto}
+  .cpusim .dp .blk rect,.cpusim .dp .blk path{fill:var(--code-bg);stroke:var(--rule);stroke-width:1.5}
+  .cpusim .dp .blk.on rect,.cpusim .dp .blk.on path{fill:var(--accent-soft);stroke:var(--accent);stroke-width:2.2}
+  .cpusim .dp text{font-family:var(--mono);font-size:11px;fill:var(--fg)}
+  .cpusim .dp text.t{font-family:var(--sans);font-size:11px;font-weight:700;fill:var(--muted);letter-spacing:.04em}
+  .cpusim .dp text.v{font-size:12px;font-weight:700;fill:var(--accent)}
+  .cpusim .dp .wire{fill:none;stroke:var(--rule);stroke-width:2}
+  .cpusim .dp .wire.on{stroke:var(--accent);stroke-width:3.5;stroke-dasharray:8 5;animation:cs-flow .6s linear infinite}
+  .cpusim .dp .lab{opacity:0;transition:opacity .2s}
+  .cpusim .dp .lab.on{opacity:1}
+  .cpusim .dp .lab rect{fill:var(--bg);stroke:var(--accent);stroke-width:1}
+  .cpusim .dp .fl rect{fill:var(--bg);stroke:var(--fc);stroke-width:1.5} .cpusim .dp .fl text{fill:var(--fc);font-weight:700}
+  .cpusim .dp .fl.set rect{fill:var(--fc)} .cpusim .dp .fl.set text{fill:#fff}
+  .cpusim .dp .fl.chg rect{stroke:var(--fg);stroke-width:2.5}
+  .cpusim .dp .fl.rd rect{stroke:var(--fg);stroke-width:2;stroke-dasharray:3 2}
+  .cpusim .dp svg.k-mem .wire.on,.cpusim .dp svg.k-mem .lab rect{stroke:var(--k-mem)} .cpusim .dp svg.k-mem text.v{fill:var(--k-mem)}
+  .cpusim .dp svg.k-br .wire.on,.cpusim .dp svg.k-br .lab rect{stroke:var(--k-br)} .cpusim .dp svg.k-br text.v{fill:var(--k-br)}
+  .cpusim .dp svg.k-sys .wire.on,.cpusim .dp svg.k-sys .lab rect{stroke:var(--k-sys)} .cpusim .dp svg.k-sys text.v{fill:var(--k-sys)}
+  .cpusim .dp .wire.on[data-w=pcinc],.cpusim .dp .wire.on[data-w=branch]{stroke:var(--k-br)}
+  .cpusim .dp .lab[data-l=branch] rect{stroke:var(--k-br)} .cpusim .dp .lab[data-l=branch] text.v{fill:var(--k-br)}
+  .cpusim .dp tspan.k-alu{fill:var(--k-alu)} .cpusim .dp tspan.k-mem{fill:var(--k-mem)} .cpusim .dp tspan.k-br{fill:var(--k-br)} .cpusim .dp tspan.k-sys{fill:var(--k-sys)}
+  .cpusim .dp tspan{font-weight:700}
+  .cpusim .dp-cap .cs-why{margin-top:.4rem}
+  .cpusim .dp-cap{font-family:var(--sans);font-size:.85rem;margin:0 0 .5rem}
+  .cpusim .dp-cap b{color:var(--accent)}
+  @keyframes cs-flow{to{stroke-dashoffset:-13}}
+  @media(prefers-reduced-motion:reduce){.cpusim .dp .wire.on{animation:none;stroke-dasharray:none}}`;
 
   function injectCss() {
     if (document.getElementById("cpusim-css")) return;
     const s = document.createElement("style");
     s.id = "cpusim-css"; s.textContent = CSS;
     document.head.appendChild(s);
+  }
+
+  // ---------------------------------------------------------------- datapath view (data-show "datapath")
+  /* A block diagram of the CPU. After each phase the wires that carried data in that phase light up and
+     show the value they carried. It reads only the machine state before and after the phase, so the
+     machine model above needs no changes for it. */
+  const DP_SVG = `
+  <svg viewBox="0 0 800 305" role="img" aria-label="CPU datapath: PC, code memory, decoder, register file, ALU with flags, data memory">
+    <g class="wires">
+      <path class="wire" data-w="pcinc" d="M50 110 V60 M20 45 H8 V140 H20"/>
+      <path class="wire" data-w="pcimem" d="M80 125 H120"/>
+      <path class="wire" data-w="imemdec" d="M240 135 H280"/>
+      <path class="wire" data-w="decregs" d="M410 125 H450"/>
+      <path class="wire" data-w="imm" d="M345 175 V212 H585 V160 H600"/>
+      <path class="wire" data-w="regA" d="M560 110 H600"/>
+      <path class="wire" data-w="regB" d="M560 160 H600"/>
+      <path class="wire" data-w="wb" d="M670 140 H685 V290 H505 V195"/>
+      <path class="wire" data-w="flagsw" d="M635 181 V222"/>
+      <path class="wire" data-w="adr" d="M685 140 H700"/>
+      <path class="wire" data-w="store" d="M505 85 V52 H742 V95"/>
+      <path class="wire" data-w="load" d="M742 175 V268 H530 V195"/>
+      <path class="wire" data-w="branch" d="M345 95 V16 H95 V145 H80"/>
+    </g>
+    <g class="blk" data-b="pcadd"><rect x="20" y="30" width="60" height="30" rx="4"/><text x="50" y="50" text-anchor="middle">+2</text></g>
+    <g class="blk" data-b="pc"><rect x="20" y="110" width="60" height="50" rx="4"/><text class="t" x="50" y="128" text-anchor="middle">PC</text><text data-t="pc" x="50" y="148" text-anchor="middle"></text></g>
+    <g class="blk" data-b="imem"><rect x="120" y="95" width="120" height="80" rx="4"/><text class="t" x="180" y="125" text-anchor="middle">CODE MEMORY</text><text x="180" y="145" text-anchor="middle">(flash)</text></g>
+    <g class="blk" data-b="dec"><rect x="280" y="95" width="130" height="80" rx="4"/><text class="t" x="345" y="118" text-anchor="middle">DECODER (IR)</text><text data-t="dec" x="345" y="145" text-anchor="middle"></text></g>
+    <g class="blk" data-b="regs"><rect x="450" y="85" width="110" height="110" rx="4"/><text class="t" x="505" y="132" text-anchor="middle">REGISTERS</text><text data-t="regs" x="505" y="155" text-anchor="middle"></text></g>
+    <g class="blk" data-b="alu"><path d="M600 85 L670 115 L670 165 L600 195 L600 152 L614 140 L600 128 Z"/><text class="t" x="640" y="135" text-anchor="middle">ALU</text><text data-t="alu" x="642" y="153" text-anchor="middle"></text></g>
+    <g class="blk" data-b="dmem"><rect x="700" y="95" width="88" height="80" rx="4"/><text class="t" x="744" y="118" text-anchor="middle">DATA MEM</text><text x="744" y="135" text-anchor="middle">RAM / GPIO</text><text data-t="dmem" x="744" y="158" text-anchor="middle"></text></g>
+    <g class="blk" data-b="flags">
+      ${["N", "Z", "C", "V"].map((f, i) => `<g class="fl f${f}" data-f="${f}"><rect x="${597 + i * 19}" y="222" width="17" height="20" rx="3"/><text x="${605.5 + i * 19}" y="236" text-anchor="middle">${f}</text></g>`).join("")}
+      <text class="t" x="634" y="258" text-anchor="middle">FLAGS</text>
+    </g>
+    ${[["pcimem", 100, 108], ["imemdec", 260, 92], ["decregs", 430, 108], ["imm", 470, 212], ["regA", 575, 70],
+       ["regB", 520, 232], ["wb", 600, 290], ["store", 692, 52], ["load", 640, 268], ["branch", 220, 16]]
+      .map(([k, x, y]) => `<g class="lab" data-l="${k}" transform="translate(${x} ${y})"><rect x="-30" y="-9" width="60" height="18" rx="3"/><text class="v" x="0" y="4" text-anchor="middle"></text></g>`).join("")}
+  </svg>`;
+
+  const ALU_OPS = ["ADD", "SUB", "AND", "ORR", "EOR", "BIC", "LSL", "LSR"];
+
+  // ---------------------------------------------------------------- colour coding
+  /* Every flag has its own colour, used wherever that flag appears: the flag boxes, the chips at the end
+     of each program line (filled = the instruction writes the flag, outlined = a conditional branch reads
+     it), the condition suffix of a branch and the "why" lines. Instructions are coloured by kind:
+     data processing (ALU), memory, branch and system. The datapath wires take the colour of the kind. */
+  const FLAGS = ["N", "Z", "C", "V"];
+  const FLAG_TITLE = { N: "N, negative: bit 31 of the result", Z: "Z, zero: the result was 0",
+    C: "C, carry: carry out of bit 31; after a subtract, 1 = no borrow", V: "V, overflow: the signed result did not fit" };
+  const COND_FLAGS = { EQ: ["Z"], NE: ["Z"], CS: ["C"], HS: ["C"], CC: ["C"], LO: ["C"], MI: ["N"], PL: ["N"],
+    HI: ["C", "Z"], LS: ["C", "Z"], GE: ["N", "V"], LT: ["N", "V"], GT: ["Z", "N", "V"], LE: ["Z", "N", "V"] };
+  const COND_TEXT = { EQ: "Z = 1", NE: "Z = 0", CS: "C = 1", HS: "C = 1", CC: "C = 0", LO: "C = 0", MI: "N = 1", PL: "N = 0",
+    HI: "C = 1 and Z = 0", LS: "C = 0 or Z = 1", GE: "N = V", LT: "N ≠ V", GT: "Z = 0 and N = V", LE: "Z = 1 or N ≠ V" };
+  const CAT_NAME = { alu: "data processing (ALU)", mem: "memory", br: "branch", sys: "system" };
+
+  function category(mnem) {
+    const m = mnem.toUpperCase().replace(/\.[WN]$/, "");
+    if (m === "B" || m === "BL" || m === "BX" || (m.length === 3 && m[0] === "B" && m.slice(1) in CONDS)) return "br";
+    if (["LDR", "STR", "PUSH", "POP"].includes(m)) return "mem";
+    if (["SVC", "MRS", "MSR", "CPSID", "CPSIE", "WFI", "NOP"].includes(m)) return "sys";
+    return "alu";
+  }
+  function flagsWritten(ins) {
+    if (ins.nf) return [];
+    if (["ADD", "SUB", "CMP"].includes(ins.op)) return FLAGS;
+    if (ins.op === "LSL" || ins.op === "LSR") return ["N", "Z", "C"];
+    if (["AND", "ORR", "EOR", "BIC", "MOV", "MVN", "TST"].includes(ins.op)) return ["N", "Z"];
+    return [];
+  }
+  const flagsRead = ins => (ins.op === "B" && ins.cond ? COND_FLAGS[ins.cond] : []);
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const num = x => (u32(x) < 0x10000 ? String(u32(x)) : hex(x));
+  /* A constant as it would be written in the source: #5, #0x40000000, #-4, =0xFFFFFFFF. */
+  function immLabel(ins) {
+    const k = "imm" in ins ? ins.imm : ins.off;
+    return (ins.nf ? "=" : "#") + (k < 0 ? String(k) : num(k));
+  }
+
+  /* One program line as coloured HTML, plus its flag chips. */
+  function codeHtml(ins) {
+    const mm = ins.text.match(/^(\S+)(\s*)(.*)$/) || [null, ins.text, "", ""];
+    const cat = category(mm[1]);
+    let mn = `<span class="k-${cat}">${esc(mm[1])}</span>`;
+    if (ins.op === "B" && ins.cond) {
+      const f = COND_FLAGS[ins.cond][0];
+      mn = `<span class="k-br">${esc(mm[1].slice(0, -2))}</span><span class="cond f${f}" title="reads ${COND_FLAGS[ins.cond].join(", ")}: ${COND_TEXT[ins.cond]}">${esc(mm[1].slice(-2))}</span>`;
+    }
+    const rest = esc(mm[3]).replace(/(#-?\w+|=\w+)|\b(R1[0-5]|R\d|SP|LR|PC)\b/gi,
+      (t, imm) => `<span class="${imm ? "k-imm" : "k-reg"}">${t}</span>`);
+    const chips = flagsWritten(ins).map(f => `<i class="f${f}" title="writes ${f}">${f}</i>`).join("") +
+      flagsRead(ins).map(f => `<i class="f${f} rd" title="reads ${f}">${f}</i>`).join("");
+    return { code: mn + mm[2] + rest, chips: chips ? `<span class="fx">${chips}</span>` : "" };
+  }
+
+  /* Why each flag has its value after an instruction: [{ f, val, why, changed }], and for a conditional
+     branch which flags it read and whether its condition held. */
+  function flagStory(ins, before, m) {
+    const out = { writes: [], read: null };
+    const a = before.r[ins.rn], b = "imm" in ins ? u32(ins.imm) : before.r[ins.rm];
+    const res = ins.op === "CMP" ? u32(a - b) : ins.op === "TST" ? u32(a & b) : m.r[ins.rd];
+    const sub = ins.op === "SUB" || ins.op === "CMP";
+    flagsWritten(ins).forEach(f => {
+      const val = m.f[f] ? 1 : 0;
+      let why;
+      if (f === "N") why = val ? "bit 31 of the result is 1, so as a signed number it is negative" : "bit 31 of the result is 0";
+      else if (f === "Z") why = val ? "the result is 0" : `the result (${num(res)}) is not 0`;
+      else if (f === "C") {
+        if (ins.op === "LSL" || ins.op === "LSR") why = `the last bit shifted out was ${val}`;
+        else if (sub) why = val ? `no borrow: ${num(a)} ≥ ${num(b)} as unsigned numbers` : `borrow: ${num(a)} < ${num(b)} as unsigned numbers`;
+        else why = val ? "carry out of bit 31: the unsigned sum did not fit in 32 bits" : "no carry out of bit 31";
+      } else why = val ? "signed overflow: the signed result did not fit in 32 bits" : "no signed overflow";
+      out.writes.push({ f, val, why, changed: !!before.f[f] !== !!m.f[f] });
+    });
+    if (ins.op === "B" && ins.cond) {
+      out.read = { flags: COND_FLAGS[ins.cond], cond: ins.cond, test: COND_TEXT[ins.cond], held: CONDS[ins.cond](before.f) };
+    }
+    return out;
+  }
+
+  function storyHtml(st, ins, m) {
+    const chip = (f, v) => `<span class="chip f${f}${v ? "" : " zero"}">${f} = ${v}</span>`;
+    let h = st.writes.map(w => `<div>${chip(w.f, w.val)}<span>${w.why}${w.changed ? " <b>(changed)</b>" : ""}</span></div>`).join("");
+    if (st.read) {
+      h += `<div><span>${st.read.flags.map(f => chip(f, m.f[f] ? 1 : 0)).join(" ")}</span><span><code>B${st.read.cond}</code> branches if ${st.read.test}: ` +
+        `that is <b>${st.read.held ? "true, so the branch is taken" : "false, so the branch is not taken"}</b>.</span></div>`;
+    }
+    return h;
+  }
+
+  function makeDatapath(E, withStory) {
+    const wrap = E("div", { class: "dp" });
+    wrap.appendChild(E("h4", { text: "Datapath: the wires used in the last phase light up" }));
+    const holder = E("div", { class: "dp-scroll" }); holder.innerHTML = DP_SVG; wrap.appendChild(holder);
+    const cap = E("div", { class: "dp-cap" }); wrap.appendChild(cap);
+    const q = (sel) => holder.querySelector(sel);
+
+    function update(info, m) {
+      const on = new Set(), blk = new Set(), lab = {};
+      const txt = { pc: hex(m.r[15], 4), dec: "", regs: "", alu: "", dmem: "" };
+      const R = i => REG_NAMES[i];
+      let caption = "Press <b>Step</b>: the datapath shows which wires each phase uses.";
+      let kind = "", story = "", flagCls = {};
+      if (info && info.ins) {
+        const { phase, ins, before } = info, a = before.r;
+        txt.dec = ins.text.length > 17 ? ins.text.slice(0, 16) + "…" : ins.text;
+        if (phase === "fetch") {
+          on.add("pcimem").add("imemdec"); blk.add("pc").add("imem").add("dec");
+          lab.pcimem = hex(before.pc, 4); lab.imemdec = "instruction";
+          caption = `<b>Fetch.</b> The PC (${hex(before.pc, 4)}) is the address. Code memory sends back the instruction, and the decoder latches it in the instruction register.`;
+        } else if (phase === "decode") {
+          on.add("decregs"); blk.add("dec").add("regs");
+          const reads = [], writes = [];
+          if (ins.rd !== undefined) (ins.op === "STR" ? reads : writes).push(ins.rd);
+          if (ins.rn !== undefined) reads.push(ins.rn);
+          if (ins.rm !== undefined) reads.push(ins.rm);
+          if (ins.op === "PUSH") reads.push(...ins.regs);
+          if (ins.op === "POP") writes.push(...ins.regs);
+          const rl = [...new Set(reads)].map(R), wl = writes.map(R);
+          lab.decregs = (rl.join(",") + (wl.length ? "→" + wl.join(",") : "")) || "–";
+          const hasK = "imm" in ins || ins.off;
+          if (hasK) { on.add("imm"); lab.imm = immLabel(ins); }
+          const parts = [];
+          if (rl.length) parts.push(`selects ${rl.join(" and ")} to be read`);
+          if (wl.length) parts.push(`marks ${wl.join(", ")} as the destination`);
+          if (hasK) parts.push(ins.nf ? `takes the constant ${lab.imm} that the assembler placed next to the code`
+                                      : `pulls the constant ${lab.imm} out of the instruction bits`);
+          if (ins.op === "B" || ins.op === "BL") parts.push("takes the branch target from the instruction bits");
+          caption = `<b>Decode.</b> The decoder ${parts.length ? (parts.length > 1 ? parts.slice(0, -1).join(", ") + " and " + parts[parts.length - 1] : parts[0]) : "recognises the instruction"}. Nothing is written yet.`;
+        } else {
+          const taken = m.r[15] !== u32(before.pc + 2);
+          kind = category(ins.text.split(/\s/)[0]);
+          const st = flagStory(ins, before, m);
+          st.writes.forEach(w => { if (w.changed) flagCls[w.f] = "chg"; });
+          if (st.read) st.read.flags.forEach(f => { flagCls[f] = "rd"; });
+          story = storyHtml(st, ins, m);
+          const srcB = () => { if ("imm" in ins) { on.add("imm"); lab.imm = immLabel(ins); } else { on.add("regB"); lab.regB = hex(a[ins.rm]); } blk.add("regs"); };
+          const memAddr = () => { on.add("regA").add("adr"); lab.regA = hex(a[ins.rn]); if (ins.off) { on.add("imm"); lab.imm = immLabel(ins); } blk.add("regs").add("alu").add("dmem"); txt.alu = "+"; return u32(a[ins.rn] + ins.off); };
+          if (ALU_OPS.includes(ins.op) || ins.op === "CMP" || ins.op === "TST") {
+            on.add("regA"); lab.regA = hex(a[ins.rn]); srcB(); blk.add("alu").add("flags"); on.add("flagsw"); txt.alu = ins.op;
+            if (ins.op !== "CMP" && ins.op !== "TST") { on.add("wb"); lab.wb = hex(m.r[ins.rd]); txt.regs = `${R(ins.rd)} ← ${hex(m.r[ins.rd]).replace(/^0x0+(?=.)/, "0x")}`; }
+            caption = `<b>Execute.</b> Two operands enter the ALU, it computes ${ins.op}` +
+              (ins.op === "CMP" || ins.op === "TST" ? ", and only the flags are kept." : `, the result goes back to ${R(ins.rd)} and the flags update.`);
+          } else if (ins.nf) {
+            on.add("imm").add("wb"); lab.imm = immLabel(ins); lab.wb = hex(m.r[ins.rd]); blk.add("regs");
+            txt.regs = `${R(ins.rd)} ← ${hex(m.r[ins.rd]).replace(/^0x0+(?=.)/, "0x")}`;
+            caption = `<b>Execute.</b> <code>LDR ${R(ins.rd)}, =…</code> loads a 32-bit constant: the assembler keeps it in a literal pool next to the code, and it goes into ${R(ins.rd)}. A load does not change the flags.`;
+          } else if (ins.op === "MOV" || ins.op === "MVN") {
+            srcB(); blk.add("alu").add("flags"); on.add("flagsw").add("wb"); txt.alu = ins.op; lab.wb = hex(m.r[ins.rd]);
+            txt.regs = `${R(ins.rd)} ← ${hex(m.r[ins.rd]).replace(/^0x0+(?=.)/, "0x")}`;
+            caption = `<b>Execute.</b> The value passes through the ALU and is written into ${R(ins.rd)}.`;
+          } else if (ins.op === "LDR") {
+            const ad = memAddr(); on.add("load"); lab.load = hex(m.r[ins.rd]); txt.dmem = hex(ad);
+            txt.regs = `${R(ins.rd)} ← ${hex(m.r[ins.rd]).replace(/^0x0+(?=.)/, "0x")}`;
+            caption = `<b>Execute.</b> The ALU adds base + offset to make the address ${hex(ad)}. Data memory answers, and the word goes into ${R(ins.rd)}.`;
+          } else if (ins.op === "STR") {
+            const ad = memAddr(); on.add("store"); lab.store = hex(a[ins.rd]); txt.dmem = hex(ad);
+            caption = `<b>Execute.</b> The ALU makes the address ${hex(ad)}, and ${R(ins.rd)} travels to memory over the data bus` +
+              (ad === GPIO_ODR ? ": that address is the LED register, so the LEDs change." : ".");
+          } else if (ins.op === "B" || ins.op === "BL") {
+            if (ins.cond) blk.add("flags");
+            if (ins.op === "BL") { txt.regs = "LR ← return"; blk.add("regs"); }
+            caption = ins.cond ? `<b>Execute.</b> The branch reads the flags for ${ins.cond}: ${taken ? "true, so the target goes into the PC." : "false, so the PC just moves on by 2."}`
+                               : `<b>Execute.</b> The target address from the instruction goes into the PC.`;
+          } else if (ins.op === "PUSH" || ins.op === "POP") {
+            const n = ins.regs.length, list = ins.regs.map(R).join(", ");
+            on.add("regA").add("adr").add("wb"); lab.regA = "SP " + hex(a[13]); lab.wb = "SP " + hex(m.r[13]);
+            blk.add("regs").add("alu").add("dmem"); txt.alu = ins.op === "PUSH" ? `−${4 * n}` : `+${4 * n}`;
+            txt.regs = `SP ← ${hex(m.r[13])}`;
+            if (ins.op === "PUSH") {
+              on.add("store"); lab.store = list.length > 12 ? `${n} words` : list; txt.dmem = hex(m.r[13]);
+              caption = `<b>Execute.</b> The ALU moves SP down by ${4 * n} bytes, to ${hex(m.r[13])}. {${list}} travel to memory, one word each, and the new SP is written back.`;
+            } else {
+              on.add("load"); lab.load = list.length > 12 ? `${n} words` : list; txt.dmem = hex(a[13]);
+              caption = `<b>Execute.</b> ${n} word${n > 1 ? "s" : ""} come back from memory at ${hex(a[13])} into {${list}}, and the ALU moves SP up by ${4 * n} bytes` +
+                (ins.regs.includes(15) ? ". One of them goes into the PC, so this is also a return." : ".");
+            }
+          } else if (ins.op === "BX") {
+            blk.add("regs").add("pc");
+            caption = `<b>Execute.</b> The address in ${R(ins.rm)} (${hex(a[ins.rm])}) goes into the PC` + (a[ins.rm] >>> 28 === 0xF ? ": that value is EXC_RETURN, so this ends an exception." : ". This is how a function returns.");
+          } else {
+            caption = `<b>Execute.</b> ${ins.op} is not drawn in this view; follow it in the panels below.`;
+          }
+          if (taken && (ins.op === "B" || ins.op === "BL")) { on.add("branch"); lab.branch = "→ " + hex(m.r[15], 4); blk.add("pc"); }
+          else if (!taken) { on.add("pcinc"); blk.add("pcadd").add("pc"); }
+        }
+      } else if (info && info.exception) {
+        caption = "<b>Exception entry.</b> The hardware pushed eight registers onto the stack and loaded the handler address into the PC.";
+        blk.add("pc");
+      }
+      holder.querySelectorAll(".wire").forEach(w => w.classList.toggle("on", on.has(w.dataset.w)));
+      holder.querySelectorAll(".blk").forEach(b => b.classList.toggle("on", blk.has(b.dataset.b)));
+      holder.querySelectorAll(".lab").forEach(g => {
+        const v = lab[g.dataset.l];
+        g.classList.toggle("on", v !== undefined);
+        if (v !== undefined) {
+          g.querySelector("text").textContent = v;
+          const w = v.length * 7.4 + 10;
+          const r = g.querySelector("rect"); r.setAttribute("width", w); r.setAttribute("x", -w / 2);
+        }
+      });
+      Object.entries(txt).forEach(([k, v]) => { const t = q(`[data-t="${k}"]`); if (t) t.textContent = v; });
+      holder.querySelectorAll(".fl").forEach(f => {
+        f.classList.toggle("set", !!m.f[f.dataset.f]);
+        f.classList.toggle("chg", flagCls[f.dataset.f] === "chg");
+        f.classList.toggle("rd", flagCls[f.dataset.f] === "rd");
+      });
+      const svg = holder.querySelector("svg");
+      ["k-alu", "k-mem", "k-br", "k-sys"].forEach(c => svg.classList.toggle(c, c === "k-" + kind));
+      if (info && info.ins && txt.dec) {
+        const sp = txt.dec.search(/\s/), mnem = sp < 0 ? txt.dec : txt.dec.slice(0, sp);
+        q('[data-t="dec"]').innerHTML = `<tspan class="k-${category(mnem)}">${esc(mnem)}</tspan>${esc(sp < 0 ? "" : txt.dec.slice(sp))}`;
+      }
+      cap.innerHTML = caption + (story && withStory ? `<div class="cs-why">${story}</div>` : "");
+    }
+    return { el: wrap, update };
   }
 
   function mount(container) {
@@ -479,19 +789,45 @@
 
     const code = E("div", { class: "cs-code" });
     asm.prog.forEach(ins => {
-      const row = E("div");
-      row.appendChild(E("span", { class: "addr", text: hex(ins.addr, 4) }));
-      row.appendChild(document.createTextNode(ins.text));
-      code.appendChild(row);
+      const { code: html, chips } = codeHtml(ins);
+      code.appendChild(E("div", { html: `<span><span class="addr">${hex(ins.addr, 4)}</span>${html}</span>${chips}` }));
     });
+    const cats = [...new Set(asm.prog.map(ins => category(ins.text.split(/\s/)[0])))];
+    const anyW = asm.prog.some(ins => flagsWritten(ins).length), anyR = asm.prog.some(ins => flagsRead(ins).length);
+    const legend = E("div", { class: "cs-legend", html:
+      ["alu", "mem", "br", "sys"].filter(c => cats.includes(c)).map(c => `<span class="k-${c}"><b></b>${CAT_NAME[c]}</span>`).join("") +
+      (anyW ? `<span><span class="fx"><i class="fZ">Z</i></span>writes the flag</span>` : "") +
+      (anyR ? `<span><span class="fx"><i class="fZ rd">Z</i></span>reads the flag</span>` : "") });
     const phase = E("div", { class: "cs-phase" }, ["FETCH", "DECODE", "EXECUTE"].map(t => E("span", { text: t })));
     const msg = E("div", { class: "cs-msg", text: "Press Step to execute one phase, or Instruction for a whole instruction." });
     const state = E("div");
     const pipe = E("div");
-    const left = E("div", {}, [E("h4", { text: "Program (PC highlighted)" }), code]);
+    const left = E("div", {}, [E("h4", { text: "Program (PC highlighted)" }), code, legend]);
     if (show.has("phases")) left.appendChild(phase);
     left.appendChild(msg);
     const grid = E("div", { class: "cs-grid" }, [left, state]);
+
+    // The "why" lines of the flags go under the flags panel when there is one, else under the datapath.
+    const dp = show.has("datapath") ? makeDatapath(E, !show.has("flags")) : null;
+    let dpInfo = null, lastExec = null;
+    /* One phase, remembering what the datapath view needs: the phase that ran, its instruction and the
+       state before it. */
+    function micro() {
+      const before = { phase: m.phase, pc: m.r[15], r: m.r.slice(), f: Object.assign({}, m.f) };
+      const out = m.microStep();
+      if (before.phase === "fetch" && m.phase === "fetch") dpInfo = m.mode === "Handler" && before.r[13] !== m.r[13] ? { exception: true } : null;
+      else dpInfo = { phase: before.phase, ins: m.ir, before };
+      if (dpInfo && dpInfo.phase === "execute") lastExec = dpInfo;
+      return out;
+    }
+    /* A whole instruction, the same as Machine.step() but phase by phase. */
+    function instruction() {
+      if (m.phase !== "fetch") { let s; do { s = micro(); } while (m.phase !== "fetch" && !m.halted); return s; }
+      const first = micro();
+      if (m.phase === "fetch") return first;
+      micro();
+      return micro();
+    }
 
     const btn = (label, fn, cls) => { const b = E("button", { class: "btn" + (cls ? " " + cls : ""), type: "button", text: label }); b.addEventListener("click", fn); return b; };
     const guard = fn => () => { try { fn(); } catch (e) { m.halted = true; msg.textContent = "Fault: " + e.message; stop(); } render(); };
@@ -501,20 +837,21 @@
       runBtn.textContent = "Pause";
       timer = setInterval(guard(() => {
         prevRegs = m.r.slice();
-        msg.textContent = m.step();
+        msg.textContent = instruction();
         if (m.halted || m.parked) { m.parked = false; stop(); }
-      }), 350);
+      }), dp ? 700 : 350);
     });
     const controls = E("div", { class: "cs-controls" }, [
-      btn("Step", guard(() => { prevRegs = m.r.slice(); msg.textContent = m.microStep(); })),
-      btn("Instruction", guard(() => { prevRegs = m.r.slice(); msg.textContent = m.step(); m.parked = false; })),
+      btn("Step", guard(() => { prevRegs = m.r.slice(); msg.textContent = micro(); })),
+      btn("Instruction", guard(() => { prevRegs = m.r.slice(); msg.textContent = instruction(); m.parked = false; })),
       runBtn,
-      btn("Reset", () => { stop(); m.reset(); prevRegs = m.r.slice(); msg.textContent = "Reset: PC = 0, SP = " + hex(STACK_TOP) + "."; render(); }, "secondary"),
+      btn("Reset", () => { stop(); m.reset(); dpInfo = lastExec = null; prevRegs = m.r.slice(); msg.textContent = "Reset: PC = 0, SP = " + hex(STACK_TOP) + "."; render(); }, "secondary"),
     ]);
     if ("IRQ_Handler" in asm.labels) {
       controls.appendChild(btn("IRQ ⚡", () => { m.irqPending = true; msg.textContent = m.primask ? "IRQ pending, but interrupts are disabled (PRIMASK = 1)." : "IRQ pending: it will be taken at the next instruction boundary."; render(); }, "secondary"));
     }
     container.appendChild(controls);
+    if (dp) container.appendChild(dp.el);
     container.appendChild(grid);
     if (show.has("pipeline")) container.appendChild(pipe);
 
@@ -551,10 +888,18 @@
       if (show.has("flags")) {
         state.appendChild(E("h4", { text: "Flags (xPSR) and PRIMASK" }));
         const f = E("div");
-        ["N", "Z", "C", "V"].forEach(k => f.appendChild(E("span", { class: "flag" + (m.f[k] ? " set" : ""), text: k })));
-        f.appendChild(E("span", { class: "flag" + (m.primask ? " set" : ""), text: "I", title: "PRIMASK: 1 = interrupts disabled" }));
+        const st = lastExec ? flagStory(lastExec.ins, lastExec.before, m) : null;
+        const fresh = st && dpInfo === lastExec;
+        FLAGS.forEach(k => {
+          const chg = fresh && st.writes.some(w => w.f === k && w.changed);
+          f.appendChild(E("span", { class: `flag f${k}` + (m.f[k] ? " set" : "") + (chg ? " chgf" : ""), text: k, title: FLAG_TITLE[k] }));
+        });
+        f.appendChild(E("span", { class: "flag fI" + (m.primask ? " set" : ""), text: "I", title: "PRIMASK: 1 = interrupts disabled" }));
         if (m.irqPending) f.appendChild(E("span", { text: "  IRQ pending" }));
         state.appendChild(f);
+        if (st && (st.writes.length || st.read)) {
+          state.appendChild(E("div", { class: "cs-why", html: `<div><span>After <code>${esc(lastExec.ins.text)}</code>:</span></div>` + storyHtml(st, lastExec.ins, m) }));
+        }
       }
       if (show.has("io")) {
         state.appendChild(E("h4", { text: `GPIO: ODR @ ${hex(GPIO_ODR)} → LEDs 7…0` }));
@@ -591,6 +936,7 @@
         state.appendChild(t);
       }
       if (show.has("pipeline")) renderPipeline();
+      if (dp) dp.update(dpInfo, m);
     }
 
     /* 3-stage pipeline view: each executed instruction is fetched one cycle after the previous one,
