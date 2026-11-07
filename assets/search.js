@@ -250,25 +250,29 @@
                                 "aria-label": "Search the course", autocomplete: "off", spellcheck: "false" });
     const list = el("ol", { class: "search-list", role: "listbox" });
     const status = el("p", { class: "search-status" });
-    const smartBox = el("input", { type: "checkbox" });
-    const smartRow = el("label", { class: "search-smart", hidden: "" }, [smartBox,
-      el("span", { html: "<strong>Smart search:</strong> also finds sections that say it in other words. " +
-                         "Downloads about 50 MB once, from Hugging Face and jsDelivr." })]);
-    const panel = el("div", { class: "search-panel", hidden: "" }, [status, list, smartRow]);
-    const box = el("div", { class: "search", role: "search" }, [input, panel]);
+    // Smart search toggle, inside the field. On first use it downloads about 50 MB once (the model
+    // from Hugging Face, the runtime from jsDelivr); the status line shows the progress.
+    const smartBtn = el("button", { type: "button", class: "search-smart", hidden: "", text: "🧠",
+                                    title: "Smart search", "aria-label": "Smart search", "aria-pressed": "false" });
+    const field = el("div", { class: "search-field" }, [input, smartBtn]);
+    const panel = el("div", { class: "search-panel", hidden: "" }, [status, list]);
+    const box = el("div", { class: "search", role: "search" }, [field, panel]);
     slot.appendChild(box);
 
     let active = -1, seq = 0, timer = null;
     const open = () => { panel.hidden = false; };
     const close = () => { panel.hidden = true; active = -1; };
 
+    let smartOn = false;
+    const setSmart = on => { smartOn = on; smartBtn.setAttribute("aria-pressed", String(on)); };
     loadSmartMeta().then(meta => {
       if (!meta) return;
-      smartRow.hidden = false;
-      smartBox.checked = smartWanted();
+      smartBtn.hidden = false;
+      setSmart(smartWanted());
     });
-    smartBox.addEventListener("change", () => {
-      setSmartWanted(smartBox.checked);
+    smartBtn.addEventListener("click", () => {
+      setSmart(!smartOn);
+      setSmartWanted(smartOn);
       run();
       input.focus();
     });
@@ -315,7 +319,7 @@
       if (my !== seq) return;
       const kw = keywordSearch(ix, query);
       show(ix, kw.ranked, kw.terms);
-      if (!smartBox.checked || smartRow.hidden) return;
+      if (!smartOn || smartBtn.hidden) return;
       try {
         if (!smart) {
           status.hidden = false;

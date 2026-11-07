@@ -11,6 +11,11 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.11 (2026-11-07)
+
+- Smart search is now a brain button inside the search bar. Tap it to switch smart search on or
+  off at any time; the choice is remembered. It used to be a checkbox under the results.
+
 ## 0.0.10 (2026-11-07)
 
 ### New lesson 105: storing data in flash
