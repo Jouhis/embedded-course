@@ -2,6 +2,15 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+- **Patch** (0.1.0 to 0.1.1): fixes, wording, new widgets or quiz questions. Saved progress,
+  bookmarks and project folders are unaffected.
+- **Minor** (0.1.x to 0.2.0): structural changes. Lessons added, removed or renumbered, project
+  folders renamed, or saved progress that needs migrating. From 0.0.11 on, the next structural
+  release is 0.1.0.
+- **Major** (1.0.0): the course is complete and stable. Every lab has been run end to end, in
+  Wokwi or on a board; at least one learner has gone through the course; and the numbering is
+  frozen, so links and saved progress stay valid.
+
 ## 0.0.10 (2026-11-07)
 
 ### New lesson 105: storing data in flash
