@@ -166,6 +166,26 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
   - `faults.js`: `faultdecode` (CFSR and HFSR, Cortex-M3) and `mpusim` (the RP2040 MPU and its HardFault).
   - `clocktree.js`: the STM32F103 and RP2040 clock trees, with the limits checked.
   - `circuit-calc.js`: Ohm's law, power, divider and LED calculators.
+  - `memlayout.js`: which section each declaration goes in, the lesson 41 build's memory map, and the startup code step by step (`data-parts` picks quiz, map, startup).
+  - `ctypes.js`: `cpromote` (integer promotion and conversion, with undefined behaviour flagged) and `structlayout` (padding, packing, byte order).
+  - `signals.js`: `debounce` (the lesson 52 integrator), `adcchain` (NTC to ADC code and back, noise and averaging) and `filterlab` (moving average, fixed-point EMA, median, aliasing).
+  - `buswave.js`: I²C, UART and SPI waveforms (`data-bus`), with a receiver clock error and an SPI mode mismatch.
+  - `timing.js`: `pwmcalc` (STM32 timer or RP2040 PWM slice, the plus-one rule) and `irqtimeline` (STM32F103 NVIC preemption, grouping, PRIMASK).
+  - `rtossim.js`: a fixed-priority scheduler timeline with semaphore and mutex (priority inheritance) and the rate-monotonic bound (`data-preset`, optionally `data-presets`).
+  - `crcframe.js`: Modbus RTU frames with CRC-16/MODBUS, a shift-by-shift trace and bit flips on the wire.
+  - `fsm.js`: the lesson 56 traffic light, table-driven, with an editable table.
+  - `pidsim.js`: the lesson 107 heater and PID controller; it reproduces the lesson's tuning table.
+  - `levels.js`: `logiclevel` (input thresholds, hysteresis on a noisy edge, an open-drain line with its pull-up current and rise time).
+  - `race.js`: `racestep`, two contexts sharing memory, stepped in the reader's order (`data-preset` cores, isr-flag, odr, volatile), with the lesson's fix as an option.
+  - `wrap.js`: `wraptime`, a timeout across the counter wrap, checked three ways (`data-preset` systick, blink, small; `data-unit`).
+  - `bytes.js`: `cobs` (encoder trace, decoder, CRC-16/CCITT-FALSE) and `glyph` (5 by 7 column bytes, SSD1306 page addressing).
+  - `canbus.js`: `canbus`, arbitration bit by bit and bit stuffing with flips on the wire.
+  - `budget.js`: `powerbudget` (duty-cycled current and battery life) and `dmaring` (circular DMA with HT and TC deadlines).
+  - `macro.js`: `macroexp`, a macro pasted as tokens and then grouped by precedence.
+  - `kernel.js`: `queuesim` (a queue, a binary and a counting semaphore fed by an ISR) and `stackmark` (a painted stack and its high-water mark).
+  - `boot.js`: `bootcheck`, the lesson 104 bootloader's slot checks, in order.
+  A widget with `data-chip`, `data-bus` or a preset group shows only that lesson's options; keep widgets to what the lesson needs.
+  - `plot.js`: the shared line-plot helper; load it before `pidsim.js`, `signals.js`, `timing.js` and `levels.js`.
   A widget's numbers come from the lesson's sources: when a lesson's value changes, change the widget's table too.
 - Before writing any interactive widget, check `assets/` for an existing one. If you need something reusable, make it a new file in `assets/` with a header comment explaining its usage. Don't inline code a future lesson would duplicate. Keep component code dependency-free (vanilla JS) so it works offline from `file://`.
 

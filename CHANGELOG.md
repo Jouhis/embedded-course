@@ -2,6 +2,42 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.9 (2026-11-07)
+
+### Interactive widgets in the later lessons
+
+- Where each variable lives: sort declarations into sections, read the lesson 41 build's memory map,
+  and step through the startup code that copies .data and clears .bss (lessons 41 and 42).
+- An integer promotion stepper (lesson 45) and a struct layout and byte order viewer (lesson 48).
+- A debounce lab with the lesson's integrator (52), a state machine stepper for the traffic light
+  (56), and the ADC chain from temperature to code and back, with noise and averaging (58).
+- Bus waveforms: I²C (60), UART with a receiver clock error you can drag (53), and SPI modes (62).
+- A timer and PWM configurator for the STM32 and the RP2040 (59, 71, 115) and an NVIC interrupt
+  timeline with preemption, grouping and critical sections (72).
+- A scheduler timeline: tasks and priorities (87), priority inversion with a semaphore and a mutex,
+  on the project's own numbers (91), and the rate-monotonic bound (93).
+- A Modbus RTU frame builder with a CRC trace and bit flips on the wire (101, 117), a filter lab
+  with aliasing (106), and a PID tuner on the lesson's heater model, which reproduces its tuning
+  table (107).
+- Logic levels, hysteresis on a noisy edge and an open-drain line with its pull-up (16).
+- A race stepper where you choose who runs next: a read-modify-write of ODR against an interrupt (47),
+  the flag and count read in three steps (57), and two cores incrementing one counter (64), each
+  with the lesson's fix as an option.
+- A timeout across the counter wrap, checked three ways (55, 73).
+- A 5 by 7 glyph editor with SSD1306 page addressing (61), a DMA ring with its half-buffer deadline
+  (74), a battery-life budget (75), CAN arbitration and bit stuffing (100), and a COBS encoder and
+  decoder with a CRC (103).
+- The volatile wait loop as the compiler wrote it (46), a macro expander (50), a queue and
+  semaphore lab (90), a painted stack and its high-water mark (92), and the bootloader's slot
+  checks (104).
+- Simpler widgets: the section quiz shows one declaration at a time, each lesson shows only its own
+  presets, chip or bus, and long event logs fold away.
+
+### Search
+
+- Each result has a coloured badge: Lesson, Glossary, Lab, Checkpoint or Reference. Glossary
+  results also have a purple edge, so they stand out from the lessons.
+
 ## 0.0.8 (2026-11-07)
 
 ### More interactive lessons

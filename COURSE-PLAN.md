@@ -375,9 +375,10 @@ Totals: 19 bench labs (15 core, 4 stretch) plus 2 in the ESP32 appendix. 13 on t
 4. Bitwise drill widget and float explorer
 5. Circuit calculators, and CircuitJS circuits running inside the lessons
 6. Logic sandbox (gates, latches, flip-flops), cache simulator, memory map explorer, fault decoder and MPU checker, clock tree configurator
-7. Lesson template
-8. "Mystery sensor" custom Wokwi chip
-9. Wokwi project templates: Pico SDK, STM32 CMSIS, STM32 HAL, FreeRTOS, Zephyr
+7. Section and startup explorer, integer promotion stepper, struct layout viewer, debounce lab, state machine stepper, ADC chain, bus waveforms, timer and PWM configurator, interrupt timeline, scheduler timeline, Modbus CRC builder, filter lab, PID tuner, logic levels, race stepper, wraparound timeline, COBS framer, OLED glyph editor, CAN arbitration and stuffing, power budget, DMA ring, macro expander, queue and semaphore lab, stack high-water mark, bootloader slot check
+8. Lesson template
+9. "Mystery sensor" custom Wokwi chip
+10. Wokwi project templates: Pico SDK, STM32 CMSIS, STM32 HAL, FreeRTOS, Zephyr
 
 ## Build Process
 1. **Environment:** Install the Part 0 tools and verify them by following lesson 1 myself.

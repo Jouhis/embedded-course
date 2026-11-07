@@ -273,13 +273,20 @@
       input.focus();
     });
 
+    // The coloured badge on each hit: glossary, lesson, lab or reference.
+    function kindOf(doc) {
+      if (/glossary/i.test(doc.u)) return "glossary";
+      if (!doc.u.startsWith("lessons/")) return "reference";
+      return /^lesson/i.test(doc.l) ? "lesson" : /^bench|^lab/i.test(doc.l) ? "lab" : "check";
+    }
+
     function show(ix, ranked, terms, note) {
       list.textContent = "";
       active = -1;
       ranked.slice(0, 12).forEach(d => {
         const doc = ix.docs[d];
-        const a = el("a", { href: ROOT + doc.u, class: "search-hit" }, [
-          el("span", { class: "search-where", text: `${doc.l} · ${doc.t}` }),
+        const a = el("a", { href: ROOT + doc.u, class: "search-hit k-" + kindOf(doc) }, [
+          el("span", { class: "search-where" }, [el("span", { class: "search-kind " + kindOf(doc), text: kindOf(doc) === "glossary" ? "Glossary" : doc.l }), " " + (kindOf(doc) === "glossary" ? "" : doc.t)]),
           el("span", { class: "search-head", html: highlight(doc.h || doc.t, terms) }),
           el("span", { class: "search-snip", html: snippet(doc.x, terms) }),
         ]);
