@@ -48,9 +48,7 @@ The hands-on parts build firmware and run it in the Wokwi simulator, so they nee
    assistant opened in the course folder, such as [Claude Code](https://claude.com/claude-code). It can
    read the lessons and your code, explain what's unclear and quiz you on older lessons. `NOTES.md`
    tells it how the course works. You need your own account for it.
-6. **Open the course:** double-click `Open course.cmd` (Windows) or run `python3 tools/serve.py`
-   (macOS, Linux), then start with lesson 1. This local copy keeps its own progress, separate from
-   the website's; use Export and Import on the index page to move it across.
+6. **Open the course** at <https://jouhis.github.io/embedded-course/> and start with lesson 1.
 
 To get new lessons and fixes later, run `git pull` in the course folder.
 
@@ -67,19 +65,6 @@ git submodule update --init
 The last line fetches the libraries in `third_party/` (CMSIS, ST HAL, ST's STM32U5 device headers, FreeRTOS, Unity, fff); the
 setup script does it for you too. Don't use `git clone --recurse-submodules`: it also tries FreeRTOS's own nested submodules, one
 of which fails to clone. The course doesn't need them.
-
-## Read the course (nothing to install)
-
-The course is plain HTML. Read it on the [website](https://jouhis.github.io/embedded-course/), or from your copy:
-
-- **Double-click `Open course.cmd`** (Windows; needs Python). It serves the course on
-  `http://localhost:8000` and opens your browser. On macOS and Linux, run `python3 tools/serve.py`.
-- Or open `index.html` directly in a browser.
-
-Serving it is better: your progress ("Mark lesson complete") is saved in the browser, and Firefox
-gives every page opened as a file its own storage. The course carries progress along its own links
-to work around that, but over localhost every page simply shares one store. Use **Export progress**
-on the index to back up your progress or move it to another browser.
 
 ## Build and simulate the projects
 

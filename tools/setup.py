@@ -456,7 +456,7 @@ def main():
     for p in problems:
         say(f"  - {p}")
     if not problems:
-        say("  Open the course: double-click 'Open course.cmd' (Windows) or run `python3 tools/serve.py`.")
+        say("  Read the course at https://jouhis.github.io/embedded-course/")
         say("  Simulating needs a free Wokwi licence: in VS Code run 'Wokwi: Request a New License' once.")
     return 1 if problems else 0
 

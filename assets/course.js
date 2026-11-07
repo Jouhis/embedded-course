@@ -30,8 +30,7 @@
  * 2. Progress. Each lesson's <body> has data-lesson="0007". A "Mark complete" bar is
  *    added automatically; progress lives in localStorage and the course index reads it.
  *    The index adds an overall bar plus Export / Import / Reset (a JSON file), and refreshes
- *    when shown again from the back/forward cache. Serve over http (tools/serve.py) so every
- *    page shares one storage origin; some browsers isolate each file:// page.
+ *    when shown again from the back/forward cache.
  *
  * 3. Code. Tag every block with its language: <pre><code class="language-c">. Languages: c,
  *    armasm, bash, powershell, cmake, dts, ini, rust, markdown, yaml, ld (linker script), kconfig,
@@ -44,68 +43,15 @@
 
   const STORE_KEY = "embedded-course-progress";
 
-  // ---------- Carrying progress along links (for pages opened as files) ----------
-  // Firefox gives every file:// page its own localStorage, so a lesson's "done" is invisible to
-  // index.html. When the course is opened as files, every click on a course link appends
-  // "#progress=<state>" and every page merges that state into its own store on load. Each record
-  // has an updatedAt time, so the newest decision (done or not done) wins.
-
-  const HASH_KEY = "progress=";
-
-  function encodeProgress(p) {
-    return Object.entries(p)
-      .filter(([, r]) => r && (r.done || r.updatedAt))
-      .map(([id, r]) => `${id}.${r.done ? 1 : 0}.${Math.floor((r.updatedAt || 0) / 1000).toString(36)}`)
-      .join(",");
-  }
-  function decodeProgress(text) {
-    const out = {};
-    decodeURIComponent(text).split(",").forEach(part => {
-      const [id, done, t] = part.split(".");
-      if (!id || !/^[\w-]+$/.test(id)) return;
-      out[id] = { done: done === "1", updatedAt: (parseInt(t || "0", 36) || 0) * 1000 };
-    });
-    return out;
-  }
-  /* Newest record wins; on a tie, done wins. Keeps other fields (completedAt, quiz scores). */
-  function mergeByTime(local, incoming) {
-    const out = Object.assign({}, local);
-    Object.entries(incoming).forEach(([id, rec]) => {
-      const cur = out[id] || {};
-      const curT = cur.updatedAt || (cur.done ? 1 : 0);
-      const newT = rec.updatedAt || (rec.done ? 1 : 0);
-      if (newT > curT || (newT === curT && rec.done && !cur.done)) {
-        out[id] = Object.assign({}, cur, { done: rec.done, updatedAt: rec.updatedAt,
-          completedAt: rec.done ? (cur.completedAt || new Date(rec.updatedAt || Date.now()).toISOString()) : null });
-      }
-    });
-    return out;
-  }
-  function absorbProgressFromUrl() {
-    const h = location.hash || "";
-    const i = h.indexOf(HASH_KEY);
-    if (i < 0) return;
-    try { saveProgress(mergeByTime(loadProgress(), decodeProgress(h.slice(i + HASH_KEY.length)))); }
-    catch (e) { /* malformed: ignore */ }
-    // Tidy the address bar (keep any real anchor that came before the progress part).
-    const rest = h.slice(0, i).replace(/[#&]$/, "");
-    history.replaceState(null, "", location.pathname + location.search + rest);
-  }
-  function carryProgressOnLinks() {
-    if (location.protocol !== "file:") return;     // over http all pages already share storage
-    document.addEventListener("click", e => {
-      const a = e.target.closest && e.target.closest("a[href]");
-      if (!a || a.target === "_blank" || a.hasAttribute("download")) return;
-      const href = a.getAttribute("href");
-      if (!/^[^:?#]+\.html(#.*)?$/.test(href)) return;   // only relative links to course pages
-      const state = encodeProgress(loadProgress());
-      if (!state) return;
-      const [base, anchor] = href.split("#");
-      a.href = base + "#" + (anchor ? anchor + "&" : "") + HASH_KEY + encodeURIComponent(state);
-    }, true);
-  }
-  absorbProgressFromUrl();
-  carryProgressOnLinks();
+  // ---------- External links open in a new tab ----------
+  // Links that leave the course site (datasheets, Wokwi, GitHub) open in a new tab, so the
+  // lesson stays open. Applied on click, so links that scripts add later are covered too.
+  document.addEventListener("click", e => {
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a || a.target || !/^https?:$/.test(a.protocol) || a.host === location.host) return;
+    a.target = "_blank";
+    a.rel = "noopener";
+  }, true);
 
   // ---------- Progress storage ----------
 
@@ -629,17 +575,6 @@
 
     box.appendChild(overall);
     box.appendChild(el("div", { class: "tools-row" }, [exportBtn, importBtn, resetBtn, file, msg]));
-    if (location.protocol === "file:") {
-      box.appendChild(el("p", { class: "storage-warning" }, [
-        "You opened the course as a file. Firefox keeps a separate store for every file, so progress travels " +
-        "between pages through the course's own links (← Course index, next, previous). The browser's Back button " +
-        "cannot carry it. For fully reliable progress, double-click ",
-        el("code", { text: "Open course.cmd" }),
-        " in the course folder (or run ",
-        el("code", { text: "python tools/serve.py" }),
-        "). Export and Import work either way.",
-      ]));
-    }
     root.parentNode.insertBefore(box, root);
   }
 

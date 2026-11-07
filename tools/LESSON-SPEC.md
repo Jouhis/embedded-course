@@ -89,6 +89,7 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
 
 ## 6. Facts and citations: never trust your memory
 - Every hardware or protocol fact needs a citation link, preferably to a vendor primary source in `RESOURCES.md` (with the section or page).
+- Every external link opens in a new tab: `<a href="https://..." target="_blank" rel="noopener">`. `check_course.py` rejects one without it.
 - If you need a fact that isn't covered there, look it up with WebFetch or WebSearch on a high-trust source, and propose the source for `RESOURCES.md` (see section 10).
 - Wokwi part names, pins and attributes: check them at `https://docs.wokwi.com/parts/<part>` before using them. Simulator limits are listed in `NOTES.md`. Never write an exercise that depends on an unsimulated feature.
 - If you are unsure of something and cannot verify it, leave it out and mention it in your report.

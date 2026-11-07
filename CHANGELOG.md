@@ -2,6 +2,13 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.6 (2026-11-07)
+
+- The course is read at <https://jouhis.github.io/embedded-course/>. `Open course.cmd`,
+  `tools/serve.py` and the instructions for serving the course on localhost are gone, and so is
+  the workaround that carried progress along links between pages opened as files.
+- External links open in a new tab, so the lesson stays open. `check_course.py` enforces it.
+
 ## 0.0.5 (2026-11-04)
 
 ### Every Wokwi lab after lesson 25 checked in the browser

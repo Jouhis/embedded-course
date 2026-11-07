@@ -407,6 +407,9 @@ def check_file(path, manifest):
 
     if not re.search(r'href="https?://', text):
         errors.append("no external citation links")
+    for tag in re.findall(r'<a\s[^>]*href="https?://[^"]*"[^>]*>', text):
+        if 'target="_blank"' not in tag and "jouhis.github.io/embedded-course" not in tag:
+            errors.append(f'external link must open in a new tab (add target="_blank" rel="noopener"): {tag}')
     return errors, warnings
 
 
