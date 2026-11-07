@@ -76,7 +76,7 @@ Before running, check reference.md "What the simulator can't do": skip FreeRTOS 
 4. The circuit does what the serial says: some pass lines print unconditionally (0025). For
    LED outputs, hold a known pattern (0xA5) and check one zoomed screenshot.
 
-Then: `python -I tools/verify_projects.py <id>` and `python -I tools/check_course.py`.
+Then: `python -I tools/verify_projects.py <id>` and `python -I tools/maintainer/check_course.py`.
 
 ## 5. Lay out a diagram
 

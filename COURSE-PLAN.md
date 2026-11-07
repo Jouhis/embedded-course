@@ -231,7 +231,7 @@ The bench labs are optional extras on real boards. The core course stays simulat
 
 Only two boards are needed: the Pico 2 and the Nucleo-U5. Nucleo boards include an onboard ST-LINK debugger, so no extra probe is needed. No bench lab ever connects 5 V to an RP2350 or STM32 pin.
 
-**Bench lab specs** (🔬 bench lab, ⭐ stretch; numbers are bench lab numbers; each lab can be done once the lesson in brackets is done, and the outline notes them at the end of each part. `tools/build_manifest.py` reads these lines.)
+**Bench lab specs** (🔬 bench lab, ⭐ stretch; numbers are bench lab numbers; each lab can be done once the lesson in brackets is done, and the outline notes them at the end of each part. `tools/maintainer/build_manifest.py` reads these lines.)
 
 Part 0
 - 🔬 **Bench lab 0: Blink on a real Pico 2** (after lesson 2). Build with `PICO_BOARD=pico2`, flash the UF2, confirm it runs. Sets up the bench for every later lab.

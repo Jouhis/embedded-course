@@ -10,9 +10,9 @@
 - Real-world examples come from common products. Klipper (open 3D-printer firmware) is a well-documented one: stepper drivers, thermistors, heater MOSFETs, the MCU-to-host link.
 
 ## Course mechanics (for the teacher)
-- Course outline: `COURSE-PLAN.md`. The lesson list is generated into `assets/manifest.js` by `python tools/build_manifest.py`.
-- Lesson spec and authoring rules: `tools/LESSON-SPEC.md`. Lesson HTML skeleton: `templates/lesson-template.html`.
-- Run `python tools/check_course.py` after any change to lessons. It validates quiz rules, links and required sections.
+- Course outline: `COURSE-PLAN.md`. The lesson list is generated into `assets/manifest.js` by `python tools/maintainer/build_manifest.py`.
+- Lesson spec and authoring rules: `tools/maintainer/LESSON-SPEC.md`. Lesson HTML skeleton: `templates/lesson-template.html`.
+- Run `python tools/maintainer/check_course.py` after any change to lessons. It validates quiz rules, links and required sections.
 - Wokwi projects for lesson NNNN live in `projects/NNNN-slug/`, with `starter/` and `solution/` subfolders.
 - Verified build templates: `templates/pico-sdk`, `stm32-cmsis`, `stm32-hal`, `stm32-freertos`, `zephyr-pico`, `zephyr-bluepill`.
 - Run simulations headlessly with `~/.wokwi/bin/wokwi-cli.exe` (needs the `WOKWI_CLI_TOKEN` environment variable).

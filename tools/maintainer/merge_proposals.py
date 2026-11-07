@@ -1,6 +1,6 @@
-"""Merge lesson authors' proposals (tools/proposals/*.md) into GLOSSARY.md and RESOURCES.md.
+"""Merge lesson authors' proposals (tools/maintainer/proposals/*.md) into GLOSSARY.md and RESOURCES.md.
 
-  python tools/merge_proposals.py [--dry-run] [proposal.md ...]   (default: every file in tools/proposals/)
+  python tools/maintainer/merge_proposals.py [--dry-run] [proposal.md ...]   (default: every file in tools/maintainer/proposals/)
 
 Glossary: each term block (**Term**: ... _Avoid_: ...) goes to the end of the group that the nearest
 preceding instruction line names, e.g. "Add these under `## RTOS`" or a new-group line "`## Peripherals`".
@@ -10,15 +10,15 @@ Resources: each "- [Title](url)" entry (with its indented lines) goes to the end
 named by the nearest preceding instruction line; if none of the named sections exist, a fallback is
 chosen from the URL. Entries whose URL is already in RESOURCES.md are skipped.
 
-Merged files are moved to tools/proposals/merged/. Afterwards run build_reference.py.
+Merged files are moved to tools/maintainer/proposals/merged/. Afterwards run build_reference.py.
 """
 import re
 import shutil
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-PROPOSALS = ROOT / "tools" / "proposals"
+ROOT = Path(__file__).resolve().parents[2]
+PROPOSALS = ROOT / "tools" / "maintainer" / "proposals"
 TERM_HEAD = re.compile(r"^\*\*([^*\n]+)\*\*:\s*$")
 ENTRY_HEAD = re.compile(r"^- \[[^\]]+\]\((https?://[^)\s]+)\)")
 

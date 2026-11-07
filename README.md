@@ -112,14 +112,26 @@ Every project has a `starter/` (your exercise) and a `solution/`.
 
 ## Tools for maintaining the course
 
-On macOS and Linux, type `python3` where these say `python`.
+These live in `tools/maintainer/`; `tools/` itself holds only the scripts learners run. On macOS and Linux, type `python3` where these say `python`.
 
 | Command | What it does |
 | --- | --- |
-| `python tools/check_course.py` | validates every lesson page |
+| `python tools/maintainer/check_course.py` | validates every lesson page |
 | `python tools/verify_projects.py` | builds and lints every Wokwi project, checks each has a pass line, runs the host unit tests |
 | `python tools/verify_projects.py --sim` | also runs solutions in the Wokwi cloud and checks the pass line (needs `WOKWI_CLI_TOKEN`) |
-| `python tools/build_manifest.py` | rebuilds `assets/manifest.js` from `COURSE-PLAN.md` |
+| `python tools/maintainer/build_manifest.py` | rebuilds `assets/manifest.js` from `COURSE-PLAN.md` |
+| `python tools/maintainer/build_search.py` | builds the search index (`assets/search/`, git-ignored); add `--semantic` for the smart-search vectors (needs Node and `npm ci` in `tools/maintainer/search` once) |
+
+To try the site with search before deploying, build the index and serve the folder (search loads
+its index with `fetch`, which browsers block for pages opened as files):
+
+```sh
+npm ci --prefix tools/maintainer/search               # once
+python tools/maintainer/build_search.py --semantic    # about a minute
+python -m http.server 8000                 # then open http://localhost:8000
+```
+
+The deploy workflow (`.github/workflows/pages.yml`) builds the same index on every push.
 
 A project's pass line is a comment in its `main.c`: `// EXPECT: <serial text>`, or
 `// SIM: skip <reason>` when it can only be built (the FreeRTOS projects on the STM32 are build-only
@@ -127,7 +139,7 @@ automatically: see the known issues in `CHANGELOG.md`). The GitHub workflow
 `.github/workflows/projects.yml` runs the same checks on every push; start it by hand with
 "simulate" ticked to run the simulations too, which uses Wokwi CI minutes.
 
-Lesson authoring rules are in `tools/LESSON-SPEC.md`; verified toolchain and simulator facts are in `NOTES.md`.
+Lesson authoring rules are in `tools/maintainer/LESSON-SPEC.md`; verified toolchain and simulator facts are in `NOTES.md`.
 
 ## Licence notes
 

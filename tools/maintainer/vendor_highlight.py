@@ -1,6 +1,6 @@
 """Build assets/vendor/highlight/highlight.min.js from the official highlight.js browser build.
 
-Usage: python -I tools/vendor_highlight.py [VERSION]
+Usage: python -I tools/maintainer/vendor_highlight.py [VERSION]
 
 Downloads @highlightjs/cdn-assets from the npm registry, takes the core plus only the languages
 the lessons use, and writes one classic script (no ES module, so it loads from file:// too).
@@ -17,7 +17,7 @@ import urllib.request
 
 VERSION = sys.argv[1] if len(sys.argv) > 1 else "11.12.0"
 LANGUAGES = ["c", "armasm", "bash", "powershell", "cmake", "dts", "ini", "rust", "markdown", "yaml", "plaintext"]
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "assets" / "vendor" / "highlight"
 
 

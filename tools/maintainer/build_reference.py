@@ -1,12 +1,12 @@
 """Build reference/glossary.html (from GLOSSARY.md) and reference/index.html.
 
-Usage:  python tools/build_reference.py   (re-run after editing GLOSSARY.md or adding a sheet)
+Usage:  python tools/maintainer/build_reference.py   (re-run after editing GLOSSARY.md or adding a sheet)
 """
 import html
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 REF = ROOT / "reference"
 
 # (file, title, description): the reference sheets planned in COURSE-PLAN.md
@@ -38,6 +38,7 @@ PAGE = """<!DOCTYPE html>
 <main>
 {body}
 </main>
+<script src="../assets/search.js"></script>
 </body>
 </html>
 """
@@ -71,19 +72,15 @@ def build_glossary() -> None:
         elif re.match(r"^\*\*(.+)\*\*:$", line):
             term = re.match(r"^\*\*(.+)\*\*:$", line).group(1)
             anchor = re.sub(r"[^a-z0-9]+", "-", term.lower()).strip("-")
-            definition, avoid = [], ""
+            definition = []
             i += 1
             while i < len(lines) and lines[i].strip():
-                if lines[i].startswith("_Avoid_:"):
-                    avoid = lines[i][len("_Avoid_:"):].strip()
-                else:
+                # "_Avoid_:" lines tell lesson authors which aliases not to use: not for learners.
+                if not lines[i].startswith("_Avoid_:"):
                     definition.append(lines[i].strip())
                 i += 1
             out.append(f'<dt id="{anchor}"><strong>{inline_md(term)}</strong></dt>')
-            dd = inline_md(" ".join(definition))
-            if avoid:
-                dd += f'<br><small class="avoid">Avoid: {inline_md(avoid)}</small>'
-            out.append(f"<dd>{dd}</dd>")
+            out.append(f"<dd>{inline_md(' '.join(definition))}</dd>")
             continue
         elif line and not intro_done and not line.startswith("#"):
             out.append(f'<p class="subtitle">{inline_md(line)}</p>')
@@ -91,8 +88,7 @@ def build_glossary() -> None:
         i += 1
     if in_dl:
         out.append("</dl>")
-    style = ("<style>dl.glossary dt{margin-top:1rem}dl.glossary dd{margin-left:0}"
-             ".avoid{color:var(--muted);font-family:var(--sans)}</style>")
+    style = ("<style>dl.glossary dt{margin-top:1rem}dl.glossary dd{margin-left:0}</style>")
     (REF / "glossary.html").write_text(PAGE.format(title="Glossary", body=style + "\n".join(out)), encoding="utf-8")
 
 

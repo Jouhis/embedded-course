@@ -358,7 +358,7 @@
 - [PulseView (sigrok)](https://sigrok.org/wiki/PulseView)
   Logic analyzer viewer with protocol decoders. Use for: viewing Wokwi `.vcd` captures.
 - [Falstad CircuitJS](https://www.falstad.com/circuit/) ([source](https://github.com/sharpie7/circuitjs1))
-  A free (GPL) browser circuit simulator with voltmeter, ammeter and scope. Built-in examples are listed in `tools/circuitjs/setuplist.txt`. Use for: all analogue hands-on work (Part 1 and analogue parts of later lessons).
+  A free (GPL) browser circuit simulator with voltmeter, ammeter and scope. Built-in examples are listed in `tools/maintainer/circuitjs/setuplist.txt`. Use for: all analogue hands-on work (Part 1 and analogue parts of later lessons).
 - [Wokwi parts reference: logic analyzer](https://docs.wokwi.com/parts/wokwi-logic-analyzer) and [pushbutton](https://docs.wokwi.com/parts/wokwi-pushbutton)
   Pin names, attributes and behaviour. Use for: lessons 10, 16 and 60. Check the part page before using any Wokwi part.
 - [Wokwi: 74HC595 shift register part](https://docs.wokwi.com/parts/wokwi-74hc595)

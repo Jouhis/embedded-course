@@ -7,7 +7,7 @@ Checks, per lesson file in lessons/:
     character lengths (the teach skill's "no clues from formatting" rule)
   - local links and project folders exist; no template placeholders remain
 
-Usage:  python tools/check_course.py [lesson-file ...]
+Usage:  python tools/maintainer/check_course.py [lesson-file ...]
 Exit code 1 if any error was found.
 """
 import html.parser
@@ -16,12 +16,12 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 LESSONS = ROOT / "lessons"
 CHAR_SPREAD = 0.50          # longest option may be at most 50 % longer than the shortest
 PLACEHOLDERS = ["LESSON TITLE", "ONE CONCRETE", "DESCRIBE THE CHANGE", "OBSERVABLE RESULT",
                 "TITLE OF THE SINGLE", "SUGGESTED FOLLOW-UP", 'data-lesson="0000"', "TODO", "Lorem"]
-# Languages bundled in assets/vendor/highlight (tools/vendor_highlight.py) plus the two course.js
+# Languages bundled in assets/vendor/highlight (tools/maintainer/vendor_highlight.py) plus the two course.js
 # grammars (ld, kconfig). "plaintext" is for logs, tool output and worked arithmetic: never coloured.
 CODE_LANGUAGES = {"c", "armasm", "bash", "powershell", "cmake", "dts", "ini", "rust", "markdown",
                   "yaml", "ld", "kconfig", "plaintext"}

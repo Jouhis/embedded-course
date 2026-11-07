@@ -32,7 +32,9 @@
  *    The index adds an overall bar plus Export / Import / Reset (a JSON file), and refreshes
  *    when shown again from the back/forward cache.
  *
- * 3. Code. Tag every block with its language: <pre><code class="language-c">. Languages: c,
+ * 3. Search. The search box is assets/search.js, loaded by loadSearch() below.
+ *
+ * 4. Code. Tag every block with its language: <pre><code class="language-c">. Languages: c,
  *    armasm, bash, powershell, cmake, dts, ini, rust, markdown, yaml, ld (linker script), kconfig,
  *    and plaintext for logs, tool output and worked arithmetic (not coloured). Write the code as
  *    plain escaped text; highlight.js adds the colours when the page loads. Every code block
@@ -42,6 +44,7 @@
   "use strict";
 
   const STORE_KEY = "embedded-course-progress";
+  const SELF = document.currentScript;   // to find assets/search.js next to this file
 
   // ---------- External links open in a new tab ----------
   // Links that leave the course site (datasheets, Wokwi, GitHub) open in a new tab, so the
@@ -792,7 +795,7 @@
 
   // ---------- Syntax highlighting ----------
   /* <pre><code class="language-c">...</code></pre>. highlight.js (assets/vendor/highlight, built by
-     tools/vendor_highlight.py) is loaded only on pages that have code. "language-plaintext" is
+     tools/maintainer/vendor_highlight.py) is loaded only on pages that have code. "language-plaintext" is
      left as written, so logs and worked arithmetic keep their own markup. Colours: course.css. */
   const ASSETS = document.currentScript ? new URL(".", document.currentScript.src).href : "../assets/";
 
@@ -888,7 +891,14 @@
     renderIndexProgress();
     highlightCode();   // after the quizzes, so code in their prompts is in the page
     addCopyButtons();
+    loadSearch();      // after the nav exists: the search box goes into it
   });
+
+  /* The search box (assets/search.js) is loaded after the page is built. */
+  function loadSearch() {
+    if (!SELF || document.querySelector('script[src$="search.js"]')) return;
+    document.body.appendChild(el("script", { src: SELF.src.replace(/course\.js(\?.*)?$/, "search.js") }));
+  }
 
   // Exposed for other components (calculators, drills).
   window.Course = { parseNumber, el, shuffle, loadProgress, updateLesson };

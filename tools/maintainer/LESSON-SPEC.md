@@ -27,7 +27,7 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 - Beautiful and printable: Tufte style, short paragraphs (3–5 sentences), clear `<h2>`/`<h3>` headings every few paragraphs, inline SVG diagrams. Long is fine; walls of text are not: break it up with headings, lists, tables, diagrams and worked examples.
 - Code blocks name their language: `<pre><code class="language-c">`. Allowed: `c`, `armasm`, `bash`, `powershell`, `cmake`, `dts`, `ini` (also prj.conf and TOML), `rust`, `markdown`, `yaml`, `ld` (linker script), `kconfig`, and `plaintext` for logs, tool output and worked arithmetic. Write the code as plain escaped text with no `<span>` markup; `course.js` highlights it. Inside quiz JSON, escape the quotes: `<pre><code class=\"language-c\">`. The checker enforces this.
 
-## 4. Required structure (enforced by `tools/check_course.py`)
+## 4. Required structure (enforced by `tools/maintainer/check_course.py`)
 File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/manifest.js`, and `<body data-lesson="<id>">` uses the exact id (`0007`, `lab03`, `cp02`).
 
 | Section | Lessons | Labs | Checkpoints |
@@ -89,6 +89,7 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
 
 ## 6. Facts and citations: never trust your memory
 - Every hardware or protocol fact needs a citation link, preferably to a vendor primary source in `RESOURCES.md` (with the section or page).
+- Each `<h2>`/`<h3>` gets an anchor from its text (`assets/search.js`), and search results link to it. Give a heading an explicit `id` if another page links to it, so renaming the heading doesn't break the link.
 - Every external link opens in a new tab: `<a href="https://..." target="_blank" rel="noopener">`. `check_course.py` rejects one without it.
 - If you need a fact that isn't covered there, look it up with WebFetch or WebSearch on a high-trust source, and propose the source for `RESOURCES.md` (see section 10).
 - Wokwi part names, pins and attributes: check them at `https://docs.wokwi.com/parts/<part>` before using them. Simulator limits are listed in `NOTES.md`. Never write an exercise that depends on an unsimulated feature.
@@ -133,8 +134,8 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
 
 ## 7.1 Electronics hands-on: Falstad CircuitJS, not Wokwi
 Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, transistor bias, capacitor charging and so on, and its resistors can't be combined with analog parts ([docs](https://docs.wokwi.com/parts/wokwi-resistor)). For analog electronics (Part 1, and the analog parts of later lessons) use **Falstad CircuitJS** (free, GPL, in the browser, with built-in voltmeter, ammeter and scope):
-- **Built-in examples:** link `https://www.falstad.com/circuit/circuitjs.html?startCircuit=<file>`. Pick file names **only** from `tools/circuitjs/setuplist.txt`, e.g. `ohms.txt`, `voltdivide.txt`, `res-series.txt`, `res-par.txt`, `npn.txt`, `nmosfet.txt`, `cap.txt`, `induct.txt`, `inductkick.txt`, `inductkick-snub.txt`, `diodecurve.txt`, `ledflasher.txt`.
-- **Custom circuits:** embed a netlist in `<pre class="circuitjs" data-title="...">…</pre>`; course.js adds an "Open in CircuitJS" button. Only write netlists by **editing values in a verified example** from `tools/circuitjs/` (`ohms.txt`, `voltdivide.txt`, `npn.txt`, `nmosfet.txt`); never invent element lines. Fetch other examples from `https://raw.githubusercontent.com/sharpie7/circuitjs1/master/src/com/lushprojects/circuitjs1/public/circuits/<file>` if needed.
+- **Built-in examples:** link `https://www.falstad.com/circuit/circuitjs.html?startCircuit=<file>`. Pick file names **only** from `tools/maintainer/circuitjs/setuplist.txt`, e.g. `ohms.txt`, `voltdivide.txt`, `res-series.txt`, `res-par.txt`, `npn.txt`, `nmosfet.txt`, `cap.txt`, `induct.txt`, `inductkick.txt`, `inductkick-snub.txt`, `diodecurve.txt`, `ledflasher.txt`.
+- **Custom circuits:** embed a netlist in `<pre class="circuitjs" data-title="...">…</pre>`; course.js adds an "Open in CircuitJS" button. Only write netlists by **editing values in a verified example** from `tools/maintainer/circuitjs/` (`ohms.txt`, `voltdivide.txt`, `npn.txt`, `nmosfet.txt`); never invent element lines. Fetch other examples from `https://raw.githubusercontent.com/sharpie7/circuitjs1/master/src/com/lushprojects/circuitjs1/public/circuits/<file>` if needed.
 - **Best practice:** have the learner *build* a small circuit themselves, following numbered steps (drawing schematics is a core skill). Then they measure, and type the measured value into a `number` quiz question, which gives them feedback.
 - Use Wokwi only where the behaviour is digital: GPIO levels, pull-ups on buttons, logic levels, the ADC reading a potentiometer.
 
@@ -150,17 +151,17 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
 - **Checkpoint:** ≥ 15 mixed questions across the whole part, plus 2–3 "explain out loud" prompts. Tell the learner which lessons to revisit for anything they miss.
 
 ## 10. Reference sheets and glossary
-- When your lessons introduce reusable facts (formulas, register fields, API calls), add them to the relevant sheet in `reference/`. File names are in `tools/build_reference.py`. Create the sheet from the same HTML shell as `reference/glossary.html` if it doesn't exist yet. Sheets are dense, scannable and printable: tables and short code, no prose paragraphs.
-- **Several authors work in parallel, so do NOT edit `GLOSSARY.md` or `RESOURCES.md` directly.** Instead write your proposed additions to `tools/proposals/<your-first-lesson-id>.md`, using the exact formats of those files. The lead merges them. You may link to glossary anchors you propose: anchor = term lowercased, non-alphanumerics → `-` (e.g. `#pull-up-resistor`). The checker won't flag anchors.
+- When your lessons introduce reusable facts (formulas, register fields, API calls), add them to the relevant sheet in `reference/`. File names are in `tools/maintainer/build_reference.py`. Create the sheet from the same HTML shell as `reference/glossary.html` if it doesn't exist yet. Sheets are dense, scannable and printable: tables and short code, no prose paragraphs.
+- **Several authors work in parallel, so do NOT edit `GLOSSARY.md` or `RESOURCES.md` directly.** Instead write your proposed additions to `tools/maintainer/proposals/<your-first-lesson-id>.md`, using the exact formats of those files. The lead merges them. You may link to glossary anchors you propose: anchor = term lowercased, non-alphanumerics → `-` (e.g. `#pull-up-resistor`). The checker won't flag anchors.
 - Link lessons to reference sheets and glossary anchors (`../reference/glossary.html#interrupt`), and to earlier lessons by file name.
 
 ## 11. Shared components
 - Before writing any interactive widget, check `assets/` for an existing one. If you need something reusable, make it a new file in `assets/` with a header comment explaining its usage. Don't inline code a future lesson would duplicate. Keep component code dependency-free (vanilla JS) so it works offline from `file://`.
 
 ## 12. Finish checklist (do all of these before reporting)
-1. `python -I tools/build_manifest.py` (marks your lessons as published)
-2. `python -I tools/build_reference.py` (if you touched the glossary or sheets)
-3. `python -I tools/check_course.py lessons/<your files>`: **zero errors**. Fix warnings unless there's a reason not to.
+1. `python -I tools/maintainer/build_manifest.py` (marks your lessons as published)
+2. `python -I tools/maintainer/build_reference.py` (if you touched the glossary or sheets)
+3. `python -I tools/maintainer/check_course.py lessons/<your files>`: **zero errors**. Fix warnings unless there's a reason not to.
 4. Every project folder builds (and simulates, if a token is available).
 5. Report back, briefly:
    - files created or changed

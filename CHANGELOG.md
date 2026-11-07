@@ -2,6 +2,20 @@
 
 Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
+## 0.0.7 (2026-11-07)
+
+- Search: a box in the top bar of every lesson and reference sheet, and on the index (`/` focuses
+  it). Keyword search over every section and glossary term, with links to the section. Quizzes are
+  not indexed. Optional smart search ranks sections by meaning as well, with a small sentence
+  model that runs in the browser (about 50 MB, downloaded once from Hugging Face and jsDelivr when
+  turned on). Built by `tools/maintainer/build_search.py` on every deploy.
+- The published glossary no longer shows the "Avoid" aliases; they are notes for lesson authors
+  and stay in `GLOSSARY.md`.
+- `tools/` now holds only the scripts learners run (`setup.py`, `build.py`, `sim.py`,
+  `new_project.py`, `verify_projects.py`). The scripts that build and check the website,
+  `LESSON-SPEC.md`, the CircuitJS examples and the authors' proposals moved to
+  `tools/maintainer/`. The merged proposals were deleted; git history keeps them.
+
 ## 0.0.6 (2026-11-07)
 
 - The course is read at <https://jouhis.github.io/embedded-course/>. `Open course.cmd`,

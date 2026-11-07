@@ -1,8 +1,8 @@
 # Embedded Systems Glossary
 
-The canonical vocabulary of this course, from electronics through CPU architecture to firmware. Every lesson uses these terms exactly as defined here, and avoids the listed aliases.
+The canonical vocabulary of this course, from electronics through CPU architecture to firmware. Every lesson uses these terms exactly as defined here.
 
-> Authors: add a term the first time a lesson defines it, in the right group. Keep each definition to one or two sentences and use already-defined terms inside definitions. Revise in place; never leave stale entries.
+> Authors: use the terms as defined, and not the aliases listed under _Avoid_ (those lines are not published). Add a term the first time a lesson defines it, in the right group. Keep each definition to one or two sentences and use already-defined terms inside definitions. Revise in place; never leave stale entries.
 
 ## Electronics
 
