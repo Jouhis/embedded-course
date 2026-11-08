@@ -28,9 +28,6 @@
   .logiclevel svg text{fill:var(--fg)} .logiclevel svg .mut{fill:var(--muted)}
   .logiclevel .zlo{fill:var(--accent-soft)} .logiclevel .zun{fill:var(--warn-soft)} .logiclevel .zhi{fill:var(--good-soft)}
   .logiclevel .mk{fill:var(--fg)} .logiclevel .mkl{stroke:var(--fg);stroke-width:2}
-  .logiclevel .devs{display:flex;flex-wrap:wrap;gap:.4rem}
-  .logiclevel .devs button{font-family:var(--sans);font-size:.8rem;padding:.25rem .55rem;border:1px solid var(--rule);border-radius:4px;background:var(--bg);color:var(--fg);cursor:pointer}
-  .logiclevel .devs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
   .logiclevel svg.ll-sch{width:100%;max-width:700px;height:auto;display:block;margin:.3rem 0;font-family:var(--sans);font-size:12px}
   .logiclevel .ll-sch .wr{fill:none;stroke:var(--fg);stroke-width:2}
   .logiclevel .ll-sch .ln{stroke-width:4}
@@ -39,9 +36,10 @@
   .logiclevel .ll-sch text.lnlab{font-weight:700;font-size:13px} .logiclevel .ll-sch text.ln-low{fill:var(--accent)} .logiclevel .ll-sch text.ln-high{fill:var(--good)} .logiclevel .ll-sch text.ln-float{fill:var(--warn)}
   .logiclevel .ll-sch .rs{fill:var(--bg);stroke:var(--fg);stroke-width:2}
   .logiclevel .ll-sch .curt{fill:var(--accent);font-weight:700}
+  .logiclevel .ll-sch .pu{cursor:pointer} .logiclevel .ll-sch .pubox{fill:transparent;stroke:var(--rule);stroke-dasharray:4 3} .logiclevel .ll-sch .pu.on .pubox{stroke:transparent} .logiclevel .ll-sch .pu:hover .pubox,.logiclevel .ll-sch .pu:focus .pubox{stroke:var(--accent)} .logiclevel .ll-sch .pu:focus{outline:none}
   .logiclevel .ll-sch .dev{cursor:pointer} .logiclevel .ll-sch .devbox{fill:var(--code-bg);stroke:var(--rule)}
   .logiclevel .ll-sch .dev.on .devbox{fill:var(--accent-soft);stroke:var(--accent)}
-  .logiclevel .ll-sch .dev:focus{outline:none} .logiclevel .ll-sch .dev:focus .devbox{stroke:var(--accent);stroke-width:2}
+  .logiclevel .ll-sch .dev:focus{outline:none} .logiclevel .ll-sch .dev:hover .devbox,.logiclevel .ll-sch .dev:focus .devbox{stroke:var(--accent);stroke-width:2}
   .logiclevel .ll-res3{min-height:5.2rem;box-sizing:border-box}
   .logiclevel .ll-tbl{min-height:13rem}
   .logiclevel tr.sel td{font-weight:700;background:var(--accent-soft)}
@@ -117,22 +115,18 @@
 
     // ---- Part 3: open-drain line
     box.appendChild(E("h4", { text: "3. An open-drain line with a pull-up" }));
-    box.appendChild(E("p", { class: "widget-hint", text: "Open drain means each device has only two choices: connect the line to ground (pull it low) or switch off and let go. No device can drive the line high; only the pull-up resistor does that. Click a device in the drawing or below to toggle it." }));
+    box.appendChild(E("p", { class: "widget-hint", text: "Open drain means each device has only two choices: connect the line to ground (pull it low) or switch off and let go. No device can drive the line high; only the pull-up resistor does that. Click a device to switch it, and click the pull-up to remove it or fit it again." }));
     const NS = "http://www.w3.org/2000/svg";
     const S = (tag, a, txt) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (txt !== undefined) e.textContent = txt; return e; };
     const sch = S("svg", { class: "ll-sch", viewBox: "0 0 700 240", role: "img", "aria-label": "Open-drain line: a pull-up resistor from 3.3 V, three devices that can switch the line to ground, and the line capacitance" });
-    const devs = E("div", { class: "devs" });
     const rIn = E("input", { type: "range", min: 0, max: 100, step: 1, "aria-label": "pull-up resistance" }), rOut = E("b");
     const cIn = E("input", { type: "range", min: 10, max: 400, step: 10, value: st.cpf, "aria-label": "line capacitance" }), cOut = E("b");
     const RVALS = [1000, 1500, 2200, 3300, 4700, 10000, 22000, 47000, 50000, 100000];
     rIn.max = RVALS.length - 1; rIn.value = RVALS.indexOf(st.rpu);
     rIn.addEventListener("input", () => { st.rpu = RVALS[+rIn.value]; draw3(); });
     cIn.addEventListener("input", () => { st.cpf = +cIn.value; draw3(); });
-    const pullSel = E("select", { "aria-label": "pull-up" }, [E("option", { value: "ext", text: "pull-up resistor fitted" }), E("option", { value: "none", text: "no pull-up" })]);
-    pullSel.addEventListener("change", () => { st.pull = pullSel.value; draw3(); });
     box.appendChild(sch);
-    box.appendChild(devs);
-    box.appendChild(E("div", { class: "ll-row" }, [E("label", {}, [pullSel]), E("label", {}, ["pull-up", rIn, rOut]), E("label", {}, ["line capacitance", cIn, cOut])]));
+    box.appendChild(E("div", { class: "ll-row" }, [E("label", {}, ["pull-up", rIn, rOut]), E("label", {}, ["line capacitance", cIn, cOut])]));
     const res3 = E("div", { class: "ll-res ll-res3" }), tbl = E("div", { class: "ll-tbl" });
     box.append(res3, tbl);
     const toggle = i => { st.devs[i] = !st.devs[i]; draw3(); };
@@ -143,16 +137,20 @@
       const n = st.devs.filter(Boolean).length;
       const R = st.rpu, C = st.cpf * 1e-12, tau = R * C, k = -Math.log(1 - VIH / VDD), tr = tau * k;
       const state = n > 0 ? "low" : on ? "high" : "float";
-      devs.innerHTML = "";
-      st.devs.forEach((d, i) => devs.appendChild(E("button", { type: "button", class: d ? "on" : "", "aria-pressed": String(d), text: `device ${i + 1}: ${d ? "pulls low" : "let go"}`, onclick: () => toggle(i) })));
       sch.innerHTML = "";
       const lc = state === "low" ? "ln-low" : state === "high" ? "ln-high" : "ln-float";
       sch.append(S("text", { x: 20, y: 16, class: "mut" }, "3.3 V"), S("path", { d: "M20 24 H120", class: "wr" }));
+      const pu = S("g", { class: "pu" + (on ? " on" : ""), tabindex: 0, role: "button", "aria-pressed": String(on), "aria-label": on ? "pull-up fitted; press to remove it" : "no pull-up; press to fit one" });
+      pu.append(S("rect", { x: 40, y: 30, width: 130, height: 74, rx: 6, class: "pubox" }));
       if (on) {
-        sch.append(S("path", { d: "M70 24 V44", class: "wr" }), S("rect", { x: 60, y: 44, width: 20, height: 46, rx: 2, class: "rs" }),
-          S("text", { x: 88, y: 62 }, "pull-up"), S("text", { x: 88, y: 78, class: "mut" }, fmtR(R)), S("path", { d: "M70 90 V110", class: "wr" }));
-        if (state === "low") sch.append(S("text", { x: 88, y: 96, class: "curt" }, "↓ " + (VDD / R * 1000).toFixed(2) + " mA"));
-      } else sch.append(S("text", { x: 40, y: 70, class: "mut" }, "(no pull-up)"));
+        pu.append(S("path", { d: "M70 24 V44", class: "wr" }), S("rect", { x: 60, y: 44, width: 20, height: 46, rx: 2, class: "rs" }),
+          S("text", { x: 88, y: 60 }, "pull-up"), S("text", { x: 88, y: 76, class: "mut" }, fmtR(R)), S("path", { d: "M70 90 V110", class: "wr" }));
+        if (state === "low") pu.append(S("text", { x: 88, y: 94, class: "curt" }, "↓ " + (VDD / R * 1000).toFixed(2) + " mA"));
+      } else pu.append(S("text", { x: 105, y: 64, class: "mut", "text-anchor": "middle" }, "no pull-up"), S("text", { x: 105, y: 80, class: "mut", "text-anchor": "middle" }, "(click to fit)"));
+      const flip = () => { st.pull = on ? "none" : "ext"; draw3(); };
+      pu.addEventListener("click", flip);
+      pu.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); } });
+      sch.append(pu);
       sch.append(S("path", { d: "M70 110 H660", class: "wr ln " + lc }));
       sch.append(S("text", { x: 430, y: 100, class: "lnlab " + lc }, state === "low" ? "line ≈ 0 V: reads 0" : state === "high" ? "line = 3.3 V: reads 1" : "line floats: 0 or 1?"));
       st.devs.forEach((d, i) => {
@@ -173,7 +171,7 @@
       else if (state === "low") { res3.className = "ll-res ll-res3 ok"; res3.textContent = `${n === 1 ? "One device connects" : n + " devices connect"} the line to ground, so it reads 0. Nothing fights: devices only ever pull down.` + (on ? ` While the line is low, 3.3 V ÷ ${fmtR(R)} = ${(VDD / R * 1000).toFixed(2)} mA flows through the pull-up into ground: the price of holding the line low.` : ""); }
       else { res3.className = "ll-res ll-res3 ok"; res3.textContent = `Every device has let go, so the pull-up resistor charges the line to 3.3 V and it reads 1. The charge flows through the resistor into the line's capacitance, so the rise takes time: the line crosses VIH = 2.0 V after ${fmtT(tr)}. That is ${k.toFixed(2)} × RC, with RC = ${fmtR(R)} × ${st.cpf} pF = ${fmtT(tau)}.`; }
       const rows = [...new Set([1000, 4700, 10000, 50000, R])].sort((x, y) => x - y);
-      tbl.innerHTML = on ? `<table><tr><th>pull-up</th><th>current while low</th><th>time to reach 2.0 V at ${st.cpf} pF</th></tr>` + rows.map(r => `<tr${r === R ? ' class="sel"' : ""}><td>${fmtR(r)}${r === R ? " (selected)" : ""}</td><td>${(VDD / r * 1000).toFixed(3)} mA</td><td>${fmtT(-r * C * Math.log(1 - VIH / VDD))}</td></tr>`).join("") + `</table><p class="widget-hint">A smaller pull-up gives a faster rise but wastes more current every time the line is low. 50 kΩ is about the RP2040's internal pull-up at its weakest.</p>` : `<p class="widget-hint">Fit a pull-up to see the current and the rise time.</p>`;
+      tbl.innerHTML = on ? `<table><tr><th>pull-up</th><th>current while low</th><th>time to reach 2.0 V at ${st.cpf} pF</th></tr>` + rows.map(r => `<tr${r === R ? ' class="sel"' : ""}><td>${fmtR(r)}${r === R ? " (selected)" : ""}</td><td>${(VDD / r * 1000).toFixed(3)} mA</td><td>${fmtT(-r * C * Math.log(1 - VIH / VDD))}</td></tr>`).join("") + `</table><p class="widget-hint">A smaller pull-up gives a faster rise but wastes more current every time the line is low. 50 kΩ is about the RP2040's internal pull-up at its weakest.</p>` : `<p class="widget-hint">Click the dashed box in the drawing to fit a pull-up, then compare the current and the rise time.</p>`;
     }
     draw3();
   }
