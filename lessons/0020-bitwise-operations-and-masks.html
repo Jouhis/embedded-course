@@ -108,7 +108,39 @@ if (reg &amp; (1u &lt;&lt; n)) { /* set */ }</code></pre>
     Those three steps are the danger. If an interrupt runs between the load and the store, and it changes the same register, the store writes back the old value of the bits the interrupt changed. The interrupt's change is lost. Lesson 57 covers interrupts in practice, and this lost update is one of the classic reasons driver code disables interrupts around a read-modify-write.
   </p>
 
-  <h2>Fields: several bits that hold one value</h2>
+  <div class="widget anim" data-title="A lost update: an interrupt between the load and the store">
+    <svg viewBox="0 0 660 250" role="img" aria-label="main loads reg as 0x2C into r0; an interrupt sets bit 0 so reg becomes 0x2D; main ORs 0x40 into its stale copy and stores 0x6C, losing bit 0">
+      <text class="ttl" x="20" y="34">main: reg |= 0x40;</text>
+      <rect class="box" x="20" y="46" width="80" height="34" rx="3" data-on="1"/><text class="lbl mid" x="60" y="68">LDR</text>
+      <rect class="box" x="110" y="46" width="80" height="34" rx="3" data-on="3"/><text class="lbl mid" x="150" y="68">ORR</text>
+      <rect class="box" x="200" y="46" width="80" height="34" rx="3" data-on="4" data-bad="4"/><text class="lbl mid" x="240" y="68">STR</text>
+      <text class="sm mid" x="60" y="96">bus read</text><text class="sm mid" x="150" y="96">in the core</text><text class="sm mid" x="240" y="96">bus write</text>
+      <text class="ttl" x="20" y="150" data-s="2-">ISR: reg |= 0x01;</text>
+      <rect class="box" x="20" y="162" width="260" height="34" rx="3" data-s="2-" data-warn="2"/>
+      <text class="lbl mid" x="150" y="184" data-s="2-">LDR, ORR, STR: all three</text>
+      <path class="wire thin dash warn arr" d="M100 63 C 100 120 60 120 60 158" data-s="2"/>
+      <rect class="box" x="360" y="40" width="130" height="56" rx="4"/>
+      <text class="sm" x="372" y="58">core register r0</text>
+      <text class="lbl" x="372" y="82" data-text="1:0x2C|3:0x6C" data-on="1,3">0x2C</text>
+      <rect class="box" x="510" y="40" width="130" height="56" rx="4" data-bad="4"/>
+      <text class="sm" x="522" y="58">peripheral reg</text>
+      <text class="lbl" x="522" y="82" data-text="1:0x2C|2:0x2D|4:0x6C" data-on="2" data-bad="4">0x2C</text>
+      <path class="wire arr" d="M508 76 H492" data-on="1"/>
+      <path class="wire arr" d="M492 60 H508" data-s="4" data-bad="4"/>
+      <text class="lbl" x="20" y="234" data-text="1:r0 = 0x2C, a copy|2:the ISR sets bit 0: reg = 0x2D|3:r0 = 0x2C | 0x40 = 0x6C, from the stale copy|4:store 0x6C: bit 0 is gone|5:fix: one write, no read in between" data-bad="4" data-good="5">r0 = 0x2C, a copy</text>
+      <text class="sm" x="360" y="130" data-s="5">disable interrupts around the three steps, or</text>
+      <text class="sm" x="360" y="146" data-s="5">on the RP2040 write the bit to a SET alias (+0x2000)</text>
+    </svg>
+    <ol>
+      <li><code>reg |= 0x40</code> is three instructions. First a load: the core reads the register over the bus and keeps a copy, 0x2C, in r0.</li>
+      <li>An interrupt arrives before the store. Its handler does its own read-modify-write, <code>reg |= 0x01</code>, and the register becomes 0x2D.</li>
+      <li>Back in main, the OR happens inside the core on the old copy: 0x2C | 0x40 = 0x6C. Main never saw bit 0 being set.</li>
+      <li>The store writes 0x6C. Bit 0, the interrupt's update, is lost, and nothing reports it.</li>
+      <li>The fix is to remove the gap: disable interrupts around the three steps, or use a write that needs no read, such as the RP2040's atomic SET alias or the SIO's GPIO set register.</li>
+    </ol>
+  </div>
+
+<h2>Fields: several bits that hold one value</h2>
   <p>
     A <strong>field</strong> is a group of adjacent bits that together hold one number, such as a 3-bit mode or a 4-bit prescaler. A datasheet names the field and its bit range, for example bits 6 to 4. To read a field, shift it down so its lowest bit is bit 0, then mask off everything above it. To write a field, clear it with the inverse of its mask, then OR in the new value after shifting it to the right place.
   </p>
@@ -138,7 +170,102 @@ reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK
 
   <div class="warning">Always mask the value before you shift it in. If <code>value</code> is 9 and the field is 3 bits wide, <code>value &lt;&lt; lo</code> sets a bit in a neighbouring field, and the bug appears somewhere else entirely.</div>
 
-  <h2>Writing the Pico LED without a read</h2>
+  <div class="widget anim" data-title="Writing the value 3 into bits 6 to 4, one operation at a time">
+    <svg viewBox="0 0 640 250" role="img" aria-label="reg = 0x56; the mask 0x70 selects bits 6 to 4; reg AND NOT mask clears them to 0x06; 3 shifted left by 4 is 0x30; OR gives 0x36">
+      <text class="sm mid" x="231" y="22">7</text><text class="sm mid" x="277" y="22">6</text><text class="sm mid" x="323" y="22">5</text><text class="sm mid" x="369" y="22">4</text><text class="sm mid" x="415" y="22">3</text><text class="sm mid" x="461" y="22">2</text><text class="sm mid" x="507" y="22">1</text><text class="sm mid" x="553" y="22">0</text>
+      <g>
+      <text class="lbl end" x="200" y="49">reg</text>
+      <rect class="box" x="210" y="30" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="231" y="50" data-text="1:0|5:0">0</text>
+      <rect class="box" x="256" y="30" width="42" height="30" rx="3" data-warn="1-"/>
+      <text class="lbl mid" x="277" y="50" data-text="1:1|5:0" data-on="1-4">1</text>
+      <rect class="box" x="302" y="30" width="42" height="30" rx="3" data-warn="1-"/>
+      <text class="lbl mid" x="323" y="50" data-text="1:0|5:1" data-on="5-">0</text>
+      <rect class="box" x="348" y="30" width="42" height="30" rx="3" data-warn="1-"/>
+      <text class="lbl mid" x="369" y="50" data-text="1:1|5:1" data-on="1-4,5-">1</text>
+      <rect class="box" x="394" y="30" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="415" y="50" data-text="1:0|5:0">0</text>
+      <rect class="box" x="440" y="30" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="461" y="50" data-text="1:1|5:1" data-on="1-4,5-">1</text>
+      <rect class="box" x="486" y="30" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="507" y="50" data-text="1:1|5:1" data-on="1-4,5-">1</text>
+      <rect class="box" x="532" y="30" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="553" y="50" data-text="1:0|5:0">0</text>
+      </g>
+      <g data-s="2-">
+      <text class="lbl end" x="200" y="91">mask</text>
+      <rect class="box" x="210" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="231" y="92" data-text="2:0">0</text>
+      <rect class="box" x="256" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="277" y="92" data-text="2:1" data-on="2-">1</text>
+      <rect class="box" x="302" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="323" y="92" data-text="2:1" data-on="2-">1</text>
+      <rect class="box" x="348" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="369" y="92" data-text="2:1" data-on="2-">1</text>
+      <rect class="box" x="394" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="415" y="92" data-text="2:0">0</text>
+      <rect class="box" x="440" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="461" y="92" data-text="2:0">0</text>
+      <rect class="box" x="486" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="507" y="92" data-text="2:0">0</text>
+      <rect class="box" x="532" y="72" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="553" y="92" data-text="2:0">0</text>
+      </g>
+      <g data-s="3-">
+      <text class="lbl end" x="200" y="133">reg &amp; ~mask</text>
+      <rect class="box" x="210" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="231" y="134" data-text="3:0">0</text>
+      <rect class="box" x="256" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="277" y="134" data-text="3:0">0</text>
+      <rect class="box" x="302" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="323" y="134" data-text="3:0">0</text>
+      <rect class="box" x="348" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="369" y="134" data-text="3:0">0</text>
+      <rect class="box" x="394" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="415" y="134" data-text="3:0">0</text>
+      <rect class="box" x="440" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="461" y="134" data-text="3:1" data-on="3-">1</text>
+      <rect class="box" x="486" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="507" y="134" data-text="3:1" data-on="3-">1</text>
+      <rect class="box" x="532" y="114" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="553" y="134" data-text="3:0">0</text>
+      </g>
+      <g data-s="4-">
+      <text class="lbl end" x="200" y="175">(3 &lt;&lt; 4) &amp; mask</text>
+      <rect class="box" x="210" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="231" y="176" data-text="4:0">0</text>
+      <rect class="box" x="256" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="277" y="176" data-text="4:0">0</text>
+      <rect class="box" x="302" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="323" y="176" data-text="4:1" data-on="4-">1</text>
+      <rect class="box" x="348" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="369" y="176" data-text="4:1" data-on="4-">1</text>
+      <rect class="box" x="394" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="415" y="176" data-text="4:0">0</text>
+      <rect class="box" x="440" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="461" y="176" data-text="4:0">0</text>
+      <rect class="box" x="486" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="507" y="176" data-text="4:0">0</text>
+      <rect class="box" x="532" y="156" width="42" height="30" rx="3"/>
+      <text class="lbl mid" x="553" y="176" data-text="4:0">0</text>
+      </g>
+      <text class="lbl" x="586" y="50" data-text="1:0x56|5:0x36">0x56</text>
+      <text class="lbl" x="586" y="92" data-s="2-" data-text="2:0x70">0x70</text>
+      <text class="lbl" x="586" y="134" data-s="3-" data-text="3:0x06">0x06</text>
+      <text class="lbl" x="586" y="176" data-s="4-" data-text="4:0x30">0x30</text>
+      <text class="lbl acc" x="20" y="218" data-text="1:bits 6 to 4 hold 101, which is 5|2:FIELD_MASK(4, 3) = ((1u &lt;&lt; 3) - 1) &lt;&lt; 4 = 0x70|3:clear the field; every other bit is kept|4:the new value, moved into place and trimmed|5:reg = 0x06 | 0x30 = 0x36: bits 6 to 4 hold 011|6:read back: (0x36 &gt;&gt; 4) &amp; 7u = 3">bits 6 to 4 hold 101, which is 5</text>
+    </svg>
+    <ol>
+      <li>The register holds 0x56, 0101 0110. The field is bits 6 to 4, and they hold 101, which is 5. The task is to write 3 there without touching any other bit.</li>
+      <li>Build the mask: three ones, shifted up to bit 4. ((1u &lt;&lt; 3) − 1) &lt;&lt; 4 is 0111 0000, 0x70.</li>
+      <li>Clear the field: AND with the inverted mask. 0x56 &amp; 0x8F is 0x06. Bit 7 and bits 3 to 0 are unchanged.</li>
+      <li>Shift the new value into place and mask it, so a value that is too big cannot spill into the next field: (3 &lt;&lt; 4) &amp; 0x70 is 0x30.</li>
+      <li>Combine with OR: 0x06 | 0x30 is 0x36, 0011 0110. Bits 6 to 4 now hold 011.</li>
+      <li>Reading the field back is the same idea in reverse: (reg &gt;&gt; 4) &amp; 7u gives 3.</li>
+    </ol>
+  </div>
+
+<h2>Writing the Pico LED without a read</h2>
   <p>
     The RP2040 can avoid the read in the middle. Each peripheral register block is allocated 4 kB of address space, and each register can be reached through four addresses. The normal address does a plain read or write. The address plus 0x1000 does an atomic XOR on write, the address plus 0x2000 does an atomic bitmask set on write, and the address plus 0x3000 does an atomic bitmask clear on write. The datasheet says this lets software change a field without a read-modify-write sequence (<a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 2.1.2, Atomic Register Access</a>).
   </p>
@@ -426,6 +553,7 @@ reg = (reg &amp; ~FIELD_MASK(lo, width)) | ((value &lt;&lt; lo) &amp; FIELD_MASK
 </main>
 <script src="../assets/manifest.js"></script>
 <script src="../assets/course.js"></script>
+<script src="../assets/anim.js"></script>
 <script src="../assets/bits.js"></script>
 </body>
 </html>

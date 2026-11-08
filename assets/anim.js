@@ -21,7 +21,8 @@
  *   data-on="…"    the element gets class "on" in these steps: boxes light up, wires carry a moving dash.
  *   data-bad="…", data-good="…", data-warn="…"   the same, with class "bad", "good" or "warn".
  *   data-at="1:x,y 3:x,y"   the element is translated to x,y from that step on; it glides between steps.
- *   data-text="1:a|3:b"     the element's text from that step on (spaces are kept).
+ *   data-text="1:a|3:b"     the element's text from that step on (spaces are kept; a "|" not followed by
+ *                           a step number and a colon is plain text).
  *   data-cls="1:slow|3:fast"  extra classes from that step on ("-" for none). Wires: slow, fast (dash speed).
  * SVG classes: box (a part), wire (a line), arr (a wire with an arrowhead), tok (a moving token), lbl
  * (mono text), sm (small muted text), ttl (bold sans text), acc/good/bad/warn (fixed colour), dim (faded),
@@ -165,8 +166,8 @@
         it.at = parseKeyed(node.dataset.at, /\s+/).map(([s, v]) => [s, v.split(",").map(Number)]);
         node.style.transformBox = "view-box";
       }
-      if (node.dataset.text) it.text = parseKeyed(node.dataset.text, "|");
-      if (node.dataset.cls) it.cls = parseKeyed(node.dataset.cls, "|");
+      if (node.dataset.text) it.text = parseKeyed(node.dataset.text, /\|(?=\s*\d+:)/);
+      if (node.dataset.cls) it.cls = parseKeyed(node.dataset.cls, /\|(?=\s*\d+:)/);
       it.arr = node.classList.contains("arr");
       items.push(it);
     });
