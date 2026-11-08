@@ -153,7 +153,62 @@ static int ring_get(ByteRing *r, uint8_t *byte) {          /* consumer: main */
     The step that matters is the difference at the wrap. Between the second and third rows, the head went from 65535 to 0. The 16-bit subtraction <code>0 − 65534</code> gives 2 modulo 65536, which is the right answer, and it is 2 because the head is two bytes past the tail. A plain signed subtraction of two 32-bit values would give −65534, and the full test would never fire. The unsigned 16-bit form is why the code casts to <code>uint16_t</code>.
   </p>
 
-  <h3>Why this needs no lock on one core</h3>
+  <div class="widget anim" data-title="The ring buffer across the 16-bit wrap">
+    <svg viewBox="0 0 660 252" role="img" aria-label="A 16-slot ring buffer with head and tail counters starting at 65534; A, B and C go into slots 14, 15 and 0 as head wraps from 65535 to 0; the 16-bit difference stays correct; a get reads A and advances tail">
+      <text class="sm" x="20" y="20">16 slots; slot = counter &amp; 15</text>
+      <rect class="box" x="26" y="70" width="34" height="40" rx="3" data-on="4"/>
+      <text class="sm mid" x="43" y="124">0</text>
+      <text class="lbl mid" x="43" y="95" data-s="4-">C</text>
+      <rect class="box" x="64" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="81" y="124">1</text>
+      <rect class="box" x="102" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="119" y="124">2</text>
+      <rect class="box" x="140" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="157" y="124">3</text>
+      <rect class="box" x="178" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="195" y="124">4</text>
+      <rect class="box" x="216" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="233" y="124">5</text>
+      <rect class="box" x="254" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="271" y="124">6</text>
+      <rect class="box" x="292" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="309" y="124">7</text>
+      <rect class="box" x="330" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="347" y="124">8</text>
+      <rect class="box" x="368" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="385" y="124">9</text>
+      <rect class="box" x="406" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="423" y="124">10</text>
+      <rect class="box" x="444" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="461" y="124">11</text>
+      <rect class="box" x="482" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="499" y="124">12</text>
+      <rect class="box" x="520" y="70" width="34" height="40" rx="3"/>
+      <text class="sm mid" x="537" y="124">13</text>
+      <rect class="box" x="558" y="70" width="34" height="40" rx="3" data-on="2" data-good="5"/>
+      <text class="sm mid" x="575" y="124">14</text>
+      <text class="lbl mid" x="575" y="95" data-s="2-" data-cls="5:dim">A</text>
+      <rect class="box" x="596" y="70" width="34" height="40" rx="3" data-on="3"/>
+      <text class="sm mid" x="613" y="124">15</text>
+      <text class="lbl mid" x="613" y="95" data-s="3-">B</text>
+      <path class="wire arr" d="M632 90 h10 V148 H14 V90 h8" style="stroke-dasharray:4 3"/>
+      <text class="sm mid" x="330" y="160">after slot 15 comes slot 0</text>
+      <g data-at="1:532,0 2:570,0 3:0,0 4:38,0 5:38,0"><path class="wire acc arr" d="M43 40 V66" style="stroke-width:2.5"/><text class="lbl acc mid" x="43" y="36">head</text></g>
+      <g data-at="1:532,0 2:532,0 3:532,0 4:532,0 5:570,0"><path class="wire warn arr" d="M43 186 V132" style="stroke-width:2.5"/><text class="lbl warn mid" x="43" y="182">tail</text></g>
+      <rect class="box" x="20" y="196" width="620" height="50" rx="4"/>
+      <text class="lbl" x="32" y="216" data-text="1:head 65534  tail 65534  head − tail = 0: empty|2:put A: head 65535, tail 65534, difference 1|3:put B: head wraps 65535 → 0, difference 2|4:put C: head 1, tail 65534, difference 3|5:get: tail 65535, reads A from slot 14, difference 2">head 65534  tail 65534  head − tail = 0: empty</text>
+      <text class="sm" x="32" y="236" data-text="1:the counters are not indexes; they run up to 65535|2:slot 65534 &amp; 15 = 14|3:(uint16_t)(0 − 65534) = 2, the right count|4:slot 1 &amp; 15 … C went into slot 0|5:the main loop consumes in order; the ISR only moves head">the counters are not indexes; they run up to 65535</text>
+    </svg>
+    <ol>
+      <li>The ring has 16 slots. head and tail are free-running 16-bit counters, and the slot is the counter's low four bits. Both start at 65534, so the slot is 14 and the buffer is empty: head − tail = 0.</li>
+      <li>The receive interrupt puts A. It writes slot 65534 &amp; 15 = 14 and moves head to 65535. One byte is queued.</li>
+      <li>It puts B into slot 15. head goes from 65535 to 0: the 16-bit counter wraps. Computed in 16 bits, head − tail = 0 − 65534 = 2 modulo 65536, still the right count.</li>
+      <li>It puts C into slot 0 &amp; 15 = 0. Three bytes are queued; the slots have wrapped from 15 to 0 as well.</li>
+      <li>The main loop gets a byte: slot 65534 &amp; 15 = 14, which is A, and tail moves to 65535. Only the ISR writes head and only main writes tail, which is why one core needs no lock here.</li>
+    </ol>
+  </div>
+
+<h3>Why this needs no lock on one core</h3>
   <p>
     The argument for safety without a lock has four parts. The solution's self-test checks it in code before the hardware runs.
   </p>
@@ -428,5 +483,6 @@ GPIOA-&gt;BSRR = GPIO_BSRR_BS0;               /* ODR bit 0 = 1 selects the pull-
 </main>
 <script src="../assets/manifest.js"></script>
 <script src="../assets/course.js"></script>
+<script src="../assets/anim.js"></script>
 </body>
 </html>
