@@ -67,7 +67,7 @@
   .anim svg text.good{fill:var(--good);font-weight:700} .anim svg text.bad{fill:var(--bad);font-weight:700}
   .anim svg text.warn{fill:var(--warn);font-weight:700}
   .anim svg .mid{text-anchor:middle} .anim svg .end{text-anchor:end}
-  .anim svg .hide{opacity:0;pointer-events:none}
+  .anim svg .hide{opacity:0 !important;pointer-events:none}
   .anim svg .anim-ah{fill:var(--muted)} .anim svg .anim-ah.on{fill:var(--accent)}
   .anim svg .anim-ah.good{fill:var(--good)} .anim svg .anim-ah.bad{fill:var(--bad)} .anim svg .anim-ah.warn{fill:var(--warn)}
   .anim svg .anim-ah.fg{fill:var(--fg)}
