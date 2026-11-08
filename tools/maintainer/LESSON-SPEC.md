@@ -158,7 +158,7 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
 
 ## 11. Shared components
 - Interactive widgets in `assets/` (each file's header comment gives the markup):
-  - `cpusim.js`: the CPU simulator. `data-show` picks panels; `datapath` draws the CPU as blocks and lights up the wires each phase uses. Flags and instruction kinds have fixed colours.
+  - `cpusim.js`: the CPU simulator. `data-show` picks panels; `datapath` draws the CPU as blocks and lights up the wires each phase uses; `bus` adds a one-shared-bus and a Harvard (I-bus + D-bus) transfer timeline side by side (`data-bus="shared"` or `"harvard"` shows one). Flags and instruction kinds have fixed colours.
   - `logicsim.js`: clickable gates, latches and flip-flops, with a truth table (combinational) or a timing diagram (sequential). `history` fixes the timing diagram's length, and `auto` adds a Run button that toggles one input.
   - `anim.js`: a step-by-step animated diagram. An inline SVG plus an `<ol>` with one caption per step; `data-s`, `data-on`, `data-text` and `data-at` on SVG elements say what each step shows. Use it for worked examples that happen in order.
   - `bits.js`: `bitreg`, `bitdrill`, and `floatbits` (the fields of an IEEE 754 float, with Q15 beside it).

@@ -14,6 +14,10 @@
  *
  * data-show (optional, comma list): regs, flags, mem, io, stack, pipeline, phases, datapath.
  * Default: regs,flags,io,phases. "datapath" draws the CPU as blocks and lights up the wires each phase uses.
+ * "bus" adds a bus timeline: every fetch and every load or store is one transfer, laid out on one shared bus
+ * (von Neumann) and, next to it, on a separate instruction bus and data bus (Harvard, idealised: the fetch of
+ * the next instruction overlaps the data transfers of the one before). data-bus="shared" or "harvard" shows
+ * only one of the two; the default is both.
  *
  * Machine model (deliberately Cortex-M-like, simplified):
  *   Registers R0–R12, SP (R13), LR (R14), PC (R15); flags N Z C V; PRIMASK (I); mode Thread/Handler.
@@ -486,6 +490,14 @@
   .cpusim .pipe td.lbl{text-align:left;white-space:nowrap;border:none;font-size:.72rem}
   .cpusim .pipe tr > td.lbl:first-child{width:15rem;max-width:15rem;overflow:hidden;text-overflow:ellipsis}
   .cpusim .pipe td{height:1.4rem;line-height:1;padding-top:0;padding-bottom:0}
+  .cpusim .cs-bus{display:grid;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));gap:1rem}
+  .cpusim .cs-bus table{width:100%;border-collapse:collapse;margin:.25rem 0}
+  .cpusim .cs-bus td,.cpusim .cs-bus th{border:1px solid var(--rule);height:1.4rem;padding:0 .35rem;white-space:nowrap}
+  .cpusim .cs-bus th{font-family:var(--sans);font-size:.72rem;color:var(--muted);text-align:left}
+  .cpusim .cs-bus td.n{color:var(--muted);text-align:right;width:2rem}
+  .cpusim .cs-bus td.f{background:var(--accent-soft)} .cpusim .cs-bus td.d{background:var(--good-soft)}
+  .cpusim .cs-bus td.new{outline:2px solid var(--warn);outline-offset:-2px}
+  .cpusim .cs-bus .cs-sum{font-family:var(--sans);font-size:.8rem;margin:.2rem 0;min-height:2.4rem}
   .cpusim h4{font-family:var(--sans);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:.5rem 0 .2rem}
   .cpusim .dp svg{width:100%;min-width:600px;height:auto;display:block;margin:.25rem 0 .5rem}
   .cpusim .dp-scroll{overflow-x:auto}
@@ -816,9 +828,42 @@
     let dpInfo = null, lastExec = null;
     /* One phase, remembering what the datapath view needs: the phase that ran, its instruction and the
        state before it. */
+    /* Bus timeline (data-show "bus"): each fetch and each memory access is one transfer. On one shared bus
+       every transfer takes its own slot. On the idealised Harvard side the fetch of the next instruction
+       goes on the instruction bus in the same slot as the data transfer of the one before. */
+    const busKind = container.dataset.bus || "both";
+    let bus, busRec = null;
+    const busReset = () => { bus = { sh: [], hv: [], nextF: 1, dPtr: 1, nf: 0, nd: 0, fresh: new Set() }; };
+    busReset();
+    const small = v => (v >>> 0) < 1000 ? String(v >>> 0) : hex(v);
+    function busAdd(kind, label, title) {
+      const cell = { label, title, kind, id: bus.nf + bus.nd };
+      bus.fresh.add(cell.id);
+      if (kind === "f") bus.nf++; else bus.nd++;
+      bus.sh.push({ b: cell });
+      let s;
+      if (kind === "f") { s = bus.nextF; bus.nextF = s + 1; bus.dPtr = Math.max(bus.dPtr, s + 1); }
+      else { s = bus.dPtr; bus.dPtr = s + 1; bus.nextF = Math.max(bus.nextF, bus.dPtr - 1); }
+      while (bus.hv.length < s) bus.hv.push({});
+      bus.hv[s - 1][kind === "f" ? "i" : "d"] = cell;
+    }
+    if (show.has("bus")) {
+      const rd = m.read.bind(m), wr = m.write.bind(m);
+      m.read = a => { const v = rd(a); if (busRec) busRec.push(["read", a, v]); return v; };
+      m.write = (a, v) => { wr(a, v); if (busRec) busRec.push(["write", a, v]); };
+    }
+
     function micro() {
       const before = { phase: m.phase, pc: m.r[15], r: m.r.slice(), f: Object.assign({}, m.f) };
-      const out = m.microStep();
+      busRec = [];
+      let out;
+      try { out = m.microStep(); } finally {
+        if (show.has("bus")) {
+          if (before.phase === "fetch" && m.phase === "decode") busAdd("f", "fetch " + m.ir.text.split(/\s/)[0], `fetch ${m.ir.text} from ${hex(before.pc)}`);
+          busRec.forEach(([k, a, v]) => busAdd("d", `${k} ${small(v)}`, `${k} ${hex(v)} ${k === "read" ? "from" : "to"} ${hex(a)}`));
+        }
+        busRec = null;
+      }
       if (before.phase === "fetch" && m.phase === "fetch") dpInfo = m.mode === "Handler" && before.r[13] !== m.r[13] ? { exception: true } : null;
       else dpInfo = { phase: before.phase, ins: m.ir, before };
       if (dpInfo && dpInfo.phase === "execute") lastExec = dpInfo;
@@ -834,7 +879,7 @@
     }
 
     const btn = (label, fn, cls) => { const b = E("button", { class: "btn" + (cls ? " " + cls : ""), type: "button", text: label }); b.addEventListener("click", fn); return b; };
-    const guard = fn => () => { try { fn(); } catch (e) { m.halted = true; msg.textContent = "Fault: " + e.message; stop(); } render(); };
+    const guard = fn => () => { bus.fresh.clear(); try { fn(); } catch (e) { m.halted = true; msg.textContent = "Fault: " + e.message; stop(); } render(); };
     const stop = () => { if (timer) { clearInterval(timer); timer = null; runBtn.textContent = "Run"; } };
     const runBtn = btn("Run", () => {
       if (timer) { stop(); return; }
@@ -849,7 +894,7 @@
       btn("Step", guard(() => { prevRegs = m.r.slice(); msg.textContent = micro(); })),
       btn("Instruction", guard(() => { prevRegs = m.r.slice(); msg.textContent = instruction(); m.parked = false; })),
       runBtn,
-      btn("Reset", () => { stop(); m.reset(); dpInfo = lastExec = null; prevRegs = m.r.slice(); msg.textContent = "Reset: PC = 0, SP = " + hex(STACK_TOP) + "."; render(); }, "secondary"),
+      btn("Reset", () => { stop(); m.reset(); busReset(); dpInfo = lastExec = null; prevRegs = m.r.slice(); msg.textContent = "Reset: PC = 0, SP = " + hex(STACK_TOP) + "."; render(); }, "secondary"),
     ]);
     if ("IRQ_Handler" in asm.labels) {
       controls.appendChild(btn("IRQ ⚡", () => { m.irqPending = true; msg.textContent = m.primask ? "IRQ pending, but interrupts are disabled (PRIMASK = 1)." : "IRQ pending: it will be taken at the next instruction boundary."; render(); }, "secondary"));
@@ -857,7 +902,30 @@
     container.appendChild(controls);
     if (dp) container.appendChild(dp.el);
     container.appendChild(grid);
+    const busEl = E("div", { class: "cs-bus" });
+    if (show.has("bus")) container.appendChild(busEl);
     if (show.has("pipeline")) container.appendChild(pipe);
+
+    /* Two fixed-size tables (BUS_ROWS slots each, the latest ones), so the widget does not jump. */
+    function renderBus() {
+      const BUS_ROWS = 8;
+      busEl.innerHTML = "";
+      const n = bus.nf + bus.nd;
+      const td = c => E("td", { class: c ? c.kind + (bus.fresh.has(c.id) ? " new" : "") : "", text: c ? c.label : "", title: c ? c.title : "" });
+      const table = (title, cols, slots, sum) => {
+        const t = E("table", {}, [E("tr", {}, [E("th", { text: "slot" }), ...cols.map(([, h]) => E("th", { text: h }))])]);
+        const start = Math.max(0, slots.length - BUS_ROWS);
+        for (let i = start; i < start + BUS_ROWS; i++) {
+          const s = slots[i];
+          t.appendChild(E("tr", {}, [E("td", { class: "n", text: String(i + 1) }), ...cols.map(([k]) => td(s && s[k]))]));
+        }
+        busEl.appendChild(E("div", {}, [E("h4", { text: title }), t, E("p", { class: "cs-sum", text: sum })]));
+      };
+      const counts = `${n} transfer${n === 1 ? "" : "s"} (${bus.nf} fetch${bus.nf === 1 ? "" : "es"}, ${bus.nd} data)`;
+      if (busKind !== "harvard") table("One shared bus (von Neumann)", [["b", "bus"]], bus.sh, `${counts} in ${bus.sh.length} slots.`);
+      if (busKind !== "shared") table("Separate buses (Harvard, idealised)", [["i", "instruction bus"], ["d", "data bus"]], bus.hv,
+        `${counts} in ${bus.hv.length} slots` + (n > bus.hv.length ? `: ${n - bus.hv.length} overlapped a fetch.` : "."));
+    }
 
     function render() {
       [...code.children].forEach((row, i) => row.classList.toggle("pc", i === m.pcIndex()));
@@ -942,6 +1010,7 @@
         });
         state.appendChild(t);
       }
+      if (show.has("bus")) renderBus();
       if (show.has("pipeline")) renderPipeline();
       if (dp) dp.update(dpInfo, m);
     }

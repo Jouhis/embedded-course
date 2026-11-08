@@ -11,6 +11,18 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.18 (2026-11-09)
+
+- Lesson 27: the CPU simulator draws two bus timelines for the store and reload program, one shared
+  bus next to an idealised Harvard core with an instruction bus and a data bus, so you can step and
+  compare: six transfers take six slots on one bus and five on two. `cpusim.js` has a new `bus` panel.
+
+## 0.0.17 (2026-11-08)
+
+- The course index has a shorter title, "Embedded Systems", and a new introduction: why the course
+  was written, how it was made, and how its 11 parts are laid out, with the hands-on exercises at
+  the end marked as optional.
+
 ## 0.0.16 (2026-11-08)
 
 - iPhone and iPad: tapping the search box no longer zooms the page. Pinch zoom still works. Other
