@@ -22,6 +22,7 @@
  *   data-bad="…", data-good="…", data-warn="…"   the same, with class "bad", "good" or "warn".
  *   data-at="1:x,y 3:x,y"   the element is translated to x,y from that step on; it glides between steps.
  *   data-text="1:a|3:b"     the element's text from that step on (spaces are kept).
+ *   data-cls="1:slow|3:fast"  extra classes from that step on ("-" for none). Wires: slow, fast (dash speed).
  * SVG classes: box (a part), wire (a line), arr (a wire with an arrowhead), tok (a moving token), lbl
  * (mono text), sm (small muted text), ttl (bold sans text), acc/good/bad/warn (fixed colour), dim (faded),
  * soft (a box with a tinted fill). The SVG keeps its size; captions share one fixed-height area, so the
@@ -46,6 +47,7 @@
   .anim svg .wire.dash{stroke-dasharray:4 4}
   .anim svg .wire.acc{stroke:var(--accent)}
   .anim svg .wire.on{stroke:var(--accent);stroke-width:3;stroke-dasharray:7 5;animation:anim-flow .7s linear infinite}
+  .anim svg .wire.on.slow{animation-duration:1.8s} .anim svg .wire.on.slower{animation-duration:3.5s} .anim svg .wire.on.fast{animation-duration:.3s}
   .anim svg .wire.good{stroke:var(--good);stroke-width:3}
   .anim svg .wire.bad{stroke:var(--bad);stroke-width:3}
   .anim svg .wire.warn{stroke:var(--warn);stroke-width:3}
@@ -155,7 +157,7 @@
     svg.insertBefore(defs, svg.firstChild);
 
     const items = [];
-    svg.querySelectorAll("[data-s],[data-on],[data-bad],[data-good],[data-warn],[data-at],[data-text],.arr").forEach(node => {
+    svg.querySelectorAll("[data-s],[data-on],[data-bad],[data-good],[data-warn],[data-at],[data-text],[data-cls],.arr").forEach(node => {
       const it = { node, base: node.getAttribute("class") || "" };
       if (node.dataset.s) it.s = parseSteps(node.dataset.s, n);
       ["on", "bad", "good", "warn"].forEach(k => { if (node.dataset[k]) it[k] = parseSteps(node.dataset[k], n); });
@@ -164,6 +166,7 @@
         node.style.transformBox = "view-box";
       }
       if (node.dataset.text) it.text = parseKeyed(node.dataset.text, "|");
+      if (node.dataset.cls) it.cls = parseKeyed(node.dataset.cls, "|");
       it.arr = node.classList.contains("arr");
       items.push(it);
     });
@@ -192,6 +195,7 @@
       items.forEach(it => {
         const cls = [it.base];
         if (it.s && !it.s.has(k)) cls.push("hide");
+        if (it.cls) { const c = atStep(it.cls, k); if (c && c !== "-") cls.push(c); }
         let colour = "";
         ["on", "bad", "good", "warn"].forEach(c => { if (it[c] && it[c].has(k)) { cls.push(c); colour = c; } });
         it.node.setAttribute("class", cls.join(" ").trim());
