@@ -25,7 +25,9 @@
  * Without flip-flops or latches the widget shows a truth table: input columns, "probes" (gate outputs
  * worth seeing, titled by the gate's "label") and the outputs. Output cells stay "?" until that row has
  * been tried, so the learner predicts before clicking. With flip-flops or latches it shows a timing
- * diagram of the "trace" ids (default: inputs and outputs) instead, one step per click.
+ * diagram of the "trace" ids (default: inputs and outputs) instead, one step per click. It keeps the
+ * last "history" steps (default 24). "auto": { "input": "CLK", "ms": 400 } adds a Run button that
+ * toggles that input every "ms" milliseconds, so a clock runs by itself; click again to pause.
  */
 (function () {
   "use strict";
@@ -222,6 +224,18 @@
       return { grp, o };
     });
     box.appendChild(svg);
+    if (spec.auto) {   // a Run button that toggles one input on a timer, e.g. a free-running clock
+      const ms = spec.auto.ms || 400;
+      let timer = null;
+      const btn = E("button", { class: "btn secondary", type: "button", text: `Run ${spec.auto.input}` });
+      const stop = () => { clearInterval(timer); timer = null; btn.textContent = `Run ${spec.auto.input}`; };
+      btn.addEventListener("click", () => {
+        if (timer) { stop(); return; }
+        timer = setInterval(() => { if (!box.isConnected) stop(); else toggle(spec.auto.input); }, ms);
+        btn.textContent = "Pause";
+      });
+      box.appendChild(btn);
+    }
     box.appendChild(E("p", { class: "ls-note", text: sequential
       ? "Click the inputs (or Tab to one and press Space). Green wires carry 1. Each click adds a step to the timing diagram."
       : "Click the inputs (or Tab to one and press Space). Green wires carry 1. Predict each row's output before you try it." }));
@@ -238,7 +252,7 @@
       return (o && o.label) || id;
     };
     function record() {
-      if (sequential) { history.push(traceIds.map(sigVal)); if (history.length > 24) history.shift(); }
+      if (sequential) { history.push(traceIds.map(sigVal)); if (history.length > (spec.history || 24)) history.shift(); }
       else visited.add(inputs.map(p => v(p.id)).join(""));
     }
 
@@ -272,7 +286,8 @@
     function renderTiming() {
       extra.innerHTML = "";
       extra.appendChild(E("h4", { text: "Timing diagram (one step per click, newest on the right)" }));
-      const step = 26, rowH = 30, left = 90, steps = Math.max(history.length, 12);
+      // a fixed width, sized for the longest history, so the diagram never resizes as it fills
+      const cap = spec.history || 24, left = 90, rowH = 30, step = Math.min(26, Math.floor(630 / cap)), steps = cap;
       const W = left + steps * step + 10, H = traceIds.length * rowH + 10;
       const s = svgEl("svg", { class: "tm", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Timing diagram" });
       s.style.maxWidth = W * 1.4 + "px";
