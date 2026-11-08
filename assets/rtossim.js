@@ -52,7 +52,7 @@
   .rtossim .rt-legend i{display:inline-block;width:1.4rem;height:.7rem;vertical-align:-1px;margin-right:.3rem;border-radius:2px}
   .rtossim .rt-play{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center;margin:.4rem 0}
   .rtossim .rt-play input[type=range]{flex:1;min-width:10rem}
-  .rtossim .rt-now{font-family:var(--sans);font-size:.9rem;background:var(--code-bg);border-radius:4px;padding:.45rem .7rem;margin:.3rem 0}
+  .rtossim .rt-now{font-family:var(--sans);font-size:.9rem;background:var(--code-bg);border-radius:4px;padding:.45rem .7rem;margin:.3rem 0;min-height:4rem;box-sizing:border-box}
   .rtossim .rt-log{font-family:var(--mono);font-size:.78rem;max-height:12rem;overflow-y:auto;background:var(--code-bg);border-radius:4px;padding:.4rem .7rem;margin:.3rem 0;white-space:pre}
   .rtossim .rt-log .future{opacity:.3}
   .rtossim .rt-sum{font-family:var(--sans);font-size:.9rem;padding:.5rem .8rem;border-radius:4px;margin:.4rem 0;background:var(--accent-soft);border-left:4px solid var(--accent)}

@@ -14,9 +14,9 @@
 
   const CSS = `
   .cachesim .cc-controls{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.5rem 0}
-  .cachesim select{font:inherit;font-size:.85rem;padding:.2rem;background:var(--bg);color:var(--fg);border:1px solid var(--rule);border-radius:4px}
+  .cachesim select{font:inherit;font-size:.85rem;padding:.2rem;max-width:14.5rem;background:var(--bg);color:var(--fg);border:1px solid var(--rule);border-radius:4px}
   .cachesim .cc-desc{font-family:var(--sans);font-size:.85rem;color:var(--muted);margin:.25rem 0 .5rem}
-  .cachesim .cc-addr{font-family:var(--mono);font-size:.95rem;margin:.5rem 0;display:flex;flex-wrap:wrap;gap:.3rem;align-items:baseline}
+  .cachesim .cc-addr{font-family:var(--mono);font-size:.95rem;margin:.5rem 0;display:flex;flex-wrap:wrap;gap:.3rem;align-items:baseline;min-height:3.3rem}
   .cachesim .cc-addr .f{padding:.15rem .4rem;border-radius:3px}
   .cachesim .cc-addr .tag{background:var(--warn-soft);color:var(--warn)}
   .cachesim .cc-addr .idx{background:var(--accent-soft);color:var(--accent);font-weight:700}
@@ -28,10 +28,10 @@
   .cachesim table.cc td.empty{color:var(--muted)}
   .cachesim table.cc tr.cur th{color:var(--accent)}
   .cachesim table.cc tr.cur td{border-color:var(--accent)}
-  .cachesim table.cc td.hit{background:var(--good-soft);border-color:var(--good);border-width:2px}
-  .cachesim table.cc td.miss{background:var(--bad-soft);border-color:var(--bad);border-width:2px}
+  .cachesim table.cc td.hit{background:var(--good-soft);border-color:var(--good);box-shadow:inset 0 0 0 1px var(--good)}
+  .cachesim table.cc td.miss{background:var(--bad-soft);border-color:var(--bad);box-shadow:inset 0 0 0 1px var(--bad)}
   .cachesim table.cc td small{display:block;color:var(--muted);font-size:.68rem}
-  .cachesim .cc-stats{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;font-family:var(--sans);font-size:.85rem;margin:.5rem 0}
+  .cachesim .cc-stats{display:flex;flex-wrap:wrap;gap:.5rem 1.2rem;font-family:var(--sans);font-size:.85rem;margin:.5rem 0;min-height:3.7rem;align-content:flex-start}
   .cachesim .cc-stats b{font-family:var(--mono)}
   .cachesim .cc-bar{height:.6rem;border-radius:3px;background:var(--bad-soft);overflow:hidden;margin:.2rem 0 .6rem;max-width:30rem}
   .cachesim .cc-bar span{display:block;height:100%;background:var(--good);transition:width .2s}
@@ -40,7 +40,7 @@
   .cachesim .cc-seq span.h{background:var(--good-soft);color:var(--good)}
   .cachesim .cc-seq span.m{background:var(--bad-soft);color:var(--bad)}
   .cachesim .cc-seq span.now{outline:2px solid var(--accent)}
-  .cachesim .cc-msg{font-family:var(--sans);font-size:.85rem;background:var(--accent-soft);padding:.5rem .75rem;border-radius:4px;min-height:2.4rem}`;
+  .cachesim .cc-msg{font-family:var(--sans);font-size:.85rem;background:var(--accent-soft);padding:.5rem .75rem;border-radius:4px;min-height:4.2rem}`;
 
   const BASE = 0x10000000;   // RP2040 XIP flash
   const hex = (x, w = 8) => "0x" + (x >>> 0).toString(16).toUpperCase().padStart(w, "0");
@@ -82,6 +82,7 @@
       .map(([n, t]) => { const o = E("option", { value: n, text: t }); if (n === ways) o.selected = true; return o; }));
     const btn = (t, f, c) => E("button", { class: "btn" + (c ? " " + c : ""), type: "button", text: t, onclick: f });
     const runBtn = btn("Run", () => { if (timer) stop(); else { runBtn.textContent = "Pause"; timer = setInterval(() => { if (!step()) stop(); }, 220); } });
+    runBtn.style.minWidth = "4.6em";
     box.appendChild(E("div", { class: "cc-controls" }, [patSel, waySel, btn("Step", () => step()), runBtn, btn("Reset", reset, "secondary")]));
     const desc = E("p", { class: "cc-desc" });
     const seqEl = E("div", { class: "cc-seq" });
@@ -156,7 +157,7 @@
           if (l.valid) {
             const start = ((l.tag << idxBits) | i) << offBits;
             td.append(`tag ${hex(l.tag, 1)}`, E("small", { text: `${hex(start)}…${(start + line - 1 & 0xFFF).toString(16).toUpperCase()}` }));
-          } else td.textContent = "empty";
+          } else td.append("empty", E("small", { text: " " }));
           tr.appendChild(td);
         });
         table.appendChild(tr);

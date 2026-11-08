@@ -128,9 +128,10 @@
   .racestep .rs-mem div{border:2px solid var(--accent);border-radius:6px;padding:.25rem .6rem;font-family:var(--mono);font-size:.85rem}
   .racestep .rs-mem div.chg{background:var(--warn-soft)}
   .racestep .rs-mem div small{display:block;font-family:var(--sans);font-size:.7rem;color:var(--muted)}
-  .racestep .rs-log{font-family:var(--mono);font-size:.74rem;max-height:9rem;overflow:auto;border:1px solid var(--rule);border-radius:4px;padding:.3rem .5rem;margin:.4rem 0}
+  .racestep .rs-many{min-height:3.2rem;margin:0 0 .4rem}
+  .racestep .rs-log{font-family:var(--mono);font-size:.74rem;height:9rem;box-sizing:border-box;overflow:auto;border:1px solid var(--rule);border-radius:4px;padding:.3rem .5rem;margin:.4rem 0}
   .racestep .rs-log .o{color:var(--good);font-weight:700}
-  .racestep .rs-res{font-family:var(--sans);font-size:.9rem;padding:.45rem .8rem;border-radius:4px;margin:.4rem 0;border-left:4px solid var(--rule);background:var(--code-bg)}
+  .racestep .rs-res{font-family:var(--sans);font-size:.9rem;min-height:3.95rem;box-sizing:border-box;padding:.45rem .8rem;border-radius:4px;margin:.4rem 0;border-left:4px solid var(--rule);background:var(--code-bg)}
   .racestep .rs-res.ok{background:var(--good-soft);border-left-color:var(--good)} .racestep .rs-res.bad{background:var(--bad-soft);border-left-color:var(--bad)}`;
 
   // Many runs of the two-core counter: each core does some other work between increments.
@@ -163,11 +164,12 @@
       E("button", { class: "btn secondary", type: "button", text: "Show me a bad order", onclick: () => { reset(); P.bad.forEach(w => (w === "b" && P.b.kind === "isr" ? fire() : step(w))); render(); } })]);
     box.append(cols, E("h4", { text: "Shared memory", style: "margin:.6rem 0 0;font-size:.88rem" }), mem, ctl, res, logEl);
     if (P.many) {
-      const out = E("span", { class: "widget-hint" });
+      const out = E("div", { class: "widget-hint rs-many", text: "Not run yet: press the button to run both cores 100,000 times." });
       box.appendChild(E("div", { class: "rs-row" }, [E("button", { class: "btn", type: "button", text: "Run 100 000 increments on each core", onclick: () => {
         const seed = (Date.now() & 0xffff) + 1, v = manyRuns(100000, gChk.checked, seed);
         out.textContent = `Total ${v.toLocaleString("en-US")} of 200,000` + (v === 200000 ? ": none lost." : `: ${(200000 - v).toLocaleString("en-US")} increments lost.`) + " (A model: each core does a random amount of other work between increments.)";
-      } }), out]));
+      } })]));
+      box.appendChild(out);
     }
 
     function reset() {

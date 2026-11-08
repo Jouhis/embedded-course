@@ -441,7 +441,7 @@
   .cpusim td,.cpusim th{padding:.1rem .4rem}
   .cpusim .chg{background:var(--warn-soft);color:var(--warn);font-weight:700}
   .cpusim .cs-controls{display:flex;flex-wrap:wrap;gap:.4rem;margin:.75rem 0}
-  .cpusim .cs-msg{font-family:var(--sans);font-size:.85rem;background:var(--accent-soft);padding:.5rem .75rem;border-radius:4px;min-height:2.6rem}
+  .cpusim .cs-msg{font-family:var(--sans);font-size:.85rem;background:var(--accent-soft);padding:.5rem .75rem;border-radius:4px;min-height:4.2rem}
   .cpusim .cs-phase{display:flex;gap:.3rem;margin:.5rem 0}
   .cpusim .cs-phase span{flex:1;text-align:center;padding:.2rem;border:1px solid var(--rule);border-radius:3px;font-size:.75rem;font-weight:700;letter-spacing:.05em}
   .cpusim .cs-phase span.on{background:var(--accent);color:var(--bg);border-color:var(--accent)}
@@ -459,6 +459,8 @@
   .cpusim .flag.chgf{animation:cs-pop .9s ease-out;outline:2px solid var(--fc);outline-offset:2px}
   @keyframes cs-pop{0%{transform:scale(1.4)}100%{transform:scale(1)}}
   .cpusim .cs-why{font-family:var(--sans);font-size:.8rem;margin:.35rem 0 .7rem;display:grid;gap:.25rem}
+  .cpusim .cs-flagwhy{height:13rem;overflow-y:auto;align-content:start}
+  .cpusim .cs-flagwhy.empty{color:var(--muted);align-content:center;text-align:center;border:1px dashed var(--rule);border-radius:4px;padding:0 1rem}
   .cpusim .cs-why div{display:flex;gap:.5rem;align-items:baseline}
   .cpusim .cs-why code{font-size:.78rem}
   .cpusim .chip{display:inline-block;white-space:nowrap;text-align:center;font-family:var(--mono);font-size:.72rem;font-weight:700;border-radius:3px;padding:0 .3rem;color:#fff;background:var(--fc);border:1px solid var(--fc)}
@@ -482,6 +484,8 @@
   .cpusim .pipe td.F{background:var(--accent-soft)} .cpusim .pipe td.D{background:var(--warn-soft)} .cpusim .pipe td.E{background:var(--good-soft)}
   .cpusim .pipe td.X{background:var(--bad-soft);color:var(--bad)}
   .cpusim .pipe td.lbl{text-align:left;white-space:nowrap;border:none;font-size:.72rem}
+  .cpusim .pipe tr > td.lbl:first-child{width:15rem;max-width:15rem;overflow:hidden;text-overflow:ellipsis}
+  .cpusim .pipe td{height:1.4rem;line-height:1;padding-top:0;padding-bottom:0}
   .cpusim h4{font-family:var(--sans);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:.5rem 0 .2rem}
   .cpusim .dp svg{width:100%;min-width:600px;height:auto;display:block;margin:.25rem 0 .5rem}
   .cpusim .dp-scroll{overflow-x:auto}
@@ -507,7 +511,7 @@
   .cpusim .dp tspan.k-alu{fill:var(--k-alu)} .cpusim .dp tspan.k-mem{fill:var(--k-mem)} .cpusim .dp tspan.k-br{fill:var(--k-br)} .cpusim .dp tspan.k-sys{fill:var(--k-sys)}
   .cpusim .dp tspan{font-weight:700}
   .cpusim .dp-cap .cs-why{margin-top:.4rem}
-  .cpusim .dp-cap{font-family:var(--sans);font-size:.85rem;margin:0 0 .5rem}
+  .cpusim .dp-cap{font-family:var(--sans);font-size:.85rem;margin:0 0 .5rem;min-height:3.1rem}
   .cpusim .dp-cap b{color:var(--accent)}
   @keyframes cs-flow{to{stroke-dashoffset:-13}}
   @media(prefers-reduced-motion:reduce){.cpusim .dp .wire.on{animation:none;stroke-dasharray:none}}`;
@@ -897,8 +901,11 @@
         f.appendChild(E("span", { class: "flag fI" + (m.primask ? " set" : ""), text: "I", title: "PRIMASK: 1 = interrupts disabled" }));
         if (m.irqPending) f.appendChild(E("span", { text: "  IRQ pending" }));
         state.appendChild(f);
+        // The story box is always there and always the same height, so the widget does not jump while it runs.
         if (st && (st.writes.length || st.read)) {
-          state.appendChild(E("div", { class: "cs-why", html: `<div><span>After <code>${esc(lastExec.ins.text)}</code>:</span></div>` + storyHtml(st, lastExec.ins, m) }));
+          state.appendChild(E("div", { class: "cs-why cs-flagwhy", html: `<div><span>After <code>${esc(lastExec.ins.text)}</code>:</span></div>` + storyHtml(st, lastExec.ins, m) }));
+        } else {
+          state.appendChild(E("div", { class: "cs-why cs-flagwhy empty", text: "After an instruction that sets or reads the flags, this box explains each one." }));
         }
       }
       if (show.has("io")) {
@@ -942,27 +949,31 @@
     /* 3-stage pipeline view: each executed instruction is fetched one cycle after the previous one,
        except that a taken branch flushes the two instructions behind it (shown in red). */
     function renderPipeline() {
+      // A fixed window: always PIPE_ROWS rows by PIPE_ROWS + 2 cycles, so the widget never changes size while it runs.
+      const PIPE_ROWS = 10, PIPE_COLS = PIPE_ROWS + 2;
       pipe.innerHTML = "";
-      pipe.appendChild(E("h4", { text: "3-stage pipeline (last 8 instructions): F = fetch, D = decode, E = execute, ✕ = flushed" }));
-      const rows = [];
+      pipe.appendChild(E("h4", { text: `3-stage pipeline (last ${PIPE_ROWS} rows): F = fetch, D = decode, E = execute, ✕ = flushed` }));
+      const all = [];
       let t = 0;
-      m.trace.slice(-8).forEach(ent => {
-        rows.push({ text: ent.text, start: t, flushed: false });
+      m.trace.slice(-PIPE_ROWS).forEach(ent => {
+        all.push({ text: ent.text, start: t, flushed: false });
         if (ent.taken) {
-          rows.push({ text: "(next instruction, wrongly fetched)", start: t + 1, flushed: true, upto: 2 });
-          rows.push({ text: "(next + 1, wrongly fetched)", start: t + 2, flushed: true, upto: 1 });
+          all.push({ text: "(next instruction, wrongly fetched)", start: t + 1, flushed: true, upto: 2 });
+          all.push({ text: "(next + 1, wrongly fetched)", start: t + 2, flushed: true, upto: 1 });
           t += 3;
         } else t += 1;
       });
-      const cycles = rows.length ? Math.max(...rows.map(r => r.start + 3)) : 3;
+      const rows = all.slice(-PIPE_ROWS);
+      const base = rows.length ? rows[0].start : 0;
       const table = E("table", { class: "pipe" });
       const head = E("tr", {}, [E("td", { class: "lbl", text: "cycle →" })]);
-      for (let c = 0; c < cycles; c++) head.appendChild(E("td", { class: "lbl", text: String(c + 1) }));
+      for (let c = 0; c < PIPE_COLS; c++) head.appendChild(E("td", { class: "lbl", text: String(c + 1) }));
       table.appendChild(head);
-      rows.forEach(r => {
-        const tr = E("tr", {}, [E("td", { class: "lbl", text: r.text })]);
-        for (let c = 0; c < cycles; c++) {
-          const k = c - r.start;
+      for (let i = 0; i < PIPE_ROWS; i++) {
+        const r = rows[i];
+        const tr = E("tr", {}, [E("td", { class: "lbl", text: r ? r.text : " " })]);
+        for (let c = 0; c < PIPE_COLS; c++) {
+          const k = r ? c - (r.start - base) : -1;
           let cls = "", txt = "";
           if (k >= 0 && k < 3) {
             if (r.flushed && k >= r.upto) { cls = ""; }
@@ -972,11 +983,11 @@
           tr.appendChild(E("td", { class: cls, text: txt }));
         }
         table.appendChild(tr);
-      });
+      }
       pipe.appendChild(table);
       const executed = m.trace.filter(e => !e.irq).length;
       const flushedCycles = m.trace.filter(e => e.taken).length * 2;
-      if (executed) pipe.appendChild(E("p", { class: "cs-msg", text: `Executed ${executed} instructions; ${flushedCycles} cycles lost to branch flushes.` }));
+      pipe.appendChild(E("p", { class: "cs-msg", text: `Executed ${executed} instructions; ${flushedCycles} cycles lost to branch flushes.` }));
     }
 
     render();

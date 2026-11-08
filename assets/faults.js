@@ -76,7 +76,7 @@
   .mpusim tr.bad td input{border-color:var(--bad)}
   .mpusim .mp-try{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.6rem 0 .3rem}
   .mpusim .mp-presets{display:flex;flex-wrap:wrap;gap:.3rem;margin:.3rem 0}
-  .mpusim .mp-res{font-family:var(--sans);font-size:.9rem;padding:.6rem .8rem;border-radius:4px;margin:.5rem 0}
+  .mpusim .mp-res{font-family:var(--sans);font-size:.9rem;padding:.6rem .8rem;border-radius:4px;margin:.5rem 0;min-height:8.7rem;box-sizing:border-box}
   .mpusim .mp-res.ok{background:var(--good-soft);border-left:4px solid var(--good)}
   .mpusim .mp-res.fault{background:var(--bad-soft);border-left:4px solid var(--bad)}
   .mpusim .mp-opts{font-family:var(--sans);font-size:.85rem;display:flex;flex-wrap:wrap;gap:.3rem 1.2rem;margin:.3rem 0}

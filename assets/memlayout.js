@@ -66,7 +66,7 @@
   .memlayout table{font-size:.8rem;border-collapse:collapse;margin:.4rem 0}
   .memlayout td,.memlayout th{padding:.18rem .5rem;border-bottom:1px solid var(--rule);text-align:left}
   .memlayout td.v{font-family:var(--mono)} .memlayout td.v.garbage{color:var(--bad)} .memlayout td.v.fresh{background:var(--good-soft);font-weight:700}
-  .memlayout .ml-step{font-family:var(--sans);font-size:.9rem;background:var(--code-bg);border-left:4px solid var(--accent);border-radius:4px;padding:.45rem .7rem;margin:.3rem 0}
+  .memlayout .ml-step{min-height:5.4rem;box-sizing:border-box;font-family:var(--sans);font-size:.9rem;background:var(--code-bg);border-left:4px solid var(--accent);border-radius:4px;padding:.45rem .7rem;margin:.3rem 0}
   .memlayout .ml-out{font-family:var(--mono);font-size:.82rem;background:var(--code-bg);border-radius:4px;padding:.4rem .7rem;margin:.3rem 0}`;
 
   const hex = v => "0x" + (v >>> 0).toString(16).toUpperCase().padStart(8, "0");

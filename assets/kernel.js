@@ -24,9 +24,9 @@
   .queuesim .qs-slots span.f{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700}
   .queuesim .qs-stats{display:flex;gap:1.2rem;flex-wrap:wrap;font-family:var(--sans);font-size:.85rem}
   .queuesim .qs-stats b{font-size:1.05rem} .queuesim .qs-stats .lost b{color:var(--bad)}
-  .queuesim .qs-log{font-family:var(--mono);font-size:.74rem;max-height:7.5rem;overflow:auto;border:1px solid var(--rule);border-radius:4px;padding:.3rem .5rem;margin:.4rem 0}
+  .queuesim .qs-log{font-family:var(--mono);font-size:.74rem;height:7.5rem;box-sizing:border-box;overflow:auto;border:1px solid var(--rule);border-radius:4px;padding:.3rem .5rem;margin:.4rem 0}
   .queuesim .qs-log .bad{color:var(--bad)}
-  .queuesim .qs-res,.stackmark .sm-res{font-family:var(--sans);font-size:.88rem;padding:.45rem .8rem;border-radius:4px;margin:.4rem 0;border-left:4px solid var(--rule);background:var(--code-bg)}
+  .queuesim .qs-res,.stackmark .sm-res{font-family:var(--sans);font-size:.88rem;min-height:3.9rem;box-sizing:border-box;padding:.45rem .8rem;border-radius:4px;margin:.4rem 0;border-left:4px solid var(--rule);background:var(--code-bg)}
   .queuesim .qs-res.ok,.stackmark .sm-res.ok{background:var(--good-soft);border-left-color:var(--good)} .queuesim .qs-res.bad,.stackmark .sm-res.bad{background:var(--bad-soft);border-left-color:var(--bad)}
   .stackmark .sm-main{display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start}
   .stackmark svg{width:13rem;height:auto;font-family:var(--sans);font-size:10px;flex:none}
