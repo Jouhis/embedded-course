@@ -55,7 +55,60 @@
     Check-in works best when each task has its own event queue and never blocks the others, which is the design of <a href="0077-layered-and-event-driven-architecture.html">lesson 77</a>. A task that blocks on a slow sensor can miss its check-in window, and then the watchdog resets the device for a reason that is not a bug in the task. The design question is how long each task may take between check-ins, and that is a number you write down.
   </p>
 
-  <h2>Concepts: the stacked frame and EXC_RETURN</h2>
+  <div class="widget anim" data-title="Check in before kicking: one stuck task resets the chip">
+    <svg viewBox="0 0 660 250" role="img" aria-label="Three tasks set check-in bits; the supervisor kicks the watchdog only when all three are set; when comms hangs its bit stays clear, the kicks stop and the watchdog resets the chip">
+      <text class="sm" x="20" y="22">tasks</text>
+      <rect class="box" x="20" y="32" width="140" height="44" rx="4"/>
+      <text class="lbl" x="32" y="52">sensor</text>
+      <text class="sm" x="32" y="68">running</text>
+      <path class="wire arr" d="M160 54 H236" data-on="2"/>
+      <rect class="box" x="20" y="88" width="140" height="44" rx="4" data-bad="4-"/>
+      <text class="lbl" x="32" y="108">comms</text>
+      <text class="sm" x="32" y="124" data-text="1:running|4:stuck in a loop">running</text>
+      <path class="wire arr" d="M160 110 H236" data-on="2"/>
+      <rect class="box" x="20" y="144" width="140" height="44" rx="4"/>
+      <text class="lbl" x="32" y="164">ui</text>
+      <text class="sm" x="32" y="180">running</text>
+      <path class="wire arr" d="M160 166 H236" data-on="3"/>
+      <text class="sm" x="240" y="22">check-in bits</text>
+      <rect class="box" x="240" y="38" width="40" height="32" rx="3" data-good="2-"/>
+      <text class="lbl mid" x="260" y="59" data-text="1:0|2:1">0</text>
+      <text class="sm" x="288" y="59">bit 0</text>
+      <rect class="box" x="240" y="94" width="40" height="32" rx="3" data-good="2-3"/>
+      <text class="lbl mid" x="260" y="115" data-text="1:0|2:1|4:0">0</text>
+      <text class="sm" x="288" y="115">bit 1</text>
+      <rect class="box" x="240" y="150" width="40" height="32" rx="3" data-good="3-"/>
+      <text class="lbl mid" x="260" y="171" data-text="1:0|3:1">0</text>
+      <text class="sm" x="288" y="171">bit 2</text>
+      <rect class="box" x="350" y="70" width="140" height="76" rx="4" data-on="3" data-bad="5-6"/>
+      <text class="ttl" x="362" y="92">supervisor</text>
+      <text class="sm" x="362" y="112">all bits set?</text>
+      <text class="lbl" x="362" y="134" data-text="1:no: wait|2:110: no kick|3:111: kick, clear|4:101: no kick|5:101: no kick|6:never">no: wait</text>
+      <path class="wire good arr" d="M490 108 H536" data-s="3" data-cls="3:fast"/>
+      <text class="lbl good" x="494" y="94" data-s="3">kick</text>
+      <text class="sm" x="540" y="22">watchdog</text>
+      <rect class="box" x="540" y="160" width="100" height="30" rx="3"/>
+      <rect class="fill warn" style="fill-opacity:.55" x="540" y="160" width="100" height="30" rx="3" data-s="1,2,3,4,5"/>
+      <rect class="box" x="540" y="126" width="100" height="30" rx="3"/>
+      <rect class="fill warn" style="fill-opacity:.55" x="540" y="126" width="100" height="30" rx="3" data-s="1,2,3,4"/>
+      <rect class="box" x="540" y="92" width="100" height="30" rx="3"/>
+      <rect class="fill warn" style="fill-opacity:.55" x="540" y="92" width="100" height="30" rx="3" data-s="1,3,4"/>
+      <rect class="box" x="540" y="58" width="100" height="30" rx="3"/>
+      <rect class="fill warn" style="fill-opacity:.55" x="540" y="58" width="100" height="30" rx="3" data-s="1,3"/>
+      <text class="lbl bad mid" x="590" y="216" data-s="6">reset</text>
+      <text class="lbl acc" x="20" y="240" data-text="1:each task sets its bit when it makes progress|2:two of three: the supervisor waits, the watchdog keeps counting|3:all three: kick and clear for the next round|4:comms hangs; sensor and ui still check in|5:bit 1 never sets, so no kick|6:the watchdog expires and resets the chip">each task sets its bit when it makes progress</text>
+    </svg>
+    <ol>
+      <li>Three tasks each own one check-in bit. The watchdog counts down from its timeout; only the supervisor may kick it.</li>
+      <li>sensor and comms have done their work and set bits 0 and 1. ui has not yet, so the supervisor does not kick. The watchdog keeps counting down.</li>
+      <li>ui checks in. All three bits are set, so the supervisor kicks the watchdog and clears the bits for the next round.</li>
+      <li>In the next round comms gets stuck in a loop. sensor and ui are healthy and set their bits again.</li>
+      <li>Bit 1 never sets, so the supervisor never kicks. A watchdog kicked from a timer interrupt would still be fed here, because the interrupt keeps running while comms is stuck.</li>
+      <li>The watchdog expires and resets the chip: the hang is caught, and the reset reason tells you after boot that it was the watchdog.</li>
+    </ol>
+  </div>
+
+<h2>Concepts: the stacked frame and EXC_RETURN</h2>
   <p>
     When a fault happens, the core behaves like any other exception entry. It pushes a fixed set of eight words onto the active stack before it runs the handler (lesson 34; PM0056 Rev 7, section 2.3.7). This set is the <strong>stacked frame</strong> (glossary: <a href="../reference/glossary.html#stacked-frame">stacked frame</a>). The eight words are R0, R1, R2, R3, R12, LR, PC and xPSR, in that order from the lowest address. Word 0 is at the frame pointer, word 6 is at the frame pointer plus 24 bytes, and word 7 is at 28 bytes.
   </p>
@@ -479,5 +532,6 @@ C:/Users/juhos/embedded-course/projects/0084-robustness/solution/main.c:90</code
 </main>
 <script src="../assets/manifest.js"></script>
 <script src="../assets/course.js"></script>
+<script src="../assets/anim.js"></script>
 </body>
 </html>
