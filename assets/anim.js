@@ -42,7 +42,7 @@
   .anim svg .box.good{stroke:var(--good);fill:var(--good-soft);stroke-width:2.4}
   .anim svg .box.bad{stroke:var(--bad);fill:var(--bad-soft);stroke-width:2.4}
   .anim svg .box.warn{stroke:var(--warn);fill:var(--warn-soft);stroke-width:2.4}
-  .anim svg .box.dim{opacity:.45}
+  .anim svg .box.dim,.anim svg .dim{opacity:.45}
   .anim svg .wire{fill:none;stroke:var(--muted);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
   .anim svg .wire.thin{stroke-width:1.2}
   .anim svg .wire.dash{stroke-dasharray:4 4}
