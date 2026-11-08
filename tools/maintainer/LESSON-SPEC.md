@@ -159,7 +159,8 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
 ## 11. Shared components
 - Interactive widgets in `assets/` (each file's header comment gives the markup):
   - `cpusim.js`: the CPU simulator. `data-show` picks panels; `datapath` draws the CPU as blocks and lights up the wires each phase uses. Flags and instruction kinds have fixed colours.
-  - `logicsim.js`: clickable gates, latches and flip-flops, with a truth table (combinational) or a timing diagram (sequential).
+  - `logicsim.js`: clickable gates, latches and flip-flops, with a truth table (combinational) or a timing diagram (sequential). `history` fixes the timing diagram's length, and `auto` adds a Run button that toggles one input.
+  - `anim.js`: a step-by-step animated diagram. An inline SVG plus an `<ol>` with one caption per step; `data-s`, `data-on`, `data-text` and `data-at` on SVG elements say what each step shows. Use it for worked examples that happen in order.
   - `bits.js`: `bitreg`, `bitdrill`, and `floatbits` (the fields of an IEEE 754 float, with Q15 beside it).
   - `cachesim.js`: a set-associative cache, stepped one access at a time.
   - `memmap.js`: decodes an address into region, block, base and offset (STM32F103 and RP2040), with a drill.
@@ -187,6 +188,7 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
   A widget with `data-chip`, `data-bus` or a preset group shows only that lesson's options; keep widgets to what the lesson needs.
   - `plot.js`: the shared line-plot helper; load it before `pidsim.js`, `signals.js`, `timing.js` and `levels.js`.
   A widget's numbers come from the lesson's sources: when a lesson's value changes, change the widget's table too.
+- A widget must keep the same size while it plays, steps or fills: reserve room for logs, results and captions instead of letting the page jump.
 - Before writing any interactive widget, check `assets/` for an existing one. If you need something reusable, make it a new file in `assets/` with a header comment explaining its usage. Don't inline code a future lesson would duplicate. Keep component code dependency-free (vanilla JS) so it works offline from `file://`.
 
 ## 12. Finish checklist (do all of these before reporting)

@@ -11,6 +11,16 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## Unreleased
+
+- Animated diagrams: a new `anim.js` widget steps through a worked example with a caption per
+  step. 51 lessons gain one or more, from Ohm's law and the ripple-carry adder to interrupt entry,
+  the .data copy, USB enumeration and the bootloader hand-over.
+- Lesson 25's counter is 4 bits wide and has a Run button; the latch widget in lesson 24 has one
+  too. Timing diagrams keep a fixed width as they fill.
+- Simulators keep the same size while they run or step: cpusim, cachesim, rtossim, racestep,
+  queuesim, stackmark, mpusim and memlayout no longer make the page jump.
+
 ## 0.0.12 (2026-11-07)
 
 - Smart search is on by default. When it is off, a line crosses the brain button. The first search
