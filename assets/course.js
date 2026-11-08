@@ -43,6 +43,15 @@
 (function () {
   "use strict";
 
+  // iPhone and iPad: Safari zooms into a text field when it gets focus. maximum-scale=1 stops that,
+  // and on iOS 10 and later pinch zoom still works because Safari ignores the limit for gestures.
+  // Other systems would block pinch zoom with it, so it is set on iOS only. (iPadOS reports a Mac
+  // with a touch screen.)
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+    const vp = document.querySelector('meta[name="viewport"]');
+    if (vp && !/maximum-scale/.test(vp.content)) vp.content += ", maximum-scale=1";
+  }
+
   const STORE_KEY = "embedded-course-progress";
   const SELF = document.currentScript;   // to find assets/search.js next to this file
 

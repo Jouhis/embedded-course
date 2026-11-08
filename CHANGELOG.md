@@ -11,6 +11,11 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.16 (2026-11-08)
+
+- iPhone and iPad: tapping the search box no longer zooms the page. Pinch zoom still works. Other
+  devices are unchanged.
+
 ## 0.0.15 (2026-11-08)
 
 - Phones: tapping the search box or a widget's dropdown no longer zooms the page, and a double tap

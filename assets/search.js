@@ -22,6 +22,15 @@
 (function () {
   "use strict";
 
+  // Same as in course.js, for pages that load only this file. iPhone and iPad: Safari zooms into a text field when it gets focus. maximum-scale=1 stops that,
+  // and on iOS 10 and later pinch zoom still works because Safari ignores the limit for gestures.
+  // Other systems would block pinch zoom with it, so it is set on iOS only. (iPadOS reports a Mac
+  // with a touch screen.)
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)) {
+    const vp = document.querySelector('meta[name="viewport"]');
+    if (vp && !/maximum-scale/.test(vp.content)) vp.content += ", maximum-scale=1";
+  }
+
   const SCRIPT = document.currentScript;
   const ROOT = SCRIPT ? SCRIPT.src.replace(/assets\/search\.js(\?.*)?$/, "") : "../";
   const SMART_KEY = "embedded-course-smart-search";
