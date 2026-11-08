@@ -4,7 +4,7 @@
  *     w: 640, h: 220, x: [0, 1200], y: [20, 70], xlabel: "time (s)", ylabel: "°C",
  *     series: [{ pts: [[x, y], ...], cls: "s1", label: "temperature", dots: false, step: false, dash: false }],
  *     hlines: [{ y: 60, label: "setpoint" }], vlines: [{ x: 105, label: "settled" }],
- *     bands: [{ y0: 59, y1: 61 }]
+ *     bands: [{ y0: 59, y1: 61 }]   (optional cls: "warn" | "acc", optional label drawn inside the band at its bottom left)
  *   });
  * Series colours come from CSS classes .plot .s1 ... .s5, set from the course palette.
  */
@@ -15,7 +15,7 @@
   .plot{width:100%;height:auto;display:block;font-family:var(--sans);font-size:11px;overflow:visible}
   .plot .ax{stroke:var(--rule);stroke-width:1} .plot .grid{stroke:var(--rule);stroke-width:.5;opacity:.6}
   .plot text{fill:var(--muted)} .plot .ln{fill:none;stroke-width:2;stroke-linejoin:round}
-  .plot .hl{stroke:var(--muted);stroke-dasharray:5 4;stroke-width:1} .plot .band{fill:var(--good-soft);opacity:.7}
+  .plot .hl{stroke:var(--muted);stroke-dasharray:5 4;stroke-width:1} .plot .band{fill:var(--good-soft);opacity:.7} .plot .band.warn{fill:var(--warn-soft);opacity:.8} .plot .band.acc{fill:var(--accent-soft);opacity:1} .plot .bandl{fill:var(--warn);font-size:10px}
   .plot .s1{stroke:var(--accent);fill:var(--accent)} .plot .s2{stroke:#d9480f;fill:#d9480f} .plot .s3{stroke:#7048e8;fill:#7048e8}
   .plot .s4{stroke:var(--good);fill:var(--good)} .plot .s5{stroke:var(--muted);fill:var(--muted)} .plot .s6{stroke:#c2255c;fill:#c2255c}
   .plot .ln.s1,.plot .ln.s2,.plot .ln.s3,.plot .ln.s4,.plot .ln.s5,.plot .ln.s6{fill:none}
@@ -47,7 +47,7 @@
     const [x0, x1] = o.x, [y0, y1] = o.y;
     const X = x => L + (x - x0) / (x1 - x0) * (w - L - R), Y = y => h - B - (y - y0) / (y1 - y0) * (h - T - B);
     const svg = node("svg", { viewBox: `0 0 ${w} ${h}`, class: "plot", role: "img", "aria-label": o.label || "plot" });
-    (o.bands || []).forEach(b => node("rect", { class: "band", x: L, y: Y(b.y1), width: w - L - R, height: Math.max(0, Y(b.y0) - Y(b.y1)) }, svg));
+    (o.bands || []).forEach(b => { node("rect", { class: "band" + (b.cls ? " " + b.cls : ""), x: L, y: Y(b.y1), width: w - L - R, height: Math.max(0, Y(b.y0) - Y(b.y1)) }, svg); if (b.label) node("text", { class: "bandl", x: L + 4, y: Y(b.y0) - 4 }, svg).textContent = b.label; });
     ticks(y0, y1, 5).forEach(v => { node("line", { class: "grid", x1: L, x2: w - R, y1: Y(v), y2: Y(v) }, svg); node("text", { x: L - 5, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = fmt(v); });
     ticks(x0, x1, 8).forEach(v => node("text", { x: X(v), y: h - B + 14, "text-anchor": "middle" }, svg).textContent = fmt(v));
     node("line", { class: "ax", x1: L, x2: w - R, y1: h - B, y2: h - B }, svg);
