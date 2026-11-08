@@ -5,7 +5,7 @@
  * Part 1: drag a voltage and read it as an RP2040 input at IOVDD = 3.3 V (VIL 0.8 V, VIH 2.0 V,
  *   RP2040 datasheet Table 625), with the output limits 0.5 V and 2.62 V and the noise margins.
  * Part 2: a slow, noisy edge read by an input with one switching point and by a Schmitt trigger with
- *   0.2 V of hysteresis. The switching points (1.4 V; 1.5 V and 1.3 V) are examples inside the band:
+ *   adjustable hysteresis (0.2 V to start, centred on 1.4 V). The switching points (1.4 V; 1.5 V and 1.3 V) are examples inside the band:
  *   the datasheet guarantees only the limits and the hysteresis.
  * Part 3: an open-drain line with a pull-up: devices that pull low, the current, and the rise time
  *   from the RC charge to VIH, t = -RC ln(1 - VIH/VDD).
@@ -40,6 +40,7 @@
   .logiclevel .ll-sch .dev{cursor:pointer} .logiclevel .ll-sch .devbox{fill:var(--code-bg);stroke:var(--rule)}
   .logiclevel .ll-sch .dev.on .devbox{fill:var(--accent-soft);stroke:var(--accent)}
   .logiclevel .ll-sch .dev:focus{outline:none} .logiclevel .ll-sch .dev:hover .devbox,.logiclevel .ll-sch .dev:focus .devbox{stroke:var(--accent);stroke-width:2}
+  .logiclevel .ll-res2{min-height:4rem;box-sizing:border-box}
   .logiclevel .ll-res3{min-height:5.2rem;box-sizing:border-box}
   .logiclevel .ll-tbl{min-height:13rem}
   .logiclevel tr.sel td{font-weight:700;background:var(--accent-soft)}
@@ -55,7 +56,7 @@
     box.appendChild(E("h3", { text: box.dataset.title || "Logic levels, hysteresis and pull-ups" }));
 
     // ---- Part 1: what does the input read?
-    const st = { v: 1.4, noise: 0.15, seed: 3, rpu: 4700, cpf: 100, devs: [false, false, false], pull: "ext" };
+    const st = { v: 1.4, noise: 0.15, hys: 0.2, seed: 3, rpu: 4700, cpf: 100, devs: [false, false, false], pull: "ext" };
     box.appendChild(E("h4", { text: "1. What does the input read?" }));
     box.appendChild(E("p", { class: "widget-hint", text: "Drag the voltage on an RP2040 input pin at IOVDD = 3.3 V. The buttons load the worst-case output levels of another chip." }));
     const vIn = E("input", { type: "range", min: 0, max: VDD, step: 0.01, value: st.v, "aria-label": "input voltage" });
@@ -83,15 +84,21 @@
 
     // ---- Part 2: hysteresis
     box.appendChild(E("h4", { text: "2. A slow, noisy edge" }));
-    box.appendChild(E("p", { class: "widget-hint", text: "The edge rises from 0 V to 3.3 V, with noise added. A plain input switches at one point, and every wobble across it is another edge. A Schmitt trigger needs the voltage to fall 0.2 V lower before it switches back. The switching points here are examples inside the band." }));
+    box.appendChild(E("p", { class: "widget-hint", text: "The edge rises from 0 V to 3.3 V, with noise added. A plain input switches at one point, 1.4 V here, and every wobble across it is another edge. A Schmitt trigger has two switching points: it goes to 1 at the upper one and back to 0 only below the lower one. The gap between them is the hysteresis; drag it and watch the edge count. The switching points are examples inside the band." }));
     const nIn = E("input", { type: "range", min: 0, max: 0.4, step: 0.01, value: st.noise, "aria-label": "noise amplitude" });
     const nOut = E("b");
     nIn.addEventListener("input", () => { st.noise = +nIn.value; draw2(); });
+    const hIn = E("input", { type: "range", min: 0, max: 1.2, step: 0.05, value: st.hys, "aria-label": "Schmitt hysteresis" });
+    const hOut = E("b");
+    hIn.addEventListener("input", () => { st.hys = +hIn.value; draw2(); });
     box.appendChild(E("div", { class: "ll-row" }, [E("label", {}, ["noise (peak)", nIn, nOut]), E("button", { class: "btn secondary", type: "button", text: "New noise", onclick: () => { st.seed++; draw2(); } })]));
-    const plot2 = E("div"), res2 = E("div", { class: "ll-res" });
+    box.appendChild(E("div", { class: "ll-row" }, [E("label", {}, ["Schmitt hysteresis", hIn, hOut]), E("button", { class: "btn secondary", type: "button", text: "RP2040: 0.2 V", onclick: () => { st.hys = 0.2; hIn.value = 0.2; draw2(); } })]));
+    const plot2 = E("div"), res2 = E("div", { class: "ll-res ll-res2" });
     box.append(plot2, res2);
     function draw2() {
       nOut.textContent = fmtV(st.noise);
+      const up = 1.4 + st.hys / 2, dn = 1.4 - st.hys / 2;
+      hOut.textContent = `${fmtV(st.hys)}: up at ${up.toFixed(2)} V, down at ${dn.toFixed(2)} V`;
       const r = P.rng(st.seed), N = 400, sig = [], plain = [], schm = [];
       let ps = 0, ss = 0, pe = 0, se = 0, nz = 0;
       for (let i = 0; i <= N; i++) {
@@ -100,16 +107,16 @@
         const v = Math.min(VDD + 0.4, Math.max(-0.4, VDD * Math.min(1, Math.max(0, (t - 15) / 70)) + st.noise * 1.6 * nz));
         sig.push([t, v]);
         const pn = v > 1.4 ? 1 : 0; if (i && pn !== ps) pe++; ps = pn;
-        const sn = ss ? (v < 1.3 ? 0 : 1) : (v > 1.5 ? 1 : 0); if (i && sn !== ss) se++; ss = sn;
+        const sn = ss ? (v < dn ? 0 : 1) : (v > up ? 1 : 0); if (i && sn !== ss) se++; ss = sn;
         plain.push([t, -1.0 + pn * 0.7]); schm.push([t, -2.1 + sn * 0.7]);
       }
       plot2.innerHTML = "";
       plot2.appendChild(P.chart({ w: 640, h: 260, x: [0, 100], y: [-2.3, 3.8], xlabel: "time", ylabel: "V",
         series: [{ pts: sig, cls: "s1", label: "pin voltage", thin: true }, { pts: plain, cls: "s2", label: "plain input reads", step: true }, { pts: schm, cls: "s4", label: "Schmitt reads", step: true }],
-        hlines: [{ y: 1.5, label: "Schmitt switches up at 1.5 V, down at 1.3 V" }, { y: 1.3 }], bands: [{ y0: VIL, y1: VIH }] }));
+        hlines: st.hys > 0 ? [{ y: up, label: `Schmitt switches up at ${up.toFixed(2)} V, down at ${dn.toFixed(2)} V` }, { y: dn }] : [{ y: 1.4, label: "no hysteresis: both switch at 1.4 V" }], bands: [{ y0: VIL, y1: VIH }] }));
       const ok = se <= 1;
       res2.className = "ll-res " + (pe > 1 ? "warn" : "ok");
-      res2.textContent = `The plain input saw ${pe} edge${pe === 1 ? "" : "s"}, the Schmitt trigger ${se}.` + (pe > 1 ? (ok ? " Software would count one slow edge as several presses; the hysteresis hides wobbles smaller than 0.2 V." : " This noise is larger than the hysteresis, so even the Schmitt trigger chatters. Filter it or debounce in software (lesson 52).") : " With little noise, one edge is one edge for both.");
+      res2.textContent = `The plain input saw ${pe} edge${pe === 1 ? "" : "s"}, the Schmitt trigger ${se}.` + (pe > 1 ? (ok ? ` Software would count one slow edge as several presses; ${fmtV(st.hys)} of hysteresis hides wobbles smaller than that.` : (st.hys === 0 ? " With no hysteresis the Schmitt trigger is just a plain input, and it chatters the same way." : ` This noise swings more than ${fmtV(st.hys)}, so even the Schmitt trigger chatters. Widen the hysteresis, filter the signal, or debounce in software (lesson 52).`)) : " With little noise, one edge is one edge for both.");
     }
     draw2();
 
