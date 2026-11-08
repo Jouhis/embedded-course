@@ -31,6 +31,20 @@
   .logiclevel .devs{display:flex;flex-wrap:wrap;gap:.4rem}
   .logiclevel .devs button{font-family:var(--sans);font-size:.8rem;padding:.25rem .55rem;border:1px solid var(--rule);border-radius:4px;background:var(--bg);color:var(--fg);cursor:pointer}
   .logiclevel .devs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .logiclevel svg.ll-sch{width:100%;max-width:700px;height:auto;display:block;margin:.3rem 0;font-family:var(--sans);font-size:12px}
+  .logiclevel .ll-sch .wr{fill:none;stroke:var(--fg);stroke-width:2}
+  .logiclevel .ll-sch .ln{stroke-width:4}
+  .logiclevel .ll-sch .dev path.ln-low{stroke-width:3.5}
+  .logiclevel .ll-sch path.ln-low{stroke:var(--accent)} .logiclevel .ll-sch path.ln-high{stroke:var(--good)} .logiclevel .ll-sch path.ln-float{stroke:var(--warn);stroke-dasharray:6 4}
+  .logiclevel .ll-sch text.lnlab{font-weight:700;font-size:13px} .logiclevel .ll-sch text.ln-low{fill:var(--accent)} .logiclevel .ll-sch text.ln-high{fill:var(--good)} .logiclevel .ll-sch text.ln-float{fill:var(--warn)}
+  .logiclevel .ll-sch .rs{fill:var(--bg);stroke:var(--fg);stroke-width:2}
+  .logiclevel .ll-sch .curt{fill:var(--accent);font-weight:700}
+  .logiclevel .ll-sch .dev{cursor:pointer} .logiclevel .ll-sch .devbox{fill:var(--code-bg);stroke:var(--rule)}
+  .logiclevel .ll-sch .dev.on .devbox{fill:var(--accent-soft);stroke:var(--accent)}
+  .logiclevel .ll-sch .dev:focus{outline:none} .logiclevel .ll-sch .dev:focus .devbox{stroke:var(--accent);stroke-width:2}
+  .logiclevel .ll-res3{min-height:5.2rem;box-sizing:border-box}
+  .logiclevel .ll-tbl{min-height:13rem}
+  .logiclevel tr.sel td{font-weight:700;background:var(--accent-soft)}
   .logiclevel table{border-collapse:collapse;font-size:.82rem;margin:.3rem 0} .logiclevel td,.logiclevel th{border:1px solid var(--rule);padding:.2rem .5rem;text-align:left}`;
 
   const fmtV = v => v.toFixed(2) + " V";
@@ -103,7 +117,10 @@
 
     // ---- Part 3: open-drain line
     box.appendChild(E("h4", { text: "3. An open-drain line with a pull-up" }));
-    box.appendChild(E("p", { class: "widget-hint", text: "Each device can only pull the line low or let go. Click the devices to make them pull. The pull-up brings the line back up when every device has let go, and the line's capacitance slows that rise." }));
+    box.appendChild(E("p", { class: "widget-hint", text: "Open drain means each device has only two choices: connect the line to ground (pull it low) or switch off and let go. No device can drive the line high; only the pull-up resistor does that. Click a device in the drawing or below to toggle it." }));
+    const NS = "http://www.w3.org/2000/svg";
+    const S = (tag, a, txt) => { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (txt !== undefined) e.textContent = txt; return e; };
+    const sch = S("svg", { class: "ll-sch", viewBox: "0 0 700 240", role: "img", "aria-label": "Open-drain line: a pull-up resistor from 3.3 V, three devices that can switch the line to ground, and the line capacitance" });
     const devs = E("div", { class: "devs" });
     const rIn = E("input", { type: "range", min: 0, max: 100, step: 1, "aria-label": "pull-up resistance" }), rOut = E("b");
     const cIn = E("input", { type: "range", min: 10, max: 400, step: 10, value: st.cpf, "aria-label": "line capacitance" }), cOut = E("b");
@@ -111,24 +128,52 @@
     rIn.max = RVALS.length - 1; rIn.value = RVALS.indexOf(st.rpu);
     rIn.addEventListener("input", () => { st.rpu = RVALS[+rIn.value]; draw3(); });
     cIn.addEventListener("input", () => { st.cpf = +cIn.value; draw3(); });
-    const pullSel = E("select", { "aria-label": "pull-up" }, [E("option", { value: "ext", text: "pull-up resistor" }), E("option", { value: "none", text: "no pull-up" })]);
+    const pullSel = E("select", { "aria-label": "pull-up" }, [E("option", { value: "ext", text: "pull-up resistor fitted" }), E("option", { value: "none", text: "no pull-up" })]);
     pullSel.addEventListener("change", () => { st.pull = pullSel.value; draw3(); });
+    box.appendChild(sch);
     box.appendChild(devs);
     box.appendChild(E("div", { class: "ll-row" }, [E("label", {}, [pullSel]), E("label", {}, ["pull-up", rIn, rOut]), E("label", {}, ["line capacitance", cIn, cOut])]));
-    const res3 = E("div", { class: "ll-res" }), tbl = E("div");
+    const res3 = E("div", { class: "ll-res ll-res3" }), tbl = E("div", { class: "ll-tbl" });
     box.append(res3, tbl);
+    const toggle = i => { st.devs[i] = !st.devs[i]; draw3(); };
     function draw3() {
       rOut.textContent = fmtR(st.rpu); cOut.textContent = st.cpf + " pF";
       const on = st.pull === "ext";
       rIn.disabled = !on;
-      devs.innerHTML = "";
-      st.devs.forEach((d, i) => devs.appendChild(E("button", { type: "button", class: d ? "on" : "", "aria-pressed": String(d), text: `device ${i + 1}: ${d ? "pulls low" : "lets go"}`, onclick: () => { st.devs[i] = !st.devs[i]; draw3(); } })));
       const n = st.devs.filter(Boolean).length;
-      const R = st.rpu, C = st.cpf * 1e-12, tau = R * C, tr = -tau * Math.log(1 - VIH / VDD);
-      if (!on && n === 0) { res3.className = "ll-res bad"; res3.textContent = "No device pulls, and nothing pulls up: the line floats. It may sit in the band and read 0 or 1 at random."; }
-      else if (n > 0) { res3.className = "ll-res ok"; res3.textContent = `${n === 1 ? "One device pulls" : n + " devices pull"} the line low, so it reads 0. Nothing fights: every device only sinks current.` + (on ? ` The pull-up passes 3.3 V ÷ ${fmtR(R)} = ${(VDD / R * 1000).toFixed(2)} mA, shared by the devices that pull.` : ""); }
-      else { res3.className = "ll-res ok"; res3.textContent = `Every device has let go, so the pull-up holds the line at 3.3 V and it reads 1. After a release it takes about ${fmtT(tr)} to rise to VIH = 2.0 V (RC = ${fmtT(tau)}).`; }
-      tbl.innerHTML = on ? `<table><tr><th>pull-up</th><th>current when low</th><th>rise to 2.0 V at ${st.cpf} pF</th></tr>` + [1000, 4700, 10000, 50000].map(r => `<tr${r === R ? ' style="font-weight:700"' : ""}><td>${fmtR(r)}</td><td>${(VDD / r * 1000).toFixed(3)} mA</td><td>${fmtT(-r * C * Math.log(1 - VIH / VDD))}</td></tr>`).join("") + `</table><p class="widget-hint">A stronger (smaller) pull-up gives a faster rise but costs current every time the line is low. 50 kΩ is about the RP2040's internal pull-up at its weakest.</p>` : "";
+      const R = st.rpu, C = st.cpf * 1e-12, tau = R * C, k = -Math.log(1 - VIH / VDD), tr = tau * k;
+      const state = n > 0 ? "low" : on ? "high" : "float";
+      devs.innerHTML = "";
+      st.devs.forEach((d, i) => devs.appendChild(E("button", { type: "button", class: d ? "on" : "", "aria-pressed": String(d), text: `device ${i + 1}: ${d ? "pulls low" : "let go"}`, onclick: () => toggle(i) })));
+      sch.innerHTML = "";
+      const lc = state === "low" ? "ln-low" : state === "high" ? "ln-high" : "ln-float";
+      sch.append(S("text", { x: 20, y: 16, class: "mut" }, "3.3 V"), S("path", { d: "M20 24 H120", class: "wr" }));
+      if (on) {
+        sch.append(S("path", { d: "M70 24 V44", class: "wr" }), S("rect", { x: 60, y: 44, width: 20, height: 46, rx: 2, class: "rs" }),
+          S("text", { x: 88, y: 62 }, "pull-up"), S("text", { x: 88, y: 78, class: "mut" }, fmtR(R)), S("path", { d: "M70 90 V110", class: "wr" }));
+        if (state === "low") sch.append(S("text", { x: 88, y: 96, class: "curt" }, "↓ " + (VDD / R * 1000).toFixed(2) + " mA"));
+      } else sch.append(S("text", { x: 40, y: 70, class: "mut" }, "(no pull-up)"));
+      sch.append(S("path", { d: "M70 110 H660", class: "wr ln " + lc }));
+      sch.append(S("text", { x: 430, y: 100, class: "lnlab " + lc }, state === "low" ? "line ≈ 0 V: reads 0" : state === "high" ? "line = 3.3 V: reads 1" : "line floats: 0 or 1?"));
+      st.devs.forEach((d, i) => {
+        const x = 170 + i * 110, g = S("g", { class: "dev" + (d ? " on" : ""), tabindex: 0, role: "button", "aria-label": `device ${i + 1}, ${d ? "pulls low" : "let go"}` });
+        g.append(S("rect", { x: x - 42, y: 122, width: 84, height: 92, rx: 6, class: "devbox" }), S("text", { x: x, y: 234, "text-anchor": "middle" }, `device ${i + 1}`),
+          S("path", { d: `M${x} 110 V152`, class: "wr" + (d ? " ln-low" : "") }),
+          S("path", { d: d ? `M${x} 152 V182` : `M${x} 182 L${x + 15} 156`, class: "wr" + (d ? " ln-low" : "") }),
+          S("path", { d: `M${x} 182 V194 M${x - 12} 194 H${x + 12} M${x - 7} 199 H${x + 7} M${x - 2} 204 H${x + 2}`, class: "wr" }),
+          S("text", { x: x + 22, y: 146, class: "mut" }, d ? "on" : "off"));
+        g.addEventListener("click", () => toggle(i));
+        g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(i); } });
+        sch.append(g);
+      });
+      const cx = 540;
+      sch.append(S("path", { d: `M${cx} 110 V150 M${cx - 16} 150 H${cx + 16} M${cx - 16} 158 H${cx + 16} M${cx} 158 V182 M${cx - 12} 182 H${cx + 12} M${cx - 7} 187 H${cx + 7}`, class: "wr" }),
+        S("text", { x: cx + 24, y: 152 }, "line capacitance"), S("text", { x: cx + 24, y: 168, class: "mut" }, st.cpf + " pF"));
+      if (state === "float") { res3.className = "ll-res ll-res3 bad"; res3.textContent = "Every device has let go and nothing pulls up, so nothing sets the voltage: the line floats. It can sit between VIL and VIH and read 0 or 1 at random. This is why an open-drain line always needs a pull-up."; }
+      else if (state === "low") { res3.className = "ll-res ll-res3 ok"; res3.textContent = `${n === 1 ? "One device connects" : n + " devices connect"} the line to ground, so it reads 0. Nothing fights: devices only ever pull down.` + (on ? ` While the line is low, 3.3 V ÷ ${fmtR(R)} = ${(VDD / R * 1000).toFixed(2)} mA flows through the pull-up into ground: the price of holding the line low.` : ""); }
+      else { res3.className = "ll-res ll-res3 ok"; res3.textContent = `Every device has let go, so the pull-up resistor charges the line to 3.3 V and it reads 1. The charge flows through the resistor into the line's capacitance, so the rise takes time: the line crosses VIH = 2.0 V after ${fmtT(tr)}. That is ${k.toFixed(2)} × RC, with RC = ${fmtR(R)} × ${st.cpf} pF = ${fmtT(tau)}.`; }
+      const rows = [...new Set([1000, 4700, 10000, 50000, R])].sort((x, y) => x - y);
+      tbl.innerHTML = on ? `<table><tr><th>pull-up</th><th>current while low</th><th>time to reach 2.0 V at ${st.cpf} pF</th></tr>` + rows.map(r => `<tr${r === R ? ' class="sel"' : ""}><td>${fmtR(r)}${r === R ? " (selected)" : ""}</td><td>${(VDD / r * 1000).toFixed(3)} mA</td><td>${fmtT(-r * C * Math.log(1 - VIH / VDD))}</td></tr>`).join("") + `</table><p class="widget-hint">A smaller pull-up gives a faster rise but wastes more current every time the line is low. 50 kΩ is about the RP2040's internal pull-up at its weakest.</p>` : `<p class="widget-hint">Fit a pull-up to see the current and the rise time.</p>`;
     }
     draw3();
   }
