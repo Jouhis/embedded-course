@@ -11,6 +11,11 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.14 (2026-11-08)
+
+- The course index's "How to use it" and "What's where" sections fold away. They start closed,
+  and the page remembers which ones you opened.
+
 ## 0.0.13 (2026-11-08)
 
 - Animated diagrams: a new `anim.js` widget steps through a worked example with a caption per
