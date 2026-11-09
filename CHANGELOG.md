@@ -11,6 +11,21 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## Unreleased
+
+- Every lesson, lab and bench lab follows one order: the ideas, a worked example, the code and the
+  hands-on task first; then **Common mistakes**, folded and tagged *When stuck*; then folded
+  **Go deeper** sections such as *In real projects*; then the summary, right before the questions.
+  Quizzes that sat between sections moved to the end.
+- Quizzes show one question at a time as a card, with a dot per question that turns green or red.
+- About 120 **Picture it** boxes (everyday analogies, each saying where it stops working) and 17
+  **In a real device** examples, placed between paragraphs rather than on top of figures.
+- Lessons 76 to 80 and 111 start with why the topic matters and the basics, before the sections
+  that use them; duplicated sections in 79 and 80 are merged. Lesson 103 shows its worked example
+  before the task. Lesson 104 gets numbered hands-on steps for its bootloader exercise.
+- Lesson 4 explains the layout. `check_course.py` keeps the win box, quizzes, steps and summary
+  out of folds; LESSON-SPEC section 3.1 describes the flow, folds and boxes.
+
 ## 0.0.19 (2026-11-09)
 
 - Every exercise folder has a `README.md`: the lesson's steps and hints, the files you change

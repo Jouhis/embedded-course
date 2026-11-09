@@ -27,6 +27,15 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 - Beautiful and printable: Tufte style, short paragraphs (3–5 sentences), clear `<h2>`/`<h3>` headings every few paragraphs, inline SVG diagrams. Long is fine; walls of text are not: break it up with headings, lists, tables, diagrams and worked examples.
 - Code blocks name their language: `<pre><code class="language-c">`. Allowed: `c`, `armasm`, `bash`, `powershell`, `cmake`, `dts`, `ini` (also prj.conf and TOML), `rust`, `markdown`, `yaml`, `ld` (linker script), `kconfig`, and `plaintext` for logs, tool output and worked arithmetic. Write the code as plain escaped text with no `<span>` markup; `course.js` highlights it. Inside quiz JSON, escape the quotes: `<pre><code class=\"language-c\">`. The checker enforces this.
 
+## 3.1 Flow, folds and boxes
+- **One order in every lesson** (the checker and `course.js` rely on it): where we are → the concepts → worked example → code → hands-on task with its `.win` → **Common mistakes**, folded → **Go deeper** folds → **Summary** → "Check your understanding" and "Spaced review" quizzes → `.source` → `.ask`. The summary is always the last section before the questions.
+- **Common mistakes** is written `<details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary> ... </details>`. The page tags it *When stuck*.
+- **Go deeper** folds hold depth a learner can skip on the first read: *In real projects*, a second way to do the same thing, history, a chip the course does not use. Write `<details class="fold depth"><summary><h2>Heading</h2></summary> ... </details>`. Use judgment: a short lesson may need none. Never fold what the hands-on task or the quiz needs to be understood first. The checker keeps the `.win` box, quizzes, `ol.steps` and the summary out of every fold.
+- **`.analogy`** ("Picture it"): an everyday comparison for an abstract idea, 3–5 sentences, ending with where the comparison stops working. At most two per lesson, and only where the idea is hard to see.
+- **`.example`** ("In a real device"): the idea inside a concrete product, with numbers you have worked out. Make no claim about a named product that the sources do not support.
+- **Do not stack boxes.** Put an analogy or example between two paragraphs, right after the one it explains, never directly before or after a figure, a widget, a `.note` or a `.warning`.
+- Basics come before the applied sections: a "why this matters" and a "concepts, one at a time" section never follow the sections that use them, and each idea is explained once.
+
 ## 4. Required structure (enforced by `tools/maintainer/check_course.py`)
 File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/manifest.js`, and `<body data-lesson="<id>">` uses the exact id (`0007`, `lab03`, `cp02`).
 
@@ -236,7 +245,7 @@ A learner who has never seen the topic must be able to follow the lesson without
 6. **In real projects.** How professionals use this: typical industry practice, and what code review or a senior engineer would expect.
 7. **Summary.** 5–8 bullet points with the key facts to remember.
 
-Then the hands-on task, `.win`, quizzes, `.source` and `.ask` as in section 4. Hands-on instructions are numbered steps that say exactly what to open, what to change and what output to expect.
+Then the hands-on task and its `.win`. Common mistakes (item 5) is folded and moves after the hands-on task, *In real projects* (item 6) is usually a Go deeper fold, and the summary (item 7) comes last, right before the quizzes, `.source` and `.ask` (section 3.1). Hands-on instructions are numbered steps that say exactly what to open, what to change and what output to expect.
 
 Rules:
 - Keep everything already correct in the lesson: facts, citations, links, project references, quizzes and diagrams. You are expanding and improving, not replacing. Fix anything wrong you find, and verify every new fact (section 6).
