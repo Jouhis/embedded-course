@@ -72,6 +72,14 @@
   <p>
     In normal mode a transfer stops when <code>CNDTR</code> reaches zero. The channel then stops, and the buffer is full (RM0008 Rev 21, section 13.3.3). Normal mode is right for a single block, such as sending one frame over the UART, where the firmware knows the length in advance.
   </p>
+
+  <div class="analogy">
+    <p>Circular mode is a conveyor loop that never stops. The DMA keeps filling the belt from the start again. The half-transfer and transfer-complete interrupts are two bells: the first says "the first half is full, read it now", the second says the same for the second half, while the DMA is already writing the first half again. You read one half while the other fills.</p>
+
+  <div class="example">
+    <p>Audio playback works this way. A digital-to-analogue converter needs one sample every 1/48000 s, about 21 µs, without a gap. A circular DMA feeds it from a buffer, and at each half-transfer interrupt the CPU refills the half that has just been played. The CPU can be late by up to half a buffer and the sound still never stutters.</p>
+  </div>
+  </div>
   <p>
     In circular mode, <code>DMA_CCR_CIRC</code> is set, and the controller reloads the count and the address at the end of the buffer (RM0008 Rev 21, section 13.3.3). The transfer starts again from the beginning, and the DMA writes into the buffer forever. The receive buffer therefore never runs out. The CPU reads behind the write position, in the same way a producer and consumer share a ring buffer in lesson 70. The difference is who the producer is. In lesson 70 the producer was an interrupt handler. Here it is the DMA.
   </p>
@@ -169,24 +177,6 @@ void uart_rx_dma_start(void) {
     The handler reads the status register, <code>DMA1-&gt;ISR</code>, to see which event happened. It clears the flag by writing to <code>DMA1-&gt;IFCR</code>, the interrupt flag clear register. The clear comes before the work, so that a new event during the work is not lost. The two <code>if</code> blocks handle the two halves. The handler does not need to know where the DMA is inside the buffer, because the two interrupts tell it which half is safe to read. <code>process_bytes()</code> is the consumer, and it must finish before the DMA writes that half again.
   </p>
 
-  <h2>Cache coherence: an M7 issue, not an F1 issue</h2>
-  <p>
-    A DMA writes to RAM directly, without going through the CPU. If the CPU has a data cache, the cache can hold an old copy of part of that RAM, and the CPU reads the stale value. The data was changed behind the cache's back. This is called a coherence problem. Any device that writes memory directly can cause it, not only DMA.
-  </p>
-  <p>
-    The fix is to invalidate the cache lines of the buffer before the CPU reads it, or to place the buffer in a memory region the cache does not cover. The Cortex-M3 on the STM32F1 has no data cache, so this issue does not arise on the course's Blue Pill. It does arise on Cortex-M7 parts, which have a data cache, so the habit is worth learning now. The course's Cortex-M3 reference is in lesson 72.</p>
-
-  <h2>In real projects</h2>
-  <p>
-    Production firmware uses DMA for most bulk data movement. A serial link to a host, a sensor that streams audio or telemetry, an ADC that scans several channels for a battery monitor, and a display that receives a frame buffer all use DMA. The usual pattern is the one in this lesson: a circular buffer for a stream that never stops, and a normal-mode transfer for a block of known size. Reviewers look for three things. They check the buffer size against the worst-case handler time. They check the sizes and increments against the peripheral's data width. And they check that the buffer is not shared with another DMA channel or with the CPU without a rule about who owns it at each moment.
-  </p>
-  <p>
-    On the Cortex-M7 parts used in many larger products, reviewers also ask about cache. A buffer that a DMA writes and the CPU reads needs either an invalidate before the read, or an address range marked non-cacheable in the memory protection setup.
-  </p>
-  <p>
-    Vendor HALs hide most of the register work behind calls such as <code>HAL_UART_Receive_DMA()</code>, and the course's Lab 4 uses the HAL for that reason. Learn the registers first anyway. A HAL call that fails silently has the same causes as the mistakes above, and you can only debug it if you know which register it wrote.
-  </p>
-
   <div class="win">You can lay out a DMA receive transfer on paper: the direction, the count, circular mode, the half and full interrupts, and the buffer size that keeps the handler in time.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
@@ -212,6 +202,26 @@ void uart_rx_dma_start(void) {
   <h3>Mistake 5: the clock is off</h3>
   <p>
     If the DMA clock is not enabled, nothing happens, because the peripheral's registers are not clocked. <strong>Symptom:</strong> the buffer stays at its initial value, no interrupt fires, and the UART itself works fine. <strong>Fix:</strong> set <code>RCC_AHBENR_DMA1EN</code> (RM0008 Rev 21, section 7.3.6, bit 0) before the DMA registers are written. The same rule applies to every peripheral, and lesson 69 showed the clock-enable pattern in the HAL.</p>
+  </details>
+
+  <details class="fold depth"><summary><h2>Cache coherence: an M7 issue, not an F1 issue</h2></summary>
+  <p>
+    A DMA writes to RAM directly, without going through the CPU. If the CPU has a data cache, the cache can hold an old copy of part of that RAM, and the CPU reads the stale value. The data was changed behind the cache's back. This is called a coherence problem. Any device that writes memory directly can cause it, not only DMA.
+  </p>
+  <p>
+    The fix is to invalidate the cache lines of the buffer before the CPU reads it, or to place the buffer in a memory region the cache does not cover. The Cortex-M3 on the STM32F1 has no data cache, so this issue does not arise on the course's Blue Pill. It does arise on Cortex-M7 parts, which have a data cache, so the habit is worth learning now. The course's Cortex-M3 reference is in lesson 72.</p>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Production firmware uses DMA for most bulk data movement. A serial link to a host, a sensor that streams audio or telemetry, an ADC that scans several channels for a battery monitor, and a display that receives a frame buffer all use DMA. The usual pattern is the one in this lesson: a circular buffer for a stream that never stops, and a normal-mode transfer for a block of known size. Reviewers look for three things. They check the buffer size against the worst-case handler time. They check the sizes and increments against the peripheral's data width. And they check that the buffer is not shared with another DMA channel or with the CPU without a rule about who owns it at each moment.
+  </p>
+  <p>
+    On the Cortex-M7 parts used in many larger products, reviewers also ask about cache. A buffer that a DMA writes and the CPU reads needs either an invalidate before the read, or an address range marked non-cacheable in the memory protection setup.
+  </p>
+  <p>
+    Vendor HALs hide most of the register work behind calls such as <code>HAL_UART_Receive_DMA()</code>, and the course's Lab 4 uses the HAL for that reason. Learn the registers first anyway. A HAL call that fails silently has the same causes as the mistakes above, and you can only debug it if you know which register it wrote.
+  </p>
   </details>
 
   <h2>Summary</h2>

@@ -17,6 +17,69 @@
     By the end of this lesson you can read the Pico's stack bounds from the linker symbols, paint the unused stack and report its high-water mark, and say why <code>malloc()</code> is banned in most firmware after startup.
   </div>
 
+  <h2>Why memory is the first thing to design</h2>
+  <p>
+    Lessons 33 and 41 showed the stack and the linker from the outside: what a call pushes, and where the linker places the code. This lesson is about the RAM itself. On a PC, a running program can ask the operating system for more memory when it needs it, and the operating system pages it in from disk. An MCU has no such help. It has a fixed amount of RAM, set when the chip was made, and the program must fit inside it on every run, including the worst run. The RP2040 on the Pico has 256 KB of SRAM, and the STM32F103 on the Blue Pill has less. If a program overflows its RAM, nothing tells you at compile time, and the failure may show up much later.
+  </p>
+  <p>
+    That is why firmware designs memory before it writes code. The question to ask is how much the program uses in the worst case, and where each byte lives. This lesson gives the vocabulary for that question.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+  <h3>Static storage</h3>
+  <p>
+    A <strong>global</strong> variable, or a <code>static</code> variable inside a function, has <em>static storage duration</em>: it exists for the whole run of the program, and its address is fixed by the linker. The linker groups it into two sections. <code>.data</code> holds the initial values, which are copied from flash into RAM at start-up. <code>.bss</code> holds the variables that start at zero, which the start-up code clears to zero. Lesson 42 shows the copy. In both cases the size is known at link time, so the linker can tell you the total before the program runs. That number is the fixed part of your RAM budget.
+  </p>
+
+  <h3>The stack</h3>
+  <p>
+    The <strong>stack</strong> holds the frames of the functions that are running: the return address, saved registers and local variables. Each call pushes a frame and each return pops it. The stack pointer, SP, marks the current end. On the Cortex-M the stack grows downward, so a push lowers SP, which is what lesson 33 describes. The size of the stack is fixed by the linker, and nothing checks it while the program runs. If a frame writes below the bottom of the stack, the write goes into whatever is there.
+  </p>
+
+  <h3>The heap</h3>
+  <p>
+    The <strong>heap</strong> is the region that <code>malloc()</code> manages. A call asks for a number of bytes and receives a pointer to a block, and a call to <code>free()</code> returns the block. The allocator must track which blocks are free and how big they are, and that bookkeeping is the source of the problems below. On the Pico, the heap starts at the symbol <code>__end__</code>, after the static data, and it ends at <code>__HeapLimit</code>, the end of the main RAM.
+  </p>
+
+  <h3>Fragmentation</h3>
+  <p>
+    <strong>Fragmentation</strong> is what happens when free memory is split into pieces that are too small. The total can be large while no single request fits. Here is a worked example with a heap of 300 bytes.
+  </p>
+
+  <div class="analogy">
+    <p>Fragmentation is a car park where cars of different sizes come and go all day. By evening the free spaces add up to room for a bus, but they are scattered gaps between parked cars, so the bus does not fit. A heap that has served many <code>malloc</code> and <code>free</code> calls of different sizes ends up the same way.</p>
+  </div>
+  <ol class="steps">
+    <li>Allocate A, 100 bytes. It takes bytes 0 to 99. Free space: bytes 100 to 299, 200 bytes.</li>
+    <li>Allocate B, 100 bytes. It takes bytes 100 to 199. Free space: bytes 200 to 299, 100 bytes.</li>
+    <li>Allocate C, 100 bytes. It takes bytes 200 to 299. Free space: none.</li>
+    <li>Free A. Bytes 0 to 99 are free. Free space: 100 bytes in one block.</li>
+    <li>Free C. Bytes 200 to 299 are free. Free space: two blocks of 100 bytes each, 200 bytes in total.</li>
+    <li>Request D, 150 bytes. The total free space is 200 bytes, but the largest block is 100 bytes. The request fails.</li>
+  </ol>
+  <p>
+    Step 6 is the one that surprises people. A test that frees everything at the end passes, and the failure appears only after a long run with a particular pattern of sizes. The failure is also not reproducible by reading the code, because it depends on the order of the calls.
+  </p>
+
+  <h3>Predictability</h3>
+  <p>
+    A second reason to avoid <code>malloc()</code> is time. A real-time task has a deadline, and the allocator's search for a free block takes a number of steps that depends on the state of the heap. Two calls with the same size can take different times. A deadline needs a bound, and the heap does not give one in general. Lesson 55 introduced deadlines, and this is one of the things that breaks them.
+  </p>
+
+  <h3>A memory pool, with numbers</h3>
+  <p>
+    A <strong>memory pool</strong> avoids both problems. It is an array of blocks of one size, and a free list that links the free ones together. Taking a block is one step, and returning one is one step, so the time is fixed. Because all blocks are the same size, no block can be too small for a request, and no free space splits into unusable pieces. On the Cortex-M, a pointer is 4 bytes, and the <code>msg_t</code> struct in the code below holds 32 bytes of payload and one pointer, so its size is 36 bytes. Eight blocks take 8 × 36 = 288 bytes, and that number is known when the program is compiled.
+  </p>
+
+  <h3>The high-water mark</h3>
+  <p>
+    The <strong>high-water mark</strong> is the deepest the stack has ever been. It is the most useful number a firmware team can measure, because the stack size is a design choice and the mark tells you how much margin you have. A tool can measure it only if it can tell used memory from unused. Painting provides that: fill the free stack with a known value, run the program, and look for the first place where the value has changed. The value <code>0xA5A5A5A5</code> is an arbitrary pattern that real code does not produce by accident.
+  </p>
+
+  <div class="analogy">
+    <p>Painting the stack is the tide line on a harbour wall. You cannot watch the water all day, but the line it leaves shows the highest it ever reached. Fill the stack with a known pattern at startup, and later the first word that no longer holds the pattern shows how deep the stack has ever gone.</p>
+  </div>
+
   <h2>The idea: three regions in one RAM</h2>
   <p>
     The RP2040 has 256 KB of SRAM starting at <code>0x20000000</code>. The program uses three parts of it. The <strong>static data</strong> (globals and <code>static</code> variables) has a fixed size and lives for the whole run (lessons 41 and 42 show how the linker places it). The <strong>stack</strong> holds the call frames, and it grows downward from the top (lesson 33). The <strong>heap</strong> is the area that <code>malloc()</code> hands out, and it grows upward. The stack and the heap grow toward each other, so a deep stack and a large heap can collide. That is the general case the figure below shows. On the Pico's default layout the core 0 stack is in SCRATCH_Y and the heap is limited to the main RAM, so the two never share an address range; the figure is a schematic of the general rule, not a map of this linker script.
@@ -101,61 +164,6 @@ static msg_t *pool_take(void) {
     Lesson 68 explains how these are defined in a script you write yourself. The symbols in this table are defined by the SDK's script, and <code>__end__</code> depends on the size of the static data in your build.
   </p>
 
-  <h2>Why memory is the first thing to design</h2>
-  <p>
-    Lessons 33 and 41 showed the stack and the linker from the outside: what a call pushes, and where the linker places the code. This lesson is about the RAM itself. On a PC, a running program can ask the operating system for more memory when it needs it, and the operating system pages it in from disk. An MCU has no such help. It has a fixed amount of RAM, set when the chip was made, and the program must fit inside it on every run, including the worst run. The RP2040 on the Pico has 256 KB of SRAM, and the STM32F103 on the Blue Pill has less. If a program overflows its RAM, nothing tells you at compile time, and the failure may show up much later.
-  </p>
-  <p>
-    That is why firmware designs memory before it writes code. The question to ask is how much the program uses in the worst case, and where each byte lives. This lesson gives the vocabulary for that question.
-  </p>
-
-  <h2>The concepts, one at a time</h2>
-  <h3>Static storage</h3>
-  <p>
-    A <strong>global</strong> variable, or a <code>static</code> variable inside a function, has <em>static storage duration</em>: it exists for the whole run of the program, and its address is fixed by the linker. The linker groups it into two sections. <code>.data</code> holds the initial values, which are copied from flash into RAM at start-up. <code>.bss</code> holds the variables that start at zero, which the start-up code clears to zero. Lesson 42 shows the copy. In both cases the size is known at link time, so the linker can tell you the total before the program runs. That number is the fixed part of your RAM budget.
-  </p>
-
-  <h3>The stack</h3>
-  <p>
-    The <strong>stack</strong> holds the frames of the functions that are running: the return address, saved registers and local variables. Each call pushes a frame and each return pops it. The stack pointer, SP, marks the current end. On the Cortex-M the stack grows downward, so a push lowers SP, which is what lesson 33 describes. The size of the stack is fixed by the linker, and nothing checks it while the program runs. If a frame writes below the bottom of the stack, the write goes into whatever is there.
-  </p>
-
-  <h3>The heap</h3>
-  <p>
-    The <strong>heap</strong> is the region that <code>malloc()</code> manages. A call asks for a number of bytes and receives a pointer to a block, and a call to <code>free()</code> returns the block. The allocator must track which blocks are free and how big they are, and that bookkeeping is the source of the problems below. On the Pico, the heap starts at the symbol <code>__end__</code>, after the static data, and it ends at <code>__HeapLimit</code>, the end of the main RAM.
-  </p>
-
-  <h3>Fragmentation</h3>
-  <p>
-    <strong>Fragmentation</strong> is what happens when free memory is split into pieces that are too small. The total can be large while no single request fits. Here is a worked example with a heap of 300 bytes.
-  </p>
-  <ol class="steps">
-    <li>Allocate A, 100 bytes. It takes bytes 0 to 99. Free space: bytes 100 to 299, 200 bytes.</li>
-    <li>Allocate B, 100 bytes. It takes bytes 100 to 199. Free space: bytes 200 to 299, 100 bytes.</li>
-    <li>Allocate C, 100 bytes. It takes bytes 200 to 299. Free space: none.</li>
-    <li>Free A. Bytes 0 to 99 are free. Free space: 100 bytes in one block.</li>
-    <li>Free C. Bytes 200 to 299 are free. Free space: two blocks of 100 bytes each, 200 bytes in total.</li>
-    <li>Request D, 150 bytes. The total free space is 200 bytes, but the largest block is 100 bytes. The request fails.</li>
-  </ol>
-  <p>
-    Step 6 is the one that surprises people. A test that frees everything at the end passes, and the failure appears only after a long run with a particular pattern of sizes. The failure is also not reproducible by reading the code, because it depends on the order of the calls.
-  </p>
-
-  <h3>Predictability</h3>
-  <p>
-    A second reason to avoid <code>malloc()</code> is time. A real-time task has a deadline, and the allocator's search for a free block takes a number of steps that depends on the state of the heap. Two calls with the same size can take different times. A deadline needs a bound, and the heap does not give one in general. Lesson 55 introduced deadlines, and this is one of the things that breaks them.
-  </p>
-
-  <h3>A memory pool, with numbers</h3>
-  <p>
-    A <strong>memory pool</strong> avoids both problems. It is an array of blocks of one size, and a free list that links the free ones together. Taking a block is one step, and returning one is one step, so the time is fixed. Because all blocks are the same size, no block can be too small for a request, and no free space splits into unusable pieces. On the Cortex-M, a pointer is 4 bytes, and the <code>msg_t</code> struct in the code below holds 32 bytes of payload and one pointer, so its size is 36 bytes. Eight blocks take 8 × 36 = 288 bytes, and that number is known when the program is compiled.
-  </p>
-
-  <h3>The high-water mark</h3>
-  <p>
-    The <strong>high-water mark</strong> is the deepest the stack has ever been. It is the most useful number a firmware team can measure, because the stack size is a design choice and the mark tells you how much margin you have. A tool can measure it only if it can tell used memory from unused. Painting provides that: fill the free stack with a known value, run the program, and look for the first place where the value has changed. The value <code>0xA5A5A5A5</code> is an arbitrary pattern that real code does not produce by accident.
-  </p>
-
   <h2>The code, line by line</h2>
   <p>The painting code is short, and each line has one job.</p>
   <ol class="steps">
@@ -169,10 +177,6 @@ static msg_t *pool_take(void) {
   <p>
     The stack-frame arithmetic in the disassembly of this build is <code>push {lr}</code> followed by <code>sub sp, #20</code>, which is 4 + 20 = 24 bytes per call. You can check the same thing in the Debug disassembly of your build with <code>arm-none-eabi-objdump -d</code>.
   </p>
-
-  <h2>In real projects</h2>
-  <p>
-    Most embedded code standards restrict dynamic memory. MISRA C:2012 has a rule that prohibits the allocation and free functions in <code>&lt;stdlib.h&gt;</code> (rule 21.3, as summarised in the Polyspace page cited above). In a review, a reviewer who sees <code>malloc()</code> in firmware asks where the memory comes from, what happens when it returns NULL, and what the worst-case heap use is. A good answer is a static bound. Teams also run the high-water measurement in their test builds, record the number, and fail the build when the margin shrinks below an agreed limit. That is the process that turns a stack size into a number someone checked.</p>
 
   <h2>Try it in Wokwi</h2>
   <p>
@@ -204,6 +208,11 @@ static msg_t *pool_take(void) {
     <li><strong>The high-water report says 0 bytes.</strong> The scan stops at <code>s_paint_limit</code>, and that is never set, or it is set before the paint runs. The symptom is a report of 0 bytes, even though the recursion clearly ran. The fix is to read the stack pointer inside <code>paint_unused_stack()</code>, and to set the limit at the end of the paint.</li>
     <li><strong>The canary is taken as protection.</strong> A team sees <code>CANARY OK</code> at the end of a test and assumes the stack is safe. The canary only sees a write after it has happened, and a stack overflow can corrupt a variable and return a wrong value long before the canary is checked. The fix is to measure the high-water mark under the worst test, leave margin, and where the hardware offers a guard, enable it.</li>
   </ol>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Most embedded code standards restrict dynamic memory. MISRA C:2012 has a rule that prohibits the allocation and free functions in <code>&lt;stdlib.h&gt;</code> (rule 21.3, as summarised in the Polyspace page cited above). In a review, a reviewer who sees <code>malloc()</code> in firmware asks where the memory comes from, what happens when it returns NULL, and what the worst-case heap use is. A good answer is a static bound. Teams also run the high-water measurement in their test builds, record the number, and fail the build when the margin shrinks below an agreed limit. That is the process that turns a stack size into a number someone checked.</p>
   </details>
 
   <h2>Summary</h2>

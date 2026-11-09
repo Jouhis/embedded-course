@@ -17,6 +17,61 @@
     By the end of this lesson you can split a super loop into two active objects, each with its own event queue and handler, connect them with a published event, and explain why a handler needs no lock.
   </div>
 
+  <h2>Why a super loop stops scaling</h2>
+  <p>
+    Lesson 55 gave the super loop a deadline. A deadline makes a single slow call survivable, but it does not fix the structure. Suppose the product grows a button, a blinking LED, a temperature sensor that takes 20 ms per read, and a serial report. In a super loop each of these is a call in one sequence. The LED must be updated every 500 ms, so the sensor read sits between two LED updates and delays them. Every new feature adds a wait to every other feature, and the timing of one part depends on the code of all the others. That is the coupling that the rest of this lesson removes.
+  </p>
+  <p>
+    The fix is to give each feature its own state, so that it can be paused, reordered or replaced without touching the rest. Lesson 56 showed one state machine. Here there are several, and they must talk to each other without calling each other directly.
+  </p>
+
+  <h2>The concepts, one at a time</h2>
+  <h3>Event</h3>
+  <p>
+    An <strong>event</strong> is a small record that says something happened. In this framework it holds one number, the <em>signal</em>, which names the kind of happening: <code>SIG_TICK</code> for the 10 ms clock, <code>SIG_PRESS</code> for a confirmed button press. The event does not carry the code that handles it. The button code knows that a press happened; it does not know what a press means.
+  </p>
+  <p>
+    The code declares the signals as an <code>enum</code>, which gives them consecutive integer values. <code>SIG_TICK</code> is 0 and <code>SIG_PRESS</code> is 1. Those integers are used as bit positions later, so the enum order matters.
+  </p>
+
+  <h3>Queue and ring buffer</h3>
+  <p>
+    A <strong>queue</strong> holds events until the object that owns it is ready to take them. This framework uses a <strong>ring buffer</strong>: an array with two indices, <code>head</code> and <code>tail</code>, and a rule that the indices wrap back to 0 at the end of the array. The queue is empty when <code>head</code> equals <code>tail</code>. A new event is written at <code>head</code>, then <code>head</code> moves on. An event is taken from <code>tail</code>, then <code>tail</code> moves on.
+  </p>
+  <p>
+    The size is a power of two, so the wrap is a single AND instruction instead of a comparison. <code>AO_QUEUE_SIZE</code> is 8, and the index mask is 8 − 1 = 7, binary <code>0b111</code>. Lesson 70 uses the same trick for the UART receive buffer.
+  </p>
+  <p>
+    Why is one slot always empty? If the queue used all 8 slots, a full queue and an empty queue would look the same, because both would have <code>head</code> equal to <code>tail</code>. Leaving one slot empty gives the two states different indices. The cost is that a queue of size 8 holds 7 events.
+  </p>
+
+  <h3>Worked example: a queue, step by step</h3>
+  <p>
+    Start with an empty button queue, <code>head = 0</code> and <code>tail = 0</code>. Three presses arrive before the dispatcher runs. Here is each step. Post one: the next head is <code>(0 + 1) &amp; 7 = 1</code>. That is not equal to the tail 0, so the event goes into slot 0, and <code>head</code> becomes 1. Post two: the next head is 2, the event goes into slot 1, and <code>head</code> becomes 2. Post three: slot 2, and <code>head</code> becomes 3. Now the dispatcher runs. It takes slot 0 and moves <code>tail</code> to 1. It takes slot 1 and moves <code>tail</code> to 2. The queue is empty again when <code>tail</code> reaches 3.
+  </p>
+  <p>
+    Now suppose the queue has seven events, so <code>head</code> is 7 and <code>tail</code> is 0. The next post computes <code>(7 + 1) &amp; 7 = 0</code>, which equals the tail, so the code counts a drop and returns <code>false</code>. The eighth event is lost. Every event before it is kept, in order.
+  </p>
+
+  <h3>Active object</h3>
+  <p>
+    An <strong>active object</strong> bundles three things: its state, its queue, and its handler. The handler is the function the dispatcher calls with each event. The struct in <code>ao.h</code> shows this directly: a handler pointer, a subscription mask, the queue array and the two indices. The first member of the feature's own struct is the <code>ao_t</code>, so that a pointer to the framework object can be cast back to the feature's struct. That is the same cast that lesson 49's callbacks use for their context.
+  </p>
+
+  <div class="analogy">
+    <p>An active object is a clerk with an inbox tray. Anyone can drop a request in the tray and walk away; nobody waits at the desk. The clerk takes one request at a time and finishes it before looking at the next, so the clerk's own papers are never touched by two people at once. That is why an active object needs no lock for its own state.</p>
+  </div>
+
+  <h3>Subscription mask</h3>
+  <p>
+    A <strong>subscription</strong> says which signals an object wants. The framework stores it as a 32-bit mask, where bit <em>n</em> means signal <em>n</em>. The macro <code>AO_SUB(sig)</code> expands to <code>(1u &lt;&lt; (sig))</code>, which is a one in bit position <code>sig</code>. Here is the arithmetic for this program. <code>AO_SUB(SIG_TICK)</code> is <code>1 &lt;&lt; 0</code>, which is <code>0b01</code>. <code>AO_SUB(SIG_PRESS)</code> is <code>1 &lt;&lt; 1</code>, which is <code>0b10</code>. The button subscribes to the tick only, so its mask is <code>0b01</code>. The blinker subscribes to both, so its mask is <code>0b11</code>. When the button publishes <code>SIG_PRESS</code>, the framework tests <code>0b01 &amp; 0b10</code> for the button, which is 0, so the button gets nothing. It tests <code>0b11 &amp; 0b10</code> for the blinker, which is 2, so the blinker gets the event.
+  </p>
+
+  <h3>Dispatcher</h3>
+  <p>
+    The <strong>dispatcher</strong> is the loop that takes events out of queues and calls handlers. Here, <code>ao_dispatch_all()</code> walks the registry of objects, and for each one it takes events until the queue is empty. The main loop is therefore very small. It makes a tick every 10 ms and calls the dispatcher on every pass. All the feature logic lives in handlers.
+  </p>
+
   <h2>The idea: events instead of waiting</h2>
   <p>
     In a super loop, each feature is a function call in order, and a slow call delays all the others (lesson 55 showed the deadline fix). An <strong>event-driven</strong> design turns each happening into a message: a press, a tick, a sensor value ready. The code that sees the happening posts an <strong>event</strong> to a <strong>queue</strong>, and the code that owns the feature takes the event out later and reacts to it.
@@ -73,57 +128,6 @@
     The framework is a service, the two AOs are application features, and the button code is a driver (lesson 76). The dependencies point one way: the blinker depends on the event <code>SIG_PRESS</code>, and it never includes the button's pin code. The button depends on the framework and on nothing about the LED. You can change either AO without touching the other.
   </p>
 
-  <h2>Why a super loop stops scaling</h2>
-  <p>
-    Lesson 55 gave the super loop a deadline. A deadline makes a single slow call survivable, but it does not fix the structure. Suppose the product grows a button, a blinking LED, a temperature sensor that takes 20 ms per read, and a serial report. In a super loop each of these is a call in one sequence. The LED must be updated every 500 ms, so the sensor read sits between two LED updates and delays them. Every new feature adds a wait to every other feature, and the timing of one part depends on the code of all the others. That is the coupling that the rest of this lesson removes.
-  </p>
-  <p>
-    The fix is to give each feature its own state, so that it can be paused, reordered or replaced without touching the rest. Lesson 56 showed one state machine. Here there are several, and they must talk to each other without calling each other directly.
-  </p>
-
-  <h2>The concepts, one at a time</h2>
-  <h3>Event</h3>
-  <p>
-    An <strong>event</strong> is a small record that says something happened. In this framework it holds one number, the <em>signal</em>, which names the kind of happening: <code>SIG_TICK</code> for the 10 ms clock, <code>SIG_PRESS</code> for a confirmed button press. The event does not carry the code that handles it. The button code knows that a press happened; it does not know what a press means.
-  </p>
-  <p>
-    The code declares the signals as an <code>enum</code>, which gives them consecutive integer values. <code>SIG_TICK</code> is 0 and <code>SIG_PRESS</code> is 1. Those integers are used as bit positions later, so the enum order matters.
-  </p>
-
-  <h3>Queue and ring buffer</h3>
-  <p>
-    A <strong>queue</strong> holds events until the object that owns it is ready to take them. This framework uses a <strong>ring buffer</strong>: an array with two indices, <code>head</code> and <code>tail</code>, and a rule that the indices wrap back to 0 at the end of the array. The queue is empty when <code>head</code> equals <code>tail</code>. A new event is written at <code>head</code>, then <code>head</code> moves on. An event is taken from <code>tail</code>, then <code>tail</code> moves on.
-  </p>
-  <p>
-    The size is a power of two, so the wrap is a single AND instruction instead of a comparison. <code>AO_QUEUE_SIZE</code> is 8, and the index mask is 8 − 1 = 7, binary <code>0b111</code>. Lesson 70 uses the same trick for the UART receive buffer.
-  </p>
-  <p>
-    Why is one slot always empty? If the queue used all 8 slots, a full queue and an empty queue would look the same, because both would have <code>head</code> equal to <code>tail</code>. Leaving one slot empty gives the two states different indices. The cost is that a queue of size 8 holds 7 events.
-  </p>
-
-  <h3>Worked example: a queue, step by step</h3>
-  <p>
-    Start with an empty button queue, <code>head = 0</code> and <code>tail = 0</code>. Three presses arrive before the dispatcher runs. Here is each step. Post one: the next head is <code>(0 + 1) &amp; 7 = 1</code>. That is not equal to the tail 0, so the event goes into slot 0, and <code>head</code> becomes 1. Post two: the next head is 2, the event goes into slot 1, and <code>head</code> becomes 2. Post three: slot 2, and <code>head</code> becomes 3. Now the dispatcher runs. It takes slot 0 and moves <code>tail</code> to 1. It takes slot 1 and moves <code>tail</code> to 2. The queue is empty again when <code>tail</code> reaches 3.
-  </p>
-  <p>
-    Now suppose the queue has seven events, so <code>head</code> is 7 and <code>tail</code> is 0. The next post computes <code>(7 + 1) &amp; 7 = 0</code>, which equals the tail, so the code counts a drop and returns <code>false</code>. The eighth event is lost. Every event before it is kept, in order.
-  </p>
-
-  <h3>Active object</h3>
-  <p>
-    An <strong>active object</strong> bundles three things: its state, its queue, and its handler. The handler is the function the dispatcher calls with each event. The struct in <code>ao.h</code> shows this directly: a handler pointer, a subscription mask, the queue array and the two indices. The first member of the feature's own struct is the <code>ao_t</code>, so that a pointer to the framework object can be cast back to the feature's struct. That is the same cast that lesson 49's callbacks use for their context.
-  </p>
-
-  <h3>Subscription mask</h3>
-  <p>
-    A <strong>subscription</strong> says which signals an object wants. The framework stores it as a 32-bit mask, where bit <em>n</em> means signal <em>n</em>. The macro <code>AO_SUB(sig)</code> expands to <code>(1u &lt;&lt; (sig))</code>, which is a one in bit position <code>sig</code>. Here is the arithmetic for this program. <code>AO_SUB(SIG_TICK)</code> is <code>1 &lt;&lt; 0</code>, which is <code>0b01</code>. <code>AO_SUB(SIG_PRESS)</code> is <code>1 &lt;&lt; 1</code>, which is <code>0b10</code>. The button subscribes to the tick only, so its mask is <code>0b01</code>. The blinker subscribes to both, so its mask is <code>0b11</code>. When the button publishes <code>SIG_PRESS</code>, the framework tests <code>0b01 &amp; 0b10</code> for the button, which is 0, so the button gets nothing. It tests <code>0b11 &amp; 0b10</code> for the blinker, which is 2, so the blinker gets the event.
-  </p>
-
-  <h3>Dispatcher</h3>
-  <p>
-    The <strong>dispatcher</strong> is the loop that takes events out of queues and calls handlers. Here, <code>ao_dispatch_all()</code> walks the registry of objects, and for each one it takes events until the queue is empty. The main loop is therefore very small. It makes a tick every 10 ms and calls the dispatcher on every pass. All the feature logic lives in handlers.
-  </p>
-
   <h2>A worked example: one press, from the pin to the LED</h2>
   <p>
     Follow one button press with the numbers in the code. The button is wired to GP14 with an internal pull-up, so pressed reads 0. The button handler counts agreeing samples in <code>count</code>, and it confirms a press when <code>count</code> reaches <code>DEBOUNCE_TICKS</code>, which is 3. Ticks come every 10 ms.
@@ -177,10 +181,6 @@
     The dispatch loop, <code>ao_dispatch_all()</code>, has the nested <code>while (take(...))</code>. <code>take()</code> returns false when the queue is empty, so the loop drains one object's queue before it moves to the next object. Each call to the handler is a full run to completion, and no other handler starts in the middle of it.
   </p>
 
-  <h2>In real projects</h2>
-  <p>
-    The active-object model is the basis of the QP/C framework, which the state-machine.com reference describes as a lightweight implementation of this design. Miro Samek's course walks through the same ideas with code, so you can see what the compiler makes of each handler. Zephyr offers the same building blocks as kernel services: a message queue, <code>k_msgq</code>, carries events between threads, and its timeout forms let a thread wait for work instead of polling. A reviewer of an event-driven design asks three questions: where the events are posted, who subscribes to each one, and what happens when a queue fills.</p>
-
   <h2>Try it in Wokwi</h2>
   <p>
     The project is <code>projects/0077-active-objects-button-blinker</code>. The framework, <code>ao.c</code> and <code>ao.h</code>, is complete in both folders. Together they are about a hundred lines with their comments (58 lines in <code>ao.c</code> and 41 in <code>ao.h</code>), so you can read the whole queue and dispatcher. The starter <code>main.c</code> is a working super loop: a press toggles the blink, and the LED flips every 500 ms. Your job is to move its logic into the two AO files and reduce <code>main.c</code> to a tick and a dispatch.
@@ -212,6 +212,11 @@
     <li><strong>The dropped count keeps rising.</strong> Under load the monitor shows presses that do not change the blink. A call to <code>ao_dropped()</code> returns a growing number. The cause is a full queue: a handler is too slow, or a burst of events is larger than 7. The fix is to make the handler faster, to raise <code>AO_QUEUE_SIZE</code> to the next power of two, or to lower the rate of the producer.</li>
     <li><strong>An interrupt posts to a queue.</strong> A student moves the button read into an interrupt so that presses are not missed. The framework is not safe for that. An interrupt can arrive while the dispatcher is updating <code>tail</code>, and the two writes race. The symptom is a rare duplicate or lost event that never reproduces in the simulator. The fix is to keep the posts in the main loop, or to protect the queue with a critical section, which lesson 57 covers.</li>
   </ol>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    The active-object model is the basis of the QP/C framework, which the state-machine.com reference describes as a lightweight implementation of this design. Miro Samek's course walks through the same ideas with code, so you can see what the compiler makes of each handler. Zephyr offers the same building blocks as kernel services: a message queue, <code>k_msgq</code>, carries events between threads, and its timeout forms let a thread wait for work instead of polling. A reviewer of an event-driven design asks three questions: where the events are posted, who subscribes to each one, and what happens when a queue fills.</p>
   </details>
 
   <h2>Summary</h2>
