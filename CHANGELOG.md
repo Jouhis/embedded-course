@@ -25,6 +25,13 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   before the task. Lesson 104 gets numbered hands-on steps for its bootloader exercise.
 - Lesson 4 explains the layout. `check_course.py` keeps the win box, quizzes, steps and summary
   out of folds; LESSON-SPEC section 3.1 describes the flow, folds and boxes.
+- **Checkpoints rebuilt** as fast multiple-choice tests: four options, one question at a time, an
+  *I don't know* button, and answers only at the end. Each question is tagged with one to three
+  lessons, so the result shows a bar per lesson (Solid, Shaky, Go over again), lists the lessons to
+  go over before the next part, and reviews every missed question with its explanation. Results
+  are saved with the progress, and the course index marks each lesson with its band. 18 to 50
+  questions per part (`tools/maintainer/checkpoints/`, built by `build_checkpoint.py`, checked by
+  `check_course.py`).
 
 ## 0.0.19 (2026-11-09)
 

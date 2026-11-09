@@ -45,7 +45,7 @@ File: `lessons/<file>` where `<file>` is the **exact** file name from `assets/ma
 | Explainer with citations | required | short brief | none |
 | Hands-on Wokwi task | required unless concept-only | required (bigger) | optional |
 | `.win` | required | required | none |
-| Quiz "Check your understanding" | ≥ 4 questions | ≥ 3 | ≥ 15, mixed across the whole part |
+| Quiz "Check your understanding" | ≥ 4 questions | ≥ 3 | none: a `.widget.checkpoint` instead (section 9) |
 | Quiz "Spaced review" (2–3 questions from **earlier** lessons) | required from lesson 5 on | optional | none |
 | `.source` (one best primary source, with sections or timestamps) | required | required | optional |
 | `.ask` (remind the learner to ask the agent, with a suggested question) | required | required | required |
@@ -91,7 +91,7 @@ A quiz is part of the teaching, not a memory test. A good question makes the lea
 ### How many
 - **Check your understanding**: as many as the lesson's ideas deserve, usually 4–8. A short concept lesson may have 3; a dense one up to 10. No fixed count. The checker requires at least 3 scored questions per lesson or lab, and 10 per checkpoint.
 - **Spaced review**: 2–3 questions that **apply** an idea from at least 2 lessons back to this lesson's context. For example, in the I²C lesson: "the bus has 4.7 kΩ pull-ups from lesson 16; how long does SDA take to rise…".
-- **Checkpoints**: 10–15 mixed, scenario-heavy questions across the part, plus one or two `reflect` design questions.
+- **Checkpoints**: four-option questions tagged with lessons, as in section 9.
 
 ### Correctness
 Every question must be answerable from this lesson and earlier ones. Work out every number yourself before writing it down. Options and feedback must not introduce unchecked facts (section 6).
@@ -160,7 +160,12 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
 
 ## 9. Labs and checkpoints
 - **Lab:** a larger build combining the part's skills. Give a requirements list (numbered), acceptance criteria the learner can check, staged milestones, and hints in `<details>`. A starter and a solution project are required.
-- **Checkpoint:** ≥ 15 mixed questions across the whole part, plus 2–3 "explain out loud" prompts. Tell the learner which lessons to revisit for anything they miss.
+- **Checkpoint:** a fast test that estimates how well each lesson of the part has stuck. It is a `.widget.checkpoint` run by `assets/checkpoint.js`, and its page is written by `tools/maintainer/build_checkpoint.py` from `tools/maintainer/checkpoints/cpNN.py`. Edit the source file, never the page.
+  - Every question has exactly four options, one right, with a `why` that the review shows after the test. No per-question feedback during the test, and an *I don't know* button on every question.
+  - Each question is tagged with 1 to 3 lessons of the part. The learner never sees the tags.
+  - Count: 3 per lesson in a part of up to 10 lessons, 2 per lesson in a bigger part, at least 18 and at most 50. Every lesson is tagged on at least 3 questions (2 in a big part). `check_course.py` enforces all of this.
+  - Keep them fast: a short scenario, an idea to apply, at most one easy step of arithmetic. Options obey the length-spread rule like any quiz.
+  - Scoring: each answer counts towards its tagged lessons, a share of 1 / (tags). A lesson's estimate is (right − wrong ÷ 3) ÷ answered, floored at 0, so a blind guess averages 0 and *I don't know* costs nothing extra. Bands: Solid ≥ 75 %, Shaky ≥ 45 %, else Go over again. The results list up to five lessons to go over before the next part, and the course index marks each lesson with its band.
 
 ## 10. Reference sheets and glossary
 - When your lessons introduce reusable facts (formulas, register fields, API calls), add them to the relevant sheet in `reference/`. File names are in `tools/maintainer/build_reference.py`. Create the sheet from the same HTML shell as `reference/glossary.html` if it doesn't exist yet. Sheets are dense, scannable and printable: tables and short code, no prose paragraphs.
@@ -253,4 +258,4 @@ Rules:
 - Every new fact, number, register name, bit position or API signature must come from a source you checked (section 6), not from memory. If you cannot verify something, leave it out.
 - Diagrams: add one when it explains something better than words (timing, memory layout, signal flow). Follow the style of the existing diagrams: `currentColor` strokes and text, `font-family="JetBrains Mono, monospace"`, `role="img"` and an `aria-label`. Check them by rendering (see the diagram notes in NOTES.md if any); never add a diagram you have not looked at.
 - Don't change the Wokwi projects unless the lesson text and project disagree; if they do, fix the lesson text to match the working project and mention it in your report.
-- Concept-only lessons (section 8) and labs follow the same depth standard; labs explain the design choices, not only the steps. Checkpoints keep their quiz format.
+- Concept-only lessons (section 8) and labs follow the same depth standard; labs explain the design choices, not only the steps. Checkpoints follow section 9.

@@ -1,0 +1,178 @@
+# Checkpoint 7: RTOS (lessons 86-99). Built by build_checkpoint.py.
+# Each question: (lessons, prompt, [right, wrong, wrong, wrong], why). The right option is listed first.
+
+GOAL = """You find out which of lessons 86 to 99 have stuck: why and how an RTOS schedules, what a context
+    switch does, the kernel objects, stacks and timing, and how a Zephyr application is built, configured,
+    described and tested. Then you know what to go over again before the communication lessons."""
+
+SOURCES = """The facts come from the Zephyr documentation on <a href="https://docs.zephyrproject.org/4.5.0/build/kconfig/index.html" target="_blank" rel="noopener">Kconfig</a>,
+    <a href="https://docs.zephyrproject.org/4.5.0/build/dts/index.html" target="_blank" rel="noopener">devicetree</a> and
+    <a href="https://docs.zephyrproject.org/4.5.0/kernel/services/threads/index.html" target="_blank" rel="noopener">threads</a>,
+    and the FreeRTOS kernel sources. Each lesson lists its own sources."""
+
+QUESTIONS = [
+    ([86],
+     "A super-loop redraws a display for 100 ms. A button must be answered within 20 ms. What is the problem?",
+     ["The button can wait the whole redraw", "The redraw uses too much RAM",
+      "The button needs a faster clock", "The loop has no idle task to run"],
+     "In a super-loop the worst-case wait is the sum of the blocking work that can run first. A scheduler "
+     "bounds the wait by the tick instead."),
+    ([86, 93],
+     "A task meets its deadline in 999 of 1000 runs. Is it real-time?",
+     ["No: every deadline, worst case included", "Yes: 99.9 % of runs is good enough",
+      "Yes, if the average is under the deadline", "No: real-time means as fast as possible"],
+     "Real-time means meeting every deadline, including the worst case. An average hides the one run that "
+     "fails."),
+    ([87],
+     "In FreeRTOS, task A has priority 3 and task B priority 1. Both are ready. Which runs?",
+     ["Task A, priority 3", "Task B, priority 1", "Each in turn, per tick", "The idle task first"],
+     "FreeRTOS priorities grow upward: a larger number is more urgent, and the highest-priority ready "
+     "task runs."),
+    ([87, 93],
+     "A task must run every 10 ms without drifting. Which call fits?",
+     ["vTaskDelayUntil()", "vTaskDelay(10)", "vTaskSuspend()", "taskYIELD() loop"],
+     "<code>vTaskDelay</code> counts from the call, so the work time adds to every period. "
+     "<code>vTaskDelayUntil</code> keeps an absolute schedule."),
+    ([87, 92],
+     "<code>xTaskCreate(fn, \"t\", 256, ...)</code> on the Cortex-M3. How big is the stack?",
+     ["1024 bytes", "256 bytes", "512 bytes", "2048 bytes"],
+     "The depth is in words, and a word is 4 bytes on the Cortex-M3, so 256 words is 1024 bytes."),
+    ([88],
+     "On exception entry, the hardware stacks R0 to R3, R12, LR, PC and xPSR. Why does the kernel save R4 to R11?",
+     ["A task switch must keep them for the leaving task", "The hardware cannot reach those registers",
+      "They hold the stack pointers of each task", "Handlers are not allowed to use them"],
+     "A normal handler preserves R4 to R11 by the calling convention. A switch returns to a different task, "
+     "so the leaving task's R4 to R11 must be saved by hand."),
+    ([88],
+     "A first task has never run. What does its hand-built frame hold?",
+     ["Its entry point as PC, xPSR = 0x01000000", "Zeros only, as the core fills the rest",
+      "The return address of main in the PC", "A copy of the kernel's own registers"],
+     "The switch restores a frame as if the task had been interrupted. PC is the entry point and xPSR has "
+     "the Thumb bit set."),
+    ([88, 89],
+     "Which EXC_RETURN value returns to thread mode on the PSP?",
+     ["0xFFFFFFFD", "0xFFFFFFF9", "0xFFFFFFF1", "0x01000000"],
+     "Tasks run on the PSP and handlers on the MSP. 0xFFFFFFFD returns to thread mode on the PSP; "
+     "0xFFFFFFF9 uses the MSP."),
+    ([89],
+     "When the tick decides a switch is needed, what does the tick handler do?",
+     ["Pends PendSV, which switches later", "Switches the tasks itself",
+      "Calls the scheduler from main", "Raises an SVC exception at once"],
+     "The tick handler only pends PendSV. PendSV runs at the lowest priority, after every other handler "
+     "has returned."),
+    ([89],
+     "Why are PendSV and SysTick set to the lowest priority, 255?",
+     ["So a switch never happens inside another handler", "So they run faster than other handlers",
+      "So the tick is never delayed by a task", "So they can call the blocking API"],
+     "A switch at a higher level could return to a task while another handler is still active. At the "
+     "lowest level, PendSV tail-chains after the others."),
+    ([90],
+     "An ISR gives a binary semaphore three times before the task takes it. How many takes succeed?",
+     ["One", "Three", "Two", "None"],
+     "A binary semaphore holds 0 or 1, so repeated gives count once. A counting semaphore keeps the count."),
+    ([90],
+     "An ISR sends to a queue with xQueueSendFromISR. What is needed for the waiting task to run at once?",
+     ["Pass woken to portYIELD_FROM_ISR()", "Call vTaskDelay(0) inside the ISR",
+      "Use xQueueSend instead of FromISR", "Give the task the lowest priority"],
+     "The FromISR call sets <code>woken</code> when a higher-priority task became ready, and "
+     "<code>portYIELD_FROM_ISR(woken)</code> switches to it as the ISR returns."),
+    ([90, 89],
+     "An ISR calling FromISR functions has priority 2 (numerically) with configMAX_SYSCALL at 5. What is wrong?",
+     ["It is too urgent to call the kernel safely", "It is too slow for the queue to accept",
+      "Priority 2 is reserved for SysTick", "Nothing: lower numbers are always fine"],
+     "An ISR that calls the kernel must be numerically equal to or above configMAX_SYSCALL_INTERRUPT_PRIORITY. "
+     "A more urgent one can run inside a kernel critical section."),
+    ([91],
+     "A high task waits for a mutex held by a low task while a medium task runs. What fixes this?",
+     ["A mutex with priority inheritance", "A binary semaphore instead of it",
+      "A longer timeout on the take", "Giving the medium task priority 0"],
+     "That is priority inversion. Inheritance raises the owner to the waiter's priority, so the medium "
+     "task cannot keep it off the CPU. A semaphore has no owner to raise."),
+    ([91],
+     "Two tasks lock mutexes A and B in opposite orders and sometimes freeze. What breaks the deadlock?",
+     ["One global lock order for every task", "Making both mutexes recursive",
+      "Taking the locks inside an ISR", "Raising both tasks' priorities"],
+     "Deadlock needs a circular wait. If every task takes A before B, no cycle can form."),
+    ([92],
+     "uxTaskGetStackHighWaterMark() returns 40 for a task with a depth of 200. What does it mean?",
+     ["At least 40 words have never been used", "The task has used 40 words at most",
+      "The stack will overflow at 40 words", "The task uses 40 bytes on average"],
+     "It returns the fewest free words seen so far, so peak use is 160 words on the paths that ran. Keep "
+     "a margin for paths the test missed."),
+    ([92],
+     "Why should vApplicationStackOverflowHook() stop the system instead of returning?",
+     ["The memory is already corrupted", "Returning resets the whole device",
+      "The kernel calls it in a loop", "The hook runs on the task's stack"],
+     "By the time the hook runs, the overflow has damaged memory. Returning hides the bug and lets the "
+     "damage spread."),
+    ([93],
+     "Rate-monotonic scheduling gives which task the highest priority?",
+     ["The one with the shortest period", "The one with the longest work",
+      "The one with the longest period", "The one created first in main"],
+     "Rate-monotonic priorities follow the rate: the shortest period is the most urgent."),
+    ([93],
+     "A 1 µs timer is 16 bits wide. What limits a single measurement with it?",
+     ["It must be shorter than 65.536 ms", "It must be shorter than 1 ms",
+      "It must be a multiple of the tick", "It cannot include an interrupt"],
+     "The counter wraps after 65 536 counts. Unsigned 16-bit subtraction handles one wrap, so a "
+     "measurement must be shorter than that."),
+    ([94, 97],
+     "A FreeRTOS task at priority 5 is moved to a Zephyr thread. Which Zephyr priority is more urgent than 5?",
+     ["2", "7", "10", "14"],
+     "In Zephyr a smaller number is more urgent, the reverse of FreeRTOS. Check every priority when you "
+     "move code."),
+    ([94],
+     "How does the course's Zephyr blink find the LED pin?",
+     ["Through the led0 alias in the devicetree", "From a pin number in main.c",
+      "From a Kconfig symbol for the pin", "By scanning every GPIO at boot"],
+     "<code>GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios)</code> reads the pin from the devicetree, so no pin "
+     "number is written in the C code."),
+    ([95],
+     "<code>CONFIG_LOG_DEFAULT_LEVEL=4</code> is in prj.conf but no logs appear. Where do you check first?",
+     ["build/zephyr/.config, for CONFIG_LOG", "The board's devicetree overlay",
+      "The C file's #include list", "The west.yml manifest file"],
+     "<code>.config</code> is the final answer. The level has no effect if <code>CONFIG_LOG</code> is off, "
+     "and an assignment with unmet dependencies is ignored with a warning."),
+    ([95],
+     "A board defconfig sets a symbol, and prj.conf sets it differently. Which wins?",
+     ["The value in prj.conf", "The board defconfig", "The Kconfig default", "The last one edited"],
+     "The application configuration overrides the board defconfig. A symbol set nowhere uses its Kconfig "
+     "default."),
+    ([96],
+     "A button node uses <code>GPIO_ACTIVE_LOW</code>. What does gpio_pin_get_dt() return while it is pressed?",
+     ["1, the logical active state", "0, the physical pin level",
+      "-1, as an error for low pins", "It depends on the pull-up"],
+     "The flag makes the API logical: a low pin on an active-low button reads 1, so a press reads 1."),
+    ([96],
+     "The LED moves to another pin on a custom board. What changes?",
+     ["The board overlay, not the C code", "The C code and the Kconfig file",
+      "The Zephyr board files for rpi_pico", "The pin number in main.c only"],
+     "The C code uses the alias. Moving the node changes only <code>boards/&lt;board&gt;.overlay</code>; "
+     "the shared board files stay untouched."),
+    ([97],
+     "A Zephyr timer expiry function runs. What should it do?",
+     ["Give a semaphore or submit work, little else", "Take a mutex and update shared state",
+      "Log a long message with LOG_INF", "Sleep for a tick, then do the work"],
+     "Timer expiries run in interrupt context. Keep them to a give or a work submit and let a thread do "
+     "the rest; a mutex is never taken there."),
+    ([98],
+     "A sensor's 7-bit I2C address is 0x48. Which byte appears on the bus for a read?",
+     ["0x91", "0x90", "0x48", "0x49"],
+     "The 7-bit address is shifted left one place and the R/W bit added: 0x90 for a write and 0x91 for a "
+     "read."),
+    ([98, 96],
+     "A button callback never fires. Which step is most often missed?",
+     ["Configuring the pin's interrupt edge", "Declaring the callback as static",
+      "Adding CONFIG_I2C=y to prj.conf", "Setting GPIO_ACTIVE_LOW in the code"],
+     "An interrupt needs three steps: configure the edge, initialise the callback with a pin mask, then "
+     "add it."),
+    ([99],
+     "A module is set to level INF. Which messages print?",
+     ["ERR, WRN and INF", "Only the INF ones", "INF and DBG only", "All four levels"],
+     "ERR is 1, WRN 2, INF 3 and DBG 4. A module at level 3 prints everything at 3 or below."),
+    ([99],
+     "A Zephyr test uses <code>zassert_equal</code> and the first assert fails. What happens to that test?",
+     ["It stops at once and is reported failed", "It runs on and reports all failures",
+      "It is retried until it passes", "It is marked skipped, not failed"],
+     "A failed zassert ends that test case immediately. Twister then reports the result."),
+]
