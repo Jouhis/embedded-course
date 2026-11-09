@@ -32,6 +32,13 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   are saved with the progress, and the course index marks each lesson with its band. 18 to 50
   questions per part (`tools/maintainer/checkpoints/`, built by `build_checkpoint.py`, checked by
   `check_course.py`).
+- **Question bank and custom tests.** Each checkpoint now has about ten questions per lesson (1,020
+  in all). Besides the premade test, *build your own test* lets you pick lessons (all, none, not yet
+  solid, not tested yet) and a size, and its result updates the marks for those lessons only.
+- **Checkpoints come before the lab** of their part, so the result points at the gaps before the
+  bigger build. The pager follows the new order.
+- Lesson 4 says the end-of-lesson questions are optional, since the checkpoint shows what has not
+  stuck, and why answering them still helps you remember.
 
 ## 0.0.19 (2026-11-09)
 

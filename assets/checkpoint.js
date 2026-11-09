@@ -201,7 +201,11 @@
         stage.appendChild(bar);
         stage.appendChild(el("div", { class: "q-prompt", html: q.prompt }));
         const opts = el("div", { class: "q-options" });
+        // Ignore a click in the first moment after a new card appears, so a double-click
+        // on one answer does not also answer the next question.
+        const shownAt = Date.now();
         const pick = r => () => {
+          if (Date.now() - shownAt < 300) return;
           answers[k] = r;
           k += 1;
           if (k < qs.length) show();
