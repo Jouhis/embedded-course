@@ -3,7 +3,7 @@
   python tools/maintainer/build_checkpoint.py            every tools/maintainer/checkpoints/cpNN.py
   python tools/maintainer/build_checkpoint.py cp03       one
 
-A source file defines GOAL and SOURCES (HTML; SOURCES links the primary sources) QUESTIONS, the premade checkpoint; cpNN_bank.py defines BANK, more questions for the tests a learner
+A source file defines GOAL and SOURCES (HTML; SOURCES links the primary sources) QUESTIONS, the premade checkpoint; cpNN_bank*.py files each define BANK, more questions for the tests a learner
 builds (ten per lesson in all, counted by each question's first lesson). Both are lists of
   (lessons, prompt, [right, wrong, wrong, wrong], why)
 with the right option first; the build spreads the right answer over the four authored positions
@@ -39,8 +39,7 @@ def build(cp):
     t = raw.replace("\r\n", "\n")
 
     qs = []
-    bank_file = SRC / f"{cp}_bank.py"
-    bank = runpy.run_path(str(bank_file))["BANK"] if bank_file.exists() else []
+    bank = [q for f in sorted(SRC.glob(f"{cp}_bank*.py")) for q in runpy.run_path(str(f))["BANK"]]
     tagged = [(q, True) for q in src["QUESTIONS"]] + [(q, False) for q in bank]
     for n, ((tags, prompt, options, why), premade) in enumerate(tagged):
         k = (n * 7 + 1) % 4                      # spread the right answer over the four positions
