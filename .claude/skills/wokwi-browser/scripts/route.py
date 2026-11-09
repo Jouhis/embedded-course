@@ -132,4 +132,5 @@ def main():
     else:
         print(text, end="")
 
-main()
+if __name__ == '__main__':   # tools/maintainer/check_diagrams.py imports PINS
+    main()

@@ -130,6 +130,8 @@ Every question must be answerable from this lesson and earlier ones. Work out ev
   not at start-up. FreeRTOS projects on the STM32 are build-only without a `SIM` line, because
   Wokwi's STM32 core cannot run FreeRTOS (CHANGELOG, 0.0.3 known issues).
 - In the lesson, tell the learner: open the `starter` folder in VS Code, press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build, then <kbd>F1</kbd> → "Wokwi: Start Simulator". For debugging: start the simulator, then press <kbd>F5</kbd>.
+- The hands-on section is the `<h2>` that names `projects/<id>` and has an `<ol class="steps">`. `tools/maintainer/build_exercise_readmes.py` copies it, with its hints and the list of files the starter and solution differ in, into the starter's `README.md`, so learners see the task in VS Code. Run it after changing that section or a starter; CI fails on a stale README. A project used by two lessons, or whose work is in another project's folder, gets an entry in the script's `SECTION` or `FILES` table.
+- Lay the diagram out so it reads at a glance (the `wokwi-browser` skill has the router). `python -I tools/maintainer/check_diagrams.py` fails on parts on top of each other, wires across parts, unrouted wires, and a starter laid out differently from its solution.
 - Code style: C11, `stdint.h` types, `static` for file-local functions, named constants (no magic numbers), and comments that explain **why**. No Arduino APIs.
 
 ## 7.1 Electronics hands-on: Falstad CircuitJS, not Wokwi

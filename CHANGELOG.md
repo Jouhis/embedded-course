@@ -11,6 +11,19 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.0.19 (2026-11-09)
+
+- Every exercise folder has a `README.md`: the lesson's steps and hints, the files you change
+  (some exercises span several), and the line the serial monitor prints when you're done. It is
+  generated from the lesson by `tools/maintainer/build_exercise_readmes.py`, and CI fails if one
+  is out of date.
+- New check `tools/maintainer/check_diagrams.py`, run in CI: no Wokwi parts on top of each other,
+  no wire across a part, every wire routed, and each starter laid out like its solution. All 166
+  diagrams pass. If a starter's LEDs sit on top of each other, your copy is older than 0.0.6:
+  update it.
+- README and lesson 4: keep your exercise work on a branch of your own, update with
+  `git pull` and `git merge main`, and check that `VERSION` matches the index page.
+
 ## 0.0.18 (2026-11-09)
 
 - Lesson 27: the CPU simulator draws two bus timelines for the store and reload program, one shared

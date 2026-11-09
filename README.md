@@ -50,7 +50,29 @@ The hands-on parts build firmware and run it in the Wokwi simulator, so they nee
    tells it how the course works. You need your own account for it.
 6. **Open the course** at <https://jouhis.github.io/embedded-course/> and start with lesson 1.
 
-To get new lessons and fixes later, run `git pull` in the course folder.
+### Keep your work on your own branch, and stay up to date
+
+The course gets fixes and new lessons often. Keep your exercise work on a branch of your own, so
+updating never fights with your edits:
+
+```sh
+git switch -c my-work                  # once: your branch, starting from the course
+git add -A && git commit -m "lesson 51 done"   # whenever you finish something
+```
+
+To update (commit your work first):
+
+```sh
+git switch main && git pull            # get the latest course
+git switch my-work && git merge main   # bring it into your branch
+```
+
+If the merge reports a conflict in a starter you edited, keep your version of that file, or ask
+your tutor to help. To check you have the latest version, compare the [`VERSION`](VERSION) file
+with the "Version" line under the title of the course's index page. If they differ and `git pull` says
+"Already up to date", you are probably not on `main`; `git status` tells you. If `git pull` refuses
+because of local changes, the Wokwi extension may have saved a `diagram.json` you opened: commit
+it on your branch, or undo it with `git restore <file>`.
 
 The sections below explain the setup in more detail.
 
@@ -117,8 +139,10 @@ These live in `tools/maintainer/`; `tools/` itself holds only the scripts learne
 | Command | What it does |
 | --- | --- |
 | `python tools/maintainer/check_course.py` | validates every lesson page |
+| `python tools/maintainer/check_diagrams.py` | checks every Wokwi `diagram.json` is readable: no parts on top of each other, no wire across a part, every wire routed, starters laid out like their solutions |
 | `python tools/verify_projects.py` | builds and lints every Wokwi project, checks each has a pass line, runs the host unit tests |
 | `python tools/verify_projects.py --sim` | also runs solutions in the Wokwi cloud and checks the pass line (needs `WOKWI_CLI_TOKEN`) |
+| `python tools/maintainer/build_exercise_readmes.py` | writes `README.md` into every exercise folder from its lesson's steps and the starter/solution difference; run it after editing a lesson's hands-on section or a starter (`--check` only reports stale ones) |
 | `python tools/maintainer/build_manifest.py` | rebuilds `assets/manifest.js` from `COURSE-PLAN.md` |
 | `python tools/maintainer/build_search.py` | builds the search index (`assets/search/`, git-ignored); add `--semantic` for the smart-search vectors (needs Node and `npm ci` in `tools/maintainer/search` once) |
 
