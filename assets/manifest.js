@@ -228,24 +228,24 @@ window.COURSE_MANIFEST = {
      "published": true
     },
     {
-     "id": "lab01",
-     "kind": "lab",
-     "number": 1,
-     "title": "Lab 1: Design and simulate an LED and MOSFET load driver",
-     "detail": "Design and simulate an LED and MOSFET load driver, and justify every component value",
-     "file": "lab01-design-and-simulate-an-led.html",
-     "section": null,
-     "conceptOnly": false,
-     "optional": false,
-     "published": true
-    },
-    {
      "id": "cp01",
      "kind": "checkpoint",
      "number": 1,
      "title": "Checkpoint 1",
      "detail": "Mixed review exam for Part 1",
      "file": "checkpoint01.html",
+     "section": null,
+     "conceptOnly": false,
+     "optional": false,
+     "published": true
+    },
+    {
+     "id": "lab01",
+     "kind": "lab",
+     "number": 1,
+     "title": "Lab 1: Design and simulate an LED and MOSFET load driver",
+     "detail": "Design and simulate an LED and MOSFET load driver, and justify every component value",
+     "file": "lab01-design-and-simulate-an-led.html",
      "section": null,
      "conceptOnly": false,
      "optional": false,
@@ -570,18 +570,6 @@ window.COURSE_MANIFEST = {
      "published": true
     },
     {
-     "id": "lab02",
-     "kind": "lab",
-     "number": 2,
-     "title": "Lab 2: Trace one instruction",
-     "detail": "follow GPIO->ODR |= 1; from C through assembly, the instruction encoding, the bus and the register to the LED; then read the .map file and the disassembly",
-     "file": "lab02-trace-one-instruction.html",
-     "section": "2.4 Memory, Buses, and Boot",
-     "conceptOnly": false,
-     "optional": false,
-     "published": true
-    },
-    {
      "id": "cp02",
      "kind": "checkpoint",
      "number": 2,
@@ -589,6 +577,18 @@ window.COURSE_MANIFEST = {
      "detail": "Mixed review exam for Part 2",
      "file": "checkpoint02.html",
      "section": null,
+     "conceptOnly": false,
+     "optional": false,
+     "published": true
+    },
+    {
+     "id": "lab02",
+     "kind": "lab",
+     "number": 2,
+     "title": "Lab 2: Trace one instruction",
+     "detail": "follow GPIO->ODR |= 1; from C through assembly, the instruction encoding, the bus and the register to the LED; then read the .map file and the disassembly",
+     "file": "lab02-trace-one-instruction.html",
+     "section": "2.4 Memory, Buses, and Boot",
      "conceptOnly": false,
      "optional": false,
      "published": true
@@ -870,24 +870,24 @@ window.COURSE_MANIFEST = {
      "published": true
     },
     {
-     "id": "lab03",
-     "kind": "lab",
-     "number": 3,
-     "title": "Lab 3: Environment monitor: sensor",
-     "detail": "Environment monitor: sensor, OLED, buttons, a menu state machine, and logging",
-     "file": "lab03-environment-monitor.html",
-     "section": null,
-     "conceptOnly": false,
-     "optional": false,
-     "published": true
-    },
-    {
      "id": "cp04",
      "kind": "checkpoint",
      "number": 4,
      "title": "Checkpoint 4",
      "detail": "Mixed review exam for Part 4",
      "file": "checkpoint04.html",
+     "section": null,
+     "conceptOnly": false,
+     "optional": false,
+     "published": true
+    },
+    {
+     "id": "lab03",
+     "kind": "lab",
+     "number": 3,
+     "title": "Lab 3: Environment monitor: sensor",
+     "detail": "Environment monitor: sensor, OLED, buttons, a menu state machine, and logging",
+     "file": "lab03-environment-monitor.html",
      "section": null,
      "conceptOnly": false,
      "optional": false,
@@ -1020,24 +1020,24 @@ window.COURSE_MANIFEST = {
      "published": true
     },
     {
-     "id": "lab04",
-     "kind": "lab",
-     "number": 4,
-     "title": "Lab 4: Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)",
-     "detail": "Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)",
-     "file": "lab04-port-lab-3-to-the.html",
-     "section": null,
-     "conceptOnly": false,
-     "optional": false,
-     "published": true
-    },
-    {
      "id": "cp05",
      "kind": "checkpoint",
      "number": 5,
      "title": "Checkpoint 5",
      "detail": "Mixed review exam for Part 5",
      "file": "checkpoint05.html",
+     "section": null,
+     "conceptOnly": false,
+     "optional": false,
+     "published": true
+    },
+    {
+     "id": "lab04",
+     "kind": "lab",
+     "number": 4,
+     "title": "Lab 4: Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)",
+     "detail": "Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)",
+     "file": "lab04-port-lab-3-to-the.html",
      "section": null,
      "conceptOnly": false,
      "optional": false,
@@ -1368,18 +1368,6 @@ window.COURSE_MANIFEST = {
      "published": true
     },
     {
-     "id": "lab06",
-     "kind": "lab",
-     "number": 6,
-     "title": "Lab 6: Port Lab 5 to Zephyr and compare the two RTOSes",
-     "detail": "Port Lab 5 to Zephyr and compare the two RTOSes",
-     "file": "lab06-port-lab-5-to-zephyr.html",
-     "section": "7.2 Zephyr (optional: the same RTOS ideas on a second kernel)",
-     "conceptOnly": false,
-     "optional": true,
-     "published": true
-    },
-    {
      "id": "cp07",
      "kind": "checkpoint",
      "number": 7,
@@ -1387,6 +1375,18 @@ window.COURSE_MANIFEST = {
      "detail": "Mixed review exam for Part 7",
      "file": "checkpoint07.html",
      "section": null,
+     "conceptOnly": false,
+     "optional": true,
+     "published": true
+    },
+    {
+     "id": "lab06",
+     "kind": "lab",
+     "number": 6,
+     "title": "Lab 6: Port Lab 5 to Zephyr and compare the two RTOSes",
+     "detail": "Port Lab 5 to Zephyr and compare the two RTOSes",
+     "file": "lab06-port-lab-5-to-zephyr.html",
+     "section": "7.2 Zephyr (optional: the same RTOS ideas on a second kernel)",
      "conceptOnly": false,
      "optional": true,
      "published": true

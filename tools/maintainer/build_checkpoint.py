@@ -3,7 +3,8 @@
   python tools/maintainer/build_checkpoint.py            every tools/maintainer/checkpoints/cpNN.py
   python tools/maintainer/build_checkpoint.py cp03       one
 
-A source file defines GOAL and SOURCES (HTML; SOURCES links the primary sources) and QUESTIONS, a list of
+A source file defines GOAL and SOURCES (HTML; SOURCES links the primary sources) QUESTIONS, the premade checkpoint; cpNN_bank.py defines BANK, more questions for the tests a learner
+builds (ten per lesson in all, counted by each question's first lesson). Both are lists of
   (lessons, prompt, [right, wrong, wrong, wrong], why)
 with the right option first; the build spreads the right answer over the four authored positions
 (assets/checkpoint.js shuffles them again for the learner). The page keeps its title and subtitle;
@@ -38,15 +39,21 @@ def build(cp):
     t = raw.replace("\r\n", "\n")
 
     qs = []
-    for n, (tags, prompt, options, why) in enumerate(src["QUESTIONS"]):
+    bank_file = SRC / f"{cp}_bank.py"
+    bank = runpy.run_path(str(bank_file))["BANK"] if bank_file.exists() else []
+    tagged = [(q, True) for q in src["QUESTIONS"]] + [(q, False) for q in bank]
+    for n, ((tags, prompt, options, why), premade) in enumerate(tagged):
         k = (n * 7 + 1) % 4                      # spread the right answer over the four positions
         opts = options[1:]
         opts.insert(k, options[0])
-        qs.append({"prompt": prompt, "options": opts, "answer": k,
-                   "lessons": [f"{int(x):04d}" for x in tags], "why": why})
+        q = {"prompt": prompt, "options": opts, "answer": k, "lessons": [f"{int(x):04d}" for x in tags]}
+        if premade:
+            q["set"] = True
+        q["why"] = why
+        qs.append(q)
     body = json.dumps({"questions": qs}, ensure_ascii=False, indent=1)
     body = body.replace("</", "<\\/")
-    n = len(qs)
+    n = sum(1 for q in qs if q.get("set"))
     nxt = data["parts"][data["parts"].index(part) + 1] if part is not data["parts"][-1] else None
     first, last = lessons[0]["number"], lessons[-1]["number"]
     block = f'''
@@ -56,6 +63,10 @@ def build(cp):
 
   <p>
     The checkpoint has {n} multiple-choice questions on lessons {first} to {last}, one at a time. Each question draws on one to three of those lessons, and the result estimates how well each lesson has stuck, so you know what to go over again{f" before Part {nxt['number']}" if nxt else ""}. Answer from memory and keep going: speed is fine. When you do not know, press <em>I don't know</em>, because a lucky guess hides a lesson you should revisit. The right answers, with explanations, come at the end.
+  </p>
+
+  <p>
+    Below the checkpoint you can also build your own test from the bank of {len(qs)} questions: pick the lessons you want, for example the ones the checkpoint marked <em>Go over again</em> after you have reread them, and choose how many questions to answer.
   </p>
 
   <div class="widget checkpoint">
@@ -73,6 +84,9 @@ def build(cp):
   </div>
 '''
     a = t.index('<p class="subtitle">')
+    sub = (f'<p class="subtitle">How well have lessons {first} to {last} stuck? A quick test, one question '
+           f'at a time, with a result for every lesson of Part {part['number']}.</p>')
+    t = t[:a] + sub + t[t.index("</p>", a) + 4:]
     a = t.index("</p>", a) + 4
     b = t.index("</main>")
     t = t[:a] + "\n" + block + t[b:]
@@ -85,7 +99,7 @@ def build(cp):
 
 
 def main(argv):
-    names = argv or sorted(p.stem for p in SRC.glob("cp*.py"))
+    names = argv or sorted(p.stem for p in SRC.glob("cp[0-9][0-9].py"))
     for cp in names:
         build(cp)
 

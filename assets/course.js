@@ -574,7 +574,9 @@
     // The latest checkpoint estimate for each lesson (assets/checkpoint.js), shown as a coloured mark.
     const est = {};
     Object.values(p).forEach(r => {
-      if (r && r.checkpoint && r.checkpoint.lessons) Object.assign(est, r.checkpoint.lessons);
+      if (!r) return;
+      if (r.estimates) for (const [id, x] of Object.entries(r.estimates)) est[id] = x.e;
+      else if (r.checkpoint && r.checkpoint.lessons) Object.assign(est, r.checkpoint.lessons);
     });
     const BAND = e => (e >= 0.75 ? ["solid", "Solid"] : e >= 0.45 ? ["shaky", "Shaky"] : ["review", "Go over again"]);
     document.querySelectorAll("[data-lesson-link]").forEach(li => {

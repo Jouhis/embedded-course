@@ -241,6 +241,9 @@ def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s)
 
 
+BANK_PER_LESSON = 10          # checkpoint bank: questions whose main (first) lesson is each lesson
+
+
 def checkpoint_target(n_lessons):
     """Questions in a checkpoint: 3 per lesson in a part of up to 10 lessons, 2 per lesson in a
     bigger one, at least 18 and at most 50."""
@@ -261,10 +264,24 @@ def check_checkpoint(raw, cp_id, errors, warnings):
     part = next((p for p in data["parts"] if any(i["id"] == cp_id for i in p["items"])), None)
     lessons = [i["id"] for i in part["items"] if i["kind"] == "lesson"] if part else []
     qs = spec.get("questions", [])
+    premade = [q for q in qs if q.get("set")]
     target = checkpoint_target(len(lessons))
-    if len(qs) < target:
-        errors.append(f"checkpoint: {len(qs)} questions, the part's {len(lessons)} lessons need {target}")
+    if not target <= len(premade) <= target + 2:
+        errors.append(f"checkpoint: {len(premade)} premade (\"set\") questions, the part's {len(lessons)} lessons need {target}")
+    main = {l: 0 for l in lessons}
+    for q in qs:
+        if q.get("lessons") and q["lessons"][0] in main:
+            main[q["lessons"][0]] += 1
+    for l, h in main.items():
+        if h < BANK_PER_LESSON:
+            errors.append(f"checkpoint bank: lesson {l} is the main lesson of {h} questions; it needs {BANK_PER_LESSON}")
     hits = {l: 0 for l in lessons}
+    seen = set()
+    for n, q in enumerate(qs, 1):
+        key = strip_tags(q.get("prompt", "")).strip().lower()
+        if key in seen:
+            errors.append(f"checkpoint Q{n}: the same prompt appears twice")
+        seen.add(key)
     answers = [0, 0, 0, 0]
     for n, q in enumerate(qs, 1):
         where = f"checkpoint Q{n}"
@@ -290,7 +307,7 @@ def check_checkpoint(raw, cp_id, errors, warnings):
         for t in tags:
             if t not in hits:
                 errors.append(f"{where}: lesson {t} is not in this part")
-            else:
+            elif q.get("set"):
                 hits[t] += 1
         if not q.get("why"):
             errors.append(f"{where}: no 'why' (the review after the test shows it)")

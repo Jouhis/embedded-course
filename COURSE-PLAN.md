@@ -38,8 +38,8 @@
 17. Reading schematics
 18. Reading datasheets: absolute maximum ratings, electrical characteristics, timing diagrams
 
-- 🔧 **Lab 1:** Design and simulate an LED and MOSFET load driver, and justify every component value
 - 📝 **Checkpoint 1**
+- 🔧 **Lab 1:** Design and simulate an LED and MOSFET load driver, and justify every component value
 
 > 🔬 Bench labs you can do now (optional, real board): 1 (Measure what you calculated), 2 (The floating input).
 
@@ -79,8 +79,8 @@
 43. Navigating a reference manual (the RP2040 datasheet and STM32 RM0008)
 44. Errata sheets and application notes
 
-- 🔧 **Lab 2, "Trace one instruction":** follow `GPIO->ODR |= 1;` from C through assembly, the instruction encoding, the bus and the register to the LED; then read the .map file and the disassembly
 - 📝 **Checkpoint 2**
+- 🔧 **Lab 2, "Trace one instruction":** follow `GPIO->ODR |= 1;` from C through assembly, the instruction encoding, the bus and the register to the LED; then read the .map file and the disassembly
 
 > 🔬 Bench labs you can do now (optional, real board): 3 (See the clock).
 
@@ -111,8 +111,8 @@
 64. 💡 Multicore on the RP2040: FIFOs and spinlocks
 65. ⭐ PIO and DMA
 
-- 🔧 **Lab 3:** Environment monitor: sensor, OLED, buttons, a menu state machine, and logging
 - 📝 **Checkpoint 4**
+- 🔧 **Lab 3:** Environment monitor: sensor, OLED, buttons, a menu state machine, and logging
 
 > 🔬 Bench labs you can do now (optional, real board): 4 (Measure the bounce), 5 (The noisy ADC), 6 (The OLED that doesn't answer), 7 (The flaky LED strip), 8 (Lab 3 on the bench).
 
@@ -128,8 +128,8 @@
 74. 💡 DMA
 75. 💡 Low-power modes
 
-- 🔧 **Lab 4:** Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)
 - 📝 **Checkpoint 5**
+- 🔧 **Lab 4:** Port Lab 3 to the STM32 behind a hardware abstraction layer (HAL)
 
 > 🔬 Bench labs you can do now (optional, real board): 9 (Bring up the Nucleo-U5), 10 (Measure interrupt latency), 11 (Stale DMA data), 12 (The sleep current hunt), 13 (Lab 4 on the Nucleo-U5).
 
@@ -171,8 +171,8 @@
 98. ⭐ The device driver model and the GPIO and I2C APIs
 99. ⭐ Logging, the shell, and testing with ztest and Twister
 
-- 🔧 **Lab 6:** ⭐ Port Lab 5 to Zephyr and compare the two RTOSes
 - 📝 **Checkpoint 7** ⭐ (Zephyr)
+- 🔧 **Lab 6:** ⭐ Port Lab 5 to Zephyr and compare the two RTOSes
 
 > 🔬 Bench labs you can do now (optional, real board): 15 (Measure your deadlines).
 
