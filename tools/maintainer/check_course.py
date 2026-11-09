@@ -521,6 +521,7 @@ def check_file(path, manifest):
 
 
 def main(argv):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     manifest = load_manifest()
     files = [Path(a) for a in argv] if argv else sorted(LESSONS.glob("*.html"))
     bad = 0
