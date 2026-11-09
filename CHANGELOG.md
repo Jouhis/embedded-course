@@ -11,7 +11,7 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
-## Unreleased
+## 0.1.0 (2026-11-09)
 
 - Every lesson, lab and bench lab follows one order: the ideas, a worked example, the code and the
   hands-on task first; then **Common mistakes**, folded and tagged *When stuck*; then folded
