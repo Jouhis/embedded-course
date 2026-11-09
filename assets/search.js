@@ -58,7 +58,11 @@
     });
     // The browser looked for the anchor before the ids existed: jump to it now.
     const target = location.hash.length > 1 && document.getElementById(decodeURIComponent(location.hash.slice(1)));
-    if (target) target.scrollIntoView();
+    if (target) {
+      const fold = target.closest("details.fold");   // a "Go deeper" section: open it first
+      if (fold) fold.open = true;
+      target.scrollIntoView();
+    }
   }
 
   // ---------- Keyword index ----------

@@ -22,10 +22,18 @@
  *    - "formula": { "vars": ["I", "R"], "answer": "I^2*R", "display": "P = I² × R" }. Any algebraically
  *      equivalent input passes (RI^2, I²R, I*I*R, "P = I^2 R"). Optional "range": [lo, hi] for samples.
  *    - "reflect": think-then-reveal, not scored. "answer" is the model answer (HTML).
+ *    - A quiz with two or more questions is shown as cards, one question at a time, with dots
+ *      that turn green or red as they are answered. Printing shows every question.
  *    - Any type: optional "hint" (shown on request, and after a wrong attempt). "mc" also takes
  *      "feedback": one string per option, shown when that option is picked.
  *    - "formula", "number" and "text" take "wrong": [{ "answer": "V*I", "feedback": "That is a power." }].
  *      When the learner's answer matches a listed mistake, its feedback explains what went wrong.
+ *
+ * 1.1 Lesson boxes and folds (styles in course.css):
+ *    <div class="analogy"><p>...</p></div>   "Picture it": an everyday comparison, and where it breaks
+ *    <div class="example"><p>...</p></div>   "In a real device": the idea inside a concrete product
+ *    <details class="fold depth"><summary><h2>Heading</h2></summary> ... </details>
+ *      a "Go deeper" section, folded on the first read. Links into it open it; printing opens all.
  *
  * 2. Progress. Each lesson's <body> has data-lesson="0007". A "Mark complete" bar is
  *    added automatically; progress lives in localStorage and the course index reads it.
@@ -341,7 +349,12 @@
     const scored = results.filter(r => r !== "skip").length;
     const scoreLine = el("div", { class: "quiz-score" });
 
+    // Two or more questions are shown as cards, one at a time (printing shows them all).
+    const cards = spec.questions.length > 1 ? [] : null;
+    let dots = null, showCard = null;
+
     function record(qi, ok) {
+      if (cards) markDot(qi, ok);
       if (results[qi] !== null) return;          // only the first attempt counts
       results[qi] = ok;
       const answered = results.filter(r => r === true || r === false).length;
@@ -386,6 +399,7 @@
           feedback.className = "q-feedback show good";
           feedback.innerHTML = `<strong>Model answer:</strong> ${q.answer}` + why();
           reveal.disabled = true;
+          record(qi, "skip");                    // not scored; marks the card as seen
         });
         const row = el("div", { class: "q-input-row" }, [reveal]);
         if (q.hint) row.insertBefore(hintButton(), reveal);
@@ -471,9 +485,55 @@
       }
       if (hintBox) block.appendChild(hintBox);
       block.appendChild(feedback);
+      if (cards) cards.push(block);
       container.appendChild(block);
     });
+    if (cards) buildCards();
     container.appendChild(scoreLine);
+
+    function markDot(qi, ok) {
+      const d = dots && dots[qi];
+      if (!d || d.classList.contains("good") || d.classList.contains("bad")) return;
+      d.classList.add(ok === "skip" ? "seen" : ok ? "good" : "bad");
+      showCard(null);                           // refresh the Next button
+    }
+
+    function buildCards() {
+      container.classList.add("cards");
+      const count = el("span", { class: "q-count" });
+      const dotRow = el("span", { class: "q-dots" });
+      dots = cards.map((_, i) => {
+        const d = el("button", { class: "q-dot", type: "button", "aria-label": `Question ${i + 1}` });
+        d.addEventListener("click", () => showCard(i));
+        dotRow.appendChild(d);
+        return d;
+      });
+      const prev = el("button", { class: "btn secondary", type: "button", text: "← Previous" });
+      const next = el("button", { class: "btn secondary", type: "button", text: "Next question →" });
+      const head = el("div", { class: "q-cardbar" }, [count, dotRow]);
+      const foot = el("div", { class: "q-cardbar foot" }, [prev, next]);
+      container.insertBefore(head, cards[0]);
+      container.appendChild(foot);
+      let at = 0;
+      showCard = i => {
+        if (i !== null) {
+          const moved = i !== at;
+          at = i;
+          if (moved && head.getBoundingClientRect().top < 0) head.scrollIntoView({ block: "start", behavior: "smooth" });
+        }
+        cards.forEach((c, k) => c.classList.toggle("active", k === at));
+        dots.forEach((d, k) => d.classList.toggle("current", k === at));
+        count.textContent = `Question ${at + 1} of ${cards.length}`;
+        prev.disabled = at === 0;
+        next.hidden = at === cards.length - 1;
+        // Once this card is answered, Next becomes the main button.
+        const answered = /good|bad|seen/.test(dots[at].className);
+        next.className = "btn" + (answered ? "" : " secondary");
+      };
+      prev.addEventListener("click", () => showCard(Math.max(0, at - 1)));
+      next.addEventListener("click", () => showCard(Math.min(cards.length - 1, at + 1)));
+      showCard(0);
+    }
   }
 
   // ---------- "Mark complete" bar ----------
@@ -948,6 +1008,21 @@
     loadSearch();      // after the nav exists: the search box goes into it
   });
 
+  /* "Go deeper" folds (<details class="fold depth">): open the one a link points into, and
+     print every fold open. */
+  function openFoldFor(hash) {
+    const t = hash && hash.length > 1 && document.getElementById(decodeURIComponent(hash.slice(1)));
+    const f = t && t.closest("details.fold");
+    if (f && !f.open) { f.open = true; t.scrollIntoView(); }
+  }
+  window.addEventListener("hashchange", () => openFoldFor(location.hash));
+  let closedForPrint = [];
+  window.addEventListener("beforeprint", () => {
+    closedForPrint = [...document.querySelectorAll("details.fold:not([open])")];
+    closedForPrint.forEach(d => { d.open = true; });
+  });
+  window.addEventListener("afterprint", () => { closedForPrint.forEach(d => { d.open = false; }); });
+
   /* The search box (assets/search.js) is loaded after the page is built. */
   function loadSearch() {
     if (!SELF || document.querySelector('script[src$="search.js"]')) return;
@@ -955,5 +1030,5 @@
   }
 
   // Exposed for other components (calculators, drills).
-  window.Course = { parseNumber, el, shuffle, loadProgress, updateLesson };
+  window.Course = { parseNumber, el, shuffle, loadProgress, updateLesson, openFoldFor };
 })();
