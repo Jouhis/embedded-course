@@ -155,52 +155,6 @@ HAL_UART_Init(&amp;huart1);</code></pre>
     <code>HAL_GetTick()</code> returns <code>uwTick</code>, the millisecond counter that SysTick increments. It is the same counter that <code>HAL_Delay()</code> waits on, so a HAL delay and the application's deadlines share one clock. The application never names SysTick, which is the point of the abstraction: a different board could take its time from a hardware timer instead.
   </p>
 
-  <h2>Common mistakes and how to spot them</h2>
-  <p>
-    Porting a driver fails in a small number of ways, and each one leaves a clear sign. The mistakes below are common in board ports, and they are the ones a reviewer checks first.
-  </p>
-  <h3>Mistake 1: the I2C address is not shifted</h3>
-  <p>
-    The board file passes <code>0x3C</code> straight to ST's HAL. <strong>Symptom:</strong> the serial monitor prints <code>LAB4 init failed</code> at once, and the OLED stays dark. A logic analyser shows the start condition, then the address byte 0x3C, and no ACK. <strong>Fix:</strong> shift the address left by one before the HAL call, as the solution does, and check the mystery sensor at 0x48 in the same way, which becomes 0x90.
-  </p>
-  <h3>Mistake 2: the LED is driven the wrong way</h3>
-  <p>
-    The board file sets the pin high to light the LED, which is the active-high rule. On the Blue Pill that is backwards. <strong>Symptom:</strong> the LED is on when the alarm is off, and off when it should be on. The log shows <code>ALARM=0</code> while the LED lights. <strong>Fix:</strong> make <code>hal_gpio_write()</code> invert the level for PC13, as the solution's comment says, and test with <code>hal_gpio_write(HAL_PIN_LED, 1)</code> alone before you test the alarm.
-  </p>
-  <h3>Mistake 3: a clock is left off</h3>
-  <p>
-    The GPIO clock for the buttons is not enabled, or the I2C clock is missing. <strong>Symptom:</strong> the buttons never move the menu, or the I2C transfers all return errors, and the sensor appears to be broken. The code looks correct, because the configuration calls run without error. <strong>Fix:</strong> check the clock list at the start of <code>hal_init()</code> against the peripherals you use. A peripheral with no clock ignores its register writes.
-  </p>
-  <h3>Mistake 4: the application is changed to fit the board</h3>
-  <p>
-    A developer finds that the Blue Pill needs a different button pin, and edits <code>app/ui.c</code> to read PB12 directly. <strong>Symptom:</strong> the build succeeds on the Blue Pill, but the Pico build fails, or the diff of <code>app/</code> against the solution is no longer empty. <strong>Fix:</strong> put the pin in the board file, and change nothing in <code>app/</code>. The acceptance test in this lab is that diff, so the mistake is caught by the same check you run to finish.
-  </p>
-  <h3>Mistake 5: a blocking call on the main loop</h3>
-  <p>
-    A developer uses <code>HAL_Delay(100)</code> inside the redraw to wait for the OLED. <strong>Symptom:</strong> the buttons miss presses, because the loop is busy, and the log lines arrive late and in bursts. <strong>Fix:</strong> keep the bus calls bounded, as <code>hal.h</code> requires, and use the deadlines. A HAL delay in the main loop is a blocking call, and it is the same problem lesson 55 described.</p>
-
-  <h2>In real projects</h2>
-  <p>
-    Production teams use this pattern for every product that may outlive its first microcontroller. The layer boundary is usually called a board support package (BSP) or a platform layer, and the names differ between companies. The rules are the same. The application calls only the layer. The layer's functions have fixed signatures. Each board port is reviewed as a unit, and each port is tested with the same application tests. Part 6 of this course (lesson 80) uses the same header to run the application on a PC with fake board files, which is the main benefit: the application can be tested without any hardware.
-  </p>
-  <p>
-    Reviewers look for three things in a port. They check that the abstraction does not leak, which means no SDK types or register names appear in the application. They check that each conversion between logical and physical levels is written in one place, with a comment that gives the wiring. And they check the timing: every call that waits must have a bound, so one missing device cannot stop the product. Porting a driver to a new chip comes down to this lab's rule: the interface is the contract, the board file is the only file that changes, and the diff proves it.
-  </p>
-  <p>
-    Note also that the two ports are not identical in speed. The Pico bus runs at 400 kHz, and the Blue Pill bus at 100 kHz, so a full screen update takes about a quarter of the time on the Pico. The application's deadlines are the same on both boards, and they still work, because the redraw is short compared with the 500 ms period. A port that is correct only at one speed is a port with a hidden assumption, and reviewers ask for the assumption to be written down.
-  </p>
-
-  <h2>Summary</h2>
-  <ul>
-    <li>A HAL is a header the application includes, plus one implementation file per board. Porting means writing one file, and the application folder stays the same.</li>
-    <li>Logical levels hide the wiring. The Blue Pill LED is active low, and the board file inverts the level once, in one place.</li>
-    <li>I2C addresses are 7-bit numbers. On the wire, the byte is the address shifted left by one, with the read-or-write bit in bit 0. ST's HAL expects the shifted form, and the course's <code>hal.h</code> does not.</li>
-    <li>I2C lines are open-drain, so each needs a pull-up resistor. Buttons use the chip's internal pull-up, and a pressed button reads 0.</li>
-    <li>Buttons are polled, and each press is debounced by a 30 ms window. A press shorter than one pass of the loop can be missed.</li>
-    <li>Periodic work uses deadlines compared with a wrap-safe difference, not with raw times.</li>
-    <li>The proof of a port is an empty diff of the application folder, plus a build for each board.</li>
-  </ul>
-
   <h2>The project layout</h2>
   <p>
     The project is <code>projects/lab04-port-lab3-to-stm32</code>. The shared application is in <code>app/</code> at the top. Each board has a starter and a solution folder, and each folder is a complete Wokwi project with its own <code>CMakeLists.txt</code>, <code>diagram.json</code> and <code>wokwi.toml</code>.
@@ -274,6 +228,56 @@ HAL_UART_Init(&amp;huart1);</code></pre>
     <summary>Hint for the timing</summary>
     <p>A full-screen update is 8 pages. Each page sends three 2-byte commands and one 129-byte data frame (a control byte and 128 columns), so 1080 data bytes, plus one address byte for each of the 32 transactions. At 100 kHz with 9 bit times per byte (8 bits and an ACK) that is 1112 × 9 ÷ 100 000 s, about 100 ms. The application redraws only when something changes, and at every 500 ms deadline. The Pico's 400 kHz bus takes about a quarter of that. A DMA transfer from lesson 74 could shorten the redraw further, but the HAL in this lab does not use one.</p>
   </details>
+
+  <div class="win">You ran the same monitor on two boards through one interface, wrote the Blue Pill board file, and showed with a diff that the application did not change.</div>
+
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <p>
+    Porting a driver fails in a small number of ways, and each one leaves a clear sign. The mistakes below are common in board ports, and they are the ones a reviewer checks first.
+  </p>
+  <h3>Mistake 1: the I2C address is not shifted</h3>
+  <p>
+    The board file passes <code>0x3C</code> straight to ST's HAL. <strong>Symptom:</strong> the serial monitor prints <code>LAB4 init failed</code> at once, and the OLED stays dark. A logic analyser shows the start condition, then the address byte 0x3C, and no ACK. <strong>Fix:</strong> shift the address left by one before the HAL call, as the solution does, and check the mystery sensor at 0x48 in the same way, which becomes 0x90.
+  </p>
+  <h3>Mistake 2: the LED is driven the wrong way</h3>
+  <p>
+    The board file sets the pin high to light the LED, which is the active-high rule. On the Blue Pill that is backwards. <strong>Symptom:</strong> the LED is on when the alarm is off, and off when it should be on. The log shows <code>ALARM=0</code> while the LED lights. <strong>Fix:</strong> make <code>hal_gpio_write()</code> invert the level for PC13, as the solution's comment says, and test with <code>hal_gpio_write(HAL_PIN_LED, 1)</code> alone before you test the alarm.
+  </p>
+  <h3>Mistake 3: a clock is left off</h3>
+  <p>
+    The GPIO clock for the buttons is not enabled, or the I2C clock is missing. <strong>Symptom:</strong> the buttons never move the menu, or the I2C transfers all return errors, and the sensor appears to be broken. The code looks correct, because the configuration calls run without error. <strong>Fix:</strong> check the clock list at the start of <code>hal_init()</code> against the peripherals you use. A peripheral with no clock ignores its register writes.
+  </p>
+  <h3>Mistake 4: the application is changed to fit the board</h3>
+  <p>
+    A developer finds that the Blue Pill needs a different button pin, and edits <code>app/ui.c</code> to read PB12 directly. <strong>Symptom:</strong> the build succeeds on the Blue Pill, but the Pico build fails, or the diff of <code>app/</code> against the solution is no longer empty. <strong>Fix:</strong> put the pin in the board file, and change nothing in <code>app/</code>. The acceptance test in this lab is that diff, so the mistake is caught by the same check you run to finish.
+  </p>
+  <h3>Mistake 5: a blocking call on the main loop</h3>
+  <p>
+    A developer uses <code>HAL_Delay(100)</code> inside the redraw to wait for the OLED. <strong>Symptom:</strong> the buttons miss presses, because the loop is busy, and the log lines arrive late and in bursts. <strong>Fix:</strong> keep the bus calls bounded, as <code>hal.h</code> requires, and use the deadlines. A HAL delay in the main loop is a blocking call, and it is the same problem lesson 55 described.</p>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Production teams use this pattern for every product that may outlive its first microcontroller. The layer boundary is usually called a board support package (BSP) or a platform layer, and the names differ between companies. The rules are the same. The application calls only the layer. The layer's functions have fixed signatures. Each board port is reviewed as a unit, and each port is tested with the same application tests. Part 6 of this course (lesson 80) uses the same header to run the application on a PC with fake board files, which is the main benefit: the application can be tested without any hardware.
+  </p>
+  <p>
+    Reviewers look for three things in a port. They check that the abstraction does not leak, which means no SDK types or register names appear in the application. They check that each conversion between logical and physical levels is written in one place, with a comment that gives the wiring. And they check the timing: every call that waits must have a bound, so one missing device cannot stop the product. Porting a driver to a new chip comes down to this lab's rule: the interface is the contract, the board file is the only file that changes, and the diff proves it.
+  </p>
+  <p>
+    Note also that the two ports are not identical in speed. The Pico bus runs at 400 kHz, and the Blue Pill bus at 100 kHz, so a full screen update takes about a quarter of the time on the Pico. The application's deadlines are the same on both boards, and they still work, because the redraw is short compared with the 500 ms period. A port that is correct only at one speed is a port with a hidden assumption, and reviewers ask for the assumption to be written down.
+  </p>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A HAL is a header the application includes, plus one implementation file per board. Porting means writing one file, and the application folder stays the same.</li>
+    <li>Logical levels hide the wiring. The Blue Pill LED is active low, and the board file inverts the level once, in one place.</li>
+    <li>I2C addresses are 7-bit numbers. On the wire, the byte is the address shifted left by one, with the read-or-write bit in bit 0. ST's HAL expects the shifted form, and the course's <code>hal.h</code> does not.</li>
+    <li>I2C lines are open-drain, so each needs a pull-up resistor. Buttons use the chip's internal pull-up, and a pressed button reads 0.</li>
+    <li>Buttons are polled, and each press is debounced by a 30 ms window. A press shorter than one pass of the loop can be missed.</li>
+    <li>Periodic work uses deadlines compared with a wrap-safe difference, not with raw times.</li>
+    <li>The proof of a port is an empty diff of the application folder, plus a build for each board.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -412,8 +416,6 @@ HAL_UART_Init(&amp;huart1);</code></pre>
     ] }
     </script>
   </div>
-
-  <div class="win">You ran the same monitor on two boards through one interface, wrote the Blue Pill board file, and showed with a diff that the application did not change.</div>
 
   <div class="source">
     <a href="https://www.raspberrypi.com/documentation/pico-sdk/" target="_blank" rel="noopener">The Pico SDK API documentation (Raspberry Pi)</a> for <code>hal_pico.c</code>, and <a href="https://www.st.com/resource/en/user_manual/um1850-description-of-stm32f1-hal-and-lowlayer-drivers-stmicroelectronics.pdf" target="_blank" rel="noopener">UM1850, Description of the STM32F1 HAL and low-layer drivers</a> for <code>hal_bluepill.c</code>. Read the I2C and GPIO chapters of UM1850, and compare the two files function by function.

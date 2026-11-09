@@ -17,6 +17,14 @@
     By the end of this lab you can turn a super-loop into FreeRTOS tasks with <code>vTaskDelayUntil()</code>, feed an interrupt into a task through a queue, protect a shared bus with a mutex, route all output through one logger task, and read each task's stack high-water mark.
   </div>
 
+  <h2>Where we are and why it matters</h2>
+  <p>
+    Lab 4 ran the whole monitor in one loop. Each pass read the sensor, updated the display, and checked the buttons, one after another. Lesson 86 showed why that breaks: the loop does work in a fixed order, so a long job delays everything behind it. There a 100 ms redraw made the 200 ms sensor sample start late and miss its window. Lessons 87 to 91 gave you the pieces that solve this: tasks with priorities, queues, semaphores and mutexes. This lab puts them together in a real firmware structure, which is what a product team builds when a super-loop stops being enough.
+  </p>
+  <p>
+    The same shape turns up in many products. A thermostat samples a sensor on a schedule, drives a display on demand, and logs to a serial port for service staff. A battery monitor must read its gauge on time while a user is pressing buttons. In each case the designer must answer three questions: which work is urgent, which resources are shared, and who is allowed to write to each output. The lab asks you to answer those questions in code.
+  </p>
+
   <h2>The idea</h2>
   <p>
     Lesson 86 showed the problem: in Lab 4, a 100 ms display redraw can make the 200 ms sensor sample miss its window. Lab 5 fixes that by giving the sensor its own higher-priority task. The UI task owns the display and the menu. A logger task owns the UART, so two tasks never write to the serial line at once. The I2C bus is shared by the sensor and the UI, so it has a mutex (lesson 91).
@@ -57,14 +65,6 @@
     </svg>
     <figcaption>Figure 1. Four tasks. The sensor and the UI share the I2C mutex. The button interrupt and the sensor send events into the UI task's queue. Only the logger writes to the UART.</figcaption>
   </figure>
-
-  <h2>Where we are and why it matters</h2>
-  <p>
-    Lab 4 ran the whole monitor in one loop. Each pass read the sensor, updated the display, and checked the buttons, one after another. Lesson 86 showed why that breaks: the loop does work in a fixed order, so a long job delays everything behind it. There a 100 ms redraw made the 200 ms sensor sample start late and miss its window. Lessons 87 to 91 gave you the pieces that solve this: tasks with priorities, queues, semaphores and mutexes. This lab puts them together in a real firmware structure, which is what a product team builds when a super-loop stops being enough.
-  </p>
-  <p>
-    The same shape turns up in many products. A thermostat samples a sensor on a schedule, drives a display on demand, and logs to a serial port for service staff. A battery monitor must read its gauge on time while a user is pressing buttons. In each case the designer must answer three questions: which work is urgent, which resources are shared, and who is allowed to write to each output. The lab asks you to answer those questions in code.
-  </p>
 
   <h2>Tasks, priorities and preemption</h2>
   <p>
@@ -151,38 +151,6 @@ xQueueSend(ui_queue, &amp;ev, portMAX_DELAY);</code></pre>
     <li><strong>Why the lab deliberately has no overflow recovery.</strong> A stack overflow or a failed allocation is a bug. The hooks stop the system so the report and the debugger show it. Recovery code would hide the bug.</li>
   </ul>
 
-  <h2>Common mistakes and how to spot them</h2>
-  <p>
-    <strong>Mistake 1: a non-FromISR call inside the ISR.</strong> Calling <code>xQueueSend()</code> from the callback is the most common error. The symptom is a freeze: the port's assertion fires when the interrupt priority is too urgent for an ISR-safe call, and the project's <code>configASSERT</code> disables interrupts and loops forever, so the board stops responding. The fix is <code>xQueueSendFromISR()</code> and <code>portYIELD_FROM_ISR()</code>, and an interrupt priority of 5 or more. The FreeRTOS port's comment at line 780 of <code>port.c</code> states the rule.
-  </p>
-  <p>
-    <strong>Mistake 2: clearing the pending flag too late.</strong> If the handler clears the EXTI flag after the callback, the flag is still set when the handler returns, and the interrupt fires again. The symptom is several events for one press: the screen advances two or three steps, or the setpoint goes up by several degrees. The fix is to clear the flag first, as the solution does.
-  </p>
-  <p>
-    <strong>Mistake 3: holding the bus mutex while waiting on a queue.</strong> If the sensor takes <code>i2c_mutex</code> and then sends to a full <code>ui_queue</code>, the sensor blocks while owning the bus. The UI task, which needs the bus to draw, then waits for the sensor, and the sensor waits for the UI. The symptom is that the display stops updating and the sample stops, with no error. The fix is to give the mutex back before the queue send, as the solution does.
-  </p>
-  <p>
-    <strong>Mistake 4: no tick hook.</strong> If <code>configUSE_TICK_HOOK</code> is 0, or the hook does not call <code>HAL_IncTick()</code>, the HAL's timeouts never expire. The symptom is a sensor that hangs silently when it stops answering, because the bus call waits forever instead of returning an error. The fix is the tick hook, which the project sets up.
-  </p>
-  <p>
-    <strong>Mistake 5: a stack that is too small.</strong> A task whose stack overflows reaches the overflow hook, which loops forever. The symptom is a system that stops printing after a while, and the stats lines show near-zero free words before it stops. The fix is to read the high-water marks, raise the depth in <code>xTaskCreate()</code> by a margin, and keep the margin when the second report looks safe.
-  </p>
-
-  <h2>In real projects</h2>
-  <p>
-    Production firmware usually has the same structure as this lab, with a sensor task on the tightest timing, a control or UI task, and one owner for each shared bus and output. Teams wrap the RTOS calls behind small modules, as the lab's <code>hal.h</code> does, so that a port to another board or RTOS touches one file. Code review looks for the same things this lab tests: no blocking call in an ISR, a mutex held only around the bus call, one writer per output, and a stack margin written down as a number. The bus and output rules are the ones most often broken, so reviewers check them first.
-  </p>
-
-  <h2>Summary</h2>
-  <ul>
-    <li>A super-loop runs its work in one order, so a long job delays the others. Tasks with priorities let the urgent work run first, with preemption.</li>
-    <li>Use <code>vTaskDelayUntil()</code> for periodic work and a queue wait with a timeout for event work. A blocked task costs no CPU.</li>
-    <li>An ISR uses only <code>FromISR</code> calls, never blocks, and calls <code>portYIELD_FROM_ISR()</code> when it wakes a more urgent task.</li>
-    <li>A mutex with an owner guards a shared bus. Take it around the bus call only, and never hold it across a blocking queue send.</li>
-    <li>One task owns each output. The logger is the only writer of the UART, and other tasks send lines to it.</li>
-    <li>The tick hook keeps the HAL's timeouts counting. Clear the EXTI flag first, and check every stack with its high-water mark.</li>
-  </ul>
-
   <h2>The project</h2>
   <p>
     The project is <code>projects/lab05-move-lab-4-onto-freertos</code>. The unchanged modules are in <code>app/</code>: the sensor, the display, the SSD1306 driver, the font and the formatting. Two shared files change, <code>app/hal.h</code> (it gains a button callback) and <code>app/ui.c</code> (buttons arrive as events and are debounced by time). Each folder has its own RTOS layer and board file.
@@ -261,6 +229,40 @@ LAB5 T=23.50 MIN=23.50 MAX=23.50 SET=28 SCREEN=LIVE
 ...</code></pre>
 
   <div class="win">You turned a super-loop into four tasks, moved the buttons to an interrupt that feeds a queue, shared the I2C bus with a mutex, and checked every stack with a high-water mark.</div>
+
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <p>
+    <strong>Mistake 1: a non-FromISR call inside the ISR.</strong> Calling <code>xQueueSend()</code> from the callback is the most common error. The symptom is a freeze: the port's assertion fires when the interrupt priority is too urgent for an ISR-safe call, and the project's <code>configASSERT</code> disables interrupts and loops forever, so the board stops responding. The fix is <code>xQueueSendFromISR()</code> and <code>portYIELD_FROM_ISR()</code>, and an interrupt priority of 5 or more. The FreeRTOS port's comment at line 780 of <code>port.c</code> states the rule.
+  </p>
+  <p>
+    <strong>Mistake 2: clearing the pending flag too late.</strong> If the handler clears the EXTI flag after the callback, the flag is still set when the handler returns, and the interrupt fires again. The symptom is several events for one press: the screen advances two or three steps, or the setpoint goes up by several degrees. The fix is to clear the flag first, as the solution does.
+  </p>
+  <p>
+    <strong>Mistake 3: holding the bus mutex while waiting on a queue.</strong> If the sensor takes <code>i2c_mutex</code> and then sends to a full <code>ui_queue</code>, the sensor blocks while owning the bus. The UI task, which needs the bus to draw, then waits for the sensor, and the sensor waits for the UI. The symptom is that the display stops updating and the sample stops, with no error. The fix is to give the mutex back before the queue send, as the solution does.
+  </p>
+  <p>
+    <strong>Mistake 4: no tick hook.</strong> If <code>configUSE_TICK_HOOK</code> is 0, or the hook does not call <code>HAL_IncTick()</code>, the HAL's timeouts never expire. The symptom is a sensor that hangs silently when it stops answering, because the bus call waits forever instead of returning an error. The fix is the tick hook, which the project sets up.
+  </p>
+  <p>
+    <strong>Mistake 5: a stack that is too small.</strong> A task whose stack overflows reaches the overflow hook, which loops forever. The symptom is a system that stops printing after a while, and the stats lines show near-zero free words before it stops. The fix is to read the high-water marks, raise the depth in <code>xTaskCreate()</code> by a margin, and keep the margin when the second report looks safe.
+  </p>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Production firmware usually has the same structure as this lab, with a sensor task on the tightest timing, a control or UI task, and one owner for each shared bus and output. Teams wrap the RTOS calls behind small modules, as the lab's <code>hal.h</code> does, so that a port to another board or RTOS touches one file. Code review looks for the same things this lab tests: no blocking call in an ISR, a mutex held only around the bus call, one writer per output, and a stack margin written down as a number. The bus and output rules are the ones most often broken, so reviewers check them first.
+  </p>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>A super-loop runs its work in one order, so a long job delays the others. Tasks with priorities let the urgent work run first, with preemption.</li>
+    <li>Use <code>vTaskDelayUntil()</code> for periodic work and a queue wait with a timeout for event work. A blocked task costs no CPU.</li>
+    <li>An ISR uses only <code>FromISR</code> calls, never blocks, and calls <code>portYIELD_FROM_ISR()</code> when it wakes a more urgent task.</li>
+    <li>A mutex with an owner guards a shared bus. Take it around the bus call only, and never hold it across a blocking queue send.</li>
+    <li>One task owns each output. The logger is the only writer of the UART, and other tasks send lines to it.</li>
+    <li>The tick hook keeps the HAL's timeouts counting. Clear the EXTI flag first, and check every stack with its high-water mark.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
