@@ -571,8 +571,19 @@
 
   function renderIndexProgress() {
     const p = loadProgress();
+    // The latest checkpoint estimate for each lesson (assets/checkpoint.js), shown as a coloured mark.
+    const est = {};
+    Object.values(p).forEach(r => {
+      if (r && r.checkpoint && r.checkpoint.lessons) Object.assign(est, r.checkpoint.lessons);
+    });
+    const BAND = e => (e >= 0.75 ? ["solid", "Solid"] : e >= 0.45 ? ["shaky", "Shaky"] : ["review", "Go over again"]);
     document.querySelectorAll("[data-lesson-link]").forEach(li => {
       li.classList.toggle("done", !!(p[li.dataset.lessonLink] || {}).done);
+      const e = est[li.dataset.lessonLink];
+      if (e === undefined) { delete li.dataset.cp; li.removeAttribute("title"); return; }
+      const [b, text] = BAND(e);
+      li.dataset.cp = b;
+      li.title = `Checkpoint: ${text} (${Math.round(100 * e)} %)`;
     });
     // Only the core path counts towards course progress. Optional lessons and the bench labs on
     // real hardware are counted on their own.

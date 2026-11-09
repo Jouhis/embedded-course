@@ -241,6 +241,67 @@ def strip_tags(s):
     return re.sub(r"<[^>]+>", "", s)
 
 
+def checkpoint_target(n_lessons):
+    """Questions in a checkpoint: 3 per lesson in a part of up to 10 lessons, 2 per lesson in a
+    bigger one, at least 18 and at most 50."""
+    return max(18, min(50, n_lessons * (3 if n_lessons <= 10 else 2)))
+
+
+def check_checkpoint(raw, cp_id, errors, warnings):
+    """A checkpoint (assets/checkpoint.js): four-option questions, each tagged with 1 to 3 lessons of
+    its part, enough of them, and every lesson covered by at least 3 questions (2 in a part of more
+    than 10 lessons)."""
+    try:
+        spec = json.loads(raw)
+    except json.JSONDecodeError as e:
+        errors.append(f"checkpoint: invalid JSON ({e})")
+        return
+    text = (ROOT / "assets" / "manifest.js").read_text(encoding="utf-8")
+    data = json.loads(text[text.index("{"): text.rindex("}") + 1])
+    part = next((p for p in data["parts"] if any(i["id"] == cp_id for i in p["items"])), None)
+    lessons = [i["id"] for i in part["items"] if i["kind"] == "lesson"] if part else []
+    qs = spec.get("questions", [])
+    target = checkpoint_target(len(lessons))
+    if len(qs) < target:
+        errors.append(f"checkpoint: {len(qs)} questions, the part's {len(lessons)} lessons need {target}")
+    hits = {l: 0 for l in lessons}
+    answers = [0, 0, 0, 0]
+    for n, q in enumerate(qs, 1):
+        where = f"checkpoint Q{n}"
+        if not q.get("prompt"):
+            errors.append(f"{where}: missing prompt")
+        opts = q.get("options", [])
+        if len(opts) != 4:
+            errors.append(f"{where}: needs exactly 4 options")
+            continue
+        if not isinstance(q.get("answer"), int) or not 0 <= q["answer"] < 4:
+            errors.append(f"{where}: answer index out of range")
+            continue
+        answers[q["answer"]] += 1
+        plain = [strip_tags(o).strip() for o in opts]
+        lens = [len(o) for o in plain]
+        if min(lens) and max(lens) - min(lens) > 3 and (max(lens) - min(lens)) / min(lens) > CHAR_SPREAD:
+            errors.append(f"{where}: option lengths vary too much {lens}: {plain}")
+        if len(set(p.lower() for p in plain)) != 4:
+            errors.append(f"{where}: duplicate options")
+        tags = q.get("lessons", [])
+        if not 1 <= len(tags) <= 3 or len(set(tags)) != len(tags):
+            errors.append(f"{where}: tag 1 to 3 different lessons")
+        for t in tags:
+            if t not in hits:
+                errors.append(f"{where}: lesson {t} is not in this part")
+            else:
+                hits[t] += 1
+        if not q.get("why"):
+            errors.append(f"{where}: no 'why' (the review after the test shows it)")
+    need = 3 if len(lessons) <= 10 else 2
+    for l, h in hits.items():
+        if h < need:
+            errors.append(f"checkpoint: lesson {l} is tagged on {h} question(s); every lesson needs at least {need}")
+    if qs and max(answers) > 0.4 * len(qs):
+        warnings.append(f"checkpoint: the right answer sits too often at one authored position {answers}")
+
+
 def check_quiz(raw, label, errors, warnings):
     """Validate one quiz widget; return the number of scored questions (reflect is not scored)."""
     try:
@@ -351,13 +412,20 @@ def check_file(path, manifest):
     required = {"lesson": ["goal", "win", "source", "ask", "quiz"],
                 "lab": ["goal", "win", "source", "ask", "quiz"],
                 "bench": ["goal", "win", "source", "ask", "quiz"],
-                "checkpoint": ["goal", "ask", "quiz"]}[item["kind"]]
+                "checkpoint": ["goal", "ask", "checkpoint"]}[item["kind"]]
     for cls in required:
         if cls not in s.classes:
             errors.append(f"missing required section .{cls}")
 
-    total = sum(check_quiz(q, f"quiz {i + 1}", errors, warnings) for i, q in enumerate(s.quizzes))
-    minimum = {"lesson": 3, "lab": 3, "bench": 3, "checkpoint": 10}[item["kind"]]
+    if item["kind"] == "checkpoint":
+        for raw in s.quizzes:
+            check_checkpoint(raw, item["id"], errors, warnings)
+        if "checkpoint.js" not in text:
+            errors.append("a checkpoint must load ../assets/checkpoint.js after course.js")
+        total = minimum = 0
+    else:
+        total = sum(check_quiz(q, f"quiz {i + 1}", errors, warnings) for i, q in enumerate(s.quizzes))
+        minimum = {"lesson": 3, "lab": 3, "bench": 3}[item["kind"]]
     if total < minimum:
         errors.append(f"only {total} scored quiz questions (minimum {minimum} for a {item['kind']})")
 
