@@ -6,7 +6,7 @@ BANK = [
     # 5 Ohm's law
     ([5],
      "What is voltage always measured between?",
-     ["Two points", "A point and air", "A wire and itself", "A part and value"],
+     ["Two separate points", "A point and air", "A wire and itself", "A part and value"],
      "Voltage is a difference, usually quoted against ground."),
     ([5],
      "A resistor has 2 V across it and 2 mA through it. What is its resistance?",
