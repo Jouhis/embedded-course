@@ -17,7 +17,6 @@
     By the end of this lesson you can split a super loop into two active objects, each with its own event queue and handler, connect them with a published event, and explain why a handler needs no lock.
   </div>
 
-  <!-- ===== 1. Knowledge ===== -->
   <h2>The idea: events instead of waiting</h2>
   <p>
     In a super loop, each feature is a function call in order, and a slow call delays all the others (lesson 55 showed the deadline fix). An <strong>event-driven</strong> design turns each happening into a message: a press, a tick, a sensor value ready. The code that sees the happening posts an <strong>event</strong> to a <strong>queue</strong>, and the code that owns the feature takes the event out later and reacts to it.
@@ -74,7 +73,6 @@
     The framework is a service, the two AOs are application features, and the button code is a driver (lesson 76). The dependencies point one way: the blinker depends on the event <code>SIG_PRESS</code>, and it never includes the button's pin code. The button depends on the framework and on nothing about the LED. You can change either AO without touching the other.
   </p>
 
-  <!-- ===== Depth: the concepts one at a time ===== -->
   <h2>Why a super loop stops scaling</h2>
   <p>
     Lesson 55 gave the super loop a deadline. A deadline makes a single slow call survivable, but it does not fix the structure. Suppose the product grows a button, a blinking LED, a temperature sensor that takes 20 ms per read, and a serial report. In a super loop each of these is a call in one sequence. The LED must be updated every 500 ms, so the sensor read sits between two LED updates and delays them. Every new feature adds a wait to every other feature, and the timing of one part depends on the code of all the others. That is the coupling that the rest of this lesson removes.
@@ -171,7 +169,7 @@
     </ol>
   </div>
 
-<h2>The code, line by line</h2>
+  <h2>The code, line by line</h2>
   <p>
     The core of the framework is <code>ao_post()</code>, which is about ten lines. Its first line computes the next head, <code>(uint8_t)((me-&gt;head + 1u) &amp; (AO_QUEUE_SIZE - 1u))</code>. The cast keeps the value in a <code>uint8_t</code>, which is the width of the index. The AND wraps it, as in the worked example. The second line, <code>if (next == me-&gt;tail)</code>, is the full check, and the counter <code>s_dropped</code> records the loss. Only then is the event copied with <code>me-&gt;queue[me-&gt;head] = e;</code> and the head moved. The order matters: the copy happens before the head moves, so the dispatcher never sees a slot that is only half written. Because the dispatcher reads <code>head</code> only to compare it with <code>tail</code>, this order is enough on one core that runs the posts and the dispatch in one loop.
   </p>
@@ -179,31 +177,10 @@
     The dispatch loop, <code>ao_dispatch_all()</code>, has the nested <code>while (take(...))</code>. <code>take()</code> returns false when the queue is empty, so the loop drains one object's queue before it moves to the next object. Each call to the handler is a full run to completion, and no other handler starts in the middle of it.
   </p>
 
-  <h2>Common mistakes and how to spot them</h2>
-  <ol class="steps">
-    <li><strong>A feature is never started.</strong> The object is declared and its handler written, but <code>ao_start()</code> is not called. The symptom is silence: the press handler never runs, the monitor prints nothing for the press, and no error appears, because a queue that no one registered is simply never dispatched. The fix is to call <code>ao_start()</code> in each init function, and to check that the startup line appears in the monitor.</li>
-    <li><strong>A subscription is missing.</strong> The blinker is started but subscribes only to the tick. The symptom is the same as above, with the tick still working. The fix is to print the mask at start-up or to read the <code>AO_SUB</code> line once more against the signals it needs. <code>ao_dropped()</code> does not help here, because a missing subscriber is not a full queue.</li>
-    <li><strong>A handler blocks.</strong> Someone adds <code>sleep_ms(500)</code> to the blinker to make the blink simpler. The symptom is that presses are answered late, sometimes by half a second, because the dispatcher cannot run the button while the blinker sleeps. The fix is to use the tick count, which is what the solution does, and to keep handlers short.</li>
-    <li><strong>The dropped count keeps rising.</strong> Under load the monitor shows presses that do not change the blink. A call to <code>ao_dropped()</code> returns a growing number. The cause is a full queue: a handler is too slow, or a burst of events is larger than 7. The fix is to make the handler faster, to raise <code>AO_QUEUE_SIZE</code> to the next power of two, or to lower the rate of the producer.</li>
-    <li><strong>An interrupt posts to a queue.</strong> A student moves the button read into an interrupt so that presses are not missed. The framework is not safe for that. An interrupt can arrive while the dispatcher is updating <code>tail</code>, and the two writes race. The symptom is a rare duplicate or lost event that never reproduces in the simulator. The fix is to keep the posts in the main loop, or to protect the queue with a critical section, which lesson 57 covers.</li>
-  </ol>
-
   <h2>In real projects</h2>
   <p>
     The active-object model is the basis of the QP/C framework, which the state-machine.com reference describes as a lightweight implementation of this design. Miro Samek's course walks through the same ideas with code, so you can see what the compiler makes of each handler. Zephyr offers the same building blocks as kernel services: a message queue, <code>k_msgq</code>, carries events between threads, and its timeout forms let a thread wait for work instead of polling. A reviewer of an event-driven design asks three questions: where the events are posted, who subscribes to each one, and what happens when a queue fills.</p>
 
-  <h2>Summary</h2>
-  <ul>
-    <li>An event is a record with a signal number. The sender does not know the handler.</li>
-    <li>A ring buffer with head and tail holds events. With size 8 it holds 7, because one slot stays empty to tell full from empty.</li>
-    <li>An active object is state, a queue and a handler. Only its handler touches its state.</li>
-    <li>A subscription is a bit mask, and <code>AO_SUB(n)</code> sets bit n. A published event goes only to masks with that bit set.</li>
-    <li>The dispatcher runs one handler to completion before it takes the next event, so one core needs no lock.</li>
-    <li>A press goes from a debounced pin, through a published event, to a state change in another object, with no direct call between them.</li>
-    <li>Watch three things in review: missing <code>ao_start()</code> or subscriptions, handlers that block, and a rising dropped count.</li>
-  </ul>
-
-  <!-- ===== Hands-on ===== -->
   <h2>Try it in Wokwi</h2>
   <p>
     The project is <code>projects/0077-active-objects-button-blinker</code>. The framework, <code>ao.c</code> and <code>ao.h</code>, is complete in both folders. Together they are about a hundred lines with their comments (58 lines in <code>ao.c</code> and 41 in <code>ao.h</code>), so you can read the whole queue and dispatcher. The starter <code>main.c</code> is a working super loop: a press toggles the blink, and the LED flips every 500 ms. Your job is to move its logic into the two AO files and reduce <code>main.c</code> to a tick and a dispatch.
@@ -227,7 +204,27 @@
 
   <div class="win">You turned a super loop into two active objects with their own queues, joined them with a published event, and can say why neither handler needs a lock.</div>
 
-  <!-- ===== Quiz ===== -->
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <ol class="steps">
+    <li><strong>A feature is never started.</strong> The object is declared and its handler written, but <code>ao_start()</code> is not called. The symptom is silence: the press handler never runs, the monitor prints nothing for the press, and no error appears, because a queue that no one registered is simply never dispatched. The fix is to call <code>ao_start()</code> in each init function, and to check that the startup line appears in the monitor.</li>
+    <li><strong>A subscription is missing.</strong> The blinker is started but subscribes only to the tick. The symptom is the same as above, with the tick still working. The fix is to print the mask at start-up or to read the <code>AO_SUB</code> line once more against the signals it needs. <code>ao_dropped()</code> does not help here, because a missing subscriber is not a full queue.</li>
+    <li><strong>A handler blocks.</strong> Someone adds <code>sleep_ms(500)</code> to the blinker to make the blink simpler. The symptom is that presses are answered late, sometimes by half a second, because the dispatcher cannot run the button while the blinker sleeps. The fix is to use the tick count, which is what the solution does, and to keep handlers short.</li>
+    <li><strong>The dropped count keeps rising.</strong> Under load the monitor shows presses that do not change the blink. A call to <code>ao_dropped()</code> returns a growing number. The cause is a full queue: a handler is too slow, or a burst of events is larger than 7. The fix is to make the handler faster, to raise <code>AO_QUEUE_SIZE</code> to the next power of two, or to lower the rate of the producer.</li>
+    <li><strong>An interrupt posts to a queue.</strong> A student moves the button read into an interrupt so that presses are not missed. The framework is not safe for that. An interrupt can arrive while the dispatcher is updating <code>tail</code>, and the two writes race. The symptom is a rare duplicate or lost event that never reproduces in the simulator. The fix is to keep the posts in the main loop, or to protect the queue with a critical section, which lesson 57 covers.</li>
+  </ol>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>An event is a record with a signal number. The sender does not know the handler.</li>
+    <li>A ring buffer with head and tail holds events. With size 8 it holds 7, because one slot stays empty to tell full from empty.</li>
+    <li>An active object is state, a queue and a handler. Only its handler touches its state.</li>
+    <li>A subscription is a bit mask, and <code>AO_SUB(n)</code> sets bit n. A published event goes only to masks with that bit set.</li>
+    <li>The dispatcher runs one handler to completion before it takes the next event, so one core needs no lock.</li>
+    <li>A press goes from a debounced pin, through a published event, to a state change in another object, with no direct call between them.</li>
+    <li>Watch three things in review: missing <code>ao_start()</code> or subscriptions, handlers that block, and a rising dropped count.</li>
+  </ul>
+
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [

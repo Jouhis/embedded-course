@@ -165,16 +165,6 @@ int main(void) {
     <code>x--</code> decrements an unsigned byte from 0. The result, −1, is stored in an 8-bit unsigned variable, and modulo 256 it becomes 255. The comparison <code>n &lt; u</code> converts <code>n</code> to <code>unsigned int</code> first. The value −1 becomes 4,294,967,295 on a 32-bit <code>int</code>, which is larger than 1, so the comparison is false. Compiling this with <code>-Wall -Wextra</code> produces a warning, <code>-Wsign-compare</code>, that points at the comparison. Treat that warning as a bug report, not as noise.
   </p>
 
-  <h2>Common mistakes and how to spot them</h2>
-  <ol>
-    <li><strong>A byte counter for a longer loop.</strong> The code <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> compares <code>i</code> with 300. The variable can only hold 0 to 255. After 255, <code>i++</code> stores 256 as 0, so <code>i</code> never reaches 300 and the loop never stops. The symptom is a program that stops printing, or a watchdog reset that happens at the same point each time. The compiler warns about it with <code>-Wextra</code> (<code>-Wtype-limits</code>). The fix is a counter wide enough for the bound: <code>uint16_t</code> here, or <code>int</code> if the range is not part of the design.</li>
-    <li><strong>A signed overflow check that the optimiser removes.</strong> A test such as <code>if (x + 1 &gt; x)</code> is meant to catch an overflow when <code>x</code> is <code>INT_MAX</code>. Because signed overflow is undefined, the compiler may assume the sum is always greater, and it may remove the check. We compiled <code>int plus_one_greater(int x) { return x + 1 &gt; x; }</code> with GCC at <code>-O2</code>, and the output was a function that returns 1 with no comparison in it. The symptom is a guard that never fires in an optimised build. The fix is to check before the addition: test <code>x &gt; INT_MAX - 1</code> first.</li>
-    <li><strong>A negative index that passes a size check.</strong> A check such as <code>if (index &lt; (int)sizeof(buf))</code> tests only the top end of the buffer. A negative index such as −1 is below the size, so it passes, and the code then reads before the start of the buffer. The symptom is a corrupted value or a fault that depends on the input. The fix is to test the sign as well, as in <code>if (index &gt;= 0 &amp;&amp; index &lt; (int)sizeof(buf))</code>.</li>
-    <li><strong>Trusting the sum of two bytes.</strong> A sensor total built as <code>uint8_t total = a + b + c</code> loses the carry at each store, so the total is wrong by a multiple of 256. The symptom is a total that is always smaller than expected for large inputs. The fix is to sum in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c;</code>, and to convert to a byte only when you must.</li>
-  </ol>
-
-  <div class="warning"><strong>The loop that never ends.</strong> The byte counter in mistake 1 is a frequent bug in firmware. It works for the first test with a small bound, and it hangs when the bound is raised. Before you change a bound, check the type of every variable the loop touches.</div>
-
   <h2>Which type to use</h2>
   <ol class="steps">
     <li><strong>A register or a wire byte:</strong> an exact-width unsigned type, such as <code>uint8_t</code> or <code>uint32_t</code>. The width is the contract, so the code and the hardware or protocol must agree on it.</li>
@@ -182,24 +172,6 @@ int main(void) {
     <li><strong>A value compared with another:</strong> use the same signedness on both sides, and cast explicitly if you must mix them.</li>
     <li><strong>A sum of many small values:</strong> add in a wide type, and narrow the result once at the end, after you have checked its range.</li>
   </ol>
-
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
-  <p>
-    Professional embedded teams treat integer types as part of the interface. A structure that matches a register map uses exact-width fields, and a protocol decoder names the width of each field in the wire format. A code review asks, for every arithmetic line on a byte or a short, what type the intermediate value has and where it is narrowed. Teams enable the warnings <code>-Wall -Wextra</code> at least, because they catch the sign comparison and the type-limit loop. Some teams add stricter checks for implicit narrowing and run static analysis on the code, as lesson 83 describes.
-  </p>
-  </details>
-
-  <h2>Summary</h2>
-  <ul>
-    <li>An unsigned value of N bits holds 0 to 2<sup>N</sup> − 1, and unsigned arithmetic wraps modulo 2<sup>N</sup>, so 256 becomes 0 in a <code>uint8_t</code>.</li>
-    <li>Before an operator runs, small integer types are promoted to <code>int</code>, so <code>uint8_t a = 200</code> and <code>b = 100</code> give <code>a + b</code> = 300 in <code>int</code>.</li>
-    <li>The wrap happens at the store. <code>uint8_t c = a + b</code> keeps 300 modulo 256, which is 44.</li>
-    <li>Signed overflow is undefined behaviour, so the optimiser may remove a check such as <code>x + 1 &gt; x</code>. Test for the overflow before the addition.</li>
-    <li>When a signed operand meets an unsigned operand of the same size, the signed value is converted to unsigned first. So <code>int n = -1</code> compared with <code>unsigned int u = 1</code> gives <code>n &lt; u</code> as false.</li>
-    <li>A <code>uint8_t i</code> in <code>for (i = 0; i &lt; 300; i++)</code> never ends, because i wraps after 255. A <code>uint16_t</code> counter reaches 300.</li>
-    <li>Use exact-width types, such as <code>uint8_t</code> or <code>uint32_t</code>, where the width is the contract for a register or a wire byte.</li>
-    <li>Add a sum of many small values in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c</code>, and narrow the result to a byte only when you must.</li>
-  </ul>
 
   <h2>Hands-on: run the two programs on your PC</h2>
   <p>
@@ -218,6 +190,35 @@ int main(void) {
   </details>
 
   <div class="win">You can predict an 8-bit sum before running it: promote to int, add, then wrap only on the store. You can also name the loop that never ends, and the comparison that flips when a negative int meets an unsigned value.</div>
+
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <ol>
+    <li><strong>A byte counter for a longer loop.</strong> The code <code>uint8_t i; for (i = 0; i &lt; 300; i++)</code> compares <code>i</code> with 300. The variable can only hold 0 to 255. After 255, <code>i++</code> stores 256 as 0, so <code>i</code> never reaches 300 and the loop never stops. The symptom is a program that stops printing, or a watchdog reset that happens at the same point each time. The compiler warns about it with <code>-Wextra</code> (<code>-Wtype-limits</code>). The fix is a counter wide enough for the bound: <code>uint16_t</code> here, or <code>int</code> if the range is not part of the design.</li>
+    <li><strong>A signed overflow check that the optimiser removes.</strong> A test such as <code>if (x + 1 &gt; x)</code> is meant to catch an overflow when <code>x</code> is <code>INT_MAX</code>. Because signed overflow is undefined, the compiler may assume the sum is always greater, and it may remove the check. We compiled <code>int plus_one_greater(int x) { return x + 1 &gt; x; }</code> with GCC at <code>-O2</code>, and the output was a function that returns 1 with no comparison in it. The symptom is a guard that never fires in an optimised build. The fix is to check before the addition: test <code>x &gt; INT_MAX - 1</code> first.</li>
+    <li><strong>A negative index that passes a size check.</strong> A check such as <code>if (index &lt; (int)sizeof(buf))</code> tests only the top end of the buffer. A negative index such as −1 is below the size, so it passes, and the code then reads before the start of the buffer. The symptom is a corrupted value or a fault that depends on the input. The fix is to test the sign as well, as in <code>if (index &gt;= 0 &amp;&amp; index &lt; (int)sizeof(buf))</code>.</li>
+    <li><strong>Trusting the sum of two bytes.</strong> A sensor total built as <code>uint8_t total = a + b + c</code> loses the carry at each store, so the total is wrong by a multiple of 256. The symptom is a total that is always smaller than expected for large inputs. The fix is to sum in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c;</code>, and to convert to a byte only when you must.</li>
+  </ol>
+
+  <div class="warning"><strong>The loop that never ends.</strong> The byte counter in mistake 1 is a frequent bug in firmware. It works for the first test with a small bound, and it hangs when the bound is raised. Before you change a bound, check the type of every variable the loop touches.</div>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Professional embedded teams treat integer types as part of the interface. A structure that matches a register map uses exact-width fields, and a protocol decoder names the width of each field in the wire format. A code review asks, for every arithmetic line on a byte or a short, what type the intermediate value has and where it is narrowed. Teams enable the warnings <code>-Wall -Wextra</code> at least, because they catch the sign comparison and the type-limit loop. Some teams add stricter checks for implicit narrowing and run static analysis on the code, as lesson 83 describes.
+  </p>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>An unsigned value of N bits holds 0 to 2<sup>N</sup> − 1, and unsigned arithmetic wraps modulo 2<sup>N</sup>, so 256 becomes 0 in a <code>uint8_t</code>.</li>
+    <li>Before an operator runs, small integer types are promoted to <code>int</code>, so <code>uint8_t a = 200</code> and <code>b = 100</code> give <code>a + b</code> = 300 in <code>int</code>.</li>
+    <li>The wrap happens at the store. <code>uint8_t c = a + b</code> keeps 300 modulo 256, which is 44.</li>
+    <li>Signed overflow is undefined behaviour, so the optimiser may remove a check such as <code>x + 1 &gt; x</code>. Test for the overflow before the addition.</li>
+    <li>When a signed operand meets an unsigned operand of the same size, the signed value is converted to unsigned first. So <code>int n = -1</code> compared with <code>unsigned int u = 1</code> gives <code>n &lt; u</code> as false.</li>
+    <li>A <code>uint8_t i</code> in <code>for (i = 0; i &lt; 300; i++)</code> never ends, because i wraps after 255. A <code>uint16_t</code> counter reaches 300.</li>
+    <li>Use exact-width types, such as <code>uint8_t</code> or <code>uint32_t</code>, where the width is the contract for a register or a wire byte.</li>
+    <li>Add a sum of many small values in a wide type, such as <code>uint32_t total = (uint32_t)a + b + c</code>, and narrow the result to a byte only when you must.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">

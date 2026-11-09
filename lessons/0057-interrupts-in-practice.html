@@ -223,6 +223,45 @@ static void on_button(uint gpio, uint32_t events) {
 
   <div class="win">You registered a hardware callback, kept the handler to one flag and one counter, and read the shared state in a critical section. The same pattern recurs throughout interrupt-driven firmware.</div>
 
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <p>
+    <strong>Mistake 1: printf in the handler.</strong> Symptom: the serial monitor shows a <code>pressed</code> line from the ISR on every press, and on hardware with a busy UART the handler can wait for the buffer to drain, so the other interrupts are delayed. The starter has this on purpose. Fix: delete the call, set a flag or a counter, and let <code>main</code> print.
+  </p>
+  <p>
+    <strong>Mistake 2: no volatile on the shared flag.</strong> Symptom: <code>main</code> never reports, even though the counter in the debugger rises when you press the button. The compiler may read <code>press_pending</code> once into a register and never look at the memory again, so the loop does not see the ISR's write. Fix: declare both shared variables <code>volatile</code>. The debugger is the quickest way to see the difference: the variable's value in memory is right, but the code never reads it.
+  </p>
+  <p>
+    <strong>Mistake 3: read-and-clear without the critical section.</strong> Symptom: the report is sometimes one press behind, and a press is missing from the log even though the count in the debugger is correct. The worked example above shows the interleaving. Fix: wrap the three steps in <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, as the solution does.
+  </p>
+  <p>
+    <strong>Mistake 4: callback never enabled.</strong> Symptom: pressing the button prints nothing at all, and the count in the debugger does not move. The handler is installed, but the event was never enabled, so the NVIC never gets the request. Fix: check the third argument of <code>gpio_set_irq_enabled_with_callback()</code>, which must be <code>true</code>, and check that the event mask is <code>GPIO_IRQ_EDGE_FALL</code> for a press with a pull-up.
+  </p>
+  <p>
+    <strong>Mistake 5: one press counted as several.</strong> Symptom: on real hardware, one push of a mechanical button prints two or three <code>presses</code> lines, because the contact bounces and the pin falls several times. The simulator does not show this. The starter's diagram sets the button's <code>bounce</code> attribute to 0, so one press makes one edge. Fix: debounce the events, as lesson 52 does, either in the handler with a timestamp check or in <code>main</code> with an integrator.
+  </p>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Professional firmware uses this pattern widely. The ISR does the minimum: it reads the hardware event, records it in a buffer or a flag, and returns. The main loop or a task does the rest. Code review checks three things in every handler: no blocking calls, no logging, and every shared variable is either <code>volatile</code>, protected by a critical section, or written from one place only. A reviewer who sees a <code>printf</code> inside an ISR asks for it to be moved out.
+  </p>
+  <p>
+    The same design shows up on bigger systems. A real-time operating system's ISR hands data to a queue and wakes a task, instead of doing the work itself. Lesson 87 introduces FreeRTOS tasks, and the same rule applies there. Priority decides which handler runs first when two events arrive together, so a safety input is given a higher priority than a status LED.
+  </p>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>An interrupt makes the core stop <code>main</code> and run a handler. On the RP2040 the NVIC has 26 connected sources, and each core has its own.</li>
+    <li>All GPIO pins in bank 0 share IRQ 13. The SDK's handler finds the pin, acknowledges the event, and calls your callback with the pin and the event mask.</li>
+    <li>Register the callback with <code>gpio_set_irq_enabled_with_callback()</code>, using <code>GPIO_IRQ_EDGE_FALL</code> and <code>true</code> for a press on a pull-up.</li>
+    <li>Priority decides which pending interrupt runs first. At equal priority, the lower IRQ number runs first.</li>
+    <li>Keep the ISR short. Set a flag or add to a counter, and never call <code>printf</code> or block.</li>
+    <li>Declare shared variables <code>volatile</code>. That stops caching, and nothing more.</li>
+    <li>A read-and-clear of shared data needs <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, because an ISR can run between any two of its steps.</li>
+    <li>Real buttons bounce, so one press can raise several edges. Debounce the events before counting them.</li>
+  </ul>
+
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
     { "questions": [
@@ -374,44 +413,6 @@ static void on_button(uint gpio, uint32_t events) {
     ] }
     </script>
   </div>
-
-  <h2>Common mistakes and how to spot them</h2>
-  <p>
-    <strong>Mistake 1: printf in the handler.</strong> Symptom: the serial monitor shows a <code>pressed</code> line from the ISR on every press, and on hardware with a busy UART the handler can wait for the buffer to drain, so the other interrupts are delayed. The starter has this on purpose. Fix: delete the call, set a flag or a counter, and let <code>main</code> print.
-  </p>
-  <p>
-    <strong>Mistake 2: no volatile on the shared flag.</strong> Symptom: <code>main</code> never reports, even though the counter in the debugger rises when you press the button. The compiler may read <code>press_pending</code> once into a register and never look at the memory again, so the loop does not see the ISR's write. Fix: declare both shared variables <code>volatile</code>. The debugger is the quickest way to see the difference: the variable's value in memory is right, but the code never reads it.
-  </p>
-  <p>
-    <strong>Mistake 3: read-and-clear without the critical section.</strong> Symptom: the report is sometimes one press behind, and a press is missing from the log even though the count in the debugger is correct. The worked example above shows the interleaving. Fix: wrap the three steps in <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, as the solution does.
-  </p>
-  <p>
-    <strong>Mistake 4: callback never enabled.</strong> Symptom: pressing the button prints nothing at all, and the count in the debugger does not move. The handler is installed, but the event was never enabled, so the NVIC never gets the request. Fix: check the third argument of <code>gpio_set_irq_enabled_with_callback()</code>, which must be <code>true</code>, and check that the event mask is <code>GPIO_IRQ_EDGE_FALL</code> for a press with a pull-up.
-  </p>
-  <p>
-    <strong>Mistake 5: one press counted as several.</strong> Symptom: on real hardware, one push of a mechanical button prints two or three <code>presses</code> lines, because the contact bounces and the pin falls several times. The simulator does not show this. The starter's diagram sets the button's <code>bounce</code> attribute to 0, so one press makes one edge. Fix: debounce the events, as lesson 52 does, either in the handler with a timestamp check or in <code>main</code> with an integrator.
-  </p>
-
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
-  <p>
-    Professional firmware uses this pattern widely. The ISR does the minimum: it reads the hardware event, records it in a buffer or a flag, and returns. The main loop or a task does the rest. Code review checks three things in every handler: no blocking calls, no logging, and every shared variable is either <code>volatile</code>, protected by a critical section, or written from one place only. A reviewer who sees a <code>printf</code> inside an ISR asks for it to be moved out.
-  </p>
-  <p>
-    The same design shows up on bigger systems. A real-time operating system's ISR hands data to a queue and wakes a task, instead of doing the work itself. Lesson 87 introduces FreeRTOS tasks, and the same rule applies there. Priority decides which handler runs first when two events arrive together, so a safety input is given a higher priority than a status LED.
-  </p>
-  </details>
-
-  <h2>Summary</h2>
-  <ul>
-    <li>An interrupt makes the core stop <code>main</code> and run a handler. On the RP2040 the NVIC has 26 connected sources, and each core has its own.</li>
-    <li>All GPIO pins in bank 0 share IRQ 13. The SDK's handler finds the pin, acknowledges the event, and calls your callback with the pin and the event mask.</li>
-    <li>Register the callback with <code>gpio_set_irq_enabled_with_callback()</code>, using <code>GPIO_IRQ_EDGE_FALL</code> and <code>true</code> for a press on a pull-up.</li>
-    <li>Priority decides which pending interrupt runs first. At equal priority, the lower IRQ number runs first.</li>
-    <li>Keep the ISR short. Set a flag or add to a counter, and never call <code>printf</code> or block.</li>
-    <li>Declare shared variables <code>volatile</code>. That stops caching, and nothing more.</li>
-    <li>A read-and-clear of shared data needs <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, because an ISR can run between any two of its steps.</li>
-    <li>Real buttons bounce, so one press can raise several edges. Debounce the events before counting them.</li>
-  </ul>
 
   <div class="source">
     <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 2.3.2 (Interrupts) and Table 80</a>: read which IRQ numbers are connected, the priority rules, and where IO_IRQ_BANK0 sits. Then read the GPIO section of the <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html#group_hardware_gpio" target="_blank" rel="noopener">Pico SDK GPIO reference</a> for <code>gpio_set_irq_enabled_with_callback</code>.

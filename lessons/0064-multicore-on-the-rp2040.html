@@ -168,22 +168,6 @@ void bump_shared(void) {
     The cost is the same in every case. A lock or a FIFO wait is time that the other core might have spent on work, so keep the shared part as short as you can. Moving work out of the critical section is usually the best speed-up, and it is the change a reviewer asks for first.
   </p>
 
-  <h2>Common mistakes and how to spot them</h2>
-  <p>
-    The mistakes below are the ones that show up in real reviews. Each one comes with its symptom and its fix, so you can recognise it in a log or in a code review.
-  </p>
-  <ol>
-    <li><strong>An unlocked read-modify-write.</strong> Code such as <code>shared_count++</code> with no lock, called from both cores. Symptom: the total is low, and the low value changes from run to run. Fix: take the lock around every access on both cores, or move the update to one core and send the new value through a FIFO.</li>
-    <li><strong>A lock left held by an early return.</strong> A function takes the lock, hits an error and returns before <code>spin_unlock</code>. Symptom: the other core stops making progress. A debugger shows it stuck inside <code>spin_lock_blocking</code>, and the serial log stops after the error. Fix: have one exit path, so the unlock always runs. Store the result in a variable, let every branch fall through to <code>spin_unlock</code>, and return the variable at the end.</li>
-    <li><strong>A flag published before the data.</strong> Core 0 sets <code>ready = 1</code> and then fills the buffer. Core 1 sees the flag and reads the buffer too early. Symptom: the first few samples are wrong, rarely, and only on some runs. Fix: fill the data first, then hand over with a FIFO push. If you must use a shared flag, put a memory barrier (<code>__dmb()</code>, which the SDK provides) between the data write and the flag write, and another between seeing the flag and reading the data. <code>volatile</code> is not a barrier.</li>
-    <li><strong>A blocking wait while holding the lock.</strong> Core 0 takes the lock, then calls <code>multicore_fifo_pop_blocking()</code> to wait for core 1. Core 1 needs the same lock before it can send the message, so it spins. Symptom: both cores stop, and neither makes progress. This is a <strong><a href="../reference/glossary.html#deadlock">deadlock</a></strong>: each core waits for the other. Fix: finish the wait before taking the lock, or send the message before taking it.</li>
-    <li><strong>Taking the same lock twice.</strong> A helper that takes the lock is called from a function that already holds it. Symptom: the core hangs at the second <code>spin_lock_blocking</code> forever, and the other core carries on. The SDK comments say that a hardware spinlock may not be acquired re-entrantly. Fix: split the code into an outer function that takes the lock and an inner function that assumes it is held.</li>
-    <li><strong>Trusting <code>volatile</code> as protection.</strong> The code is marked <code>volatile</code>, so the author assumes it is safe. Symptom: the same lost updates as the first mistake. Fix: read the lock as the protection, and use <code>volatile</code> only to stop the compiler caching the value inside the lock.</li>
-  </ol>
-  <p>
-    Look at each mistake from the same angle. Ask which core can see the data, which lock or FIFO covers it, and whether any path leaves the lock held or waits for the other core while holding it. Those three questions find most multicore bugs.
-  </p>
-
   <h2>Predict the race</h2>
   <p>
     Work through each question before you open the answer. The questions use the same ideas as the section above.
@@ -326,6 +310,23 @@ void bump_shared(void) {
   </div>
 
   <div class="win">You can launch core 1, pass a value through the FIFO, protect shared data with a spinlock, and find the common mistakes in a review: an unlocked read-modify-write, a lock that an early return leaves held, a flag that is set before its data, and a blocking wait made while holding a lock.</div>
+
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <p>
+    The mistakes below are the ones that show up in real reviews. Each one comes with its symptom and its fix, so you can recognise it in a log or in a code review.
+  </p>
+  <ol>
+    <li><strong>An unlocked read-modify-write.</strong> Code such as <code>shared_count++</code> with no lock, called from both cores. Symptom: the total is low, and the low value changes from run to run. Fix: take the lock around every access on both cores, or move the update to one core and send the new value through a FIFO.</li>
+    <li><strong>A lock left held by an early return.</strong> A function takes the lock, hits an error and returns before <code>spin_unlock</code>. Symptom: the other core stops making progress. A debugger shows it stuck inside <code>spin_lock_blocking</code>, and the serial log stops after the error. Fix: have one exit path, so the unlock always runs. Store the result in a variable, let every branch fall through to <code>spin_unlock</code>, and return the variable at the end.</li>
+    <li><strong>A flag published before the data.</strong> Core 0 sets <code>ready = 1</code> and then fills the buffer. Core 1 sees the flag and reads the buffer too early. Symptom: the first few samples are wrong, rarely, and only on some runs. Fix: fill the data first, then hand over with a FIFO push. If you must use a shared flag, put a memory barrier (<code>__dmb()</code>, which the SDK provides) between the data write and the flag write, and another between seeing the flag and reading the data. <code>volatile</code> is not a barrier.</li>
+    <li><strong>A blocking wait while holding the lock.</strong> Core 0 takes the lock, then calls <code>multicore_fifo_pop_blocking()</code> to wait for core 1. Core 1 needs the same lock before it can send the message, so it spins. Symptom: both cores stop, and neither makes progress. This is a <strong><a href="../reference/glossary.html#deadlock">deadlock</a></strong>: each core waits for the other. Fix: finish the wait before taking the lock, or send the message before taking it.</li>
+    <li><strong>Taking the same lock twice.</strong> A helper that takes the lock is called from a function that already holds it. Symptom: the core hangs at the second <code>spin_lock_blocking</code> forever, and the other core carries on. The SDK comments say that a hardware spinlock may not be acquired re-entrantly. Fix: split the code into an outer function that takes the lock and an inner function that assumes it is held.</li>
+    <li><strong>Trusting <code>volatile</code> as protection.</strong> The code is marked <code>volatile</code>, so the author assumes it is safe. Symptom: the same lost updates as the first mistake. Fix: read the lock as the protection, and use <code>volatile</code> only to stop the compiler caching the value inside the lock.</li>
+  </ol>
+  <p>
+    Look at each mistake from the same angle. Ask which core can see the data, which lock or FIFO covers it, and whether any path leaves the lock held or waits for the other core while holding it. Those three questions find most multicore bugs.
+  </p>
+  </details>
 
   <details class="fold depth"><summary><h2>In real projects</h2></summary>
   <p>

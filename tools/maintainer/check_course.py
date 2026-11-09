@@ -321,7 +321,7 @@ def check_quiz(raw, label, errors, warnings):
 def depth_folds(text):
     """The text of each <details class="fold depth"> ... </details>, nested <details> included."""
     out = []
-    for m in re.finditer(r'<details class="fold depth"', text):
+    for m in re.finditer(r'<details class="fold (?:depth|mistakes)"', text):
         depth = 0
         for t in re.finditer(r"<details|</details>", text[m.start():]):
             depth += 1 if t.group(0) == "<details" else -1
@@ -420,12 +420,12 @@ def check_file(path, manifest):
 
     for fold in depth_folds(text):
         # "Go deeper" folds hold extra depth only: the core path stays open (LESSON-SPEC 3.1).
-        if not re.match(r'<details class="fold depth">\s*<summary>\s*<h2[ >]', fold):
-            errors.append('a "Go deeper" fold must start <details class="fold depth"><summary><h2>')
+        if not re.match(r'<details class="fold (depth|mistakes)">\s*<summary>\s*<h2[ >]', fold):
+            errors.append('a fold must start <details class="fold depth|mistakes"><summary><h2>')
         for what, pat in (("the .win box", r'class="win"'), ("a quiz", r'class="widget quiz"'),
                           ("hands-on steps", r'<ol class="steps"'), ("the summary", r"<h2[^>]*>\s*Summary")):
             if re.search(pat, fold):
-                errors.append(f'a "Go deeper" fold must not hold {what}: keep it on the core path')
+                errors.append(f'a folded section must not hold {what}: keep it on the core path')
 
     if not re.search(r'href="https?://', text):
         errors.append("no external citation links")

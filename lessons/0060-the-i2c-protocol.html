@@ -178,15 +178,6 @@ i2c_read_blocking(i2c0, 0x68, &amp;value, 1, false);  /* nostop = false: STOP at
     The pins are GP4 for SDA and GP5 for SCL. In the RP2040's GPIO function table they are I2C0's SDA and SCL pins, so the pair is valid for the I2C0 peripheral <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, GPIO function table (Table 279)</a>. They are also the Pico board's default I2C pair: the SDK's board header <code>boards/pico.h</code> defines <code>PICO_DEFAULT_I2C</code> as 0, <code>PICO_DEFAULT_I2C_SDA_PIN</code> as 4 and <code>PICO_DEFAULT_I2C_SCL_PIN</code> as 5. "Default" only names the pair, though: nothing connects the pins to the I2C block until your code sets their GPIO function to I2C with <code>gpio_set_function()</code>.
   </p>
 
-  <details class="fold depth"><summary><h2>More than one master</h2></summary>
-  <p>
-    This lesson has one master, the Pico, so the bus never has a conflict. The protocol allows more. Two masters can start a transfer at the same moment, and then both drive SDA. The NXP specification's rule is simple: while SCL is high, each master checks that SDA matches what it sent. The first time a master sends a 1 and reads back a 0, it has lost arbitration, turns off its SDA driver, and waits. Nothing is corrupted, because the bit that won was the one the other master had also sent, so the winner's data is intact <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.8</a>.
-  </p>
-  <p>
-    That is why I2C can run several masters on one bus without a separate arbiter chip. It is also why a second master on your bench can cause a problem that looks like a sensor fault. A bus that works with one master can fail intermittently when a second master is added, and a logic analyzer shows the lost arbitration as a transfer that stops early. Clock stretching, from the bit section, adds one more case: a slow sensor can hold SCL low, so a transfer that the code expects to take 100 µs can take longer. A timeout in the driver is the defence, and the SDK's timeout functions cover that case.
-  </p>
-  </details>
-
   <h2>The code, line by line</h2>
   <p>
     The solution's two helpers and its main loop show every rule from this lesson. Read the write helper first, because the wake-up uses it.
@@ -266,6 +257,50 @@ static int read_reg(uint8_t reg, uint8_t *value) {
   <p>The reference solution is in <code>projects/0060-the-i2c-protocol/solution</code>. Try first, compare after.</p>
 
   <div class="win">You read a register from an I2C device, joined the write and the read with a repeated start, and decoded both from a logic-analyzer capture. You can now check any I2C sensor's address, register and ACK on the wire.</div>
+
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <p>
+    <strong>Mistake 1: the shifted address.</strong> Symptom: the write returns an error, and the solution prints <code>I2C FAIL: read 0x00</code>, because the read never got an address acknowledge. The bug is usually passing 0xD0 as the address, which the SDK then shifts again. Fix: pass the 7-bit address 0x68. The analyzer shows the 8-bit byte, so compare with 0xD0 there, not in the code.
+  </p>
+  <p>
+    <strong>Mistake 2: a STOP between the write and the read.</strong> Symptom: the code works and prints <code>WHO_AM_I=0x68</code>, but the decoder shows two separate transactions, each with its own START and STOP, instead of one with a repeated START. A single master on a quiet bus gets away with it, and a bus shared with another master does not. Fix: pass <code>nostop = true</code> on the register write, as the solution does.
+  </p>
+  <p>
+    <strong>Mistake 3: a pull-up that is too weak.</strong> Symptom: on the bench wire it works, but on a longer wire or at a higher speed the decoder shows slow, rounded edges, and some transfers fail. The internal pull-up of 50 to 80 kΩ rises too slowly for a bus with real capacitance. Fix: add external pull-ups of a few kilohms, as the diagram does, and check the rise time with the formula in section 7.1.
+  </p>
+  <p>
+    <strong>Mistake 4: the sensor left asleep.</strong> Symptom: the device answers its address, but its measurements do not change. The SLEEP bit is set at power-up, so the sensor does not measure until the wake write clears it. Fix: write 0 to PWR_MGMT_1 before reading any measurement register. The wake write in <code>main()</code> prints <code>I2C FAIL</code> if it is not acknowledged.
+  </p>
+  <p>
+    <strong>Mistake 5: the wrong address for AD0.</strong> Symptom: the write gets no acknowledge, and the decoder shows a NACK straight after the address byte. The board has AD0 high, so the device is at 0x69, and the code asks for 0x68. Fix: match the address to the AD0 pin, or scan the bus to find the device, which is what an address scan does.
+  </p>
+  </details>
+
+  <details class="fold depth"><summary><h2>More than one master</h2></summary>
+  <p>
+    This lesson has one master, the Pico, so the bus never has a conflict. The protocol allows more. Two masters can start a transfer at the same moment, and then both drive SDA. The NXP specification's rule is simple: while SCL is high, each master checks that SDA matches what it sent. The first time a master sends a 1 and reads back a 0, it has lost arbitration, turns off its SDA driver, and waits. Nothing is corrupted, because the bit that won was the one the other master had also sent, so the winner's data is intact <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.8</a>.
+  </p>
+  <p>
+    That is why I2C can run several masters on one bus without a separate arbiter chip. It is also why a second master on your bench can cause a problem that looks like a sensor fault. A bus that works with one master can fail intermittently when a second master is added, and a logic analyzer shows the lost arbitration as a transfer that stops early. Clock stretching, from the bit section, adds one more case: a slow sensor can hold SCL low, so a transfer that the code expects to take 100 µs can take longer. A timeout in the driver is the defence, and the SDK's timeout functions cover that case.
+  </p>
+  </details>
+
+  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <p>
+    Professional I2C debugging starts with the bus, not the code. The first question is whether the device acknowledges its address, and one logic-analyzer capture answers that. Once you can read the decode, most bus faults show up as one of the five mistakes above.
+  </p>
+  </details>
+
+  <h2>Summary</h2>
+  <ul>
+    <li>I2C has two open-drain wires, SDA and SCL. Pull-ups make the high level, so several devices can share the bus safely.</li>
+    <li>A START is SDA falling while SCL is high. A STOP is SDA rising while SCL is high. A repeated START keeps the bus.</li>
+    <li>Every byte is eight bits, MSB first, and is followed by an ACK or a NACK. A master NACKs the last byte of a read.</li>
+    <li>The address is 7 bits on the wire plus a R/W bit, so 0x68 is 0xD0 for a write and 0xD1 for a read.</li>
+    <li>A register read is a write of the register pointer, a repeated START, and a read. Pass <code>nostop = true</code> on the pointer write.</li>
+    <li>The rise time is 0.8473 × R × C, and the standard-mode limit is 1000 ns. Use external pull-ups for real buses, because the RP2040's internal ones are weak.</li>
+    <li>The MPU6050 powers up asleep. Clear the SLEEP bit in PWR_MGMT_1 (0x6B) before reading its measurements.</li>
+  </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
     <script type="application/json">
@@ -426,40 +461,6 @@ static int read_reg(uint8_t reg, uint8_t *value) {
     ] }
     </script>
   </div>
-
-  <h2>Common mistakes and how to spot them</h2>
-  <p>
-    <strong>Mistake 1: the shifted address.</strong> Symptom: the write returns an error, and the solution prints <code>I2C FAIL: read 0x00</code>, because the read never got an address acknowledge. The bug is usually passing 0xD0 as the address, which the SDK then shifts again. Fix: pass the 7-bit address 0x68. The analyzer shows the 8-bit byte, so compare with 0xD0 there, not in the code.
-  </p>
-  <p>
-    <strong>Mistake 2: a STOP between the write and the read.</strong> Symptom: the code works and prints <code>WHO_AM_I=0x68</code>, but the decoder shows two separate transactions, each with its own START and STOP, instead of one with a repeated START. A single master on a quiet bus gets away with it, and a bus shared with another master does not. Fix: pass <code>nostop = true</code> on the register write, as the solution does.
-  </p>
-  <p>
-    <strong>Mistake 3: a pull-up that is too weak.</strong> Symptom: on the bench wire it works, but on a longer wire or at a higher speed the decoder shows slow, rounded edges, and some transfers fail. The internal pull-up of 50 to 80 kΩ rises too slowly for a bus with real capacitance. Fix: add external pull-ups of a few kilohms, as the diagram does, and check the rise time with the formula in section 7.1.
-  </p>
-  <p>
-    <strong>Mistake 4: the sensor left asleep.</strong> Symptom: the device answers its address, but its measurements do not change. The SLEEP bit is set at power-up, so the sensor does not measure until the wake write clears it. Fix: write 0 to PWR_MGMT_1 before reading any measurement register. The wake write in <code>main()</code> prints <code>I2C FAIL</code> if it is not acknowledged.
-  </p>
-  <p>
-    <strong>Mistake 5: the wrong address for AD0.</strong> Symptom: the write gets no acknowledge, and the decoder shows a NACK straight after the address byte. The board has AD0 high, so the device is at 0x69, and the code asks for 0x68. Fix: match the address to the AD0 pin, or scan the bus to find the device, which is what an address scan does.
-  </p>
-
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
-  <p>
-    Professional I2C debugging starts with the bus, not the code. The first question is whether the device acknowledges its address, and one logic-analyzer capture answers that. Once you can read the decode, most bus faults show up as one of the five mistakes above.
-  </p>
-  </details>
-
-  <h2>Summary</h2>
-  <ul>
-    <li>I2C has two open-drain wires, SDA and SCL. Pull-ups make the high level, so several devices can share the bus safely.</li>
-    <li>A START is SDA falling while SCL is high. A STOP is SDA rising while SCL is high. A repeated START keeps the bus.</li>
-    <li>Every byte is eight bits, MSB first, and is followed by an ACK or a NACK. A master NACKs the last byte of a read.</li>
-    <li>The address is 7 bits on the wire plus a R/W bit, so 0x68 is 0xD0 for a write and 0xD1 for a read.</li>
-    <li>A register read is a write of the register pointer, a repeated START, and a read. Pass <code>nostop = true</code> on the pointer write.</li>
-    <li>The rise time is 0.8473 × R × C, and the standard-mode limit is 1000 ns. Use external pull-ups for real buses, because the RP2040's internal ones are weak.</li>
-    <li>The MPU6050 powers up asleep. Clear the SLEEP bit in PWR_MGMT_1 (0x6B) before reading its measurements.</li>
-  </ul>
 
   <div class="source">
     <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, I2C-bus specification and user manual (NXP)</a>: read section 3.1.4 for START and STOP, 3.1.5 and 3.1.6 for the byte format and ACK, 3.1.10 for the address and R/W bit, Table 10 for the rise-time limit, and section 7.1 for pull-up sizing.
