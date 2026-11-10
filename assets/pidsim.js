@@ -349,15 +349,22 @@
       const X = t => right - (now - t) / span * (right - left);
       g.font = "11px " + getComputedStyle(box).getPropertyValue("--sans");
       const panel = (y0, label, lim, unit, pick, colr, extra) => {
-        const Y = v => y0 + half / 2 - Math.max(-lim, Math.min(lim, v)) / lim * (half / 2 - 4);
-        g.strokeStyle = c.rule; g.lineWidth = 1; g.strokeRect(left, y0, right - left, half - 2);
-        g.beginPath(); g.moveTo(left, Y(0)); g.lineTo(right, Y(0)); g.stroke();
-        g.fillStyle = c.muted; g.fillText(label, left + 6, y0 + 12);
-        g.fillText(`+${lim}`, 4, y0 + 10); g.fillText(`−${lim}`, 4, y0 + half - 6); g.fillText(`0 ${unit}`, 4, Y(0) + 4);
+        const h0 = half - 2, Y = v => y0 + h0 / 2 - Math.max(-lim, Math.min(lim, v)) / lim * (h0 / 2 - 4);
+        g.fillStyle = c.muted;
+        g.fillText(`+${lim}`, 4, y0 + 10); g.fillText(`−${lim}`, 4, y0 + h0 - 2); g.fillText(`0 ${unit}`, 4, Y(0) + 4);
+        // Everything of the trace stays inside its box: clip to it.
+        g.save(); g.beginPath(); g.rect(left + 1, y0 + 1, right - left - 2, h0 - 2); g.clip();
+        g.strokeStyle = c.rule; g.lineWidth = 1; g.beginPath(); g.moveTo(left, Y(0)); g.lineTo(right, Y(0)); g.stroke();
         if (extra) extra(Y);
         g.strokeStyle = colr; g.lineWidth = 1.6; g.beginPath();
         hist.forEach((h, i) => { const px = X(h.t), py = Y(pick(h)); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
         g.stroke();
+        // The panel's name on a patch of background, so the trace never runs through it.
+        const tw = g.measureText(label).width;
+        g.fillStyle = c.bg; g.fillRect(left + 2, y0 + 2, tw + 8, 14);
+        g.fillStyle = c.muted; g.fillText(label, left + 6, y0 + 12);
+        g.restore();
+        g.strokeStyle = c.rule; g.lineWidth = 1; g.strokeRect(left + 0.5, y0 + 0.5, right - left - 1, h0 - 1);
       };
       panel(2, "lean of the pole (°)", 30, "°", h => h.th, c.accent, Y => {
         g.strokeStyle = c.muted; g.setLineDash([4, 3]); g.beginPath();
