@@ -1,4 +1,4 @@
-/* Small SVG line plots for the course widgets (pidsim, signals). No dependencies.
+/* Small SVG line plots for the course widgets (signals and others). No dependencies.
  *
  *   const svg = Plot.chart({
  *     w: 640, h: 220, x: [0, 1200], y: [20, 70], xlabel: "time (s)", ylabel: "°C",

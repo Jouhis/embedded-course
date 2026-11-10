@@ -12,6 +12,7 @@ Workspace root: `C:\Users\juhos\embedded-course` (Git Bash: `/c/Users/juhos/embe
 5. `RESOURCES.md`: trusted sources. Cite from here.
 6. `templates/lesson-template.html`: the lesson skeleton. Copy it; don't invent a new structure.
 7. `assets/course.css` and `assets/course.js`: available styles and widgets (read the header comment of course.js).
+   `design.html` (repo root, not on the website) shows every reusable element and widget on one page, in both themes. Serve the repo (`python -m http.server`) and open it to see what exists before you style anything; use those elements rather than new one-off styles, so the course looks the same everywhere.
 8. The lessons immediately before yours in `lessons/`, so tone, terminology and difficulty connect.
 
 ## 2. The learner
@@ -192,7 +193,7 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
   - `rtossim.js`: a fixed-priority scheduler timeline with semaphore and mutex (priority inheritance) and the rate-monotonic bound (`data-preset`, optionally `data-presets`).
   - `crcframe.js`: Modbus RTU frames with CRC-16/MODBUS, a shift-by-shift trace and bit flips on the wire.
   - `fsm.js`: the lesson 56 traffic light, table-driven, with an editable table.
-  - `pidsim.js`: the lesson 108 heater and PID controller; it reproduces the lesson's tuning table.
+  - `pidsim.js`: lesson 108's PID demo, a balancing cart (inverted pendulum) the learner tunes, pushes and moves; it shows P, I and D on a fast, unstable plant. The heater numbers stay in the lesson's table and project.
   - `levels.js`: `logiclevel` (input thresholds, hysteresis on a noisy edge, an open-drain line with its pull-up current and rise time).
   - `race.js`: `racestep`, two contexts sharing memory, stepped in the reader's order (`data-preset` cores, isr-flag, odr, volatile), with the lesson's fix as an option.
   - `wrap.js`: `wraptime`, a timeout across the counter wrap, checked three ways (`data-preset` systick, blink, small; `data-unit`).
@@ -203,9 +204,10 @@ Wokwi is a **digital** simulator. It can't simulate currents, voltage dividers, 
   - `kernel.js`: `queuesim` (a queue, a binary and a counting semaphore fed by an ISR) and `stackmark` (a painted stack and its high-water mark).
   - `boot.js`: `bootcheck`, the lesson 104 bootloader's slot checks, in order.
   A widget with `data-chip`, `data-bus` or a preset group shows only that lesson's options; keep widgets to what the lesson needs.
-  - `plot.js`: the shared line-plot helper; load it before `pidsim.js`, `signals.js`, `timing.js` and `levels.js`.
+  - `plot.js`: the shared line-plot helper; load it before `signals.js`, `timing.js` and `levels.js`.
   A widget's numbers come from the lesson's sources: when a lesson's value changes, change the widget's table too.
 - A widget must keep the same size while it plays, steps or fills: reserve room for logs, results and captions instead of letting the page jump.
+- Keep one design. Colours come from the `:root` tokens in `course.css` (each a `light-dark()` pair, so both themes work); never hard-code a colour that has no dark twin. A new reusable element or widget gets a sample in `design.html`, and a colour change is tried there first with its tuner.
 - Before writing any interactive widget, check `assets/` for an existing one. If you need something reusable, make it a new file in `assets/` with a header comment explaining its usage. Don't inline code a future lesson would duplicate. Keep component code dependency-free (vanilla JS) so it works offline from `file://`.
 
 ## 12. Finish checklist (do all of these before reporting)

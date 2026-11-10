@@ -13,9 +13,13 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
 
 ## Unreleased
 
+- Lesson 108's PID demo is now a **balancing cart**: a pole on a cart that the learner tunes
+  (kp, ki, kd), pushes, and moves by dragging its target. Presets show P alone falling, too little
+  D, too weak or too strong P, a steady wind that needs I, too much I, sensor noise and a slow
+  controller. The heater table and project are unchanged.
 - `design.html`: every reusable design element on one page (colours, text, boxes, folds, code,
   quizzes, index and checkpoint pieces, live widgets), with a colour tuner that copies the
-  `:root` lines for `course.css`. For maintainers; not linked from the course.
+  `:root` lines for `course.css`. For maintainers: kept in the repo, not on the website.
 
 ## 0.1.1 (2026-11-10)
 

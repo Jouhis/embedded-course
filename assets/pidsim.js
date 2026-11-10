@@ -1,114 +1,312 @@
-/* PID tuner on the lesson 108 heater. Load after course.js and plot.js.
+/* PID demo for lesson 108: a cart that balances a pole (an inverted pendulum). Load after course.js.
  *
  *   <div class="widget pidsim"></div>
  *
- * Same model and controller as projects/0108-pid-host/solution:
- *   plant  T <- T + dt * (P * 80 - (T - 25)) / 60, dt = 1 s, 1200 steps
- *   PID    e = sp - meas; P = kp e; I += ki e dt, clamped to 0..1 (anti-windup);
- *          D = -kd (meas - last_meas) / dt, zero on the first sample; u = clamp(P + I + D, 0, 1)
- *   metrics overshoot = max(T - sp); settled = the second after the last sample outside sp ± 1 °C
+ * The learner tunes the balance loop (kp, ki, kd), pushes the pole, and drags the target to move the
+ * cart. The heater numbers of the lesson stay in its table and project; this shows the same three
+ * terms on a fast, unstable plant, where a bad gain makes the pole fall in a second.
+ *
+ * Plant (the classic cart-pole, RK4 at 1 ms): cart 1 kg, pole 0.2 kg and 1 m long (pivot to tip),
+ *   cart friction 0.2 N·s/m, g = 9.81, track ±2.4 m with end stops. The pole has fallen past 40°.
+ * Balance loop, run every dt (100 Hz unless the learner picks slower): e = lean − wanted lean;
+ *   F = kp e + I + D, with I += ki e dt and D = kd × (rate of change of the measured lean)
+ *   (derivative on measurement); F limited to ±20 N, the motor's limit. The integral is clamped to
+ *   ±20 N and stops growing while F is at the limit (anti-windup).
+ * Position hold (a second, slower loop around the first, on by default): wanted lean =
+ *   0.05 × (target − x) − 0.1 × cart speed, limited to ±0.1 rad. To move right the cart has to lean
+ *   right first, so it starts by rolling a little to the left.
+ * Wind: a steady 3 N on the cart. Noise: ±1° on the lean sensor.
+ * Checked by running window.PidSim headless, starting 3° off upright: 40/0/6 balances and moves 2 m
+ * cleanly; 40/0/0 falls in 1.5 s; 40/0/3 keeps swinging about ±15°; 15/0/6 and 200/0/6 swing hard
+ * and hit an end stop; with wind, ki 0 parks 1.5 m short and ki 10 holds the target; 40/100/6 swings
+ * about ±20°; at 10 Hz 40/0/6 swings about ±14° (20 Hz still holds); noise with kd 20 swings ±10°.
  */
 (function () {
   "use strict";
   const CSS = `
-  .pidsim .pid-ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:.4rem 1.2rem;margin:.5rem 0}
-  .pidsim label{font-family:var(--sans);font-size:.85rem;display:flex;align-items:center;gap:.5rem}
-  .pidsim input[type=range]{flex:1;min-width:6rem}
-  .pidsim .v{font-family:var(--mono);min-width:4.2rem;text-align:right}
-  .pidsim .pid-opts{display:flex;flex-wrap:wrap;gap:.3rem 1.2rem;margin:.3rem 0}
-  .pidsim .pid-presets{display:flex;flex-wrap:wrap;gap:.3rem;margin:.4rem 0}
-  .pidsim .pid-presets .btn{font-size:.75rem;padding:.15rem .5rem}
-  .pidsim .pid-metrics{display:flex;flex-wrap:wrap;gap:.5rem;margin:.5rem 0}
-  .pidsim .m{background:var(--code-bg);border-radius:4px;padding:.3rem .6rem;font-family:var(--sans);font-size:.8rem}
+  .pidsim .pc-scene{display:block;width:100%;aspect-ratio:680/210;touch-action:none;cursor:ew-resize;border:1px solid var(--rule);border-radius:6px;background:var(--bg)}
+  .pidsim .pc-scene:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .pidsim .pc-chart{display:block;width:100%;aspect-ratio:680/170;margin-top:.4rem}
+  .pidsim .pc-row{display:flex;flex-wrap:wrap;gap:.35rem;align-items:center;margin:.45rem 0}
+  .pidsim .pc-row .btn{font-size:.78rem;padding:.2rem .55rem}
+  .pidsim .pc-ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(14rem,1fr));gap:.3rem 1.2rem;margin:.4rem 0}
+  .pidsim label{font-family:var(--sans);font-size:.85rem;display:flex;align-items:center;gap:.45rem}
+  .pidsim input[type=range]{flex:1;min-width:5rem}
+  .pidsim .v{font-family:var(--mono);min-width:3.2rem;text-align:right}
+  .pidsim select{font-family:var(--sans);font-size:.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--rule);border-radius:4px;padding:.15rem .3rem}
+  .pidsim .pc-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(6.8rem,1fr));gap:.4rem;margin:.5rem 0}
+  .pidsim .m{background:var(--code-bg);border-radius:4px;padding:.3rem .6rem;font-family:var(--sans);font-size:.78rem}
   .pidsim .m b{font-family:var(--mono);font-size:1rem;display:block}
   .pidsim .m.bad b{color:var(--bad)} .pidsim .m.good b{color:var(--good)}
-  .pidsim .pid-why{font-family:var(--sans);font-size:.88rem;margin:.3rem 0;padding-left:1.2rem}
-  .pidsim select{font-family:var(--sans);font-size:.85rem;background:var(--bg);color:var(--fg);border:1px solid var(--rule);border-radius:4px;padding:.15rem .3rem}`;
+  .pidsim .pc-why{font-family:var(--sans);font-size:.88rem;margin:.3rem 0;padding-left:1.2rem;min-height:4.2em}`;
 
-  const PRESETS = [
-    ["Starter: 0.05 / 0.002 / 0", 0.05, 0.002, 0], ["Less I: 0.05 / 0.0005 / 0", 0.05, 0.0005, 0], ["Add D: 0.05 / 0.002 / 0.5", 0.05, 0.002, 0.5],
-    ["0.04 / 0.002 / 0.5", 0.04, 0.002, 0.5], ["Reference: 0.04 / 0.0005 / 0.5", 0.04, 0.0005, 0.5], ["0.03 / 0.0005 / 0.5", 0.03, 0.0005, 0.5],
-    ["P only: 0.05 / 0 / 0", 0.05, 0, 0], ["Too much P: 0.5 / 0 / 0", 0.5, 0, 0],
-  ];
+  // ---------------------------------------------------------------- model
+  const P = { M: 1, m: 0.2, l: 0.5, g: 9.81, b: 0.2, Fmax: 20, track: 2.4, fall: 0.7,
+              kpx: 0.05, kdx: 0.1, lean: 0.1, wind: 3, noise: 0.0175 };
 
-  function simulate(o) {
-    const sp = o.sp, steps = 1200, rnd = window.Plot.rng(7);
-    let T = 25, integral = 0, last = 0, first = true, overshoot = 0, lastOutside = -1, maxI = 0;
-    const temp = [[0, T]], power = [], iterm = [], meas = [];
-    for (let t = 0; t < steps; t++) {
-      const amb = o.draught && t >= 600 ? 15 : 25;
-      const m = T + (o.noise ? 0.3 * window.Plot.gauss(rnd) : 0);
-      const e = sp - m;
-      const P = o.kp * e;
-      integral += o.ki * e * 1;
-      if (o.clamp) integral = Math.min(1, Math.max(0, integral));
-      maxI = Math.max(maxI, integral);
-      const D = first ? 0 : -o.kd * (m - last) / 1;
-      first = false; last = m;
-      const u = Math.min(1, Math.max(0, P + integral + D));
-      T = T + 1 * (u * 80 - (T - amb)) / 60;
-      if (Math.abs(T - sp) > 1) lastOutside = t;
-      if (T - sp > overshoot) overshoot = T - sp;
-      temp.push([t + 1, T]); power.push([t, u]); iterm.push([t, integral]); if (o.noise) meas.push([t, m]);
+  function deriv(s, F) {
+    const { M, m, l, g, b } = P, tot = M + m, sin = Math.sin(s[2]), cos = Math.cos(s[2]);
+    const tmp = (F - b * s[1] + m * l * s[3] * s[3] * sin) / tot;
+    const aTh = (g * sin - cos * tmp) / (l * (4 / 3 - m * cos * cos / tot));
+    return [s[1], tmp - m * l * aTh * cos / tot, s[3], aTh];
+  }
+  function rng(seed) {
+    let s = seed | 0;
+    return () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  }
+  function create(th0) {
+    return { s: [0, 0, th0, 0], t: 0, I: 0, last: null, u: 0, want: 0, acc: 0, fell: false, hit: false, r: rng(3), meas: th0 };
+  }
+  /* One controller update: o = { kp, ki, kd, dt, target, hold, noise }. */
+  function control(st, o) {
+    const [x, v, th] = st.s;
+    const m = th + (o.noise ? P.noise * (2 * st.r() - 1) : 0);
+    const want = o.hold ? Math.max(-P.lean, Math.min(P.lean, P.kpx * (o.target - x) - P.kdx * v)) : 0;
+    const e = m - want;
+    const D = st.last === null ? 0 : o.kd * (m - st.last) / o.dt;
+    st.last = m;
+    const raw = o.kp * e + st.I + D;
+    if (Math.abs(raw) < P.Fmax) st.I = Math.max(-P.Fmax, Math.min(P.Fmax, st.I + o.ki * e * o.dt));
+    st.u = Math.max(-P.Fmax, Math.min(P.Fmax, o.kp * e + st.I + D));
+    st.want = want; st.meas = m; st.e = e;
+  }
+  /* Advance the plant by T seconds, running the controller every o.dt. */
+  function advance(st, o, T) {
+    const h = 0.001;
+    for (let n = Math.round(T / h); n > 0 && !st.fell; n--) {
+      st.acc += h;
+      if (st.acc >= o.dt - 1e-9) { st.acc -= o.dt; control(st, o); }
+      const F = st.u + (o.wind ? P.wind : 0), s = st.s;
+      const k1 = deriv(s, F), k2 = deriv(s.map((q, j) => q + h / 2 * k1[j]), F);
+      const k3 = deriv(s.map((q, j) => q + h / 2 * k2[j]), F), k4 = deriv(s.map((q, j) => q + h * k3[j]), F);
+      st.s = s.map((q, j) => q + h / 6 * (k1[j] + 2 * k2[j] + 2 * k3[j] + k4[j]));
+      if (Math.abs(st.s[0]) > P.track) { st.s[0] = Math.sign(st.s[0]) * P.track; st.s[1] = 0; st.hit = true; }
+      st.t += h;
+      if (Math.abs(st.s[2]) > P.fall) st.fell = true;
     }
-    return { temp, power, iterm, meas, overshoot, settle: lastOutside + 1 < steps ? lastOutside + 1 : -1, final: T, maxI };
   }
 
+  const PRESETS = [
+    ["Balanced: 40 / 0 / 6", 40, 0, 6], ["P only: 40 / 0 / 0", 40, 0, 0], ["Too little D: 40 / 0 / 3", 40, 0, 3],
+    ["Too weak: 15 / 0 / 6", 15, 0, 6], ["Too much P: 200 / 0 / 6", 200, 0, 6],
+    ["I for the wind: 40 / 10 / 6", 40, 10, 6], ["Too much I: 40 / 100 / 6", 40, 100, 6],
+  ];
+  const DEG = 180 / Math.PI;
+
+  // ---------------------------------------------------------------- widget
   function mount(box) {
     const E = window.Course.el;
-    const st = { kp: 0.05, ki: 0.002, kd: 0, sp: 60, clamp: true, noise: false, draught: false, span: 600 };
-    box.appendChild(E("h3", { text: box.dataset.title || "Tune the heater" }));
-    const presets = E("div", { class: "pid-presets" });
-    PRESETS.forEach(([t, kp, ki, kd]) => presets.appendChild(E("button", { class: "btn secondary", type: "button", text: t, onclick: () => { Object.assign(st, { kp, ki, kd }); sync(); render(); } })));
+    const o = { kp: 40, ki: 0, kd: 6, dt: 0.01, target: 0, hold: true, noise: false, wind: false };
+    let st = create(0.05), running = true, visible = true, hist = [], lastFrame = 0, upright = 0;
+
+    box.appendChild(E("h3", { text: box.dataset.title || "Balance the cart" }));
+    box.appendChild(E("p", { class: "widget-hint", text: "Drag in the picture (or use ← →) to move the target. Push the pole and watch the loop catch it." }));
+    const scene = E("canvas", { class: "pc-scene", tabindex: "0", role: "img",
+      "aria-label": "A cart on a track balancing an upright pole; drag to move its target" });
+    const chart = E("canvas", { class: "pc-chart", role: "img", "aria-label": "The last 10 seconds of the lean angle and the motor force" });
+
+    const btn = (text, fn, cls) => { const b = E("button", { class: "btn " + (cls || "secondary"), type: "button", text }); b.addEventListener("click", fn); return b; };
+    const push = dir => () => { if (!st.fell) st.s[3] += dir * 1.2; };
+    const pauseBtn = btn("Pause", () => { running = !running; pauseBtn.textContent = running ? "Pause" : "Run"; });
+    const actions = E("div", { class: "pc-row" }, [btn("← Push the pole", push(-1)), btn("Push the pole →", push(1)),
+      btn("Reset", reset), pauseBtn]);
+
+    const presets = E("div", { class: "pc-row" });
+    PRESETS.forEach(([t, kp, ki, kd]) => presets.appendChild(btn(t, () => { Object.assign(o, { kp, ki, kd }); sync(); reset(); })));
     const sliders = {};
     const slider = (key, label, min, max, step, dec) => {
       const r = E("input", { type: "range", min, max, step, "aria-label": label });
       const v = E("span", { class: "v" });
-      r.addEventListener("input", () => { st[key] = +r.value; v.textContent = (+r.value).toFixed(dec); render(); });
+      r.addEventListener("input", () => { o[key] = +r.value; v.textContent = (+r.value).toFixed(dec); });
       sliders[key] = [r, v, dec];
       return E("label", {}, [label, r, v]);
     };
-    const check = (key, label) => { const c = E("input", { type: "checkbox" }); c.checked = st[key]; c.addEventListener("change", () => { st[key] = c.checked; render(); }); return E("label", {}, [c, label]); };
-    const span = E("select", { "aria-label": "Time shown" }, [[300, "first 300 s"], [600, "first 600 s"], [1200, "all 1200 s"]].map(([v, t]) => E("option", { value: v, text: t })));
-    span.value = "600"; span.addEventListener("change", () => { st.span = +span.value; render(); });
-    const ctl = E("div", { class: "pid-ctl" }, [slider("kp", "kp", 0, 0.5, 0.005, 3), slider("ki", "ki", 0, 0.01, 0.0001, 4), slider("kd", "kd", 0, 3, 0.05, 2), slider("sp", "setpoint °C", 30, 90, 1, 0)]);
-    const opts = E("div", { class: "pid-opts" }, [check("clamp", " anti-windup clamp on the integral"), check("noise", " sensor noise (±0.3 °C)"),
-      check("draught", " a draught at 600 s: the room drops to 15 °C"), E("label", {}, ["show ", span])]);
-    const metrics = E("div", { class: "pid-metrics" }), plotT = E("div"), plotU = E("div"), why = E("ul", { class: "pid-why" });
-    box.append(E("p", { class: "widget-hint", text: "Gain sets from the table above:" }), presets, ctl, opts, metrics, plotT, plotU, why);
+    const check = (key, label) => {
+      const c = E("input", { type: "checkbox" }); c.checked = o[key];
+      c.addEventListener("change", () => { o[key] = c.checked; });
+      return E("label", {}, [c, label]);
+    };
+    const rate = E("select", { "aria-label": "Controller rate" },
+      [[0.01, "100 Hz"], [0.02, "50 Hz"], [0.05, "20 Hz"], [0.1, "10 Hz"]].map(([v, t]) => E("option", { value: v, text: t })));
+    rate.value = "0.01";
+    rate.addEventListener("change", () => { o.dt = +rate.value; st.acc = 0; });
+    const ctl = E("div", { class: "pc-ctl" }, [slider("kp", "kp", 0, 250, 1, 0),
+      slider("ki", "ki", 0, 200, 1, 0), slider("kd", "kd", 0, 25, 0.1, 1)]);
+    const opts = E("div", { class: "pc-ctl" }, [check("hold", " hold the position (second loop)"),
+      check("wind", " a steady wind: 3 N on the cart"), check("noise", " sensor noise (±1°)"),
+      E("label", {}, ["controller runs at ", rate])]);
+    const metrics = E("div", { class: "pc-metrics", "aria-live": "off" });
+    const why = E("ul", { class: "pc-why" });
+    box.append(scene, actions, E("p", { class: "widget-hint", text: "Gain sets, kp / ki / kd (force in newtons per radian of lean, per radian-second, per radian per second):" }), presets, ctl, opts, metrics, chart, why);
 
-    function sync() { for (const k in sliders) { const [r, v, dec] = sliders[k]; r.value = st[k]; v.textContent = (+st[k]).toFixed(dec); } }
+    function sync() { for (const k in sliders) { const [r, v, dec] = sliders[k]; r.value = o[k]; v.textContent = (+o[k]).toFixed(dec); } }
+    function reset() { st = create(0.05); hist = []; upright = 0; o.target = 0; }
 
-    function render() {
-      const r = simulate(st);
-      const cut = pts => pts.filter(p => p[0] <= st.span);
-      const lo = Math.min(20, ...cut(r.temp).map(p => p[1])) , hi = Math.max(st.sp + 10, ...cut(r.temp).map(p => p[1]));
-      plotT.innerHTML = ""; plotU.innerHTML = "";
-      const series = [{ pts: cut(r.temp), cls: "s2", label: "temperature" }];
-      if (st.noise) series.unshift({ pts: cut(r.meas), cls: "s5", thin: true, label: "what the sensor reports" });
-      plotT.appendChild(window.Plot.chart({ w: 680, h: 230, x: [0, st.span], y: [Math.floor(lo / 5) * 5, Math.ceil(hi / 5) * 5], xlabel: "time (s)", ylabel: "°C",
-        series, hlines: [{ y: st.sp, label: "setpoint" }], bands: [{ y0: st.sp - 1, y1: st.sp + 1 }], vlines: r.settle > 0 && r.settle <= st.span ? [{ x: r.settle, label: "settled" }] : [] }));
-      plotU.appendChild(window.Plot.chart({ w: 680, h: 150, x: [0, st.span], y: [0, 1], xlabel: "time (s)", ylabel: "power, 0 to 1",
-        series: [{ pts: cut(r.power), cls: "s1", label: "output u" }, { pts: cut(r.iterm).map(([t, v]) => [t, Math.min(1.05, v)]), cls: "s3", dash: true, label: "integral term I" }] }));
-      const tol = r.final - st.sp;
-      metrics.innerHTML = "";
-      [["Overshoot", r.overshoot.toFixed(2) + " °C", r.overshoot > 2 ? "bad" : r.overshoot < 0.5 ? "good" : ""],
-       ["Settling time (±1 °C)", r.settle < 0 ? "never" : r.settle + " s", r.settle < 0 ? "bad" : ""],
-       ["At 1200 s", r.final.toFixed(2) + " °C", Math.abs(tol) > 1 ? "bad" : ""]]
-        .forEach(([k, v, c]) => metrics.appendChild(E("div", { class: "m " + c }, [k, E("b", { text: v })])));
-      const w = [];
-      if (st.ki === 0) w.push(`With no I term the loop settles where heat loss balances kp × error: it stops ${Math.abs(tol).toFixed(2)} °C ${tol < 0 ? "below" : "above"} the setpoint. Add a little ki.`);
-      if (st.kp >= 0.3 && st.kd === 0) w.push("A large kp drives the heater between full and zero power: the output saturates, and the loop behaves like an on/off thermostat.");
-      if (!st.clamp && r.maxI > 1) w.push(`Without the clamp the integral reached ${r.maxI.toFixed(2)}, more than the heater can use (1.0). It must unwind through negative error, which is the extra overshoot.`);
-      if (st.clamp && st.ki > 0 && r.overshoot > 2) w.push("The overshoot comes from the integral: it keeps growing while the temperature is still below the setpoint. Lower ki and watch the dashed line.");
-      if (st.kd > 0 && st.noise) w.push("D reacts to how fast the measurement changes, so it turns sensor noise into a noisy output. Compare kd = 0 with kd = 1.");
-      if (st.draught) w.push("At 600 s more heat leaks out. P alone cannot hold the setpoint against it; the integral slowly raises the power until the error is gone again.");
-      if (!w.length) w.push("Change one gain at a time and predict the curve before you let go of the slider.");
-      why.innerHTML = w.map(s => `<li>${s}</li>`).join("");
+    // Colours come from the course theme; read them through a probe so light-dark() is resolved.
+    const probe = E("span", { style: "display:none" });
+    box.appendChild(probe);
+    let col = {}, colAt = 0;
+    function colours(now) {
+      if (now - colAt < 500 && col.fg) return col;
+      colAt = now;
+      for (const k of ["fg", "muted", "rule", "accent", "good", "bad", "warn", "code-bg", "bg"]) {
+        probe.style.color = `var(--${k})`; col[k] = getComputedStyle(probe).color;
+      }
+      return col;
     }
-    sync(); render();
+
+    // ---- pointer and keys: move the target
+    const toMetres = ev => {
+      const r = scene.getBoundingClientRect(), mpp = (P.track * 2 + 0.6) / r.width;
+      return Math.max(-P.track + 0.2, Math.min(P.track - 0.2, (ev.clientX - r.left - r.width / 2) * mpp));
+    };
+    let dragging = false;
+    scene.addEventListener("pointerdown", ev => { dragging = true; scene.setPointerCapture(ev.pointerId); o.target = toMetres(ev); });
+    scene.addEventListener("pointermove", ev => { if (dragging) o.target = toMetres(ev); });
+    scene.addEventListener("pointerup", () => { dragging = false; });
+    scene.addEventListener("pointercancel", () => { dragging = false; });
+    scene.addEventListener("keydown", ev => {
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+        o.target = Math.max(-P.track + 0.2, Math.min(P.track - 0.2, o.target + (ev.key === "ArrowLeft" ? -0.25 : 0.25)));
+        ev.preventDefault();
+      }
+    });
+
+    // ---- drawing
+    function fit(c) {
+      const dpr = window.devicePixelRatio || 1, w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      return [g, c.clientWidth, c.clientHeight];
+    }
+    function drawScene(c) {
+      const [g, W, H] = fit(scene);
+      g.clearRect(0, 0, W, H);
+      const ppm = W / (P.track * 2 + 0.6), cx = W / 2, rail = H - 26;
+      const X = m => cx + m * ppm;
+      g.font = "11px " + getComputedStyle(box).getPropertyValue("--sans");
+      // track and end stops
+      g.strokeStyle = c.muted; g.lineWidth = 2;
+      g.beginPath(); g.moveTo(X(-P.track - 0.15), rail); g.lineTo(X(P.track + 0.15), rail); g.stroke();
+      g.fillStyle = c.muted;
+      [-1, 1].forEach(sgn => g.fillRect(X(sgn * (P.track + 0.15)) - (sgn > 0 ? 0 : 4), rail - 22, 4, 22));
+      for (let m = -2; m <= 2; m++) { g.fillRect(X(m) - 0.5, rail + 3, 1, 5); g.fillText(`${m} m`, X(m) - 9, rail + 19); }
+      // target flag
+      const tx = X(o.target);
+      g.strokeStyle = c.accent; g.fillStyle = c.accent; g.lineWidth = 1.5; g.setLineDash([5, 4]);
+      g.beginPath(); g.moveTo(tx, rail + 2); g.lineTo(tx, 16); g.stroke(); g.setLineDash([]);
+      g.beginPath(); g.moveTo(tx - 6, rail + 10); g.lineTo(tx + 6, rail + 10); g.lineTo(tx, rail + 2); g.fill();
+      const tl = "target"; g.fillText(tl, Math.min(W - 40, Math.max(4, tx - g.measureText(tl).width / 2)), 12);
+      // wind
+      if (o.wind) {
+        g.strokeStyle = c.rule; g.lineWidth = 1.5;
+        for (let i = 0; i < 3; i++) { const y = 18 + i * 14, x0 = 12 + (i % 2) * 10; g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + 34, y); g.lineTo(x0 + 28, y - 4); g.moveTo(x0 + 34, y); g.lineTo(x0 + 28, y + 4); g.stroke(); }
+        g.fillStyle = c.muted; g.fillText("wind 3 N", 12, 66);
+      }
+      // cart
+      const [x, , th] = st.s, cw = 0.5 * ppm, ch = 0.2 * ppm, px = X(x), top = rail - ch - 8;
+      g.fillStyle = c["code-bg"]; g.strokeStyle = c.fg; g.lineWidth = 1.5;
+      g.fillRect(px - cw / 2, top, cw, ch); g.strokeRect(px - cw / 2, top, cw, ch);
+      g.fillStyle = c.fg;
+      [-1, 1].forEach(sgn => { g.beginPath(); g.arc(px + sgn * cw / 3, rail - 4, 4, 0, 2 * Math.PI); g.fill(); });
+      // force arrow (the motor)
+      const fx = st.u / P.Fmax * 0.6 * ppm;
+      if (Math.abs(fx) > 1) {
+        const y = top + ch / 2, x0 = px + Math.sign(fx) * cw / 2;
+        g.strokeStyle = Math.abs(st.u) >= P.Fmax - 1e-6 ? c.bad : c.warn; g.fillStyle = g.strokeStyle; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(x0, y); g.lineTo(x0 + fx, y); g.stroke();
+        g.beginPath(); g.moveTo(x0 + fx + Math.sign(fx) * 6, y); g.lineTo(x0 + fx, y - 5); g.lineTo(x0 + fx, y + 5); g.fill();
+      }
+      // pole (drawn lying on the cart once it has fallen)
+      const shown = st.fell ? Math.sign(th) * 1.35 : th, len = 2 * P.l * ppm;
+      const tipX = px + len * Math.sin(shown), tipY = top - len * Math.cos(shown);
+      g.strokeStyle = st.fell ? c.bad : c.fg; g.lineWidth = 5; g.lineCap = "round";
+      g.beginPath(); g.moveTo(px, top); g.lineTo(tipX, tipY); g.stroke(); g.lineCap = "butt";
+      g.fillStyle = c.accent; g.beginPath(); g.arc(tipX, tipY, 6, 0, 2 * Math.PI); g.fill();
+      g.fillStyle = c.fg; g.beginPath(); g.arc(px, top, 3, 0, 2 * Math.PI); g.fill();
+      // status
+      g.fillStyle = st.fell ? c.bad : c.muted; g.font = (st.fell ? "bold 14px " : "11px ") + getComputedStyle(box).getPropertyValue("--sans");
+      const msg = st.fell ? `Fell over after ${st.t.toFixed(1)} s. Press Reset.` : running ? "" : "Paused";
+      if (msg) g.fillText(msg, W - g.measureText(msg).width - 12, 22);
+    }
+    function drawChart(c) {
+      const [g, W, H] = fit(chart);
+      g.clearRect(0, 0, W, H);
+      const left = 44, right = W - 8, half = (H - 22) / 2, span = 10, now = st.t;
+      const X = t => right - (now - t) / span * (right - left);
+      g.font = "11px " + getComputedStyle(box).getPropertyValue("--sans");
+      const panel = (y0, label, lim, unit, pick, colr, extra) => {
+        const Y = v => y0 + half / 2 - Math.max(-lim, Math.min(lim, v)) / lim * (half / 2 - 4);
+        g.strokeStyle = c.rule; g.lineWidth = 1; g.strokeRect(left, y0, right - left, half - 2);
+        g.beginPath(); g.moveTo(left, Y(0)); g.lineTo(right, Y(0)); g.stroke();
+        g.fillStyle = c.muted; g.fillText(label, left + 6, y0 + 12);
+        g.fillText(`+${lim}`, 4, y0 + 10); g.fillText(`−${lim}`, 4, y0 + half - 6); g.fillText(`0 ${unit}`, 4, Y(0) + 4);
+        if (extra) extra(Y);
+        g.strokeStyle = colr; g.lineWidth = 1.6; g.beginPath();
+        hist.forEach((h, i) => { const px = X(h.t), py = Y(pick(h)); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
+        g.stroke();
+      };
+      panel(2, "lean of the pole (°)", 30, "°", h => h.th, c.accent, Y => {
+        g.strokeStyle = c.muted; g.setLineDash([4, 3]); g.beginPath();
+        hist.forEach((h, i) => { const px = X(h.t), py = Y(h.want); if (i) g.lineTo(px, py); else g.moveTo(px, py); });
+        g.stroke(); g.setLineDash([]);
+      });
+      panel(half + 4, "motor force (N), limit ±20", 20, "N", h => h.u, c.warn);
+      g.fillStyle = c.muted; g.fillText("last 10 s", right - 52, H - 4);
+    }
+
+    function updateText() {
+      const recent = hist.filter(h => h.t > st.t - 5);
+      const sat = recent.length ? recent.filter(h => Math.abs(h.u) >= P.Fmax - 1e-6).length / recent.length : 0;
+      const swing = recent.length ? Math.max(...recent.map(h => Math.abs(h.th))) : 0;
+      const off = o.target - st.s[0];
+      metrics.innerHTML = "";
+      [["Upright for", st.fell ? "fell" : `${upright.toFixed(0)} s`, st.fell ? "bad" : upright > 10 ? "good" : ""],
+       ["Lean now", `${(st.s[2] * DEG).toFixed(1)}°`, Math.abs(st.s[2]) > 0.2 ? "bad" : ""],
+       ["Swing, last 5 s", `±${swing.toFixed(1)}°`, swing > 10 ? "bad" : swing < 2 ? "good" : ""],
+       ["Off the target", `${Math.abs(off).toFixed(2)} m`, o.hold && Math.abs(off) > 0.2 && Math.abs(st.s[1]) < 0.05 ? "bad" : ""],
+       ["Force at limit", `${Math.round(100 * sat)} %`, sat > 0.3 ? "bad" : ""]]
+        .forEach(([k, v, cl]) => metrics.appendChild(E("div", { class: "m " + cl }, [k, E("b", { text: v })])));
+      const w = [];
+      if (o.kd === 0 && o.kp > 0) w.push("With no D the loop only sees how far the pole leans, not how fast it is falling, so each correction comes too late and the swings grow. Add kd.");
+      else if (o.kd > 0 && o.kd < 4.5 && o.kp >= 30) w.push("A little D is not enough: the swings die out slowly or not at all. D is the damping; raise it until one push settles in a swing or two.");
+      if (o.kp > 0 && o.kp < 20) w.push("kp is too weak: below about 17 N/rad the push back is smaller than gravity's pull on the leaning pole, so the cart has to race along the track to stay under it.");
+      if (o.kp > 120) w.push("A large kp asks for more force than the motor has: the force sits at its ±20 N limit, and the loop works like an on/off switch that overshoots each way.");
+      if (o.wind && o.hold && o.ki === 0) w.push(`The wind pushes the cart and P alone needs an error to push back, so the cart parks ${Math.abs(off).toFixed(2)} m from the target. A little ki adds up that error and removes it.`);
+      if (o.ki >= 60) w.push("Too much I: the integral keeps pushing after the pole is upright again, and the cart swings to and fro. The I term is slow on purpose; keep ki small.");
+      if (o.noise && o.kd >= 12) w.push("D turns sensor noise into force: it reacts to how fast the reading changes, and noise changes fast. Watch the force trace shake, then lower kd.");
+      if (o.dt >= 0.1) w.push("At 10 Hz the loop sees the pole only every 100 ms. The pole falls a long way between updates, so the same gains that hold it at 100 Hz now swing it hard.");
+      if (!o.hold) w.push("Without position hold nothing keeps the cart near the target: the balance loop alone lets it drift until it hits an end stop.");
+      if (!w.length) w.push("Change one gain at a time, push the pole, and predict what the trace will do before you look.");
+      why.innerHTML = w.slice(0, 3).map(s => `<li>${s}</li>`).join("");
+    }
+
+    let frame = 0;
+    function tick(now) {
+      if (!box.isConnected) return;
+      requestAnimationFrame(tick);
+      if (!visible) { lastFrame = now; return; }
+      const dt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000));
+      lastFrame = now;
+      if (running && !st.fell) {
+        const before = st.t;
+        advance(st, o, dt);
+        if (!st.fell) upright += st.t - before;
+        hist.push({ t: st.t, th: st.meas * DEG, want: st.want * DEG, u: st.u });
+        while (hist.length && hist[0].t < st.t - 10.5) hist.shift();
+      }
+      const c = colours(now);
+      drawScene(c); drawChart(c);
+      if (frame++ % 15 === 0) updateText();
+    }
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(es => { visible = es[0].isIntersecting; }).observe(box);
+    }
+    sync(); updateText();
+    requestAnimationFrame(now => { lastFrame = now; tick(now); });
   }
-  window.PidSim = { simulate };
+
+  window.PidSim = { P, create, control, advance };
   function init() {
     if (!document.getElementById("pidsim-css")) { const s = document.createElement("style"); s.id = "pidsim-css"; s.textContent = CSS; document.head.appendChild(s); }
     document.querySelectorAll(".widget.pidsim").forEach(mount);
