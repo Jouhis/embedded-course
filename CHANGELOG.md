@@ -11,7 +11,7 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
-## Unreleased
+## 0.1.3 (2026-11-11)
 
 - Lesson 108's balancing cart: the live traces stay inside their boxes; they no longer run over
   the axis numbers or the panel names.
