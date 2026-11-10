@@ -145,7 +145,7 @@
   }
 
   const PRESETS = [
-    ["Starter: 40 / 0 / 6", 40, 0, 6], ["P only: 40 / 0 / 0", 40, 0, 0], ["Too little D: 40 / 0 / 3", 40, 0, 3],
+    ["Starter: 40 / 0 / 6", 40, 0, 6], ["Well tuned: 45 / 25 / 7", 45, 25, 7], ["P only: 40 / 0 / 0", 40, 0, 0], ["Too little D: 40 / 0 / 3", 40, 0, 3],
     ["Too weak: 20 / 0 / 4", 20, 0, 4], ["Too much P: 100 / 0 / 6", 100, 0, 6], ["Too much I: 40 / 100 / 6", 40, 100, 6],
     ["Everything at maximum", 250, 200, 25],
   ];
