@@ -11,6 +11,12 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## Unreleased
+
+- `design.html`: every reusable design element on one page (colours, text, boxes, folds, code,
+  quizzes, index and checkpoint pieces, live widgets), with a colour tuner that copies the
+  `:root` lines for `course.css`. For maintainers; not linked from the course.
+
 ## 0.1.1 (2026-11-10)
 
 - **Light and dark themes.** A theme button in the top bar (top right on the course index) switches
