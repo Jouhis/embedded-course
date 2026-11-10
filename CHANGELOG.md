@@ -11,7 +11,7 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
-## Unreleased
+## 0.1.2 (2026-11-10)
 
 - Lesson 108's PID demo is now a **balancing cart**: a pole on a cart that the learner tunes
   (kp, ki, kd), pushes, and moves by dragging its target. Presets show P alone falling, too little
