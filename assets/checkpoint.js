@@ -261,7 +261,9 @@
         el("span", { class: "cp-total-note", text: (mode === "custom" ? "Your own test · " : "") +
           `${pct} % right` + (rec.idk ? ` · ${rec.idk} × I don't know` : "") }),
       ]));
-      stage.querySelector(".cp-total .cp-progress-fill").style.width = `${pct}%`;
+      const totalFill = stage.querySelector(".cp-total .cp-progress-fill");
+      totalFill.style.width = `${pct}%`;
+      totalFill.style.background = C.scoreColor(rec.right / rec.total);
 
       // One row per lesson tested, in course order.
       const tested = info.lessons.filter(l => rec.lessons[l.id] !== undefined);

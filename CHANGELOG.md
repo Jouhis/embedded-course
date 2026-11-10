@@ -11,6 +11,15 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.1.1 (2026-11-10)
+
+- **Light and dark themes.** A theme button in the top bar (top right on the course index) switches
+  between Dark, Light and Auto, which follows the system setting. Dark is the default; the choice is
+  saved in the browser. Printing always uses the light colours.
+- The course index shows each checkpoint's last score as a small bar on its line, coloured from red
+  through yellow to green. Scores between two colours mix them, but always lean towards one.
+- The total bar on a checkpoint's result screen uses the same colours instead of always green.
+
 ## 0.1.0 (2026-11-09)
 
 - Every lesson, lab and bench lab follows one order: the ideas, a worked example, the code and the

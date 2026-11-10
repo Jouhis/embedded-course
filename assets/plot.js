@@ -16,12 +16,11 @@
   .plot .ax{stroke:var(--rule);stroke-width:1} .plot .grid{stroke:var(--rule);stroke-width:.5;opacity:.6}
   .plot text{fill:var(--muted)} .plot .ln{fill:none;stroke-width:2;stroke-linejoin:round}
   .plot .hl{stroke:var(--muted);stroke-dasharray:5 4;stroke-width:1} .plot .band{fill:var(--good-soft);opacity:.7} .plot .band.warn{fill:var(--warn-soft);opacity:.8} .plot .band.acc{fill:var(--accent-soft);opacity:1} .plot .bandl{fill:var(--warn);font-size:10px}
-  .plot .s1{stroke:var(--accent);fill:var(--accent)} .plot .s2{stroke:#d9480f;fill:#d9480f} .plot .s3{stroke:#7048e8;fill:#7048e8}
-  .plot .s4{stroke:var(--good);fill:var(--good)} .plot .s5{stroke:var(--muted);fill:var(--muted)} .plot .s6{stroke:#c2255c;fill:#c2255c}
+  .plot .s1{stroke:var(--accent);fill:var(--accent)} .plot .s2{stroke:light-dark(#d9480f,#ff922b);fill:light-dark(#d9480f,#ff922b)} .plot .s3{stroke:light-dark(#7048e8,#9775fa);fill:light-dark(#7048e8,#9775fa)}
+  .plot .s4{stroke:var(--good);fill:var(--good)} .plot .s5{stroke:var(--muted);fill:var(--muted)} .plot .s6{stroke:light-dark(#c2255c,#f06595);fill:light-dark(#c2255c,#f06595)}
   .plot .ln.s1,.plot .ln.s2,.plot .ln.s3,.plot .ln.s4,.plot .ln.s5,.plot .ln.s6{fill:none}
   .plot .dash{stroke-dasharray:6 4} .plot .thin{stroke-width:1.2}
-  .plot .lg text{fill:var(--fg)}
-  @media (prefers-color-scheme: dark){.plot .s2{stroke:#ff922b;fill:#ff922b}.plot .s3{stroke:#9775fa;fill:#9775fa}.plot .s6{stroke:#f06595;fill:#f06595}}`;
+  .plot .lg text{fill:var(--fg)}`;
 
   function css() {
     if (document.getElementById("plot-css")) return;

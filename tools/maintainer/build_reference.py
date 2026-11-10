@@ -32,6 +32,7 @@ PAGE = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title} · Embedded Systems Course</title>
   <link rel="stylesheet" href="../assets/course.css">
+  <script src="../assets/theme.js"></script>
 </head>
 <body>
 <nav class="course-nav"><a href="../index.html">← Course index</a><a href="index.html">Reference sheets</a></nav>

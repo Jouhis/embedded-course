@@ -569,6 +569,21 @@
 
   // ---------- Course index: show which lessons are done ----------
 
+  /* A score (0..1) as a colour on red → yellow → green. Between two anchors the colours mix, but
+   * never half and half: the mix always leans clearly towards the nearer anchor. */
+  function scoreColor(f) {
+    const stops = [[0.40, "var(--bad)"], [0.60, "var(--warn)"], [0.80, "var(--good)"]];
+    if (f <= stops[0][0]) return stops[0][1];
+    for (let i = 1; i < stops.length; i++) {
+      const [x0, c0] = stops[i - 1], [x1, c1] = stops[i];
+      if (f > x1) continue;
+      const t = (f - x0) / (x1 - x0);
+      const lean = t < 0.5 ? 0.7 * t : 1 - 0.7 * (1 - t);   // 0..0.35 or 0.65..1, never 0.5
+      return `color-mix(in oklab, ${c1} ${Math.round(100 * lean)}%, ${c0})`;
+    }
+    return stops[stops.length - 1][1];
+  }
+
   function renderIndexProgress() {
     const p = loadProgress();
     // The latest checkpoint estimate for each lesson (assets/checkpoint.js), shown as a coloured mark.
@@ -580,7 +595,22 @@
     });
     const BAND = e => (e >= 0.75 ? ["solid", "Solid"] : e >= 0.45 ? ["shaky", "Shaky"] : ["review", "Go over again"]);
     document.querySelectorAll("[data-lesson-link]").forEach(li => {
-      li.classList.toggle("done", !!(p[li.dataset.lessonLink] || {}).done);
+      const r = p[li.dataset.lessonLink] || {};
+      li.classList.toggle("done", !!r.done);
+      // A checkpoint's line shows its last score as a small bar.
+      const old = li.querySelector(".cp-score");
+      if (old) old.remove();
+      const cp = r.checkpoint;
+      if (cp && cp.total) {
+        const f = cp.right / cp.total;
+        const fill = el("span", { class: "cp-score-fill" });
+        fill.style.width = `${Math.max(3, Math.round(100 * f))}%`;
+        fill.style.background = scoreColor(f);
+        li.appendChild(el("span", { class: "cp-score", title: `Last checkpoint: ${cp.right} / ${cp.total} right` }, [
+          el("span", { class: "cp-score-bar" }, [fill]),
+          el("span", { class: "cp-score-num", text: `${Math.round(100 * f)} %` }),
+        ]));
+      }
       const e = est[li.dataset.lessonLink];
       if (e === undefined) { delete li.dataset.cp; li.removeAttribute("title"); return; }
       const [b, text] = BAND(e);
@@ -1043,5 +1073,5 @@
   }
 
   // Exposed for other components (calculators, drills).
-  window.Course = { parseNumber, el, shuffle, loadProgress, updateLesson, openFoldFor };
+  window.Course = { parseNumber, el, shuffle, loadProgress, updateLesson, openFoldFor, scoreColor };
 })();

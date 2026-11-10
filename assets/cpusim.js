@@ -454,8 +454,7 @@
   .cpusim .led.on{background:#e53935;box-shadow:0 0 8px #e53935;border-color:#e53935}
   .cpusim .sw{font-family:var(--mono);font-size:.75rem;padding:.1rem .35rem;cursor:pointer;min-width:1.6rem}
   .cpusim .flag{display:inline-block;width:1.6rem;text-align:center;border:1px solid var(--rule);border-radius:3px;margin-right:.2rem;font-family:var(--mono);font-size:.8rem}
-  .cpusim{--fN:#c2255c;--fZ:#7048e8;--fC:#d9480f;--fV:#0b7285;--k-alu:var(--accent);--k-mem:var(--good);--k-br:var(--warn);--k-sys:var(--bad)}
-  @media(prefers-color-scheme:dark){.cpusim{--fN:#f06595;--fZ:#9775fa;--fC:#ff922b;--fV:#3bc9db}}
+  .cpusim{--fN:light-dark(#c2255c,#f06595);--fZ:light-dark(#7048e8,#9775fa);--fC:light-dark(#d9480f,#ff922b);--fV:light-dark(#0b7285,#3bc9db);--k-alu:var(--accent);--k-mem:var(--good);--k-br:var(--warn);--k-sys:var(--bad)}
   .cpusim .fN{--fc:var(--fN)} .cpusim .fZ{--fc:var(--fZ)} .cpusim .fC{--fc:var(--fC)} .cpusim .fV{--fc:var(--fV)} .cpusim .fI{--fc:var(--muted)}
   .cpusim .flag{border-color:var(--fc);color:var(--fc);font-weight:700}
   .cpusim .flag.set{background:var(--fc);color:#fff}

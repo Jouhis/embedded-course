@@ -25,8 +25,7 @@
   .dmaring .dr-res.ok{background:var(--good-soft);border-left-color:var(--good)} .dmaring .dr-res.bad{background:var(--bad-soft);border-left-color:var(--bad)}
   .dmaring svg{width:100%;height:auto;display:block;font-family:var(--sans);font-size:11px}
   .dmaring svg text{fill:var(--fg)} .dmaring svg .mut{fill:var(--muted)}
-  .dmaring .hA{fill:var(--accent);opacity:.75} .dmaring .hB{fill:#7048e8;opacity:.75} .dmaring .ov{fill:var(--bad)} .dmaring .ev{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}
-  @media (prefers-color-scheme: dark){.dmaring .hB{fill:#9775fa}}`;
+  .dmaring .hA{fill:var(--accent);opacity:.75} .dmaring .hB{fill:light-dark(#7048e8,#9775fa);opacity:.75} .dmaring .ov{fill:var(--bad)} .dmaring .ev{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3}`;
 
   // ---------------- power budget ----------------
   function mountPower(box) {
