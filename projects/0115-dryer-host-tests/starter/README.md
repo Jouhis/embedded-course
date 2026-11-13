@@ -6,13 +6,13 @@ Lesson: [Capstone 3: the NTC driver and unit tests](https://jouhis.github.io/emb
 
 ## Try it: make the NTC conversion pass the host tests
 
-The host tests for this lesson live in `projects/0115-dryer-host-tests`. They compile the application code from `projects/0116-dryer-drivers`, so the conversion you write is the file the firmware uses. The starter has one stub to fill in: `ntc_centi_from_raw()` returns `false` for every code. Your task is to implement it so that the NTC tests pass.
+The host tests for this lesson live in `projects/0115-dryer-host-tests` and compile the application code from `projects/0116-dryer-drivers`, so the conversion you write is the file the firmware uses, the starter having one stub to fill in, `ntc_centi_from_raw()`, which returns `false` for every code, and your task being to implement it so that the NTC tests pass.
 
-1. Open the workspace in VS Code. Run `python -I tools/build.py projects/0115-dryer-host-tests/starter --test` from the workspace root. Expect the summary `63% tests passed, 3 tests failed out of 8`. The failing programs are `ntc`, `safety` and `drivers`. If CMake reports that a CMakeCache.txt was created for a different folder, add `--clean` to the command. The copied starter folder carries a stale build directory, and `--clean` deletes it first.
-2. Open `projects/0116-dryer-drivers/starter/app/ntc.c`. Read the TODO(learner) comment at the top. It gives the three formula lines and says which codes to reject.
-3. Replace the stub body. Reject codes below `NTC_RAW_MIN` and above `NTC_RAW_MAX`, then compute the three formula steps in floats, multiply by 100, round with `lroundf()`, store the result in `*centi_c`, and return `true`.
-4. Rerun the host-test command. Expect `88% tests passed, 1 tests failed out of 8`. The `ntc` and `drivers` programs now pass. The one failure left is `safety`, which you fix in lesson 116.
-5. Find the two lines in `test/test_drivers.c` that replace the ADC with a fake, and check which value the fake returns. Then open `projects/0116-dryer-drivers/solution/app/ntc.c` and compare it with your version.
+1. Open the workspace in VS Code and run `python -I tools/build.py projects/0115-dryer-host-tests/starter --test` from the workspace root, expecting the summary `63% tests passed, 3 tests failed out of 8`, with `ntc`, `safety` and `drivers` as the failing programs. If CMake reports that a CMakeCache.txt was created for a different folder, add `--clean` to the command, because the copied starter folder carries a stale build directory, which `--clean` deletes first.
+2. Open `projects/0116-dryer-drivers/starter/app/ntc.c` and read the TODO(learner) comment at the top, which gives the three formula lines and says which codes to reject.
+3. Replace the stub body, rejecting codes below `NTC_RAW_MIN` and above `NTC_RAW_MAX`, then computing the three formula steps in floats, multiplying by 100, rounding with `lroundf()`, storing the result in `*centi_c` and returning `true`.
+4. Rerun the host-test command, expecting `88% tests passed, 1 tests failed out of 8`, the `ntc` and `drivers` programs now passing and the one remaining failure being `safety`, which you fix in lesson 116.
+5. Find the two lines in `test/test_drivers.c` that replace the ADC with a fake and check which value the fake returns, then open `projects/0116-dryer-drivers/solution/app/ntc.c` and compare it with your version.
 
 ## Files you work on
 

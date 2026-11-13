@@ -6,17 +6,17 @@ Lesson: [Bench lab 12: The sleep current hunt](https://jouhis.github.io/embedded
 
 ## On the board: hunt
 
-1. Build `projects/bench12-sleep-current/starter`, flash it, and open the VCP. Connect a jumper wire to **PB0** (ST morpho CN7 pin 34, Arduino A3) and leave its other end loose. The program reads PB0 at start-up as if it were a configuration jumper.
-2. The VCP says `mode RUN`. Read the meter. Press B1: `mode LOW POWER`. Read again, and touch the loose wire with your finger while you watch the meter.
-3. The starter's low-power mode is a plain `WFI`. Write down both readings. That's the "before" of your report.
+1. Build `projects/bench12-sleep-current/starter`, flash it and open the VCP. Connect a jumper wire to **PB0** (ST morpho CN7 pin 34, Arduino A3) and leave its other end loose, because the program reads PB0 at start-up as if it were a configuration jumper.
+2. The VCP says `mode RUN`, so read the meter. Press B1 for `mode LOW POWER`, read again, and touch the loose wire with your finger while you watch the meter.
+3. The starter's low-power mode is a plain `WFI`. Write down both readings as the before of your report.
 
-Now remove the waste, one change at a time, and measure after each one:
+Now remove the waste one change at a time, measuring after each one.
 
-1. **The mode.** Set `LPMS` to Stop 2 and set `SCB->SCR`'s `SLEEPDEEP` bit before `WFI`; clear it after waking. The PWR registers need their clock: `RCC_AHB3ENR_PWREN`.
-2. **The floating input.** PB0 stays a digital input after it has been read. A loose wire picks up mains hum and your hand's charge, and holds the input buffer's voltage between the rails, where both of its transistors conduct a little (bench lab 2's [floating input](https://jouhis.github.io/embedded-course/reference/glossary.html#floating-input), now as a current). After reading it, put the pin back in analog mode: `MODER` = 11. Touch the wire again and compare.
-3. **The LED.** LD2 is lit during Run and stays lit in the starter's low-power mode. Turn it off before sleeping. LD2 is driven through a transistor (UM3062 section 6.5): measure how much this change saves, and explain the result from where the LED's current comes from.
+1. **The mode.** Set `LPMS` to Stop 2 and set `SCB->SCR`'s `SLEEPDEEP` bit before `WFI`, clearing it after waking. The PWR registers need their clock, `RCC_AHB3ENR_PWREN`.
+2. **The floating input.** PB0 stays a digital input after it has been read, and a loose wire picks up mains hum and your hand's charge, holding the input buffer's voltage between the rails, where both of its transistors conduct a little, bench lab 2's [floating input](https://jouhis.github.io/embedded-course/reference/glossary.html#floating-input) appearing now as a current. After reading the pin, put it back in analog mode with `MODER` = 11, then touch the wire again and compare.
+3. **The LED.** LD2 is lit during Run and stays lit in the starter's low-power mode, so turn it off before sleeping. LD2 is driven through a transistor (UM3062 section 6.5), so measure how much this change saves and explain the result from where the LED's current comes from.
 
-`projects/bench12-sleep-current/solution` steps through Run, Sleep and Stop 2 with all three changes. Fill in a table: mode, before, after, and which change made the difference.
+`projects/bench12-sleep-current/solution` steps through Run, Sleep and Stop 2 with all three changes. Fill in a table with the mode, the before and after readings and the change that made the difference.
 
 ## Files you work on
 

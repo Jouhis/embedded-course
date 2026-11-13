@@ -6,14 +6,14 @@ Lesson: [An I2C OLED display and a small UI framework](https://jouhis.github.io/
 
 ## Try it in Wokwi
 
-The project `projects/0061-an-i2c-oled-display-and` wires a `board-ssd1306` display to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups as in lesson 60, and two pushbuttons: DOWN on GP14 and SELECT on GP15. Use Wokwi's SSD1306 board part, because the older `wokwi-ssd1306` part is deprecated [Wokwi, board-ssd1306 part](https://docs.wokwi.com/parts/board-ssd1306). The display's address is 0x3C.
+The project `projects/0061-an-i2c-oled-display-and` wires a `board-ssd1306` display to GP4 (SDA) and GP5 (SCL) with 4.7 kΩ pull-ups, as in lesson 60, and two pushbuttons, DOWN on GP14 and SELECT on GP15. It uses Wokwi's SSD1306 board part, because the older `wokwi-ssd1306` part is deprecated [Wokwi, board-ssd1306 part](https://docs.wokwi.com/parts/board-ssd1306), and the display's address is 0x3C.
 
 1. Open `projects/0061-an-i2c-oled-display-and/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The init and flush code is given, so the panel is powered and configured, but it stays blank: nothing has been drawn into the framebuffer yet.
-3. Write `ssd1306_draw_char()` in `ssd1306.c`. Copy the five column bytes from `font_glyph(c)` into `s_fb[page][x + i]`, and set column `x + 5` to zero. Keep the bounds check at the top, so an off-screen character is dropped.
-4. Write `ssd1306_draw_text()`. It calls `ssd1306_draw_char()` for each character and advances x by six. Stop at the end of the string or when the next character would not fit.
-5. Fix `menu_next()` in `menu.c`. The starter does a plain `m->cursor++`. Replace it with a modulo by `m->count`, and write a comment that says why the modulo keeps the cursor in range.
-6. Expected result: the serial monitor prints `MENU OK` once, and the screen shows the title `MENU` with three items and a `>` cursor. Press DOWN and the cursor moves to the next item. Press DOWN after the last item and it wraps to the first. Press SELECT and the status line counts the press, as `PRESSES:1`.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The init and flush code is provided, so the panel is powered and configured, but it stays blank because nothing has been drawn into the framebuffer yet.
+3. Write `ssd1306_draw_char()` in `ssd1306.c`, copying the five column bytes from `font_glyph(c)` into `s_fb[page][x + i]` and setting column `x + 5` to zero, and keep the bounds check at the top so that an off-screen character is dropped.
+4. Write `ssd1306_draw_text()`, which calls `ssd1306_draw_char()` for each character, advancing x by six, and stops at the end of the string or when the next character would not fit.
+5. Fix `menu_next()` in `menu.c`, replacing the starter's plain `m->cursor++` with a modulo by `m->count`, and add a comment explaining why the modulo keeps the cursor in range.
+6. The program works when the serial monitor prints `MENU OK` once and the screen shows the title `MENU` with three items and a `>` cursor. DOWN moves the cursor to the next item, wrapping from the last item to the first, and SELECT makes the status line count the press, as `PRESSES:1`.
 
 ## Files you work on
 
@@ -30,14 +30,14 @@ The serial monitor prints `MENU OK`.
 <details>
 <summary>Hint for the glyph copy</summary>
 
-The glyph has five columns. Copy them into `s_fb[page][x + i]`, and leave `x + 5` at zero. Check the page and x against the framebuffer's size first. The function already has a bounds check at the top, so you only need the copy.
+The glyph has five columns, which go into `s_fb[page][x + i]`, with `x + 5` left at zero. The function already checks the page and x against the framebuffer's size at the top, so only the copy is needed.
 
 </details>
 
 <details>
 <summary>Hint for the cursor</summary>
 
-A modulo by the item count keeps the cursor in range, and it wraps by itself after the last item. Write `m->cursor = (m->cursor + 1) % m->count;` and check that the cast to `uint8_t` still fits.
+A modulo by the item count keeps the cursor in range and wraps it after the last item by itself, so write `m->cursor = (m->cursor + 1) % m->count;` and check that the cast to `uint8_t` still fits.
 
 </details>
 

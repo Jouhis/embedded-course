@@ -6,12 +6,12 @@ Lesson: [Bench lab 0: Blink on a real Pico 2](https://jouhis.github.io/embedded-
 
 ## Stage 1: in Wokwi
 
-1. Open `projects/bench00-first-board/starter` in VS Code. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The first build also builds picotool, so give it a few minutes.
+1. Open `projects/bench00-first-board/starter` in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, giving the first build a few minutes, because it also builds picotool.
 2. Check that `build/blink.uf2` exists next to `build/blink.elf`.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor shows `BENCH0 chip id not read yet`, then `LED on` and `LED off`.
-4. **Task 1:** fill in `print_chip()` so it prints `CHIP_ID` in hex and its three fields.
-5. **Task 2:** turn the even blink into the heartbeat, and print `beat N` after each flash.
-6. Rebuild and run in Wokwi. Write down the `CHIP_ID` the simulator reports.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, after which the serial monitor shows `BENCH0 chip id not read yet`, then `LED on` and `LED off`.
+4. **Task 1:** fill in `print_chip()` so that it prints `CHIP_ID` in hex and its three fields.
+5. **Task 2:** turn the even blink into the heartbeat, printing `beat N` after each flash.
+6. Rebuild and run in Wokwi, and write down the `CHIP_ID` the simulator reports.
 
 ## Files you work on
 

@@ -11,11 +11,7 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Bench lab 3: See the clock</h1>
-  <p class="subtitle">Put the Pico 2's system clock on a pin and measure it with a logic analyzer. Then change the PLL and watch the UART fall apart on the board while the simulator carries on.</p>
-
-  <div class="note">
-    <strong>This bench lab is optional.</strong> It needs a Pico 2 and the 8-channel logic analyzer with PulseView (see <a href="bench00-blink-on-a-real-pico.html">bench lab 0</a>). It doesn't count towards your progress. Time: about 50 minutes.
-  </div>
+  <p class="subtitle">Clock outputs, PLL changes and baud errors</p>
 
   <div class="goal">
     By the end of this lab you can <strong>route an internal clock to a GPIO, measure it, and explain why changing the system clock broke the UART and how to fix it</strong>.
@@ -23,64 +19,78 @@
 
   <h2>Which clock feeds the UART</h2>
   <p>
-    Lesson <a href="0040-clock-tree-and-plls.html">40</a> drew the clock tree: oscillators and PLLs at the root, and named clocks branching off to the parts of the chip. Each peripheral runs from one of those branches, and the UART runs from <code>clk_peri</code> <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf" target="_blank" rel="noopener">(RP2350 datasheet, section 8.1)</a>. Its baud rate is clk_peri divided by a <a href="../reference/glossary.html#baud-divisor">baud divisor</a>, and the SDK computes that divisor once, in <code>uart_init()</code>, from the clk_peri frequency at that moment.
+    This lab puts the Pico 2's system clock on a pin and measures it with a logic analyzer, then changes the PLL and watches the UART fall apart on the board while the simulator carries on. It is optional, needing a Pico 2 and the 8-channel logic analyzer with PulseView (see <a href="bench00-blink-on-a-real-pico.html">bench lab 0</a>), it does not count towards your progress, and it takes about 50 minutes.
   </p>
   <p>
-    At start-up the SDK runs clk_sys at 150 MHz and clk_peri from clk_sys, also at 150 MHz. When you call <code>set_sys_clock_khz()</code> to change the system clock, the SDK can't leave clk_peri on clk_sys, because the UART would change speed with it. By default it moves clk_peri to the USB PLL at 48 MHz instead (the SDK option <code>PICO_CLOCK_ADJUST_PERI_CLOCK_WITH_SYS_CLOCK</code> is 0). The UART's divisor still assumes 150 MHz. So after the change the UART sends at 115 200 × 48 / 150 ≈ 36 900 baud, about a third of the rate the receiver expects.
+    Lesson <a href="0040-clock-tree-and-plls.html">40</a> drew the clock tree, oscillators and PLLs at the root and named clocks branching off to the parts of the chip, each peripheral running from one of those branches, the UART from <code>clk_peri</code> <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf" target="_blank" rel="noopener">(RP2350 datasheet, section 8.1)</a>. Its baud rate is clk_peri divided by a <a href="../reference/glossary.html#baud-divisor">baud divisor</a>, which the SDK computes once, in <code>uart_init()</code>, from the clk_peri frequency at that moment.
   </p>
   <p>
-    Wokwi's serial monitor reads the characters the UART model emits; it doesn't time the bits on the wire. So in the simulator, the text stays readable. On the board, anything listening at 115 200 baud sees garbage.
+    At start-up the SDK runs clk_sys at 150 MHz and clk_peri from clk_sys, also at 150 MHz, and when you call <code>set_sys_clock_khz()</code> to change the system clock, the SDK cannot leave clk_peri on clk_sys, because the UART would change speed with it, so by default it moves clk_peri to the USB PLL at 48 MHz instead (the SDK option <code>PICO_CLOCK_ADJUST_PERI_CLOCK_WITH_SYS_CLOCK</code> being 0). The UART's divisor still assumes 150 MHz, so after the change the UART sends at
+  </p>
+  <p class="eq"><span>baud<sub>actual</sub> = 115 200 × 48 ÷ 150 ≈ 36 900</span><span class="eq-n">(1)</span></p>
+  <p>
+    where 48 MHz is the new clk_peri and 150 MHz the clock the divisor was computed for, about a third of the rate the receiver expects. Wokwi's serial monitor reads the characters the UART model emits without timing the bits on the wire, so in the simulator the text stays readable, whereas on the board anything listening at 115 200 baud sees garbage.
   </p>
 
-  <h2>Putting a clock on a pin</h2>
+  <h2>A clock output on a GPIO</h2>
   <p>
-    The RP2350's clock block has four general-purpose clock outputs, <code>clk_gpout0</code> to 3, that can drive an internal clock out on a pin through a divider. GPIO21 is one of the pins that can carry GPOUT0 <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf" target="_blank" rel="noopener">(RP2350 datasheet, sections 8.1 and 1.2.3)</a>. The program does it in one SDK call:
+    The RP2350's clock block has four general-purpose clock outputs, <code>clk_gpout0</code> to 3, which can drive an internal clock out on a pin through a divider, GPIO21 being one of the pins that can carry GPOUT0 <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf" target="_blank" rel="noopener">(RP2350 datasheet, sections 8.1 and 1.2.3)</a>, and the program does it in one SDK call.
   </p>
   <pre><code class="language-c">clock_gpio_init(21, CLOCKS_CLK_GPOUT0_CTRL_AUXSRC_VALUE_CLK_SYS, 150);</code></pre>
   <p>
-    150 MHz is far too fast for a 24 MS/s logic analyzer, so the divider brings it down to 1 MHz. A 24 MS/s capture of a 1 MHz square wave gives 24 samples per period: enough to count. After the PLL change, the same divider gives 100 MHz / 150 ≈ 667 kHz, and you'll see it change on the trace.
+    150 MHz is far too fast for a 24 MS/s logic analyzer, so the divider brings it down to 1 MHz, a 24 MS/s capture of which gives 24 samples per period, enough to count, and after the PLL change the same divider gives 100 MHz ÷ 150 ≈ 667 kHz, a change you will see on the trace.
   </p>
 
   <h2>Stage 1: in Wokwi</h2>
   <ol class="steps">
-    <li>Open <code>projects/bench03-see-the-clock/starter</code>, build and run. The diagram has a logic analyzer part on GP0 (UART0 TX) and GP21.</li>
-    <li>The log shows <code>clk_sys=150000000 clk_peri=150000000</code>, ten test lines, then <code>after the PLL change: clk_sys=100000000 clk_peri=48000000</code>, and ten more test lines, all readable.</li>
-    <li>The program reports the new clk_peri itself. It knows the clock changed. The UART divisor doesn't.</li>
+    <li>Open <code>projects/bench03-see-the-clock/starter</code>, build and run it, the diagram having a logic analyzer part on GP0 (UART0 TX) and GP21.</li>
+    <li>The log shows <code>clk_sys=150000000 clk_peri=150000000</code>, ten test lines, then <code>after the PLL change: clk_sys=100000000 clk_peri=48000000</code> and ten more test lines, all readable.</li>
+    <li>The program reports the new clk_peri itself, so it knows the clock changed, whereas the UART divisor does not.</li>
   </ol>
 
   <h2>Stage 2: on the board</h2>
   <p>
-    Connect the logic analyzer: D0 to GP0, D1 to GP21, GND to a Pico GND pin. Flash the starter and open the USB serial port: the USB log is unaffected, because USB runs on its own clock, clk_usb.
+    Connect the logic analyzer, D0 to GP0, D1 to GP21 and GND to a Pico GND pin, then flash the starter and open the USB serial port, whose log is unaffected, because USB runs on its own clock, clk_usb.
   </p>
   <ol class="steps">
     <li>In PulseView, set 24 MHz and a few million samples, and capture across the moment the log prints <code>after the PLL change</code>.</li>
-    <li>Measure D1: zoom into a stretch before the change and use a cursor pair over ten periods. You should get 10 µs (1 MHz), and after the change 15 µs (≈ 667 kHz).</li>
-    <li>Add a UART decoder on D0 at 115 200 baud, 8N1. Lines from before the change decode as <code>BENCH3 UART test 0123456789</code>. Lines from after it decode as garbage and framing errors.</li>
-    <li>Measure one bit time after the change: the narrowest pulse on D0. At 115 200 baud a bit is 8.7 µs; you'll find about 27 µs.</li>
-    <li><strong>Your fix:</strong> after <code>set_sys_clock_khz()</code>, recompute the divisor with <code>uart_set_baudrate(uart0, BAUD)</code>, which reads the current clk_peri frequency. Print the baud rate it returns. Rebuild, flash, capture again: both halves decode.</li>
+    <li>Measure D1 by zooming into a stretch before the change and putting a cursor pair over ten periods, which should give 10 µs (1 MHz), and 15 µs (≈ 667 kHz) after the change.</li>
+    <li>Add a UART decoder on D0 at 115 200 baud, 8N1, lines from before the change decoding as <code>BENCH3 UART test 0123456789</code> and lines from after it as garbage and framing errors.</li>
+    <li>Measure one bit time after the change, the narrowest pulse on D0, which at 115 200 baud would be 8.7 µs but measures about 27 µs.</li>
+    <li><strong>Your fix:</strong> after <code>set_sys_clock_khz()</code>, recompute the divisor with <code>uart_set_baudrate(uart0, BAUD)</code>, which reads the current clk_peri frequency, print the baud rate it returns, then rebuild, flash and capture again, after which both halves decode.</li>
   </ol>
   <p>
-    The value <code>uart_set_baudrate()</code> returns is the rate it actually achieved, not the one you asked for: the divisor has a 16-bit integer part and a 6-bit fraction, so the result is close but rarely exact. Logging it is a cheap way to catch a clock that isn't what you think.
+    The value <code>uart_set_baudrate()</code> returns is the rate actually achieved rather than the one requested, because the divisor has a 16-bit integer part and a 6-bit fraction, so the result is close but rarely exact, and logging it is a cheap way to catch a clock that is not what you think.
   </p>
 
-  <div class="win">You measured a clock that lives inside the chip, and fixed a bug that only exists on real wires. Every "garbage on the serial port" bug you meet from now on starts with the question you just answered: which clock, and did it change?</div>
+  <div class="win">You measured a clock that lives inside the chip and fixed a bug that exists only on real wires, and every bug of garbage on the serial port you meet from now on starts with the question you just answered, which clock it is and whether it changed.</div>
 
-  <details class="fold mistakes"><summary><h2>Common mistakes</h2></summary>
-  <ol>
-    <li><strong>Changing a clock without re-initialising what depends on it.</strong> UART, SPI and I2C dividers, PWM periods and timer-based delays may all assume the old frequency. After any clock change, list the peripherals on that clock and redo their rate setup.</li>
-    <li><strong>Sampling the clock output too slowly.</strong> A 24 MS/s analyzer can't show 150 MHz; it shows aliased nonsense. Divide the clock down first.</li>
-    <li><strong>No common ground.</strong> Without the analyzer's GND on a Pico GND, the trace is noise. Connect it first.</li>
-    <li><strong>Trusting the simulator's serial output for timing.</strong> Wokwi passes characters, not bit timing; baud errors only show on real wires.</li>
-  </ol>
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>A clock changed without re-initialising its users</h3>
+  <p>
+    A peripheral runs at the wrong rate after a clock change, because UART, SPI and I2C dividers, PWM periods and timer-based delays may all assume the old frequency. After any clock change, list the peripherals on that clock and redo their rate setup.
+  </p>
+  <h3>The clock output sampled too slowly</h3>
+  <p>
+    The trace shows aliased nonsense, because a 24 MS/s analyzer cannot show 150 MHz. Divide the clock down first.
+  </p>
+  <h3>No common ground</h3>
+  <p>
+    The trace is noise, because the analyzer's GND is not on a Pico GND. Connect the ground first.
+  </p>
+  <h3>The simulator's serial output trusted for timing</h3>
+  <p>
+    The text reads cleanly in Wokwi while the board sends garbage, because Wokwi passes characters rather than bit timing, so baud errors show only on real wires. Check baud rates with a logic analyzer on the board.
+  </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>The UART runs from clk_peri, and its divisor is computed once from clk_peri's frequency.</li>
+    <li>The UART runs from clk_peri, its divisor being computed once from clk_peri's frequency.</li>
     <li><code>set_sys_clock_khz()</code> moves clk_peri to the 48 MHz USB PLL by default, so the old divisor gives the wrong baud rate.</li>
-    <li>Fix: call <code>uart_set_baudrate()</code> after the change; it recomputes from the current clock and returns the achieved rate.</li>
+    <li>The fix is to call <code>uart_set_baudrate()</code> after the change, which recomputes from the current clock and returns the achieved rate.</li>
     <li><code>clock_gpio_init()</code> puts an internal clock, divided, on a GPOUT pin, where a logic analyzer can measure it.</li>
-    <li>Wokwi doesn't time UART bits, so baud errors are a bench-only bug.</li>
+    <li>Wokwi does not time UART bits, so baud errors are a bench-only bug.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

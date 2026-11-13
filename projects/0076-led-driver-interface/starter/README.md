@@ -6,13 +6,13 @@ Lesson: [Driver design and hardware abstraction layers](https://jouhis.github.io
 
 ## Try it in Wokwi
 
-The project is `projects/0076-led-driver-interface`. The starter has the interface and `main.c`, which blinks the LED three times and reports `LED DRIVER OK` only if the driver reads back the level it was given. The two backends are empty, marked `TODO(learner)`.
+The project is `projects/0076-led-driver-interface`, whose starter has the interface and a `main.c` that blinks the LED three times and reports `LED DRIVER OK` only if the driver reads back the level it was given, while the two backends are empty and marked `TODO(learner)`.
 
-1. Open `projects/0076-led-driver-interface/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `LED DRIVER FAIL`, because both backends do nothing.
-2. Your task, part 1: in `led_gpio.c`, fill in the three `TODO(learner)` functions with the GP25 pin. Initialise the pin as an output, drive it with `gpio_put()`, and read it back with `gpio_get_out_level()`. Build and run. The LED blinks and the monitor prints `LED DRIVER OK`.
-3. Your task, part 2: in `led_fake.c`, keep the state in `s_on` and print `LED fake: on` or `LED fake: off` on each change. Then, in `CMakeLists.txt`, change the default `"gpio"` to `"fake"`, and run <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> with the *Clean build* task. The cache value is read only on a fresh configure, so the clean build is needed.
-4. You will know it works when the monitor prints `LED fake: init`, then six `on` and `off` lines, then `LED DRIVER OK`. The LED does not blink in this mode, because the fake has no pin.
-5. Optional: add `led_fake.c` to the sources while the GPIO backend is selected. Read the linker error. It names the function that is defined twice, which is the point of link-time choice.
+1. Open `projects/0076-led-driver-interface/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `LED DRIVER FAIL`, because both backends do nothing.
+2. In `led_gpio.c`, fill in the three `TODO(learner)` functions for pin GP25, initialising it as an output, driving it with `gpio_put()` and reading it back with `gpio_get_out_level()`, then build and run, and the LED blinks while the monitor prints `LED DRIVER OK`.
+3. In `led_fake.c`, keep the state in `s_on` and print `LED fake: on` or `LED fake: off` on each change, then change the default `"gpio"` in `CMakeLists.txt` to `"fake"` and run <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> with the *Clean build* task, which is needed because the cache value is read only on a fresh configure.
+4. The fake works when the monitor prints `LED fake: init`, then six `on` and `off` lines, then `LED DRIVER OK`, the LED not blinking in this mode because the fake has no pin.
+5. Optionally, add `led_fake.c` to the sources while the GPIO backend is selected and read the linker error, which names the function defined twice, the point of link-time choice.
 
 ## Files you work on
 
@@ -28,14 +28,14 @@ The serial monitor prints `LED DRIVER OK`.
 <details>
 <summary>Hint for the GPIO backend</summary>
 
-The three functions are `gpio_init()`, `gpio_set_dir()` with `GPIO_OUT`, and `gpio_put()`. `gpio_put()` takes 0 or 1, so write `on ? 1 : 0`. The starter's comments name each function.
+The three functions are `gpio_init()`, `gpio_set_dir()` with `GPIO_OUT` and `gpio_put()`, which takes 0 or 1, so write `on ? 1 : 0`, and the starter's comments name each function.
 
 </details>
 
 <details>
 <summary>Hint if the monitor still prints LED DRIVER FAIL</summary>
 
-`led_get()` must report what `led_set()` applied. A stub that always returns `false` fails the check after the first `led_set(true)`. Read the output level, not a constant.
+`led_get()` must report what `led_set()` applied, so a stub that always returns `false` fails the check after the first `led_set(true)`, and the output level should be read rather than a constant returned.
 
 </details>
 

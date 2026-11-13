@@ -11,69 +11,77 @@
 <body data-lesson="0093">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Timing analysis: execution time, deadlines, and rate-monotonic priorities</h1>
-  <p class="subtitle">A periodic task is correct only if every run finishes before its deadline, and the runs that matter most are the slowest ones. This lesson shows how to time a run with a hardware timer, how to assign rate-monotonic priorities, and how to check a task set against the utilisation bound.</p>
+  <h1>Timing analysis</h1>
+  <p class="subtitle">Execution times, deadlines and rate-monotonic priorities</p>
 
   <div class="goal">
     By the end of this lesson you can time a code section with TIM2 in microseconds, assign rate-monotonic priorities to periodic tasks, and check a task set against the Liu and Layland utilisation bound n(2^(1/n) − 1).
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Deadlines as part of a design review</h2>
   <p>
-    Lesson <a href="0086-why-use-an-rtos.html">86</a> defined a job's deadline and its response time, and it showed that a super-loop can miss a deadline when a long job blocks a short one. Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> turned each job into a FreeRTOS task, and it introduced the tick and <code>vTaskDelayUntil()</code>. Lesson <a href="0091-mutexes-priority-inversion-and-deadlock.html">91</a> showed that a mutex can make a high-priority task wait for a low-priority one, and that the wait is extra time a design has to count.
+    Lesson <a href="0086-why-use-an-rtos.html">86</a> defined a job's deadline and response time and showed that a super-loop can miss a deadline when a long job blocks a short one, lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> turned each job into a FreeRTOS task with the tick and <code>vTaskDelayUntil()</code>, and lesson <a href="0091-mutexes-priority-inversion-and-deadlock.html">91</a> showed that a mutex can make a high-priority task wait for a low-priority one, extra time a design has to count.
   </p>
   <p>
-    This lesson covers the timing half of a design review. Lesson <a href="0092-stack-sizing.html">92</a> covered the stack half. The question here is whether each task finishes its work before its deadline on every run. A motor controller that runs its current loop 2 ms late can overheat a winding. A fitness tracker whose display update is 200 ms late is only annoying. The two products set very different deadlines, but the analysis is the same for both. A senior engineer will ask for the measured numbers and the bound, not for a feeling that the system is fast enough.
+    This lesson covers the timing half of a design review, lesson <a href="0092-stack-sizing.html">92</a> having covered the stack half, the question being whether each task finishes its work before its deadline on every run. A motor controller running its current loop 2 ms late can overheat a winding, while a fitness tracker whose display update is 200 ms late is merely annoying, so the two products set very different deadlines although the analysis is the same for both, and a senior engineer will ask for the measured numbers and the bound rather than a feeling that the system is fast enough.
   </p>
 
   <h2>Work, period and deadline</h2>
   <p>
-    A periodic task runs at a fixed rate. Its <strong>period</strong>, T, is the time between the starts of two runs. Its <strong>work</strong>, C, also called its execution time, is the CPU time that one run needs. Its <strong>deadline</strong> is the time by which each run must finish. The usual simple case sets the deadline equal to the period, so the task must finish before its next start.
+    A periodic task runs at a fixed rate, its <strong>period</strong> T being the time between the starts of two runs, its <strong>work</strong> C, also called its execution time, the CPU time one run needs, and its <strong>deadline</strong> the time by which each run must finish, the usual simple case setting the deadline equal to the period, so that the task finishes before its next start.
   </p>
   <p>
-    A job's <a href="../reference/glossary.html#response-time">response time</a> is its waiting time plus its own work, as lesson 86 defined it. The deadline is met when the response time is within the deadline. The waiting time comes from the other tasks and interrupts that run first, so the work and the waiting together decide the outcome. A task with a short work time can still miss a deadline if it waits behind something long.
+    A job's <a href="../reference/glossary.html#response-time">response time</a> is its waiting time plus its own work, as lesson 86 defined it, and the deadline is met when the response time lies within it. The waiting time comes from the other tasks and interrupts that run first, so work and waiting together decide the outcome, and a task with a short work time can still miss its deadline when it waits behind something long.
   </p>
   <p>
-    The work of a task is not a single number. It changes with the input, with the branch that is taken, and with any interrupt that arrives during the run. A deadline has to hold for the slowest run that can happen, because the system is wrong on the one run that misses. The average is useful for planning the CPU budget, and it is useless for deciding whether a deadline is met.
+    The work of a task is not a single number, changing with the input, the branch taken and any interrupt arriving during the run, and since the system is wrong on the one run that misses, a deadline must hold for the slowest run that can happen. The average serves to plan the CPU budget but cannot decide whether a deadline is met.
   </p>
   <p>
-    Two terms come up in reviews. The <strong>worst-case execution time</strong>, WCET, is the largest work that a task can need on any run. The <strong>measured worst case</strong> is the largest work that the tests actually showed. The measured value is never more than the true WCET, and it is only as good as the tests that produced it. This lesson measures the second and uses it as an estimate of the first.
+    Two terms come up in reviews, the <strong>worst-case execution time</strong>, WCET, the largest work a task can need on any run, and the <strong>measured worst case</strong>, the largest work the tests actually showed, which never exceeds the true WCET and is only as good as the tests producing it. This lesson measures the second and uses it as an estimate of the first.
   </p>
 
-  <h2>Measuring time: a counter faster than the tick</h2>
+  <h2>Microsecond timing with TIM2</h2>
   <p>
-    The tick is the kernel's clock. In this project it runs at 1 kHz, since <code>configTICK_RATE_HZ</code> is 1000, so one tick is 1 ms (lesson 87). That is too coarse for a work time of a fraction of a millisecond. A run that takes 0.3 ms either lies inside one tick or straddles two, and the tick count cannot say which. So the project times its work with a hardware timer, TIM2.
+    The tick is the kernel's clock, running here at 1 kHz with <code>configTICK_RATE_HZ</code> at 1000, so one tick is 1 ms (lesson 87), too coarse for a work time of a fraction of a millisecond, since a run of 0.3 ms either lies inside one tick or straddles two and the tick count cannot say which. The project therefore times its work with a hardware timer, TIM2.
   </p>
   <p>
-    A timer is a counter that is driven by a clock. TIM2 is a 16-bit counter. It counts clock pulses, and when it reaches its reload value it wraps back to zero (lesson <a href="0071-timers.html">71</a> covered the counter, the reload register ARR and the wrap). The prescaler, the <code>PSC</code> register, divides the clock before it reaches the counter. Lesson 71 gave the rule: the counter ticks at the clock frequency divided by <code>PSC + 1</code>.
+    A timer is a counter driven by a clock, TIM2 being a 16-bit counter that counts clock pulses and wraps back to zero when it reaches its reload value (lesson <a href="0071-timers.html">71</a> covered the counter, the reload register ARR and the wrap), while the prescaler register <code>PSC</code> divides the clock before it reaches the counter, so the counter ticks at
+  </p>
+  <p class="eq"><span>f<sub>count</sub> = f<sub>clk</sub> ÷ (PSC + 1)</span><span class="eq-n">(1)</span></p>
+  <p>
+    where f<sub>clk</sub> is the timer's input clock and PSC the prescaler register value, the rule lesson 71 gave.
   </p>
   <p>
-    The project's clock is <code>SystemCoreClock</code>, which is 8 MHz here. The project does not configure the phase-locked loop (PLL) that would raise it, so the value stays at the reset default of 8 MHz (the variable is initialised to 8000000 in <code>system_stm32f1xx.c</code>). Dividing 8 MHz by 8 gives 1 MHz, so one count is one microsecond, and the prescaler is 8 − 1 = 7. The code computes that value from the clock rather than writing 7 directly. If someone later changes the clock setup, the one-microsecond count stays true. A hard-coded 7 would silently make every measurement wrong after such a change.
+    The project's clock is <code>SystemCoreClock</code>, 8 MHz here, because the project does not configure the phase-locked loop (PLL) that would raise it, so the value stays at the reset default (the variable being initialised to 8000000 in <code>system_stm32f1xx.c</code>). Dividing 8 MHz by 8 gives 1 MHz, one count per microsecond, so the prescaler is 8 − 1 = 7, which the code computes from the clock rather than writing 7 directly, so that the one-microsecond count stays true if someone later changes the clock setup, whereas a hard-coded 7 would silently make every measurement wrong after such a change.
   </p>
   <p>
-    A timer measures elapsed time, not the CPU time of the task. TIM2 keeps counting while another task runs. If a task is preempted in the middle of a measured section, the measured time includes the other task's run. That is the right quantity for a deadline, which is counted in elapsed time. It also means that a large worst value can come from preemption rather than from the work itself, and the mistakes section shows how to tell the difference.
+    A timer measures elapsed time rather than the task's CPU time, TIM2 counting on while another task runs, so a task preempted in the middle of a measured section includes the other task's run in its measurement. That is the right quantity for a deadline, which is counted in elapsed time, but it also means that a large worst value can come from preemption rather than from the work itself, and the mistakes section shows how to tell the difference.
   </p>
 
-  <h2>Deadlines, periods and rate-monotonic priorities</h2>
+  <h2>Rate-monotonic priorities and the utilisation bound</h2>
   <p>
-    The fixed priorities of FreeRTOS decide which task runs when two are ready. The kernel runs the highest-priority ready task (lesson 87). For periodic tasks the standard choice is <a href="../reference/glossary.html#rate-monotonic-scheduling">rate-monotonic</a> assignment: the shorter the period, the higher the priority. The reason is intuitive once you picture it. A task that must run every 10 ms cannot wait behind a task that runs every second, because it would miss its window. A task that runs every second can always wait a few milliseconds.
+    The fixed priorities of FreeRTOS decide which of two ready tasks runs, the kernel running the highest-priority one (lesson 87), and for periodic tasks the standard choice is <a href="../reference/glossary.html#rate-monotonic-scheduling">rate-monotonic</a> assignment, in which the shorter the period, the higher the priority. The reason is intuitive, since a task that must run every 10 ms would miss its window waiting behind a task that runs every second, whereas the once-a-second task can always wait a few milliseconds.
   </p>
   <p>
-    In FreeRTOS, a larger number means a higher priority, and the port's <code>configMAX_PRIORITIES</code> sets the range. So the 10 ms task gets priority 3, the 100 ms task gets 2, and the 1000 ms report gets 1. The rule is about the period, not about how much the output matters to a reader. A task that prints a lot is not more urgent than a task with a short deadline.
+    In FreeRTOS a larger number means a higher priority, with <code>configMAX_PRIORITIES</code> setting the range, so the 10 ms task gets priority 3, the 100 ms task 2 and the 1 000 ms report 1. The rule concerns the period rather than how much the output matters to a reader, so a task that prints a lot is not more urgent than one with a short deadline.
   </p>
   <p>
-    Liu and Layland published the central result in 1973. For independent periodic tasks whose deadlines equal their periods, rate-monotonic priorities are optimal among fixed-priority schemes. They also gave a test, the utilisation bound. Add up the utilisation of every task, where each task's utilisation is its work divided by its period, U = Σ C<sub>i</sub>/T<sub>i</sub>. If U is at most n(2<sup>1/n</sup> − 1) for n tasks, every task meets its deadline. The right-hand side decreases as n grows, and it approaches ln 2, about 0.693, as n becomes large.
+    Liu and Layland published the central result in 1973, showing that for independent periodic tasks with deadlines equal to their periods, rate-monotonic priorities are optimal among fixed-priority schemes, and giving a test, the utilisation bound, under which every task meets its deadline if
   </p>
-<pre><code class="language-plaintext">U = Σ (C<sub>i</sub> / T<sub>i</sub>)  ≤  n · (2<sup>1/n</sup> − 1)
+  <p class="eq"><span>U = Σ C<sub>i</sub>/T<sub>i</sub> ≤ n(2<sup>1/n</sup> − 1)</span><span class="eq-n">(2)</span></p>
+  <p>
+    where C<sub>i</sub> is the work and T<sub>i</sub> the period of task i, U the total utilisation and n the number of tasks, the right-hand side decreasing as n grows and approaching ln 2, about 0.693, for large n.
+  </p>
+  <pre><code class="language-plaintext">U = Σ (C<sub>i</sub> / T<sub>i</sub>)  ≤  n · (2<sup>1/n</sup> − 1)
 
 n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</code></pre>
   <p>
-    The bound is <a href="../reference/glossary.html#utilisation-bound">sufficient, not necessary</a>. A task set above the bound may still be schedulable, and then you need an exact response-time analysis to decide. A set below the bound is always schedulable under rate-monotonic priorities, so the bound is the first check you run, and it costs one line of arithmetic. The bound assumes independent tasks and deadlines equal to periods. When either assumption fails, the bound does not apply, and the design needs a different analysis.
+    The bound is <a href="../reference/glossary.html#utilisation-bound">sufficient, not necessary</a>, so a task set above it may still be schedulable, which only an exact response-time analysis can decide, whereas a set below it is always schedulable under rate-monotonic priorities, which makes the bound the first check to run at the cost of one line of arithmetic. It assumes independent tasks and deadlines equal to periods, and when either assumption fails, it does not apply and the design needs a different analysis.
   </p>
 
-  <h2>Worked example with numbers</h2>
+  <h2>Worked example: the utilisation of the project's task set</h2>
   <p>
-    Take the three tasks of the project. The fast task runs every 10 ms, the slow task every 100 ms, and the report task every 1000 ms. The table gives design targets for their work times. These are targets, not measurements. Your report shows the real numbers, and you replace these with them.
+    The project's three tasks run every 10 ms, 100 ms and 1 000 ms, and the table gives design targets for their work times, which are targets rather than measurements, to be replaced by the real numbers from your report. Before adding them up, predict whether the set passes the three-task bound of 0.780.
   </p>
   <table>
     <thead>
@@ -85,57 +93,43 @@ n = 1: 1.000     n = 2: 0.828     n = 3: 0.780     n → ∞: ln 2 ≈ 0.693</co
       <tr><td>report</td><td>1</td><td>1000 ms</td><td>0.5 ms</td><td>0.0005</td></tr>
     </tbody>
   </table>
+  <ol class="steps">
+    <li><strong>The fast task.</strong> It uses 0.3 ms of every 10 ms, a share of 0.3 ÷ 10 = 0.030.</li>
+    <li><strong>The slow task.</strong> It uses 3 ms of every 100 ms, 3 ÷ 100 = 0.030 again.</li>
+    <li><strong>The report task.</strong> It uses 0.5 ms of every 1 000 ms, 0.0005.</li>
+    <li><strong>The total.</strong> 0.030 + 0.030 + 0.0005 = 0.0605, well below the three-task bound of 0.780, and even ten times the target work would give 0.605, still under the bound.</li>
+    <li><strong>A measured value that wraps.</strong> The timing code subtracts two counter reads while the counter wraps to zero every 65 536 µs, so with a first read of 65000 and a second of 300 after one wrap, plain subtraction gives 300 − 65000 = −64700, which is not a time, whereas adding one full wrap, 65 536, gives 836, so the elapsed time is 836 µs, which the code achieves with the 16-bit cast shown in the code section, the mistakes section showing what happens without it.</li>
+  </ol>
   <p>
-    <strong>Step 1: the fast task.</strong> It uses 0.3 ms out of every 10 ms, so its share is 0.3 divided by 10, which is 0.030.
-  </p>
-  <p>
-    <strong>Step 2: the slow task.</strong> It uses 3 ms out of every 100 ms, which is 3 divided by 100. That is 0.030 again.
-  </p>
-  <p>
-    <strong>Step 3: the report task.</strong> It uses 0.5 ms out of every 1000 ms, which is 0.0005.
-  </p>
-  <p>
-    <strong>Step 4: the total.</strong> 0.030 + 0.030 + 0.0005 = 0.0605. The bound for three tasks is 0.780, so the set passes the test with a wide margin. Even if the real work were ten times longer than the targets, the total would be 0.605 and still under the bound.
-  </p>
-  <p>
-    <strong>Step 5: a measured value that wraps.</strong> The timing code subtracts two counter reads, and the counter wraps back to zero every 65,536 microseconds. Suppose the first read is 65000 and the second read, taken after the counter has wrapped once, is 300. Plain subtraction gives 300 − 65000 = −64700, which is not a time. Adding one full wrap, 65536, gives 836. So the elapsed time is 836 µs. The code does this with the 16-bit cast shown in the code section, and the common mistakes section shows what happens without it.
-  </p>
-  <p>
-    The bound says nothing about the stack, the shared bus or the interrupts, so a passing result is a necessary first step, not a proof of the whole system. Lesson 91 showed that a mutex can make a high-priority task wait for a low-priority one, and that wait is extra time the bound does not include. A review should ask for the blocking time as well, and for the time that interrupts take from each task.
+    The bound says nothing about the stack, the shared bus or the interrupts, so a passing result is a necessary first step rather than a proof of the whole system. Lesson 91 showed that a mutex can make a high-priority task wait for a low-priority one, extra time the bound does not include, so a review should also ask for the blocking time and the time interrupts take from each task.
   </p>
 
   <p>
-    See the bound at work on a task set with longer work times than the project's, so that the bars are visible. The rate-monotonic set meets every deadline. Swap the priorities, or add work until U passes 1, and watch the short task miss.
+    The widget below shows the bound at work on a task set with longer work times than the project's, so that the bars are visible. The rate-monotonic set meets every deadline, and swapping the priorities, or adding work until U passes 1, makes the short task miss.
   </p>
   <div class="widget rtossim" data-preset="rm-ok" data-title="Rate-monotonic scheduling, tick by tick"></div>
 
-  <h2>Reading the code, line by line</h2>
+  <h2>The timing code line by line</h2>
   <p>
-    The timing code is spread over a few functions in the solution's <code>main.c</code>. The constants come first:
+    The timing code is spread over a few functions in the solution's <code>main.c</code>, starting with the constants.
   </p>
-<pre><code class="language-c">#define TIMER_TICKS_PER_US 1U       /* the TIM2 prescaler gives 1 count per microsecond */
+  <pre><code class="language-c">#define TIMER_TICKS_PER_US 1U       /* the TIM2 prescaler gives 1 count per microsecond */
 #define FAST_PERIOD_MS     10U
 #define SLOW_PERIOD_MS     100U</code></pre>
   <p>
-    <code>TIMER_TICKS_PER_US</code> states the goal of the prescaler in plain words: one count per microsecond. The periods are in milliseconds, which is the unit a reader will check against the design. The <code>U</code> suffix marks each as an unsigned constant.
+    <code>TIMER_TICKS_PER_US</code> states the goal of the prescaler in plain words, one count per microsecond, while the periods are in milliseconds, the unit a reader checks against the design, and the <code>U</code> suffix marks each as an unsigned constant. The timer setup has four lines.
   </p>
-  <p>
-    The timer setup has four lines:
-  </p>
-<pre><code class="language-c">RCC-&gt;APB1ENR |= RCC_APB1ENR_TIM2EN;
+  <pre><code class="language-c">RCC-&gt;APB1ENR |= RCC_APB1ENR_TIM2EN;
 TIM2-&gt;PSC = (SystemCoreClock / 1000000U) * TIMER_TICKS_PER_US - 1U;
 TIM2-&gt;ARR = 0xFFFFU;
 TIM2-&gt;CR1 = TIM_CR1_CEN;</code></pre>
   <p>
-    The first line turns on the clock to TIM2 in the reset and clock control block (RCC). Until that bit is set, TIM2 receives no clock, so it does not count. The second line is the prescaler. <code>SystemCoreClock / 1000000U</code> is the number of clock cycles in one microsecond, which is 8 at 8 MHz. Multiplying by <code>TIMER_TICKS_PER_US</code> asks for one count per microsecond, and subtracting one gives the register value 7, because the register stores the divider minus one.
+    The first line turns on the clock to TIM2 in the reset and clock control block (RCC), without which TIM2 receives no clock and does not count. The second line is the prescaler, <code>SystemCoreClock / 1000000U</code> being the number of clock cycles in one microsecond, 8 at 8 MHz, multiplied by <code>TIMER_TICKS_PER_US</code> to ask for one count per microsecond, with one subtracted to give the register value 7, because the register stores the divider minus one.
   </p>
   <p>
-    The third line sets the auto-reload value ARR to <code>0xFFFF</code>. The counter then runs from 0 to 65535 and wraps, which is the 16-bit range that the wrap-safe subtraction depends on. The fourth line sets the counter-enable bit, CEN, in the control register CR1, which starts the counting. The counter runs from then on, whether or not any task is measuring.
+    The third line sets the auto-reload value ARR to <code>0xFFFF</code>, so the counter runs from 0 to 65535 and wraps, the 16-bit range on which the wrap-safe subtraction depends, and the fourth line sets the counter-enable bit, CEN, in the control register CR1, which starts the counting, after which the counter runs whether or not any task is measuring. The measurement function uses the counter.
   </p>
-  <p>
-    The measurement function is the one that uses the counter:
-  </p>
-<pre><code class="language-c">static void timed_work(uint32_t loops, volatile uint32_t *max_us) {
+  <pre><code class="language-c">static void timed_work(uint32_t loops, volatile uint32_t *max_us) {
     uint16_t start = (uint16_t)TIM2-&gt;CNT;
     do_work(loops);
     uint32_t elapsed = (uint16_t)((uint16_t)TIM2-&gt;CNT - start);
@@ -144,15 +138,12 @@ TIM2-&gt;CR1 = TIM_CR1_CEN;</code></pre>
     }
 }</code></pre>
   <p>
-    The first line reads the counter and stores it as a 16-bit value. The second line runs the work. The third line reads the counter again and subtracts the first reading. The outer <code>(uint16_t)</code> cast makes the result a 16-bit value, so when the counter wrapped during the work, the subtraction comes out right, as the worked example showed. The cast is what makes the function wrap-safe. Without it, the result is a negative or 32-bit difference, and a wrap produces a meaningless number. The function is correct as long as the work is shorter than one full wrap, which is 65.536 ms at one microsecond per count.
+    The first line reads the counter and stores it as a 16-bit value, the second runs the work, and the third reads the counter again and subtracts the first reading, the outer <code>(uint16_t)</code> cast making the result a 16-bit value, so that a counter that wrapped during the work still gives the right difference, as the worked example showed. The cast is what makes the function wrap-safe, since without it the result is a negative or 32-bit difference and a wrap produces a meaningless number, and the function stays correct as long as the work is shorter than one full wrap, 65.536 ms at one microsecond per count.
   </p>
   <p>
-    The last lines keep the largest value that has been seen. The pointer <code>max_us</code> points at the task's own worst-case variable, so every run can update it. This is the line that implements the rule that a deadline is about the worst case, not the average.
+    The last lines keep the largest value seen, the pointer <code>max_us</code> pointing at the task's own worst-case variable so that every run can update it, which implements the rule that a deadline concerns the worst case rather than the average. The periodic task ties the timing together, as the solution's fast task shows.
   </p>
-  <p>
-    The periodic task ties the timing together. Here is the fast task from the solution:
-  </p>
-<pre><code class="language-c">static void fast_task(void *arg) {
+  <pre><code class="language-c">static void fast_task(void *arg) {
     (void)arg;
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
@@ -161,75 +152,82 @@ TIM2-&gt;CR1 = TIM_CR1_CEN;</code></pre>
     }
 }</code></pre>
   <p>
-    <code>last_wake</code> holds the tick at which the task last started. It is set once, before the loop. <code>(void)arg</code> tells the compiler that the parameter is unused, which keeps the warning list clean. Inside the loop, <code>timed_work()</code> runs the work and records its worst time into <code>fast_max_us</code>. The last line controls the timing. <code>vTaskDelayUntil()</code> sleeps until <code>last_wake</code> plus the period, and it then moves <code>last_wake</code> forward by exactly one period. A plain <code>vTaskDelay(10)</code> would instead sleep 10 ms after the work finished, so the period would drift by the work time on every cycle. Over a long run the drift adds up, and the measured rate is wrong. <code>pdMS_TO_TICKS()</code> converts milliseconds to ticks, and with a 1 kHz tick the conversion is the identity, so 10 ms is 10 ticks.
+    <code>last_wake</code> holds the tick at which the task last started, set once before the loop, and <code>(void)arg</code> tells the compiler that the parameter is unused, which keeps the warning list clean, while inside the loop <code>timed_work()</code> runs the work and records its worst time in <code>fast_max_us</code>. The last line controls the timing, <code>vTaskDelayUntil()</code> sleeping until <code>last_wake</code> plus the period and then moving <code>last_wake</code> forward by exactly one period, whereas a plain <code>vTaskDelay(10)</code> would sleep 10 ms after the work finished, so the period would drift by the work time on every cycle and the measured rate would end up wrong over a long run. <code>pdMS_TO_TICKS()</code> converts milliseconds to ticks, the identity with a 1 kHz tick, so 10 ms is 10 ticks.
   </p>
   <p>
-    Finally, the priorities are the third and fourth arguments of the three <code>xTaskCreate()</code> calls in <code>main()</code>. The solution sets them as follows:
+    Finally, the priorities are the fifth argument of the three <code>xTaskCreate()</code> calls in <code>main()</code>, which the solution sets as follows.
   </p>
-<pre><code class="language-c">xTaskCreate(fast_task, "fast", FAST_STACK_WORDS, NULL, 3U, &amp;fast_handle);
+  <pre><code class="language-c">xTaskCreate(fast_task, "fast", FAST_STACK_WORDS, NULL, 3U, &amp;fast_handle);
 xTaskCreate(slow_task, "slow", SLOW_STACK_WORDS, NULL, 2U, &amp;slow_handle);
 xTaskCreate(report_task, "report", REPORT_STACK_WORDS, NULL, 1U, &amp;report_handle);</code></pre>
   <p>
-    The shortest period, 10 ms, has the highest number, 3, as rate-monotonic order requires. The report task, with the longest period, has 1. The stack depth argument in the middle is the subject of lesson 92.
+    The shortest period, 10 ms, has the highest number, 3, as rate-monotonic order requires, and the report task, with the longest period, has 1, while the stack depth argument is the subject of lesson 92.
   </p>
 
   <h2>Try it: time the tasks and check the bound</h2>
   <p>
-    The project <code>projects/0093-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms, and a report task every second. The report prints each task's worst measured time in microseconds, and the stack lines that lesson <a href="0092-stack-sizing.html">92</a> covers. This lesson uses the timing lines.
+    The project <code>projects/0093-stack-and-timing</code> runs a fast task every 10 ms, a slow task every 100 ms and a report task every second, the report printing each task's worst measured time in microseconds along with the stack lines that lesson <a href="0092-stack-sizing.html">92</a> covers, while this lesson uses the timing lines.
   </p>
   <div class="warning">
     <strong>Known issue: the simulator may print nothing.</strong> The projects in this lesson build, but they cannot run in Wokwi. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (see the open issue in <code>CHANGELOG.md</code> at the workspace root). In the simulator the output stops after the first task's first output, or prints nothing, so the report may never appear. The steps below are still how you check the work. Build and read the code. Compare your report with the expected output in <code>projects/0093-stack-and-timing/solution/main.c</code>, which is what a real Blue Pill prints.
   </div>
   <ol class="steps">
-    <li>Open <code>projects/0093-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The build should finish with no errors.</li>
-    <li>In <code>main()</code>, find the <code>TODO(learner)</code> about rate-monotonic order. The starter has the fast and slow tasks both at priority 2 on purpose. Set <code>fast_task</code> to 3, leave <code>slow_task</code> at 2 and <code>report_task</code> at 1.</li>
-    <li>Build again and simulate. In the simulator the report may not appear. On a real Blue Pill the report should show a worst value in microseconds for <code>fast</code> and for <code>slow</code>, once a second.</li>
-    <li>Compare the size of your worst values with the solution's output in <code>projects/0093-stack-and-timing/solution/main.c</code>. The exact digits depend on the simulated clock, so compare the order of magnitude, not the digits.</li>
-    <li>Work out the utilisation from your report. Use periods in microseconds: 10 ms is 10 000 µs and 100 ms is 100 000 µs. For the fast task, divide its worst time by 10 000. For the slow task, divide its worst time by 100 000. Add the two results. The report task is not timed, so either add a design estimate for it, such as 0.5 ms out of 1000 ms, which is 0.0005, or say that you left it out.</li>
-    <li>Compare your total with 0.780, the bound for three tasks. If the total is below the bound, the set passes the first test. If it is above, the test says nothing either way, and the next step is the exact response-time analysis, which this course does not cover in a hands-on task.</li>
+    <li>Open <code>projects/0093-stack-and-timing/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, which should finish without errors, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>In <code>main()</code>, find the <code>TODO(learner)</code> about rate-monotonic order, the starter having the fast and slow tasks both at priority 2 on purpose, and set <code>fast_task</code> to 3, leaving <code>slow_task</code> at 2 and <code>report_task</code> at 1.</li>
+    <li>Build again and simulate, and although the report may not appear in the simulator, on a real Blue Pill it should show a worst value in microseconds for <code>fast</code> and for <code>slow</code> once a second.</li>
+    <li>Compare the size of your worst values with the solution's output in <code>projects/0093-stack-and-timing/solution/main.c</code>, comparing the order of magnitude rather than the digits, which depend on the simulated clock.</li>
+    <li>Work out the utilisation from your report with periods in microseconds, 10 ms being 10 000 µs and 100 ms 100 000 µs, dividing the fast task's worst time by 10 000 and the slow task's by 100 000 and adding the two, and since the report task is not timed, either add a design estimate for it, such as 0.5 ms of 1 000 ms, which is 0.0005, or state that you left it out.</li>
+    <li>Compare your total with 0.780, the bound for three tasks, and if it is below, the set passes the first test, whereas above it the test says nothing either way and the next step is the exact response-time analysis, which this course does not cover in a hands-on task.</li>
   </ol>
-  <div class="note">The report task measures nothing and runs at the lowest priority, so it cannot delay the other two. Its own stack is still reported in lesson 92, because an overflow in the report task would also corrupt memory.</div>
+  <p>
+    The report task measures nothing and runs at the lowest priority, so it cannot delay the other two, while its own stack is still reported in lesson 92, because an overflow in the report task would also corrupt memory.
+  </p>
 
-  <div class="win">You timed the fast and slow tasks with TIM2 in microseconds, assigned rate-monotonic priorities, and checked your measured task set against the utilisation bound.</div>
+  <div class="win">You timed the fast and slow tasks with TIM2 in microseconds, assigned rate-monotonic priorities and checked your measured task set against the utilisation bound.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>A plain delay in a periodic task</h3>
   <p>
-    <strong>Mistake 1: using a plain delay for a periodic task.</strong> A task written with <code>vTaskDelay()</code> runs at a period of work time plus delay time, not at the period you wrote. The symptom appears only over time. Take a task with a 100 ms period that does 2 ms of work per run and calls <code>vTaskDelay(100)</code>. Each cycle takes 102 ms, so in 10 seconds it runs about 98 times, not 100. The fix is <code>vTaskDelayUntil()</code>, as the solution uses, with the previous wake time kept between cycles.
+    Over time the task runs fewer times than planned, a 100 ms task doing 2 ms of work per run and calling <code>vTaskDelay(100)</code> taking 102 ms per cycle and so running about 98 times in 10 seconds rather than 100, because a task written with <code>vTaskDelay()</code> runs at a period of work time plus delay time. Use <code>vTaskDelayUntil()</code>, as the solution does, keeping the previous wake time between cycles.
   </p>
+  <h3>Counter reads subtracted without the 16-bit cast</h3>
   <p>
-    <strong>Mistake 2: subtracting counter reads without the 16-bit cast.</strong> Suppose the first read is 64000 and the counter wraps before the second read, which is 500. Without the cast, the code subtracts in 32 bits and stores 4,294,903,796 µs, which is 2<sup>32</sup> − 63,500. That number is not a time. The symptom is a single absurd worst value on the report, and it stays there, because the report keeps the largest value it has seen. A wrap lands inside a measurement only some of the time, so the symptom can take a while to appear. The fix is the cast, as in <code>timed_work()</code>, and a test with a start value close to the top of the counter range.
+    A single absurd worst value appears on the report and stays there, since the report keeps the largest value seen, because with a first read of 64000 and a second read of 500 after a wrap, the code subtracts in 32 bits and stores 4 294 903 796 µs, 2<sup>32</sup> − 63 500, which is not a time, and since a wrap lands inside a measurement only some of the time, the symptom can take a while to appear. Add the cast, as in <code>timed_work()</code>, and test with a start value close to the top of the counter range.
   </p>
+  <h3>The average or the first run reported</h3>
   <p>
-    <strong>Mistake 3: reporting the average, or the first run.</strong> An average hides exactly the bursts that miss a deadline. A report that shows the mean of 1000 runs can look healthy while one run in a thousand is 2 ms late. The symptom is a field failure on the rare late sample, while the bench figures look fine. The fix is to keep the worst value, as the solution does, and to put that value in the report, so that the number a reviewer sees is the one the deadline is checked against.
+    A field failure appears on a rare late sample while the bench figures look fine, because the report shows the mean of 1 000 runs, which hides exactly the bursts that miss a deadline, so it can look healthy while one run in a thousand is 2 ms late. Keep the worst value, as the solution does, and put it in the report, so that the number a reviewer sees is the one the deadline is checked against.
   </p>
+  <h3>Equal or reversed priorities</h3>
   <p>
-    <strong>Mistake 4: equal or reversed priorities.</strong> The starter sets the fast and slow tasks both to priority 2 on purpose. With equal priorities and time slicing, the kernel lets the two tasks take turns (lesson 87), so the fast task can be preempted in the middle of its measured section. The timer keeps counting during the preemption, so the measured worst time includes the slow task's run. The symptom is a fast worst value that looks like a slow task's work. The fix is the rate-monotonic order: the 10 ms task gets the higher priority.
+    The fast task's worst value looks like a slow task's work, because the starter sets the fast and slow tasks both to priority 2 on purpose, and with equal priorities and time slicing the kernel lets them take turns (lesson 87), so the fast task can be preempted in the middle of its measured section while the timer keeps counting. Use the rate-monotonic order, giving the 10 ms task the higher priority.
   </p>
+  <h3>A passing bound treated as a proof</h3>
   <p>
-    <strong>Mistake 5: treating a passing bound as a proof.</strong> A set below 0.780 with three tasks passes the first test, but the test assumes independent tasks, deadlines equal to periods, and no blocking. A mutex, an interrupt that steals time or a task with a late deadline all sit outside it. The symptom is a design that passes the review and then misses a deadline with a shared bus. The fix is to add the blocking time and the interrupt time to each task's work, and to run the exact analysis when the set is above the bound.
+    A design passes the review and then misses a deadline with a shared bus, because the bound, which a three-task set below 0.780 passes, assumes independent tasks, deadlines equal to periods and no blocking, while a mutex, an interrupt that steals time or a task with a late deadline all lie outside it. Add the blocking time and the interrupt time to each task's work, and run the exact analysis when the set is above the bound.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Worst-case timing records in real-time products</h2></summary>
   <p>
-    Teams that ship real-time products measure the worst-case execution time of each task and interrupt on the real board, with a timer such as the one in this lesson. They compare the sum against the deadlines and keep the table in the design record. A simulator's timing is useful for finding bugs, but it is not a substitute for the board's own measurement, so the figures in a review come from hardware.
+    Teams shipping real-time products measure the worst-case execution time of each task and interrupt on the real board with a timer like the one in this lesson, compare the sum against the deadlines and keep the table in the design record. A simulator's timing helps find bugs but cannot replace the board's own measurement, so the figures in a review come from hardware.
   </p>
   <p>
-    Some teams also enable a runtime statistics feature in FreeRTOS, which reports the share of CPU time that each task used. That number is a useful overview, but it is an average over a window, so the worst case still needs its own measurement. Treat the statistics as a complement to the worst-case table, not a replacement.
+    Some teams also enable FreeRTOS's runtime statistics feature, which reports each task's share of CPU time, a useful overview but an average over a window, so the worst case still needs its own measurement, the statistics complementing the worst-case table rather than replacing it.
   </p>
   <p>
-    In a code review, a senior engineer looks for three things. Each periodic task should use a delay until a fixed time, not a delay after the work. The worst case should be the value that is checked, not the average. And the priorities should follow the periods, with the blocking and interrupt time added to the analysis. Remember that the utilisation bound is a sufficient test, that it assumes independent tasks and deadlines equal to periods, and that a mutex or a blocking call adds time the bound does not count.
+    In a code review a senior engineer expects each periodic task to delay until a fixed time rather than after the work, the worst case rather than the average to be the value checked, and the priorities to follow the periods with the blocking and interrupt time added to the analysis. The utilisation bound remains a sufficient test that assumes independent tasks and deadlines equal to periods, so a mutex or a blocking call adds time that it does not count.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A periodic task has a period T, a work C and a deadline. The response time is the waiting time plus the work. The deadline must hold for the worst run, not the average.</li>
-    <li>The tick is 1 ms here, too coarse for short work. A timer counts microseconds when its prescaler is set to the clock divided by 1 MHz, which is 8 − 1 = 7 at the project's 8 MHz clock.</li>
-    <li>Subtract two counter reads in unsigned 16-bit arithmetic. At one microsecond per count the wrap time is 65.536 ms, so one measurement must be shorter than that.</li>
-    <li>Keep the worst case. The timer measures elapsed time, so a preempted run includes the other task's work.</li>
-    <li>Use <code>vTaskDelayUntil()</code> for periodic tasks, so the period does not drift with the work time.</li>
-    <li>Rate-monotonic priorities give the shortest period the highest priority. For n tasks, a total utilisation at or below n(2<sup>1/n</sup> − 1) guarantees the deadlines, for independent tasks whose deadlines equal their periods. The bound is sufficient, not necessary.</li>
+    <li>A periodic task has a period T, a work C and a deadline, its response time being the waiting time plus the work, and the deadline must hold for the worst run rather than the average.</li>
+    <li>The 1 ms tick is too coarse for short work, whereas a timer counts microseconds when its prescaler divides the clock to 1 MHz, 8 − 1 = 7 at the project's 8 MHz clock.</li>
+    <li>Two counter reads are subtracted in unsigned 16-bit arithmetic, and at one microsecond per count the wrap time is 65.536 ms, so one measurement must be shorter than that.</li>
+    <li>The worst case is kept, and since the timer measures elapsed time, a preempted run includes the other task's work.</li>
+    <li><code>vTaskDelayUntil()</code> keeps the period of a periodic task from drifting with the work time.</li>
+    <li>Rate-monotonic priorities give the shortest period the highest priority, and for n independent tasks with deadlines equal to periods a total utilisation at or below n(2<sup>1/n</sup> − 1) guarantees the deadlines, the bound being sufficient but not necessary.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

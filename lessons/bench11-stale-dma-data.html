@@ -11,11 +11,7 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Bench lab 11: Stale DMA data</h1>
-  <p class="subtitle">The DMA fills a buffer while the CPU does other work. If the CPU reads that buffer at the wrong moment, it gets half an old frame and half a new one, or the same frame twice. On the Nucleo-U5 you make both happen, count them, and fix them with double buffering. Then you read about the cache version of the bug, which faster chips add on top.</p>
-
-  <div class="note">
-    <strong>This bench lab is optional and a stretch.</strong> It needs the NUCLEO-U545RE-Q from bench lab 9; a logic analyzer helps but isn't required. It doesn't count towards your progress. Time: about 50 minutes.
-  </div>
+  <p class="subtitle">Torn and stale DMA frames and double buffering</p>
 
   <div class="goal">
     By the end of this lab you can <strong>show torn and stale DMA frames on a real board, fix them with double buffering and a transfer-complete handshake, and explain why chips with a data cache need cache maintenance as well</strong>.
@@ -23,51 +19,54 @@
 
   <h2>Two kinds of old data</h2>
   <p>
-    Lesson <a href="0074-dma.html">74</a> let the DMA fill a buffer while the CPU did other work, then read the buffer when the transfer-complete interrupt fired. The CPU and the DMA share one buffer, and the rule that makes this safe is about time: the CPU may read the buffer only between "the DMA finished" and "the DMA starts again". Break the rule and two things go wrong:
+    The DMA fills a buffer while the CPU does other work, and if the CPU reads that buffer at the wrong moment, it gets half an old frame and half a new one, or the same frame twice. On the Nucleo-U5 you make both happen, count them and fix them with double buffering, and then read about the cache version of the bug, which faster chips add on top. The lab is optional and a stretch, needing the NUCLEO-U545RE-Q from bench lab 9, with a logic analyzer helpful but not required, it does not count towards your progress, and it takes about 50 minutes.
+  </p>
+  <p>
+    Lesson <a href="0074-dma.html">74</a> let the DMA fill a buffer while the CPU did other work and then read the buffer when the transfer-complete interrupt fired. The CPU and the DMA share one buffer, and the rule that makes this safe is about time, because the CPU may read the buffer only between the DMA finishing and the DMA starting again. Breaking the rule makes two things go wrong.
   </p>
   <ul>
     <li><strong>Torn data.</strong> The CPU reads while the DMA is writing. The first part of what it reads is the new frame, the rest is the old one. Each value looks fine; the frame as a whole is nonsense.</li>
     <li><strong>Stale data.</strong> The CPU reads again before a new frame has arrived, and processes the same frame twice as if it were fresh. An average looks smoother than it is; a counter counts one event twice.</li>
   </ul>
   <p>
-    Lesson 74 was concept-only because Wokwi doesn't simulate the Blue Pill's DMA. The U5 has a general-purpose DMA controller, GPDMA1, and here it runs for real.
+    Lesson 74 was concept-only, because Wokwi does not simulate the Blue Pill's DMA, whereas the U5 has a general-purpose DMA controller, GPDMA1, which here runs for real.
   </p>
 
   <h2>The test rig</h2>
   <p>
-    <code>projects/bench11-stale-dma-data</code> needs no wiring. A producer stands in for a peripheral: every millisecond, the SysTick handler starts a GPDMA1 memory-to-memory copy of one 256-word frame. The frames alternate between two sources, every word <code>0x55555555</code> or every word <code>0xAAAAAAAA</code>, so a frame that contains both was read mid-copy. The main loop is the consumer: it reads a frame, checks it and counts. Once a second the ST-LINK's VCP prints frames produced, frames read, torn, stale and missed.
+    <code>projects/bench11-stale-dma-data</code> needs no wiring, because a producer stands in for a peripheral, the SysTick handler starting a GPDMA1 memory-to-memory copy of one 256-word frame every millisecond. The frames alternate between two sources, every word <code>0x55555555</code> or every word <code>0xAAAAAAAA</code>, so a frame that contains both was read mid-copy. The main loop is the consumer, reading a frame, checking it and counting, and once a second the ST-LINK's VCP prints frames produced, frames read, torn, stale and missed.
   </p>
   <p>
     The DMA set-up is a single block. <code>CTR1</code> sets 32-bit words with both addresses incrementing, <code>CTR2_SWREQ</code> makes it a memory-to-memory transfer started by software, <code>CBR1</code> holds the size in bytes, and <code>CCR</code> enables the channel with its transfer-complete interrupt. The channel switches itself off at the end of the block, so the producer arms it again for each frame.
   </p>
   <p>
-    Optional analyzer wiring: D0 on PA6 (CN10 pin 13) is high while a copy runs, D1 on PA7 (CN10 pin 15) is high while the consumer reads, and GND goes to GND. Where the two overlap, that read is torn.
+    For the optional analyzer wiring, D0 on PA6 (CN10 pin 13) is high while a copy runs, D1 on PA7 (CN10 pin 15) is high while the consumer reads, and GND goes to GND, so a read that overlaps a copy is torn.
   </p>
 
   <h2>On the board: the starter</h2>
   <ol class="steps">
-    <li>Build <code>projects/bench11-stale-dma-data/starter</code> and copy <code>build/dma.bin</code> to the ST-LINK drive, as in bench lab 9. Open the VCP.</li>
-    <li>Read the counts. The starter has one buffer, and the consumer reads it whenever it likes. Expect about 1000 frames produced per second, many more reads than that, most of them stale, and a steady share of torn ones.</li>
-    <li>With the analyzer, capture 10 ms and find a read that overlaps a copy. Measure how long one copy takes and how long one read takes: those two numbers decide how often a read is torn.</li>
+    <li>Build <code>projects/bench11-stale-dma-data/starter</code>, copy <code>build/dma.bin</code> to the ST-LINK drive, as in bench lab 9, and open the VCP.</li>
+    <li>Read the counts. The starter has one buffer, which the consumer reads whenever it likes, so expect about 1000 frames produced per second, many more reads than that, most of them stale, and a steady share of torn ones.</li>
+    <li>With the analyzer, capture 10 ms and find a read that overlaps a copy, then measure how long one copy takes and how long one read takes, the two numbers that decide how often a read is torn.</li>
   </ol>
 
   <h2>On the board: double buffering</h2>
-  <p>Fix it with two buffers and a handshake, as the solution does:</p>
+  <p>The fix is two buffers and a handshake, as in the solution.</p>
   <ol class="steps">
-    <li><strong>Ping-pong.</strong> Frame <em>n</em> goes into buffer <em>n</em> % 2. While the CPU reads one buffer, the DMA writes the other.</li>
-    <li><strong>Publish on completion.</strong> The transfer-complete interrupt records which buffer is complete and the frame's number, in <code>volatile</code> variables: the buffer first, then the number.</li>
-    <li><strong>Wait for a new number.</strong> The consumer reads only when the frame number has changed, so it never reads a stale frame. Afterwards it checks that the number hasn't moved on by two, which would mean the DMA lapped it and came back to the buffer it was reading.</li>
+    <li><strong>Ping-pong.</strong> Frame <em>n</em> goes into buffer <em>n</em> % 2, so while the CPU reads one buffer, the DMA writes the other.</li>
+    <li><strong>Publish on completion.</strong> The transfer-complete interrupt records which buffer is complete and the frame's number in <code>volatile</code> variables, the buffer first and then the number.</li>
+    <li><strong>Wait for a new number.</strong> The consumer reads only when the frame number has changed, so it never reads a stale frame, and afterwards it checks that the number has not moved on by two, which would mean that the DMA lapped it and came back to the buffer it was reading.</li>
   </ol>
   <p>
-    Run the solution: torn and stale stay at 0, and missed stays at 0 as long as the consumer keeps up with one frame per millisecond. Then make the consumer slow, with a busy loop of about 3 ms after each read, and watch missed frames appear while torn stays at 0. Skipping frames can be a deliberate design choice; reading torn ones never is. Real peripherals work the same way with a circular transfer and half-transfer and transfer-complete interrupts: the DMA fills one half while the CPU processes the other.
+    Running the solution keeps torn and stale at 0, and missed stays at 0 as long as the consumer keeps up with one frame per millisecond. Making the consumer slow, with a busy loop of about 3 ms after each read, makes missed frames appear while torn stays at 0, and while skipping frames can be a deliberate design choice, reading torn ones never is. Real peripherals work the same way with a circular transfer and half-transfer and transfer-complete interrupts, the DMA filling one half while the CPU processes the other.
   </p>
 
   <h2>The cache version of the bug</h2>
   <p>
-    Faster chips add a second way to read old data, and this one isn't about timing. A Cortex-M7, as in the STM32H7 and F7, has a level-1 data cache between the core and SRAM. It keeps copies of recently used memory in lines of 32 bytes <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h" target="_blank" rel="noopener">(CMSIS, cachel1_armv7.h: <code>__SCB_DCACHE_LINE_SIZE</code>)</a>. The DMA writes SRAM and never goes through that cache, so after the first read the CPU can keep reading its cached copy of the buffer, however correct the handshake is.
+    Faster chips add a second way to read old data, one that has nothing to do with timing. A Cortex-M7, as in the STM32H7 and F7, has a level-1 data cache between the core and SRAM, which keeps copies of recently used memory in lines of 32 bytes <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h" target="_blank" rel="noopener">(CMSIS, cachel1_armv7.h: <code>__SCB_DCACHE_LINE_SIZE</code>)</a>. The DMA writes SRAM without going through that cache, so after the first read the CPU can keep reading its cached copy of the buffer, however correct the handshake is.
   </p>
   <p>
-    Your U5 can't show this. Its DCACHE sits in front of external memory only (the OCTOSPI and FMC interfaces), and accesses to internal SRAM bypass it <a href="https://st.com/resource/en/product_training/stm32u5-system-data-cache.pdf" target="_blank" rel="noopener">(ST training: STM32U5 system data cache)</a>. The rest of this section explains the bug and its two standard fixes, so you recognise it on a chip that has a data cache.
+    Your U5 cannot show this, because its DCACHE sits in front of external memory only (the OCTOSPI and FMC interfaces), and accesses to internal SRAM bypass it <a href="https://st.com/resource/en/product_training/stm32u5-system-data-cache.pdf" target="_blank" rel="noopener">(ST training: STM32U5 system data cache)</a>. The rest of this section explains the bug and its two standard fixes, so that you recognise it on a chip that has a data cache.
   </p>
   <ol>
     <li>The DMA fills <code>adc_buf</code>. The CPU reads it; the reads miss, so the core loads the buffer's lines into the cache. The first result is right.</li>
@@ -75,12 +74,12 @@
     <li>The CPU reads again. The reads hit in the cache and return the first block. The result freezes until something evicts those lines.</li>
   </ol>
   <p>
-    The other direction fails too: the CPU's writes to a transmit buffer may still sit in a write-back cache when the DMA reads SRAM. Both bugs depend on what else the program does, so they can vanish when you add a <code>printf</code> to look for them.
+    The other direction fails too, because the CPU's writes to a transmit buffer may still sit in a write-back cache when the DMA reads SRAM. Both bugs depend on what else the program does, so they can vanish when you add a <code>printf</code> to look for them.
   </p>
 
-  <h2>Fix 1: cache maintenance</h2>
+  <h2>Cache maintenance</h2>
   <p>
-    Tell the cache, at the right moments, that its copy is out of date. CMSIS provides the operations for a range of addresses <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h" target="_blank" rel="noopener">(CMSIS, cachel1_armv7.h)</a>:
+    The first fix tells the cache at the right moments that its copy is out of date, and CMSIS provides the operations for a range of addresses <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/cachel1_armv7.h" target="_blank" rel="noopener">(CMSIS, cachel1_armv7.h)</a>.
   </p>
   <ul>
     <li><code>SCB_InvalidateDCache_by_Addr(addr, size)</code> discards the cached copies of those lines, so the next read loads fresh data from SRAM. Call it <strong>after the DMA has written the buffer, before the CPU reads it</strong>.</li>
@@ -94,37 +93,47 @@ void dma_complete(void) {
     process(adc_buf, 64);                                    /* now reads SRAM */
 }</code></pre>
   <p>
-    The alignment isn't decoration. Cache operations work on whole 32-byte lines. If <code>adc_buf</code> started in the middle of a line, invalidating it would also discard the cached copy of whatever variable shares that line, including changes not yet written back. That variable silently reverts to an older value. So a DMA buffer maintained this way must start on a 32-byte boundary and occupy whole lines.
+    The alignment matters, because cache operations work on whole 32-byte lines. If <code>adc_buf</code> started in the middle of a line, invalidating it would also discard the cached copy of whatever variable shares that line, including changes not yet written back, so that variable would silently revert to an older value. A DMA buffer maintained this way must therefore start on a 32-byte boundary and occupy whole lines.
   </p>
 
-  <h2>Fix 2: an MPU region that isn't cached</h2>
+  <h2>A non-cacheable MPU region</h2>
   <p>
-    The other approach removes the second copy. The <a href="../reference/glossary.html#mpu-memory-protection-unit">MPU</a>, which lesson <a href="0039-the-mpu-and-how-faults.html">39</a> introduced for protection, also sets memory attributes per region, including whether a region may be cached. Put all DMA buffers in one section of RAM and make that region non-cacheable:
+    The other approach removes the second copy. The <a href="../reference/glossary.html#mpu-memory-protection-unit">MPU</a>, which lesson <a href="0039-the-mpu-and-how-faults.html">39</a> introduced for protection, also sets memory attributes per region, including whether a region may be cached, so all DMA buffers go in one section of RAM whose region is made non-cacheable.
   </p>
   <pre><code class="language-c">/* Region 1: 32 KB at the DMA buffer section, normal memory, not cacheable. */
 MPU-&gt;RBAR = ARM_MPU_RBAR(1, (uint32_t)&amp;__dma_buffers_start);
 MPU-&gt;RASR = ARM_MPU_RASR(1, ARM_MPU_AP_FULL, 1, 0, 0, 0, 0, ARM_MPU_REGION_SIZE_32KB);
 ARM_MPU_Enable(MPU_CTRL_PRIVDEFENA_Msk);</code></pre>
   <p>
-    The arguments follow CMSIS's <code>ARM_MPU_RASR(DisableExec, AccessPermission, TypeExtField, IsShareable, IsCacheable, IsBufferable, SubRegionDisable, Size)</code> <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/mpu_armv7.h" target="_blank" rel="noopener">(CMSIS, mpu_armv7.h)</a>: TEX = 1 with C = 0 and B = 0 is normal memory that isn't cached. An ARMv7-M region must be a power of two in size and aligned to its size, so the linker script (lesson <a href="0068-writing-your-own-linker-script.html">68</a>) has to place the section accordingly. Every CPU access to those buffers then goes to SRAM, which is slower than a cache hit; for DMA buffers that the CPU reads once, that's usually fine.
+    The arguments follow CMSIS's <code>ARM_MPU_RASR(DisableExec, AccessPermission, TypeExtField, IsShareable, IsCacheable, IsBufferable, SubRegionDisable, Size)</code> <a href="https://github.com/ARM-software/CMSIS_5/blob/develop/CMSIS/Core/Include/mpu_armv7.h" target="_blank" rel="noopener">(CMSIS, mpu_armv7.h)</a>, where TEX = 1 with C = 0 and B = 0 is normal memory that is not cached. An ARMv7-M region must be a power of two in size and aligned to its size, so the linker script (lesson <a href="0068-writing-your-own-linker-script.html">68</a>) has to place the section accordingly. Every CPU access to those buffers then goes to SRAM, which is slower than a cache hit, but for DMA buffers that the CPU reads once, that is usually fine.
   </p>
 
-  <div class="win">You've made a DMA race visible on real hardware, counted it and removed it. When a reading looks impossible, you'll check who was writing the buffer at that moment, and, on a cached chip, which copy you read.</div>
+  <div class="win">You have made a DMA race visible on real hardware, counted it and removed it, so when a reading looks impossible, you will check who was writing the buffer at that moment and, on a cached chip, which copy you read.</div>
 
-  <details class="fold mistakes"><summary><h2>Common mistakes</h2></summary>
-  <ol>
-    <li><strong>Reading the buffer because "the DMA is probably done".</strong> Wait for the transfer-complete flag or interrupt. Timing that works at one clock speed tears at another.</li>
-    <li><strong>Publishing the frame number before the buffer index.</strong> The consumer can see the new number together with the old index. Write the data first and the "ready" signal last.</li>
-    <li><strong>"Fixing" either bug with <code>volatile</code> alone.</strong> <code>volatile</code> makes the compiler read memory every time; it doesn't stop the DMA writing during the read, and it does nothing about a hardware data cache.</li>
-    <li><strong>On a cached chip: cleaning when you should invalidate, or the reverse.</strong> DMA writes memory: invalidate afterwards. DMA reads memory: clean first. And align the buffers to 32 bytes.</li>
-  </ol>
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>The buffer read on a guess that the DMA is done</h3>
+  <p>
+    Frames tear at one clock speed and not at another, because the read relied on timing instead of the transfer-complete signal. Wait for the transfer-complete flag or interrupt.
+  </p>
+  <h3>The frame number published before the buffer index</h3>
+  <p>
+    The consumer occasionally reads the wrong buffer, because it can see the new number together with the old index. Write the data first and the ready signal last.
+  </p>
+  <h3>volatile alone as the fix</h3>
+  <p>
+    Torn frames and cache-stale reads persist, because <code>volatile</code> only makes the compiler read memory every time, which neither stops the DMA writing during the read nor affects a hardware data cache. Use double buffering, and cache maintenance on a cached chip.
+  </p>
+  <h3>Clean and invalidate swapped on a cached chip</h3>
+  <p>
+    The CPU still reads old data, or the DMA sends old data, because the wrong maintenance operation ran. Invalidate after the DMA writes memory, clean before the DMA reads it, and align the buffers to 32 bytes.
+  </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A CPU that reads a DMA buffer while the DMA writes it gets torn frames; one that reads before a new frame arrives gets stale ones.</li>
-    <li>Double buffering with a transfer-complete handshake fixes both: the DMA writes one buffer while the CPU reads the other, and the CPU reads only a newly published frame.</li>
-    <li>Publish the data first and the "ready" signal last, in <code>volatile</code> variables.</li>
+    <li>A CPU that reads a DMA buffer while the DMA writes it gets torn frames, and one that reads before a new frame arrives gets stale ones.</li>
+    <li>Double buffering with a transfer-complete handshake fixes both, the DMA writing one buffer while the CPU reads the other and the CPU reading only a newly published frame.</li>
+    <li>The data is published first and the ready signal last, in <code>volatile</code> variables.</li>
     <li>On a chip with a data cache in front of SRAM, such as a Cortex-M7, invalidate after the DMA writes and clean before it reads, on 32-byte aligned buffers, or put the buffers in a non-cacheable MPU region.</li>
     <li>The U5's DCACHE serves external memory only, so only the timing version of the bug happens on it.</li>
   </ul>

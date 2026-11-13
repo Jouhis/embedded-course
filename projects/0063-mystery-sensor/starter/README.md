@@ -6,13 +6,13 @@ Lesson: [Writing a driver from a datasheet](https://jouhis.github.io/embedded-co
 
 ## Try it in Wokwi
 
-The MYS-1 is a **Wokwi custom chip**: C code compiled to WebAssembly, which the simulator runs as if it were a real part on the I2C bus. Its source is `projects/0063-mystery-sensor/chip/mystery.chip.c`. Try not to open it until you have finished. It is the datasheet written as code, so it gives the answers away.
+The MYS-1 is a **Wokwi custom chip**, C code compiled to WebAssembly that the simulator runs as if it were a real part on the I2C bus. Its source is `projects/0063-mystery-sensor/chip/mystery.chip.c`, but avoid opening it until you have finished, because it is the datasheet written as code and gives the answers away.
 
-1. Open `projects/0063-mystery-sensor/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Keep the datasheet open in a second window: [MYS-1 datasheet](https://jouhis.github.io/embedded-course/projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. Right now the serial monitor prints `MYSTERY whoami failed` every second, because `mystery_whoami()` is not written yet.
-4. Your task: in `mystery.c`, replace the three `TODO(learner)` functions. `mystery_init` brings up I2C0 on GP4 and GP5, turns on the pulls, and starts measuring. `mystery_whoami` reads WHO_AM_I into `*id`. `mystery_read_celsius` polls DRDY with a timeout, reads TEMP_L and TEMP_H in one burst, and converts the value.
-5. Expected result: the serial monitor prints `MYSTERY OK id=0xA7 temp=22.xx C` once per second. The first temperature is between 22.5 and 23 °C, and the values change slowly from one line to the next. If the read times out, the solution prints `MYSTERY read timed out`, and the starter prints `MYSTERY read failed, id=0xA7`.
+1. Open `projects/0063-mystery-sensor/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), and keep the [MYS-1 datasheet](https://jouhis.github.io/embedded-course/projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html) open in a second window.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor now prints `MYSTERY whoami failed` every second, because `mystery_whoami()` is not yet written.
+4. Replace the three `TODO(learner)` functions in `mystery.c`: `mystery_init` brings up I2C0 on GP4 and GP5, enables the pulls and starts measuring, `mystery_whoami` reads WHO_AM_I into `*id`, and `mystery_read_celsius` polls DRDY with a timeout, reads TEMP_L and TEMP_H in one burst and converts the value.
+5. The serial monitor should print `MYSTERY OK id=0xA7 temp=22.xx C` once a second, the first temperature lying between 22.5 and 23 °C and the values changing slowly from line to line. On a timeout the solution prints `MYSTERY read timed out` and the starter `MYSTERY read failed, id=0xA7`.
 
 ## Files you work on
 
@@ -28,14 +28,14 @@ The serial monitor prints `MYSTERY OK`.
 <details>
 <summary>Hint for the init function</summary>
 
-The same steps as lesson 60: `i2c_init`, then `gpio_set_function` on both pins, then the pulls. The last step is one `reg_write` to CTRL with bit 0 set. The datasheet names that bit `MEAS_EN`.
+The steps are those of lesson 60, `i2c_init`, then `gpio_set_function` on both pins, then the pulls, followed by one `reg_write` to CTRL with bit 0 set, the bit the datasheet names `MEAS_EN`.
 
 </details>
 
 <details>
 <summary>Hint for the read function</summary>
 
-Poll STATUS in a loop. Break out when bit 0 is set. Return `false` if `time_reached(deadline)` is true first. Then use `reg_read(REG_TEMP_L, raw, 2)`, and do the conversion from the section above.
+Poll STATUS in a loop, breaking out when bit 0 is set and returning `false` if `time_reached(deadline)` becomes true first, then call `reg_read(REG_TEMP_L, raw, 2)` and apply the conversion above.
 
 </details>
 

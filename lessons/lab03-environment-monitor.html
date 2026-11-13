@@ -12,16 +12,21 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Lab 3: Environment monitor</h1>
-  <p class="subtitle">Put Part 4 together in one device: a temperature sensor on I2C, an OLED screen, two debounced buttons with interrupts, a menu state machine, non-blocking timing, and a UART log. Each piece is a lesson you have done. This lab is the first time they run at the same time.</p>
+  <p class="subtitle">A sensor, an OLED, buttons and a log in one super-loop</p>
 
   <div class="goal">
     By the end of this lab you can <strong>build a super-loop that reads a sensor, draws a menu on an OLED, reacts to two interrupt-driven buttons, and logs the state over UART, with no call that blocks the loop</strong>.
   </div>
 
-  <h2>The idea</h2>
+  <h2>The device and its loop</h2>
   <p>
-    The device has one loop. The loop never waits without a bound. It checks three deadlines: take a sensor sample every 200 ms, redraw the screen every 500 ms, and print a log line every second. The buttons work differently. Their interrupts only record a press, and the loop acts on the record. That split keeps the loop short, which is the rule from lesson <a href="0057-interrupts-in-practice.html">57</a> and the timing rule from lesson <a href="0055-timing-and-non-blocking-super.html">55</a>.
-    <span class="sidenote">The sensor and the OLED share one I2C bus, I2C0 on GP4 and GP5. Two devices on one bus is normal in industry. Each has its own address, and the bus has only one set of pull-ups. The bus is covered in <a href="0060-the-i2c-protocol.html">lesson 60</a>, and the OLED driver is <a href="0061-an-i2c-oled-display-and.html">lesson 61</a>'s, which this lab reuses unchanged except for six extra glyphs. <a href="0062-spi.html">Lesson 62</a> shows the same kind of panel on SPI, which you can compare with this I2C version.</span>
+    This lab puts Part 4 together in one device, a temperature sensor on I2C, an OLED screen, two debounced buttons with interrupts, a menu state machine, non-blocking timing and a UART log. Each piece is a lesson you have done, and this is the first time they run at the same time.
+  </p>
+  <p>
+    The device has one loop, which never waits without a bound but checks three deadlines, taking a sensor sample every 200 ms, redrawing the screen every 500 ms and printing a log line every second. The buttons work differently, because their interrupts only record a press and the loop acts on the record, a split that keeps the loop short, following the rule from lesson <a href="0057-interrupts-in-practice.html">57</a> and the timing rule from lesson <a href="0055-timing-and-non-blocking-super.html">55</a>.
+  </p>
+  <p>
+    The sensor and the OLED share one I2C bus, I2C0 on GP4 and GP5, which is normal in industry, because each device has its own address and the bus has only one set of pull-ups. The bus is covered in <a href="0060-the-i2c-protocol.html">lesson 60</a>, and the OLED driver is <a href="0061-an-i2c-oled-display-and.html">lesson 61</a>'s, which this lab reuses unchanged except for six extra glyphs, while <a href="0062-spi.html">lesson 62</a> shows the same kind of panel on SPI for comparison with this I2C version.
   </p>
 
   <figure>
@@ -53,108 +58,112 @@
 
   <h2>One loop, three deadlines</h2>
   <p>
-    A <strong><a href="../reference/glossary.html#super-loop">super-loop</a></strong> is a <code>while (true)</code> loop that calls a short function for each job, over and over, with no operating system. It is the simplest firmware structure that handles several jobs at once. Lesson <a href="0055-timing-and-non-blocking-super.html">55</a> introduced it. This lab uses one loop for four jobs: the sensor, the screen, the buttons and the log.
+    A <strong><a href="../reference/glossary.html#super-loop">super-loop</a></strong> is a <code>while (true)</code> loop that calls a short function for each job, over and over, with no operating system, the simplest firmware structure that handles several jobs at once. Lesson <a href="0055-timing-and-non-blocking-super.html">55</a> introduced it, and this lab uses one loop for four jobs, the sensor, the screen, the buttons and the log.
   </p>
   <p>
-    Each job has a <strong><a href="../reference/glossary.html#deadline-timer">deadline</a></strong>: a stored time at which the job should run next. The loop reads the clock on every pass and runs a job only when its deadline has passed. A job that is not due costs one comparison, so the loop goes round in a few microseconds when nothing is due. The clock comes from the SDK's <code>to_ms_since_boot(get_absolute_time())</code>, a 32-bit count of milliseconds that the chip keeps since power-up.
+    Each job has a <strong><a href="../reference/glossary.html#deadline-timer">deadline</a></strong>, a stored time at which the job should run next, and the loop reads the clock on every pass and runs a job only when its deadline has passed. A job that is not due costs one comparison, so the loop goes round in a few microseconds when nothing is due. The clock comes from the SDK's <code>to_ms_since_boot(get_absolute_time())</code>, a 32-bit count of milliseconds that the chip keeps since power-up.
   </p>
   <p>
-    The comparison has to survive the counter wrapping to zero. A 32-bit millisecond count wraps after 2<sup>32</sup> ms, about 49.7 days. The loop uses <code>(int32_t)(now - deadline) &gt;= 0</code>. The subtraction is done in unsigned arithmetic, so it gives the right answer across the wrap, and the signed cast reads the result as a small positive or negative number. This is a <strong><a href="../reference/glossary.html#wrap-safe-timeout">wrap-safe timeout</a></strong>, and lesson <a href="0055-timing-and-non-blocking-super.html">55</a> explained why a plain <code>now &gt;= deadline</code> is wrong.
+    The comparison has to survive the counter wrapping to zero, because a 32-bit millisecond count wraps after 2<sup>32</sup> ms, about 49.7 days. The loop therefore tests
+  </p>
+  <p class="eq"><span>(int32_t)(now − deadline) ≥ 0</span><span class="eq-n">(1)</span></p>
+  <p>
+    where the subtraction is done in unsigned arithmetic, so it gives the right answer across the wrap, and the signed cast reads the result as a small positive or negative number. This is a <strong><a href="../reference/glossary.html#wrap-safe-timeout">wrap-safe timeout</a></strong>, and lesson <a href="0055-timing-and-non-blocking-super.html">55</a> explained why a plain <code>now &gt;= deadline</code> is wrong.
   </p>
   <p>
-    A worked case shows the arithmetic. Say the deadline is <code>0xFFFFFFF0</code>, which is 4294967280 ms, and the clock has just wrapped, so <code>now</code> is <code>0x00000005</code>, which is 5 ms. In unsigned arithmetic, <code>5 − 4294967280</code> wraps to 21. The cast gives +21, which is not negative, so the job is due. Had <code>now</code> been <code>0xFFFFFFE0</code>, the difference would be −16, and the job would not be due yet. The rule works in both cases, as long as the two times are less than about 24.8 days apart.
+    A worked case shows the arithmetic. Say the deadline is <code>0xFFFFFFF0</code>, which is 4294967280 ms, and the clock has just wrapped, so <code>now</code> is <code>0x00000005</code>, which is 5 ms. In unsigned arithmetic <code>5 − 4294967280</code> wraps to 21, and the cast gives +21, which is not negative, so the job is due, whereas had <code>now</code> been <code>0xFFFFFFE0</code>, the difference would be −16 and the job would not be due yet. The rule works in both cases, as long as the two times are less than about 24.8 days apart.
   </p>
 
   <h2>Two devices on one I2C bus</h2>
   <p>
-    The sensor and the OLED are both I2C devices, and I2C lets many devices share two wires: SDA carries the data and SCL carries the clock. Each device answers to a 7-bit address, which the master sends first in each transaction. The sensor is at <code>0x48</code>, as its datasheet says, and the OLED is at <code>0x3C</code>, as lesson <a href="0061-an-i2c-oled-display-and.html">61</a> explains. The two addresses are different, so each device answers only its own transactions.
+    The sensor and the OLED are both I2C devices, and I2C lets many devices share two wires, SDA carrying the data and SCL the clock. Each device answers to a 7-bit address, which the master sends first in each transaction, the sensor being at <code>0x48</code>, as its datasheet says, and the OLED at <code>0x3C</code>, as lesson <a href="0061-an-i2c-oled-display-and.html">61</a> explains, so each device answers only its own transactions.
   </p>
   <p>
-    Each byte on the bus is followed by an acknowledge bit. The receiver pulls SDA low for one clock to say ACK, and leaves it high to say NACK, which means "no device here" or "I did not accept that". The SDK reports this to your code: <code>i2c_write_blocking()</code> returns the number of bytes written, or <code>PICO_ERROR_GENERIC</code> if the address is not acknowledged <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK, hardware_i2c)</a>. That return value is how the lab notices a sensor that has gone missing. The OLED driver from lesson 61 does not check it, so a missing display does not stop the rest of the device.
+    Each byte on the bus is followed by an acknowledge bit, the receiver pulling SDA low for one clock to say ACK and leaving it high to say NACK, which means that no device is there or that the byte was not accepted. The SDK reports this to your code, because <code>i2c_write_blocking()</code> returns the number of bytes written, or <code>PICO_ERROR_GENERIC</code> if the address is not acknowledged <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK, hardware_i2c)</a>, and that return value is how the lab notices a sensor that has gone missing. The OLED driver from lesson 61 does not check it, so a missing display does not stop the rest of the device.
   </p>
   <p>
-    The bus has one pair of pull-up resistors, R<sub>SDA</sub> and R<sub>SCL</sub> in the diagram, and both devices share them. A pull-up is a resistor from the line to the supply, so the line is high when no device pulls it low <a href="0016-logic-levels-pull-ups-open.html">(lesson 16)</a>. The Pico's internal pulls are too weak for a real bus, which is why the diagram has 4.7 kΩ resistors. The solution's <code>gpio_pull_up()</code> calls also enable the chip's own weak pulls, which is harmless next to the external resistors.
+    The bus has one pair of pull-up resistors, R<sub>SDA</sub> and R<sub>SCL</sub> in the diagram, which both devices share, a pull-up being a resistor from the line to the supply, so that the line is high when no device pulls it low <a href="0016-logic-levels-pull-ups-open.html">(lesson 16)</a>. The Pico's internal pulls are too weak for a real bus, which is why the diagram has 4.7 kΩ resistors, and the solution's <code>gpio_pull_up()</code> calls also enable the chip's own weak pulls, which is harmless next to the external resistors.
   </p>
   <p>
-    The bus runs at 400 kHz. At that speed each byte takes nine clock pulses, eight data bits and one ACK, so 22.5 µs. That number matters for timing, and the next section uses it.
+    The bus runs at 400 kHz, at which each byte takes nine clock pulses, eight data bits and one ACK, so 22.5 µs, a number the timing of the display flush depends on.
   </p>
 
   <h2>Reading the sensor without waiting</h2>
   <p>
-    The MYS-1 makes a new temperature sample every 500 ms, and it sets a data-ready flag (DRDY) in bit 0 of its STATUS register at address <code>0x27</code>. Reading the high byte of the temperature clears the flag. The datasheet says the sensor does not queue samples, so an older value is lost if you do not read it before the next one arrives <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">(MYS-1 datasheet, section 4.2)</a>. Lesson <a href="0063-writing-a-driver-from-a.html">63</a> built the driver with a loop that waits for DRDY, with a timeout.
+    The MYS-1 makes a new temperature sample every 500 ms and sets a data-ready flag (DRDY) in bit 0 of its STATUS register at address <code>0x27</code>, which reading the high byte of the temperature clears. The datasheet says that the sensor does not queue samples, so an older value is lost if you do not read it before the next one arrives <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">(MYS-1 datasheet, section 4.2)</a>, and lesson <a href="0063-writing-a-driver-from-a.html">63</a> built the driver with a loop that waits for DRDY, with a timeout.
   </p>
   <p>
-    This lab cannot wait. A driver that waits for DRDY blocks the super-loop for up to 500 ms, and the buttons, the screen and the log all stop with it. So <code>sensor_poll()</code> reads STATUS once. If DRDY is clear, it returns <code>SENSOR_IDLE</code> and the loop goes on. If DRDY is set, it reads TEMP_L and TEMP_H in one burst, and returns the new sample. The burst matters because reading TEMP_L latches the sample, so both bytes come from the same reading.
+    This lab cannot wait, because a driver that waits for DRDY blocks the super-loop for up to 500 ms, and the buttons, the screen and the log all stop with it. <code>sensor_poll()</code> therefore reads STATUS once, returning <code>SENSOR_IDLE</code> if DRDY is clear so that the loop goes on, and reading TEMP_L and TEMP_H in one burst if DRDY is set, returning the new sample. The burst matters, because reading TEMP_L latches the sample, so both bytes come from the same reading.
   </p>
   <p>
-    The poll rate is 5 per second, faster than the sensor's 2 per second. That is deliberate. The loop checks often enough to see every sample soon after it arrives, and a poll that finds DRDY clear costs one short transaction. Polling faster than the sensor cannot show a newer sample, because there is none, so the sample rate is the sensor's, not the loop's.
+    The poll rate of 5 per second, faster than the sensor's 2 per second, is deliberate. The loop checks often enough to see every sample soon after it arrives, and a poll that finds DRDY clear costs one short transaction, while polling faster than the sensor cannot show a newer sample, because there is none, so the sample rate is the sensor's rather than the loop's.
   </p>
   <p>
-    The read itself is a repeated start: the driver writes the register number with <code>nostop = true</code>, so the bus stays claimed, and then reads the bytes. Lesson <a href="0063-writing-a-driver-from-a.html">63</a> explained why. A STOP between the two would let another master take the bus in between, which the datasheet warns about.
+    The read itself is a repeated start, in which the driver writes the register number with <code>nostop = true</code>, so that the bus stays claimed, and then reads the bytes, for the reason lesson <a href="0063-writing-a-driver-from-a.html">63</a> explained: a STOP between the two would let another master take the bus in between, which the datasheet warns about.
   </p>
 
   <h2>Buttons, bounce and interrupts</h2>
   <p>
-    Each button connects a pin to ground when it is pressed. The pin has a pull-up, so it reads high when the button is up and low when it is down. The lab wires the buttons as active low, which means a press is a falling edge: the pin goes from high to low. Lesson <a href="0052-gpio-input-and-debouncing.html">52</a> covered this wiring.
+    Each button connects a pin to ground when it is pressed, and with a pull-up on the pin it reads high when the button is up and low when it is down. The lab wires the buttons as active low, so a press is a falling edge, the pin going from high to low, the wiring lesson <a href="0052-gpio-input-and-debouncing.html">52</a> covered.
   </p>
   <p>
-    A mechanical switch does not change cleanly. For a few milliseconds the contacts make and break many times, which is <strong><a href="../reference/glossary.html#bounce">bounce</a></strong>. One click can produce several falling edges. The lab removes the extra edges with a <strong><a href="../reference/glossary.html#debounce">debounce</a></strong> window: after an edge is accepted, any edge on the same button within 30 ms is ignored. Lesson <a href="0052-gpio-input-and-debouncing.html">52</a> described other debouncing methods. A time window is the simplest one that works for a button that is not pressed rapidly.
+    A mechanical switch does not change cleanly, because for a few milliseconds the contacts make and break many times, which is <strong><a href="../reference/glossary.html#bounce">bounce</a></strong>, so one click can produce several falling edges. The lab removes the extra edges with a <strong><a href="../reference/glossary.html#debounce">debounce</a></strong> window, ignoring any edge on the same button within 30 ms after an edge is accepted. Lesson <a href="0052-gpio-input-and-debouncing.html">52</a> described other debouncing methods, and a time window is the simplest one that works for a button that is not pressed rapidly.
   </p>
   <p>
-    The button is connected to an interrupt. The RP2040 sends GPIO events to the core through interrupt lines, one per bank of pins, and both buttons are in bank 0 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.2, Table 80, IRQ 13 IO_IRQ_BANK0)</a>. The SDK's <code>gpio_set_irq_enabled_with_callback()</code> installs one callback for the bank, and the callback receives the pin number and the event mask. The lab checks <code>GPIO_IRQ_EDGE_FALL</code> in the mask, so a rising edge (a release) does nothing. Both buttons share the callback, which is why the handler compares the pin number.
+    The button is connected to an interrupt, the RP2040 sending GPIO events to the core through interrupt lines, one per bank of pins, with both buttons in bank 0 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.2, Table 80, IRQ 13 IO_IRQ_BANK0)</a>. The SDK's <code>gpio_set_irq_enabled_with_callback()</code> installs one callback for the bank, which receives the pin number and the event mask, and the lab checks <code>GPIO_IRQ_EDGE_FALL</code> in the mask, so that a rising edge (a release) does nothing. Both buttons share the callback, which is why the handler compares the pin number.
   </p>
 
-  <h2>The interrupt handler must only record</h2>
+  <h2>The record-only interrupt handler</h2>
   <p>
-    An interrupt is a <strong><a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a></strong> that runs in the middle of the loop, when the press happens, not when the loop is ready. It must be short. While it runs, the loop is paused. The lab's handler does three things: it checks the edge, applies the debounce window, and sets one bit in <code>pending_events</code>. It does nothing else: it does not draw, print or change the menu state. The loop does those things at a time it chooses.
+    An <strong><a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a></strong> runs in the middle of the loop, when the press happens rather than when the loop is ready, and since the loop is paused while it runs, it must be short. The lab's handler does three things, checking the edge, applying the debounce window and setting one bit in <code>pending_events</code>, and nothing else, so it neither draws, prints nor changes the menu state, which the loop does at a time it chooses.
   </p>
   <p>
-    The handler reads the time with <code>to_ms_since_boot()</code>, which only reads the hardware timer and does not wait. It compares the time with the last accepted press on the same button, and it keeps one timestamp for each button. A press that comes less than 30 ms after the last accepted one is treated as bounce and dropped. Lesson <a href="0057-interrupts-in-practice.html">57</a> gave the rules, and this handler follows them.
+    The handler reads the time with <code>to_ms_since_boot()</code>, which only reads the hardware timer and does not wait, and compares it with the last accepted press on the same button, keeping one timestamp for each button. A press that comes less than 30 ms after the last accepted one is treated as bounce and dropped, following the rules lesson <a href="0057-interrupts-in-practice.html">57</a> gave.
   </p>
   <p>
-    The flag itself is shared between the handler and the loop, so it is declared <code>volatile</code>. Lesson <a href="0046-volatile-const-and-static.html">46</a> explained why: the compiler must not keep the value in a register between reads. The lab goes one step further. The main loop reads the flag and clears it with interrupts off, using <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>. Without that, a press that arrives between the read and the clear would be lost. The disabled section is short, a few instructions, so the interrupt is delayed by very little.
+    The flag itself is shared between the handler and the loop, so it is declared <code>volatile</code>, because, as lesson <a href="0046-volatile-const-and-static.html">46</a> explained, the compiler must not keep the value in a register between reads. The lab goes one step further, the main loop reading the flag and clearing it with interrupts off, using <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, since otherwise a press that arrives between the read and the clear would be lost. The disabled section is a few instructions long, so the interrupt is delayed by very little.
   </p>
   <div class="note">The critical section in <code>ui_poll_buttons()</code> protects the flag from one interrupt on one core. It is not a lock between cores. Lesson <a href="0064-multicore-on-the-rp2040.html">64</a> explained why a second core would need a spinlock instead.</div>
 
   <h2>The menu state machine</h2>
   <p>
-    A <strong>state machine</strong> is code that is always in one of a fixed set of states, and moves between them on events. This menu has three screens: LIVE, MINMAX and SETPOINT. Button A is the event that moves to the next screen, and button B is an event whose meaning depends on the state. On MINMAX, B resets the range. On SETPOINT, B raises the alarm threshold. On LIVE, B does nothing.
+    A <strong>state machine</strong> is code that is always in one of a fixed set of states and moves between them on events. This menu has three screens, LIVE, MINMAX and SETPOINT, button A being the event that moves to the next screen and button B an event whose meaning depends on the state, resetting the range on MINMAX, raising the alarm threshold on SETPOINT and doing nothing on LIVE.
   </p>
   <p>
-    The screen change is one line: <code>screen = (screen + 1) % UI_SCREEN_COUNT</code>. The count is three, so LIVE becomes MINMAX, MINMAX becomes SETPOINT, and SETPOINT wraps back to LIVE. The modulo keeps the rule in one place: add a fourth screen by changing the enum, and the wrap follows. Separating the state from the events is what makes this easy to test. Each event changes the state in one function, and the drawing code only reads the state.
+    The screen change is one line, <code>screen = (screen + 1) % UI_SCREEN_COUNT</code>, and with a count of three, LIVE becomes MINMAX, MINMAX becomes SETPOINT and SETPOINT wraps back to LIVE. The modulo keeps the rule in one place, so a fourth screen needs only a change to the enum and the wrap follows. Separating the state from the events is what makes this easy to test, because each event changes the state in one function and the drawing code only reads the state.
   </p>
   <p>
-    The alarm is not a state. It is a value the state machine computes from the newest reading and the threshold, each time a sample arrives. It is on when the reading is above the threshold, and it appears on the LIVE screen. Keeping it as a value, not a screen, means it can be shown on any screen without changing the state.
+    The alarm is not a state but a value the state machine computes from the newest reading and the threshold each time a sample arrives, on when the reading is above the threshold, and it appears on the LIVE screen. Keeping it as a value rather than a screen means it can be shown on any screen without changing the state.
   </p>
 
   <h2>Drawing and logging</h2>
   <p>
-    The OLED driver keeps a framebuffer in RAM, which is one byte per eight vertical pixels in each column. The UI draws into that buffer with <code>display_clear()</code> and <code>display_text()</code>, which touch only RAM. Then <code>display_flush()</code> sends the whole buffer over I2C. Lesson <a href="0061-an-i2c-oled-display-and.html">61</a> described this split.
+    The OLED driver keeps a framebuffer in RAM, one byte per eight vertical pixels in each column. The UI draws into that buffer with <code>display_clear()</code> and <code>display_text()</code>, which touch only RAM, and then <code>display_flush()</code> sends the whole buffer over I2C, the split lesson <a href="0061-an-i2c-oled-display-and.html">61</a> described.
   </p>
   <p>
-    The flush is the one place where the loop waits for hardware. It sends about 1,080 bytes, counting the commands for each page, and at 400 kHz each byte takes 22.5 µs, so a flush takes about 24 ms before the start and stop conditions are counted. That is a bounded wait, and it ends after about 24 ms. It means the loop can be late by up to about 25 ms on a draw pass. The sample and button deadlines still run, but a little late. The lab accepts that delay, and the design choice is to draw only every 500 ms, so the screen is busy for about 5% of the time.
+    The flush is the one place where the loop waits for hardware. It sends about 1 080 bytes, counting the commands for each page, and at 400 kHz each byte takes 22.5 µs, so a flush takes about 24 ms before the start and stop conditions are counted. That is a bounded wait, but it means the loop can be late by up to about 25 ms on a draw pass, the sample and button deadlines still running, only a little late. The lab accepts that delay, and drawing only every 500 ms keeps the screen busy for about 5 % of the time.
   </p>
   <p>
-    The log uses <code>printf()</code>. The SDK's default UART is UART0 on GP0 and GP1 for the Pico, and <code>stdio_init_all()</code> routes <code>printf()</code> to it <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK defaults for the Pico board)</a>. The log prints a snapshot of the state once a second: the newest temperature, the minimum and maximum, the alarm flag, the threshold and the screen name. The snapshot is taken with <code>ui_status()</code>, so the log always shows one consistent state.
+    The log uses <code>printf()</code>. The SDK's default UART is UART0 on GP0 and GP1 for the Pico, and <code>stdio_init_all()</code> routes <code>printf()</code> to it <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK defaults for the Pico board)</a>. The log prints a snapshot of the state once a second, the newest temperature, the minimum and maximum, the alarm flag, the threshold and the screen name, taken with <code>ui_status()</code>, so that the log always shows one consistent state.
   </p>
 
   <h2>Worked example: one button press, step by step</h2>
   <p>
-    Follow one press of button A through the code, with real times. The sensor and the display keep their own deadlines and do not matter for this trace.
+    We follow one press of button A through the code, with real times, the sensor and the display keeping their own deadlines, which do not matter for this trace. Before reading on, predict how many times the screen changes for a press that bounces three times, and when the new screen appears.
   </p>
-  <ol>
+  <ol class="steps">
     <li><strong>t = 5000.0 ms.</strong> The button bounces. The first falling edge reaches the ISR. The debounce check compares 5000 with the last accepted press on button A, which was long ago, so the press is accepted. The handler stores 5000 as the last accepted time and sets <code>EVT_A</code> in <code>pending_events</code>. The ISR returns.</li>
     <li><strong>t = 5000.8, 5002.1 and 5004.5 ms.</strong> The contact bounces three more times. Each edge reaches the ISR. Each is less than 30 ms after 5000, the last accepted press, so each is dropped. Nothing is recorded.</li>
     <li><strong>The next loop pass.</strong> The loop calls <code>ui_poll_buttons()</code>. It disables interrupts, copies <code>pending_events</code> (which holds <code>EVT_A</code>), clears it and restores interrupts. Then it sees <code>EVT_A</code>, and <code>screen</code> changes from LIVE to MINMAX. The function returns, and the loop goes on.</li>
     <li><strong>The next draw deadline.</strong> The draw deadline comes every 500 ms. The screen state is already MINMAX, but the OLED still shows LIVE until the next draw. That draw renders MINMAX into the framebuffer and flushes it, which takes about 24 ms. The new screen therefore appears between 0 and 500 ms after the press, plus the flush time, depending on where the press falls in the draw cycle.</li>
   </ol>
   <p>
-    The trace shows three things. The ISR did almost no work. The bounce was removed by a time rule, not by waiting. And the state changed one loop pass after the press, because the loop picks up the flag and does the work at its own pace. The display is a separate step with its own deadline, which is why the OLED lags the state.
+    The trace shows that the ISR did almost no work, that the bounce was removed by a time rule rather than by waiting, and that the state changed one loop pass after the press, because the loop picks up the flag and does the work at its own pace. The display is a separate step with its own deadline, which is why the OLED lags the state.
   </p>
 
   <h2>Worked example: deadlines without drift</h2>
   <p>
-    The log's deadline starts at 1000 ms after boot, and it should print every 1000 ms. Suppose the loop was busy with a flush, and it reaches the log deadline at 1007 ms, 7 ms late. There are two ways to set the next deadline.
+    The log's deadline starts at 1000 ms after boot, and it should print every 1000 ms. Suppose the loop was busy with a flush and reaches the log deadline at 1007 ms, 7 ms late, and predict which of the two ways of setting the next deadline keeps the log on the one-second grid.
   </p>
   <table>
     <thead><tr><th>Rule</th><th>Calculation</th><th>Next deadline</th></tr></thead>
@@ -164,12 +173,12 @@
     </tbody>
   </table>
   <p>
-    With the lab's rule, the 7 ms lateness is spent once, and the next print comes at 2000 ms. With the wrong rule, every late pass adds its lateness to the schedule, so the log drifts away from the one-second grid, and after a few minutes it runs visibly off the sensor's 500 ms samples. The lab's Hint 5 gives this rule.
+    With the lab's rule the 7 ms lateness is spent once, and the next print comes at 2000 ms, whereas with the wrong rule every late pass adds its lateness to the schedule, so the log drifts away from the one-second grid, and after a few minutes it runs visibly off the sensor's 500 ms samples. The lab's Hint 5 gives this rule.
   </p>
 
   <h2>Design choices</h2>
   <p>
-    Each choice in the lab is a trade-off, and a reviewer will ask about it. The four main ones are below.
+    Each choice in the lab is a trade-off a reviewer will ask about, the four main ones being these.
   </p>
   <ul>
     <li><strong>One super-loop, not an RTOS.</strong> Four jobs with simple deadlines fit in one loop, and the loop's behaviour is easy to read. <a href="lab04-port-lab-3-to-the.html">Lab 4</a> ports this device to the STM32, and <a href="lab05-move-lab-4-onto-freertos.html">lab 5</a> moves it onto FreeRTOS, where each job has its own task. The comparison will make sense once you have built the loop by hand.</li>
@@ -204,9 +213,9 @@
 
   <h2>Milestones</h2>
   <ol class="steps">
-    <li><strong>M1: sensor and log.</strong> Implement <code>sensor_init</code>, <code>sensor_poll</code> and <code>ui_on_sample</code>. The log shows <code>T=</code> values.</li>
-    <li><strong>M2: display.</strong> Implement <code>display_init</code>, <code>display_flush</code> and <code>ui_draw</code> for LIVE. The OLED shows the temperature.</li>
-    <li><strong>M3: buttons.</strong> Implement <code>ui_init</code>, the interrupt handler, and <code>ui_poll_buttons</code>. Button A changes the screen.</li>
+    <li><strong>M1: sensor and log.</strong> Implement <code>sensor_init</code>, <code>sensor_poll</code> and <code>ui_on_sample</code>, after which the log shows <code>T=</code> values.</li>
+    <li><strong>M2: display.</strong> Implement <code>display_init</code>, <code>display_flush</code> and <code>ui_draw</code> for LIVE, after which the OLED shows the temperature.</li>
+    <li><strong>M3: buttons.</strong> Implement <code>ui_init</code>, the interrupt handler and <code>ui_poll_buttons</code>, after which button A changes the screen.</li>
     <li><strong>M4: min, max and alarm.</strong> Finish MINMAX and SETPOINT, including button B, the alarm and the wrap.</li>
     <li><strong>M5: the whole device.</strong> Check every acceptance criterion, then the error case.</li>
   </ol>
@@ -214,12 +223,13 @@
   <h2>Try it in Wokwi</h2>
   <ol class="steps">
     <li>Open <code>projects/lab03-environment-monitor/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, and it prints a note that the subsystems are not initialised while the TODO(learner) comments remain.</li>
-    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Work through the milestones, rebuilding after each one.</li>
-    <li>The diagram has the sensor and the OLED on I2C0, two pull-up resistors, and two pushbuttons. Click the buttons in the simulator, or use the keys <kbd>A</kbd> and <kbd>B</kbd> set in the diagram.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles and prints a note that the subsystems are not initialised while the TODO(learner) comments remain.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>, and work through the milestones, rebuilding after each one.</li>
+    <li>The diagram has the sensor and the OLED on I2C0, two pull-up resistors and two pushbuttons. Click the buttons in the simulator, or use the keys <kbd>A</kbd> and <kbd>B</kbd> set in the diagram.</li>
   </ol>
+  <div class="warning">If the screen stays blank, check the wiring and the address first: the OLED must answer at 0x3C on GP4 and GP5. The lesson 61 driver does not report a missing acknowledge, so a blank screen with no log line is the usual symptom.</div>
   <p>
-    The reference solution is in <code>projects/lab03-environment-monitor/solution</code>. Try each milestone yourself first. The solution's modules are <code>sensor.c</code>, <code>display.c</code>, <code>ui.c</code> and <code>main.c</code>, and the headers match the starter, so you can copy one function at a time.
+    The reference solution is in <code>projects/lab03-environment-monitor/solution</code>, so try each milestone yourself first. The solution's modules are <code>sensor.c</code>, <code>display.c</code>, <code>ui.c</code> and <code>main.c</code>, and the headers match the starter, so you can copy one function at a time.
   </p>
 
   <details>
@@ -243,43 +253,54 @@
     <p>Compare with <code>(int32_t)(now - deadline) &gt;= 0</code>, and add the period to the deadline, not to <code>now</code>. Adding to <code>now</code> drifts, and the drift grows with every late iteration.</p>
   </details>
 
-  <div class="warning">If the screen stays blank, check the wiring and the address first: the OLED must answer at 0x3C on GP4 and GP5. The lesson 61 driver does not report a missing acknowledge, so a blank screen with no log line is the usual symptom.</div>
-
-  <div class="win">You built a device that runs several jobs in one loop. The sensor, the display, the buttons and the log each use one of the techniques from Part 4, and no job waits on hardware that may never answer. The only wait is the bounded display flush. That is a common structure for small firmware.</div>
+  <div class="win">You built a device that runs several jobs in one loop, the sensor, the display, the buttons and the log each using one of the techniques from Part 4, with no job waiting on hardware that may never answer and the bounded display flush as the only wait, a common structure for small firmware.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>Waiting for DRDY inside the sensor poll</h3>
   <p>
-    The mistakes below are the ones most likely in this lab. Each comes with the symptom you see in the log or on the screen, and the fix.
+    The log stops printing for half a second at a time and a button press seems to lag, and with the sensor unplugged the whole device freezes and no screen changes, because a <code>while</code> loop around the STATUS read stops the super-loop for up to 500 ms. Read STATUS once and return <code>SENSOR_IDLE</code> if DRDY is clear.
   </p>
-  <ol>
-    <li><strong>Waiting for DRDY inside the sensor poll.</strong> A <code>while</code> loop around the STATUS read stops the super-loop for up to 500 ms. Symptom: the log stops printing for half a second at a time, and a button press seems to lag. With the sensor unplugged, the whole device freezes and no screen changes. Fix: read STATUS once and return <code>SENSOR_IDLE</code> if DRDY is clear.</li>
-    <li><strong>Drawing or printing inside the handler.</strong> The handler calls <code>display_text()</code> or <code>printf()</code>. Symptom: when you press two buttons quickly, one press is lost, or the device stops responding for a moment. Fix: record the press in <code>pending_events</code> and act on it in <code>ui_poll_buttons()</code>.</li>
-    <li><strong>Adding the period to now.</strong> The next deadline is <code>now + PERIOD</code>, not <code>deadline + PERIOD</code>. Symptom: the log's one-second rhythm drifts relative to the sensor over minutes, as the worked example shows. Fix: add the period to the deadline.</li>
-    <li><strong>No pull-up on a button pin.</strong> The pin floats when the button is up. Symptom: the screen changes by itself, or a press is missed, and the behaviour changes with the position of your hand near the wires. Fix: call <code>gpio_pull_up()</code>, and check the level with <code>gpio_get()</code> printed to the log.</li>
-    <li><strong>Enabling both edges.</strong> The callback fires on the press and on the release. Symptom: every click moves the menu two screens. Fix: enable <code>GPIO_IRQ_EDGE_FALL</code> only, and check the mask in the callback.</li>
-    <li><strong>Forgetting <code>volatile</code>, or reading the flag without the critical section.</strong> The loop may keep the flag in a register, or a press may arrive between the read and the clear. Symptom: an optimised build never sees the press, or a press is lost very rarely. Fix: declare the flag <code>volatile</code>, and copy-and-clear it with interrupts disabled.</li>
-  </ol>
+  <h3>Drawing or printing inside the handler</h3>
+  <p>
+    One of two quick presses is lost, or the device stops responding for a moment, because the handler calls <code>display_text()</code> or <code>printf()</code>. Record the press in <code>pending_events</code> and act on it in <code>ui_poll_buttons()</code>.
+  </p>
+  <h3>The period added to now</h3>
+  <p>
+    The log's one-second rhythm drifts relative to the sensor over minutes, as the worked example shows, because the next deadline is <code>now + PERIOD</code> instead of <code>deadline + PERIOD</code>. Add the period to the deadline.
+  </p>
+  <h3>No pull-up on a button pin</h3>
+  <p>
+    The screen changes by itself, or a press is missed, and the behaviour changes with the position of your hand near the wires, because the pin floats when the button is up. Call <code>gpio_pull_up()</code>, and check the level with <code>gpio_get()</code> printed to the log.
+  </p>
+  <h3>Both edges enabled</h3>
+  <p>
+    Every click moves the menu two screens, because the callback fires on the press and on the release. Enable <code>GPIO_IRQ_EDGE_FALL</code> only, and check the mask in the callback.
+  </p>
+  <h3>A shared flag without volatile or the critical section</h3>
+  <p>
+    An optimised build never sees the press, or a press is lost very rarely, because the loop may keep the flag in a register, or a press may arrive between the read and the clear. Declare the flag <code>volatile</code>, and copy and clear it with interrupts disabled.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Super-loops in small products</h2></summary>
   <p>
-    Many small embedded products use a super-loop with flags from interrupts, among them thermostats, meters, remote controls and sensor nodes. It is simple to reason about, its timing is visible in the code, and it needs no operating system. Its weakness is that one slow job delays all the others, so engineers add a job only after checking the time it can take. A flush that takes 24 ms is acceptable here, and a flush that takes 200 ms would need a different design.
+    Many small embedded products use a super-loop with flags from interrupts, among them thermostats, meters, remote controls and sensor nodes, because it is simple to reason about, its timing is visible in the code and it needs no operating system. Its weakness is that one slow job delays all the others, so a job is added only after checking the time it can take, a flush of 24 ms being acceptable here, whereas one of 200 ms would need a different design.
   </p>
   <p>
-    A reviewer of this kind of code looks for four things. Every blocking call in the loop must have a known bound. Every flag shared with an interrupt must be <code>volatile</code>, and every read-and-clear of it must be protected. Every deadline must add the period to the deadline. And the interrupt handler must be short. Those four checks catch most of the bugs above.
+    A reviewer of this kind of code looks for four things: every blocking call in the loop has a known bound, every flag shared with an interrupt is <code>volatile</code> and protected on every read-and-clear, every deadline adds the period to the deadline, and the interrupt handler is short. Those four checks catch most of the mistakes above.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A super-loop runs several jobs from one <code>while (true)</code>. Each job has a deadline, and it runs only when the deadline has passed.</li>
-    <li>Compare deadlines with <code>(int32_t)(now - deadline) &gt;= 0</code>, which survives the 32-bit wrap, and add the period to the deadline, not to now.</li>
-    <li>Two I2C devices share SDA and SCL, each with its own address. A missing device shows up as a NACK, and <code>i2c_write_blocking()</code> returns <code>PICO_ERROR_GENERIC</code>.</li>
-    <li>The sensor's data-ready flag must be read once per poll, with no waiting. Reading TEMP_L and TEMP_H in one burst keeps the two bytes from one sample.</li>
-    <li>A switch bounces for a few milliseconds. A 30 ms lockout after each accepted falling edge removes the extra edges.</li>
-    <li>An interrupt handler records a press in a <code>volatile</code> flag. The loop copies and clears the flag with interrupts off, then acts on it.</li>
-    <li>The state machine changes state on events, and the alarm is a value computed from the newest sample.</li>
-    <li>A flush of the OLED takes about 24 ms at 400 kHz, which is the longest wait in the loop.</li>
+    <li>A super-loop runs several jobs from one <code>while (true)</code>, each job having a deadline and running only when the deadline has passed.</li>
+    <li>Deadlines are compared with <code>(int32_t)(now - deadline) &gt;= 0</code>, which survives the 32-bit wrap, and the period is added to the deadline rather than to now.</li>
+    <li>Two I2C devices share SDA and SCL, each with its own address, and a missing device shows up as a NACK, for which <code>i2c_write_blocking()</code> returns <code>PICO_ERROR_GENERIC</code>.</li>
+    <li>The sensor's data-ready flag is read once per poll without waiting, and reading TEMP_L and TEMP_H in one burst keeps the two bytes from one sample.</li>
+    <li>A switch bounces for a few milliseconds, and a 30 ms lockout after each accepted falling edge removes the extra edges.</li>
+    <li>An interrupt handler records a press in a <code>volatile</code> flag, which the loop copies and clears with interrupts off before acting on it.</li>
+    <li>The state machine changes state on events, while the alarm is a value computed from the newest sample.</li>
+    <li>A flush of the OLED takes about 24 ms at 400 kHz, the longest wait in the loop.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

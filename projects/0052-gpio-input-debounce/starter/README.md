@@ -6,12 +6,12 @@ Lesson: [GPIO input and debouncing](https://jouhis.github.io/embedded-course/les
 
 ## Try it in Wokwi
 
-The project is `projects/0052-gpio-input-debounce`. One pushbutton sits between GP14 and GND, with bounce on. The starter counts raw edges and prints a line for each one. That is the wrong count, and you will see it.
+The project is `projects/0052-gpio-input-debounce`, with one pushbutton between GP14 and GND and bounce on. The starter counts raw edges and prints a line for each, which is the wrong count, as you will see.
 
 1. Open `projects/0052-gpio-input-debounce/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Click the button once. The serial monitor prints several `press` lines for one click, because the starter's naive edge detector counts every bounce.
-3. Your task, in two places marked `TODO(learner)`. First, configure GP14 as an input with the pull-up enabled, so the released button reads 1 and the starter's inverted read is correct. Second, replace the naive `debounce_press()` with the integrator above.
-4. Build again and start the simulator again. The serial monitor prints `DEBOUNCE OK` at startup. Click once, and expect one `press` line per click. The raw-edge count may still climb, which is correct: it counts the bounce.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator* and click the button once. The serial monitor prints several `press` lines for the single click, because the starter's naive edge detector counts every bounce.
+3. Complete the two places marked `TODO(learner)`: first configure GP14 as an input with the pull-up enabled, so that the released button reads 1 and the starter's inverted read is correct, and then replace the naive `debounce_press()` with the integrator above.
+4. Build and start the simulator again. The serial monitor prints `DEBOUNCE OK` at startup and then one `press` line per click, while the raw-edge count may still climb, correctly, because it counts the bounce.
 
 ## Files you work on
 
@@ -26,21 +26,21 @@ The serial monitor prints `DEBOUNCE OK`.
 <details>
 <summary>Hint for the pull-up</summary>
 
-An input needs three calls, in this order: `gpio_init()` for the SIO function, `gpio_set_dir()` with `GPIO_IN`, then `gpio_pull_up()`. Without the pull-up, the released pin floats, and the count is random.
+An input needs three calls in this order: `gpio_init()` for the SIO function, `gpio_set_dir()` with `GPIO_IN` and then `gpio_pull_up()`. Without the pull-up the released pin floats and the count is random.
 
 </details>
 
 <details>
 <summary>Hint for the integrator</summary>
 
-Keep `integrator` and `stable_pressed` as `static` variables inside the function, so they survive between calls. Return `true` only on the step where the integrator reaches the top while the stable state is still released. The release branch must reset the stable state when the integrator returns to 0.
+Keep `integrator` and `stable_pressed` as `static` variables inside the function so that they survive between calls, and return `true` only on the step where the integrator reaches the top while the stable state is still released. The release branch must reset the stable state when the integrator returns to 0.
 
 </details>
 
 <details>
 <summary>Optional experiment</summary>
 
-In `diagram.json`, add `"bounce": "0"` to the `attrs` of `btn1`, then run the starter again. With no bounce, the raw count and the press count agree. Remove the line afterwards, so the bounce is back for the real test.
+In `diagram.json`, add `"bounce": "0"` to the `attrs` of `btn1` and run the starter again, and with no bounce the raw count and the press count agree. Remove the line afterwards so that the bounce is back for the real test.
 
 </details>
 

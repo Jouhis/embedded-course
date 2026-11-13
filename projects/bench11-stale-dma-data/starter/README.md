@@ -6,9 +6,9 @@ Lesson: [Bench lab 11: Stale DMA data](https://jouhis.github.io/embedded-course/
 
 ## On the board: the starter
 
-1. Build `projects/bench11-stale-dma-data/starter` and copy `build/dma.bin` to the ST-LINK drive, as in bench lab 9. Open the VCP.
-2. Read the counts. The starter has one buffer, and the consumer reads it whenever it likes. Expect about 1000 frames produced per second, many more reads than that, most of them stale, and a steady share of torn ones.
-3. With the analyzer, capture 10 ms and find a read that overlaps a copy. Measure how long one copy takes and how long one read takes: those two numbers decide how often a read is torn.
+1. Build `projects/bench11-stale-dma-data/starter`, copy `build/dma.bin` to the ST-LINK drive, as in bench lab 9, and open the VCP.
+2. Read the counts. The starter has one buffer, which the consumer reads whenever it likes, so expect about 1000 frames produced per second, many more reads than that, most of them stale, and a steady share of torn ones.
+3. With the analyzer, capture 10 ms and find a read that overlaps a copy, then measure how long one copy takes and how long one read takes, the two numbers that decide how often a read is torn.
 
 ## Files you work on
 

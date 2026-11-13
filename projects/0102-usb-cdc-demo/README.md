@@ -6,13 +6,13 @@ Lesson: [USB fundamentals](https://jouhis.github.io/embedded-course/lessons/0102
 
 ## Try it: build the USB CDC demo
 
-The project is `projects/0102-usb-cdc-demo`. It prints a line each half-second over USB, and it waits up to three seconds for a terminal to open first. You cannot see the port in Wokwi, so you build it and check the build output.
+The project `projects/0102-usb-cdc-demo` prints a line each half-second over USB after waiting up to three seconds for a terminal to open, and since the port cannot be seen in Wokwi, you build it and check the build output.
 
-1. From the workspace root, run `python -I tools/build.py projects/0102-usb-cdc-demo`. It ends with the link step, and it produces `build/usb_cdc_demo.elf`.
-2. Read `main.c`. Find the call that enables the USB stdio in `CMakeLists.txt`, and the line that turns UART stdio off.
-3. On a real Pico, you need a way to load the program. The templates turn picotool off (`PICO_NO_PICOTOOL`), so the build makes an ELF, not a UF2. Load it with a debug probe, or turn picotool on and build a UF2. Then plug the board in, and open the new serial port in a terminal at any baud rate. You will know it works when the first line is `CDC demo: connected=1 after N ms`, with N below 3000, and then the lines `tick 0: LED on` and `tick 0: LED off` follow, one every 500 ms, with the tick number rising by one every second. If the first line says `connected=0`, no terminal opened within three seconds, and the program prints anyway.
+1. From the workspace root, run `python -I tools/build.py projects/0102-usb-cdc-demo`, which ends with the link step and produces `build/usb_cdc_demo.elf`.
+2. Read `main.c`, and find in `CMakeLists.txt` the call that enables the USB stdio and the line that turns UART stdio off.
+3. On a real Pico you need a way to load the program, and since the templates turn picotool off (`PICO_NO_PICOTOOL`), so that the build makes an ELF rather than a UF2, load it with a debug probe or turn picotool on and build a UF2, then plug the board in and open the new serial port in a terminal at any baud rate. It works when the first line is `CDC demo: connected=1 after N ms`, with N below 3000, followed by the lines `tick 0: LED on` and `tick 0: LED off`, one every 500 ms, the tick number rising by one every second, whereas a first line saying `connected=0` means that no terminal opened within three seconds and the program printed anyway.
 
-Do not expect the Wokwi simulator to show this port. Its serial monitor is a UART, and the Pico's USB support is only partial there (NOTES.md), so the CDC port does not appear in the simulator.
+The Wokwi simulator will not show this port, because its serial monitor is a UART and the Pico's USB support there is only partial (NOTES.md), so the CDC port does not appear in the simulator.
 
 ## Done when
 

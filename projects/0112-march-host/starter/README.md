@@ -6,11 +6,11 @@ Lesson: [Functional safety: IEC 61508 and ISO 26262](https://jouhis.github.io/em
 
 ## Try it: a March test that finds stuck bits
 
-1. Open `projects/0112-march-host/starter` in VS Code, or run `python -I tools/build.py projects/0112-march-host/starter --test` from the workspace root. The starter compiles, and its tests fail, because the function reports every RAM as healthy.
-2. Your task: write the six passes of `march_c_minus()` in `src/march.c`, following the comment at the top of the file. Return the address of the first wrong read, or -1 if every pass succeeds.
-3. You will know it works when the test summary reports 0 failures. Four tests plant a stuck bit and check that the function returns that address, one checks that healthy RAM passes, and one checks that the simulator itself shows the stuck bit on a plain read.
+1. Open `projects/0112-march-host/starter` in VS Code, or run `python -I tools/build.py projects/0112-march-host/starter --test` from the workspace root, the starter compiling but its tests failing, because the function reports every RAM as healthy.
+2. Write the six passes of `march_c_minus()` in `src/march.c`, following the comment at the top of the file, returning the address of the first wrong read, or -1 if every pass succeeds.
+3. The function works when the test summary reports 0 failures, four tests planting a stuck bit and checking that the function returns that address, one checking that healthy RAM passes and one checking that the simulator itself shows the stuck bit on a plain read.
 
-The four fault tests are the ones that matter. A self-test deserves trust only after it has found faults you planted on purpose.
+The reference solution, in `projects/0112-march-host/solution`, passes all 6 tests, and the four fault tests are the ones that matter, because a self-test deserves trust only after it has found faults you planted on purpose.
 
 ## Files you work on
 

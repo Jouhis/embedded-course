@@ -11,53 +11,49 @@
 <body data-lesson="0059">
 <main>
   <p class="lesson-meta"></p>
-  <h1>PWM: dimming, servos, tones</h1>
-  <p class="subtitle">A pin cannot output 1.6 V, but it can switch fast enough that the average looks like 1.6 V. PWM does that with a counter, a wrap value and a compare. The same three numbers give you a dimmed LED, a 50 Hz servo signal and a buzzer tone.</p>
+  <h1>PWM</h1>
+  <p class="subtitle">Pulse-width modulation for dimming, servos and tones</p>
 
   <div class="goal">
     By the end of this lesson you can compute the PWM frequency and duty cycle of an RP2040 slice from the system clock, the clock divider and the wrap value, and set up a dimmed LED, a 50 Hz servo signal and a 440 Hz tone with the Pico SDK.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>An average voltage from a digital pin</h2>
   <p>
-    Lesson 58 read an analogue voltage into the Pico. This lesson goes the other way. A GPIO pin can only be high or low, at the supply voltage or at 0 V, so it cannot set a motor to half speed or a heater to 40 per cent. Lesson 25 showed a shift register that drives outputs in bulk, but it still only switches them on and off. PWM is the standard way to get an average voltage out of a digital output: switch the pin fast, and vary how long it stays high.
+    Lesson 58 read an analogue voltage into the Pico, and this lesson goes the other way. A GPIO pin can only be high or low, at the supply voltage or at 0 V, so it cannot run a motor at half speed or a heater at 40 per cent, and the shift register of lesson 25 drives outputs in bulk but still only switches them on and off. PWM is the standard way to get an average voltage out of a digital output, switching the pin fast and varying how long it stays high.
   </p>
   <p>
-    You will see PWM in many products that move something or dim something. A printer's hotend and bed heaters are driven by PWM through a MOSFET, so the controller can set the average power. A brushless fan or a DC motor takes a PWM speed signal. A hobby servo reads the width of a pulse to choose its angle, and a piezo buzzer makes a tone at the frequency of the signal on its pin. The Pico has dedicated PWM hardware for all of these, so the CPU does not have to toggle the pin in software.
-  </p>
-
-  <h2>The concepts, one at a time</h2>
-  <p>
-    Four ideas make up PWM: the duty cycle, the counter that defines the period, the compare value that sets the duty cycle, and the clock divider that sets the speed of the counter. Each one is simple, and the formula that combines them is short.
+    PWM appears in many products that move or dim something. A printer's hotend and bed heaters are driven by PWM through a MOSFET so that the controller can set the average power, a brushless fan or a DC motor takes a PWM speed signal, a hobby servo reads the width of a pulse to choose its angle, and a piezo buzzer makes a tone at the frequency of the signal on its pin. The Pico has dedicated PWM hardware for all of these, so the CPU need not toggle the pin in software.
   </p>
 
-  <h3>Duty cycle is the fraction of time high</h3>
+  <h2>Duty cycle</h2>
   <p>
-    A PWM output is a square wave: it is high for part of each period and low for the rest. The <strong><a href="../reference/glossary.html#duty-cycle">duty cycle</a></strong> is the fraction of one period that the output spends high, usually given in percent. A 1 kHz signal that is high for 250 µs of each 1 ms period has a duty cycle of 25 %. The datasheet describes the output in these terms: the fraction of time spent high is the duty cycle, and the averaged output voltage follows that fraction <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.1</a>.
-    <span class="sidenote">The output of a filtered PWM signal is its duty cycle times the supply. A 25 % duty cycle on a 3.3 V pin averages to about 0.83 V, once any ripple has been filtered out.</span>
+    Four ideas make up PWM, the duty cycle, the counter that defines the period, the compare value that sets the duty cycle and the clock divider that sets the counter's speed, each simple and combined by a short formula. A PWM output is a square wave, high for part of each period and low for the rest, and its <strong><a href="../reference/glossary.html#duty-cycle">duty cycle</a></strong> is the fraction of one period spent high, usually given in percent, so a 1 kHz signal that is high for 250 µs of each 1 ms period has a duty cycle of 25 %. The datasheet describes the output in these terms, the fraction of time spent high being the duty cycle, which the averaged output voltage follows <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.1</a>.
+    <span class="sidenote">A filtered PWM signal settles at its duty cycle times the supply, so a 25 % duty cycle on a 3.3 V pin averages to about 0.83 V once the ripple has been filtered out.</span>
   </p>
   <p>
-    The reason it works is that the load responds to the average, not the peaks. An LED's brightness and a heater's temperature both follow the energy delivered over many periods. A motor's speed follows its average voltage. None of them can follow a 1 kHz square wave one edge at a time, so they see the average.
+    It works because the load responds to the average rather than the peaks. An LED's perceived brightness and a heater's temperature both follow the energy delivered over many periods and a motor's speed follows its average voltage, and since none of them can follow a 1 kHz square wave edge by edge, they see the average.
   </p>
 
   <div class="analogy">
-    <p>Flick a light switch on and off very fast, on for a quarter of each cycle. The room looks a quarter as bright, because your eye averages the flashes. The LED is never half on: it is fully on or fully off, and the duty cycle sets the share of time it spends on.</p>
+    <p>Flicking a light switch on and off very fast, on for a quarter of each cycle, makes the room look a quarter as bright, because the eye averages the flashes. The LED is never half on but fully on or fully off, the duty cycle setting its share of time on. The comparison breaks for slow loads, though, because a hand on a switch cannot reach the switching rate at which a heater or motor stops following individual pulses.</p>
   </div>
 
-  <h3>The counter sets the period</h3>
+  <h2>The PWM counter and its period</h2>
   <p>
-    Each PWM <strong><a href="../reference/glossary.html#pwm-slice">slice</a></strong> is a 16-bit counter that counts from 0 up to a wrap value, which the datasheet calls TOP. When it reaches TOP, it wraps back to 0 and starts again. The RP2040 has eight identical slices, and each slice has two outputs, A and B, so there are 16 PWM channels in total. All 30 GPIO pins can drive PWM <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.1</a>.
+    Each PWM <strong><a href="../reference/glossary.html#pwm-slice">slice</a></strong> is a 16-bit counter that counts from 0 up to a wrap value, which the datasheet calls TOP, and then wraps back to 0 and starts again. The RP2040 has eight identical slices, each with two outputs, A and B, giving 16 PWM channels in total, and all 30 GPIO pins can drive PWM <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.1</a>.
   </p>
   <p>
-    The pin map is fixed. GP0 is slice 0 A, GP1 is slice 0 B, GP2 is slice 1 A, and so on up to GP15 as slice 7 B. The mapping repeats from GP16, so GP16 is slice 0 A again <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2, Table 515</a>. Two outputs in the same slice share one counter, so they share one period. Two outputs on different slices can have different periods.
+    The pin map is fixed, GP0 being slice 0 A, GP1 slice 0 B, GP2 slice 1 A and so on up to GP15 as slice 7 B, with the mapping repeating from GP16, which is slice 0 A again <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2, Table 515</a>. The two outputs of a slice share one counter and therefore one period, whereas outputs on different slices can have different periods.
   </p>
 
-  <h3>The compare sets the duty cycle</h3>
+  <h2>The compare value</h2>
   <p>
-    Each channel has a compare value, called CC, that is compared with the counter on every tick. The output is high while the counter is below CC, and low once it reaches CC. So a larger CC means a longer high time. The datasheet puts it as: when the input value is higher than the counter, the output is driven high <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.1</a>. The average output, as a fraction of the supply, is CC divided by TOP + 1.
+    Each channel has a compare value, CC, which is compared with the counter on every tick, the output being high while the counter is below CC and low once it reaches CC, so a larger CC means a longer high time. The datasheet puts it as the output being driven high when the input value is higher than the counter <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.1</a>, and the duty cycle is
   </p>
+  <p class="eq"><span>D = CC ÷ (TOP + 1)</span><span class="eq-n">(1)</span></p>
   <p>
-    The two ends are clean. A CC of 0 keeps the output always low, which is 0 %. A CC equal to TOP + 1 keeps it always high, which is 100 %, and the datasheet says both ends are glitch-free <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.2</a>. That is why the solution's LED can reach fully on without a special case.
+    where CC is the compare value and TOP + 1 the number of ticks per period. The two ends are clean, a CC of 0 keeping the output always low at 0 % and a CC of TOP + 1 keeping it always high at 100 %, and the datasheet states that both ends are glitch-free <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.2</a>, which is why the solution's LED can reach fully on without a special case.
   </p>
 
   <div class="widget anim" data-title="Counter, compare, output: one PWM slice">
@@ -107,53 +103,57 @@
     </ol>
   </div>
 
-<h3>The clock divider sets the speed</h3>
+  <h2>The clock divider and the frequency formula</h2>
   <p>
-    The clock divider DIV slows the counter. It is an 8-bit integer with a 4-bit fraction, so it can divide the system clock by 1.0 up to 255.9375, and the datasheet states that it slows the count by up to a factor of 256 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.4</a>. The SDK's header puts the same rule in one line: the counter runs at the system clock divided by the divider <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_pwm/include/hardware/pwm.h" target="_blank" rel="noopener">pico-sdk, hardware/pwm.h</a>.
+    The clock divider DIV slows the counter. It is an 8-bit integer with a 4-bit fraction, dividing the system clock by 1.0 up to 255.9375, and the datasheet states that it slows the count by up to a factor of 256 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.4</a>, while the SDK's header states the same rule in one line, the counter running at the system clock divided by the divider <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_pwm/include/hardware/pwm.h" target="_blank" rel="noopener">pico-sdk, hardware/pwm.h</a>.
   </p>
   <p>
-    The datasheet's period rule is built from these pieces. The slice counts from 0 to TOP, which is TOP + 1 steps, and each step lasts DIV system clock cycles. So the period in clock cycles is (TOP + 1) × DIV, and the frequency is the system clock divided by that <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.6</a>. The equation itself is an image in the PDF, so the SDK's rule is the one to check against.
+    The datasheet's period rule follows from these pieces. The slice counts from 0 to TOP, which is TOP + 1 steps of DIV system clock cycles each, so the frequency is
+  </p>
+  <p class="eq"><span>f = f<sub>sys</sub> ÷ (DIV × (TOP + 1))</span><span class="eq-n">(2)</span></p>
+  <p>
+    where f<sub>sys</sub> is the system clock <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.5.2.6</a>. The equation appears only as an image in the PDF, so the SDK's rule is the text to check against, and the code comment below states both formulas.
   </p>
   <pre><code class="language-c">/* frequency = clk_sys / (DIV * (TOP + 1)) */
 /* duty cycle = compare / (TOP + 1)        */
 /* example: 125 MHz, DIV 125, TOP 19999 gives 125e6 / (125 * 20000) = 50 Hz */</code></pre>
-  <div class="note">Read the system clock with <code>clock_get_hz(clk_sys)</code> instead of assuming 125 MHz. The code in this lesson does that.</div>
+  <div class="note">Read the system clock with <code>clock_get_hz(clk_sys)</code> instead of assuming 125 MHz, as the code in this lesson does.</div>
 
-  <h2>Worked example: a 50 Hz servo frame, one number at a time</h2>
+  <h2>Worked example: a 50 Hz servo frame</h2>
   <p>
-    A hobby servo expects a frame of 20 ms, which is 50 Hz, and it reads the width of a pulse inside that frame. Build the PWM setup for it from the three numbers, with the system clock at 125 MHz.
+    A hobby servo expects a 20 ms frame, 50 Hz, and reads the width of a pulse inside it, so we build its PWM setup from the three numbers with the system clock at 125 MHz. Before starting, predict what TOP must be if each tick lasts 1 µs.
   </p>
   <ol class="steps">
-    <li><strong>Pick the tick.</strong> Choose a counter rate that makes the pulse easy to count. A divider of 125 gives 125 MHz ÷ 125 = 1 MHz, so one tick is exactly 1 µs. Now the compare value is the pulse width in microseconds.</li>
-    <li><strong>Count the ticks in one frame.</strong> A 20 ms frame at 1 µs per tick is 20,000 ticks. The counter counts from 0 to TOP and then wraps, so TOP + 1 must equal 20,000.</li>
-    <li><strong>Set TOP.</strong> TOP = 20,000 − 1 = 19,999. Check the frequency with the formula: 125 MHz ÷ (125 × 20,000) = 50 Hz.</li>
-    <li><strong>Set the pulse.</strong> A pulse of 1.5 ms is 1500 ticks, so CC = 1500. The duty cycle is 1500 ÷ 20,000 = 7.5 %, which is the 1.5 ms pulse divided by the 20 ms frame.</li>
+    <li><strong>Pick the tick.</strong> A counter rate that makes the pulse easy to count is best, and a divider of 125 gives 125 MHz ÷ 125 = 1 MHz, exactly 1 µs per tick, so that the compare value equals the pulse width in microseconds.</li>
+    <li><strong>Count the ticks in one frame.</strong> A 20 ms frame at 1 µs per tick is 20 000 ticks, and since the counter counts from 0 to TOP before wrapping, TOP + 1 must equal 20 000.</li>
+    <li><strong>Set TOP.</strong> TOP = 20 000 − 1 = 19 999, and equation (2) confirms the frequency, 125 MHz ÷ (125 × 20 000) = 50 Hz.</li>
+    <li><strong>Set the pulse.</strong> A 1.5 ms pulse is 1 500 ticks, so CC = 1 500, and equation (1) gives a duty cycle of 1 500 ÷ 20 000 = 7.5 %, the 1.5 ms pulse divided by the 20 ms frame.</li>
   </ol>
   <p>
-    The same three steps give any PWM output. Pick the divider so the tick is convenient, count the ticks in one period, and set TOP to that count minus one. Then the compare is a count, and it is always a count of ticks, never a percentage. The starter's planted bug is the second step: it sets TOP to 1999, which is 2000 ticks, or 2 ms, and that gives 500 Hz.
+    The same steps give any PWM output: pick the divider so that the tick is convenient, count the ticks in one period and set TOP to that count minus one, after which the compare is always a count of ticks and never a percentage. The starter's planted bug lies in the second step, setting TOP to 1999, which is 2 000 ticks, or 2 ms, and gives 500 Hz.
   </p>
 
   <p>
-    Check the worked example in the configurator, then load the starter's TOP = 1999 and see the frequency it really gives. Type a target such as 1 kHz at 25 % to find DIV, TOP and CC for the dimmer.
+    The configurator below confirms the worked example. Then load the starter's TOP = 1999 to see the frequency it really gives, and type a target such as 1 kHz at 25 % to find DIV, TOP and CC for the dimmer.
   </p>
   <div class="widget pwmcalc" data-chip="rp2040" data-title="PWM slice configurator"></div>
 
-  <h2>Dimming, a servo, and a tone</h2>
+  <h2>Dimming, servo pulses and tones</h2>
   <p>
-    The same three numbers serve three jobs. Each job chooses different values.
+    The same three numbers serve three jobs, each choosing different values.
   </p>
 
   <div class="example">
-    <p>A PC fan with a 4-pin connector is driven the same way. The fourth wire carries a PWM signal at about 25 kHz, above what people hear, and the duty cycle sets the fan speed. The motherboard changes one compare value as the CPU gets warmer, which is the same call you make for a dimmer LED.</p>
+    <p>A PC fan with a 4-pin connector is driven the same way, its fourth wire carrying a PWM signal at about 25 kHz, above the range of hearing, whose duty cycle sets the fan speed. The motherboard changes one compare value as the CPU warms up, the same call that dims an LED.</p>
   </div>
   <p>
-    <strong>Dimming.</strong> Choose a frequency high enough that the eye does not see flicker, such as 1 kHz. Then set the compare to a fraction of TOP + 1 with the potentiometer. The LED's brightness follows the average, so a 25 % duty cycle looks dimmer than full on, although how much dimmer depends on how the eye responds at this frequency and on the LED.
+    For dimming, the frequency must be high enough that the eye sees no flicker, such as 1 kHz, and the potentiometer sets the compare as a fraction of TOP + 1. The LED's brightness follows the average, so a 25 % duty cycle looks dimmer than full on, although how much dimmer depends on how the eye responds at this frequency and on the LED.
   </p>
   <p>
-    <strong>Servo.</strong> The servo reads the pulse width in each 20 ms frame. Wokwi's servo part has a PWM input, a 5 V supply pin and ground, and it sweeps from 0 to 180 degrees between hard stops <a href="https://docs.wokwi.com/parts/wokwi-servo" target="_blank" rel="noopener">Wokwi, servo part</a>. The pulse widths that match those two ends are not given on that page. Most hobby servos use about 1 ms for one end and 2 ms for the other, but the exact limits vary from model to model, so check the datasheet of the servo you buy. The solution maps the potentiometer onto 1000 to 2000 µs, and the comment marks those values as the usual range.
+    A servo reads the pulse width in each 20 ms frame. Wokwi's servo part has a PWM input, a 5 V supply pin and ground and sweeps from 0 to 180 degrees between hard stops <a href="https://docs.wokwi.com/parts/wokwi-servo" target="_blank" rel="noopener">Wokwi, servo part</a>, but that page does not give the pulse widths matching the two ends. Most hobby servos use about 1 ms for one end and 2 ms for the other, with exact limits varying from model to model, so check the datasheet of the servo you buy; the solution maps the potentiometer onto 1 000 to 2 000 µs, with a comment marking those values as the usual range.
   </p>
   <p>
-    <strong>Tone.</strong> A piezo buzzer makes a sound at the frequency of the square wave on its pin, so a 50 % duty cycle at 440 Hz gives a clean A4 tone. Wokwi's buzzer part is driven from its pins 1 and 2 <a href="https://docs.wokwi.com/parts/wokwi-buzzer" target="_blank" rel="noopener">Wokwi, buzzer part</a>. For 440 Hz, a DIV of 8 keeps TOP inside 16 bits: 125 MHz ÷ (8 × 440) − 1 = 35,510.4, which the code truncates to 35,510. At that TOP the frequency is 440.0 Hz, to within a tenth of a hertz.
+    A piezo buzzer sounds at the frequency of the square wave on its pin, so a 50 % duty cycle at 440 Hz gives a clean A4 tone, and Wokwi's buzzer part is driven from its pins 1 and 2 <a href="https://docs.wokwi.com/parts/wokwi-buzzer" target="_blank" rel="noopener">Wokwi, buzzer part</a>. For 440 Hz a DIV of 8 keeps TOP within 16 bits, since 125 MHz ÷ (8 × 440) − 1 ≈ 35 510.4, which the code truncates to 35 510, giving 440.0 Hz to within a tenth of a hertz.
   </p>
 
   <figure>
@@ -174,9 +174,9 @@
     <figcaption>Figure 1. The counter ramps and wraps. The output is high while the counter is below the compare value, so a higher compare means a longer high time.</figcaption>
   </figure>
 
-  <h2>The code, line by line</h2>
+  <h2>The PWM setup code line by line</h2>
   <p>
-    The solution's <code>pwm_start()</code> helper sets up one slice, and <code>main()</code> uses it three times. Read the helper first, because every output goes through it.
+    The solution's <code>pwm_start()</code> helper sets up one slice and <code>main()</code> uses it three times, so the helper comes first, since every output goes through it.
   </p>
   <pre><code class="language-c">static void pwm_start(uint gpio, float div, uint16_t top) {
     gpio_set_function(gpio, GPIO_FUNC_PWM);
@@ -187,12 +187,12 @@
     pwm_init(slice, &amp;cfg, true);
 }</code></pre>
   <ol class="steps">
-    <li><code>gpio_set_function(gpio, GPIO_FUNC_PWM)</code> routes the pin to the PWM block instead of the GPIO logic. Without it, the pin stays an ordinary output and never switches on its own.</li>
-    <li><code>pwm_gpio_to_slice_num(gpio)</code> finds the slice from the pin, using the mapping in Table 515. The caller never has to remember which slice a pin belongs to.</li>
-    <li><code>pwm_get_default_config()</code> returns a configuration with the SDK defaults, so the fields you do not set are known values.</li>
-    <li><code>pwm_config_set_clkdiv(&amp;cfg, div)</code> stores the divider. The SDK takes a float and converts it to the 8.4 fixed-point register field, which is why the solution passes 125.0 and 8.0 as floats.</li>
+    <li><code>gpio_set_function(gpio, GPIO_FUNC_PWM)</code> routes the pin to the PWM block instead of the GPIO logic, without which the pin stays an ordinary output and never switches on its own.</li>
+    <li><code>pwm_gpio_to_slice_num(gpio)</code> finds the pin's slice from the mapping in Table 515, so the caller never has to remember it.</li>
+    <li><code>pwm_get_default_config()</code> returns a configuration with the SDK defaults, so the fields left unset hold known values.</li>
+    <li><code>pwm_config_set_clkdiv(&amp;cfg, div)</code> stores the divider, the SDK converting the float into the 8.4 fixed-point register field, which is why the solution passes 125.0 and 8.0 as floats.</li>
     <li><code>pwm_config_set_wrap(&amp;cfg, top)</code> stores TOP, the 16-bit wrap value.</li>
-    <li><code>pwm_init(slice, &amp;cfg, true)</code> writes the configuration to the slice and starts it. The final argument is <code>true</code>, so the counter runs at once.</li>
+    <li><code>pwm_init(slice, &amp;cfg, true)</code> writes the configuration to the slice and, with its final argument <code>true</code>, starts the counter at once.</li>
   </ol>
   <pre><code class="language-c">int main(void) {
     /* ... setup omitted ... */
@@ -214,11 +214,11 @@
     /* ... */
 }</code></pre>
   <ol class="steps">
-    <li><code>clock_get_hz(clk_sys)</code> reads the system clock the chip is actually running at. Every TOP in the program is derived from this number, so a different clock setting gives correct frequencies without editing the code.</li>
-    <li>The LED's divider is <code>tick_div</code>, which is 125 at the default clock. The LED's TOP is 999, so the period is 1000 ticks of 1 µs, which is 1 kHz.</li>
-    <li>The servo uses the same divider, so its tick is the same 1 µs. Its TOP is 19,999, which makes the frame 20,000 ticks, or 20 ms.</li>
-    <li>The buzzer's TOP comes from the formula, not from a memorised number. It divides the clock by the divider and by 440, then subtracts 1. The cast to <code>uint16_t</code> truncates the result to 35,510.</li>
-    <li><code>pwm_set_gpio_level(BUZZER_PIN, (tone_top + 1) / 2)</code> sets the compare to half of TOP + 1. That is a 50 % duty cycle, which gives a square wave.</li>
+    <li><code>clock_get_hz(clk_sys)</code> reads the system clock the chip is actually running at, and since every TOP in the program derives from it, a different clock setting still gives correct frequencies without code changes.</li>
+    <li>The LED's divider is <code>tick_div</code>, 125 at the default clock, and its TOP is 999, so the period is 1 000 ticks of 1 µs, or 1 kHz.</li>
+    <li>The servo uses the same divider and therefore the same 1 µs tick, and its TOP of 19 999 makes the frame 20 000 ticks, or 20 ms.</li>
+    <li>The buzzer's TOP comes from the formula rather than a memorised number, dividing the clock by the divider and by 440 and subtracting 1, with the cast to <code>uint16_t</code> truncating the result to 35 510.</li>
+    <li><code>pwm_set_gpio_level(BUZZER_PIN, (tone_top + 1) / 2)</code> sets the compare to half of TOP + 1, a 50 % duty cycle that gives a square wave.</li>
   </ol>
   <pre><code class="language-c">while (true) {
     uint16_t pot = read_pot();
@@ -233,69 +233,74 @@
     /* ... */
 }</code></pre>
   <ol class="steps">
-    <li><code>pot</code> is the 12-bit reading from lesson 58, from 0 to 4095. Both outputs are scaled from it.</li>
-    <li>The LED's level is <code>pot × (TOP + 1) ÷ 4096</code>. The multiplication is done in 32 bits before the division, so the intermediate value cannot overflow. With the pot at its top code of 4095, the level is 999, which is TOP, not TOP + 1, so the LED runs just short of 100 % from the pot. That is harmless, and the comment states the rule for the 100 % case.</li>
-    <li>The servo's level is a count of microseconds, because each tick is 1 µs. The formula maps 0 to 4095 onto 1000 to 2000 ticks, so the pulse is the value in microseconds.</li>
-    <li><code>pwm_set_gpio_level()</code> writes the compare register for the channel. The write takes effect at the next wrap, so the output does not glitch mid-period.</li>
+    <li><code>pot</code> is the 12-bit reading of lesson 58, from 0 to 4 095, from which both outputs are scaled.</li>
+    <li>The LED's level is <code>pot × (TOP + 1) ÷ 4096</code>, with the multiplication done in 32 bits before the division so that the intermediate value cannot overflow. At the pot's top code of 4 095 the level is 999, which is TOP rather than TOP + 1, so the pot leaves the LED just short of 100 %, which is harmless, and the comment states the rule for the 100 % case.</li>
+    <li>The servo's level is a count of microseconds, because each tick is 1 µs, and the formula maps 0 to 4 095 onto 1 000 to 2 000 ticks.</li>
+    <li><code>pwm_set_gpio_level()</code> writes the channel's compare register, and the write takes effect at the next wrap, so the output does not glitch mid-period.</li>
   </ol>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0059-pwm</code> has a potentiometer on GP26, an LED on GP18 (slice 1, A), a servo on GP16 (slice 0, A) and a buzzer on GP22 (slice 3, A). The three outputs use three slices, because each slice has only one period. The solution sets the LED to 1 kHz, the servo to 50 Hz and the buzzer to 440 Hz.
+    The project <code>projects/0059-pwm</code> has a potentiometer on GP26, an LED on GP18 (slice 1, A), a servo on GP16 (slice 0, A) and a buzzer on GP22 (slice 3, A), the three outputs using three slices because each slice has only one period. The solution runs the LED at 1 kHz, the servo at 50 Hz and the buzzer at 440 Hz.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0059-pwm/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Your task: check the LED's TOP and explain it in a comment. Fix the servo's TOP (the starter has a planted 2 ms period, which gives 500 Hz). Compute the buzzer's TOP from <code>sys_hz</code> and set its level to half of TOP + 1. Set the LED and servo levels from the potentiometer reading. You will know it works when the servo arm moves with the pot, the LED dims, and the serial monitor prints <code>PWM OK</code>.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Check the LED's TOP and explain it in a comment, fix the servo's TOP, where the starter has a planted 2 ms period giving 500 Hz, compute the buzzer's TOP from <code>sys_hz</code> with its level at half of TOP + 1, and set the LED and servo levels from the potentiometer reading. The program works when the servo arm follows the pot, the LED dims and the serial monitor prints <code>PWM OK</code>.</li>
   </ol>
   <details>
     <summary>Hint for the servo</summary>
-    <p>The servo wants 20,000 ticks per frame at 1 µs each. Count the ticks in one frame, and the TOP is that count minus one.</p>
+    <p>The servo needs 20 000 ticks per frame at 1 µs each, so count the ticks in one frame and subtract one for TOP.</p>
   </details>
   <details>
     <summary>Hint for the levels</summary>
-    <p>The level is a count of ticks, not a percentage. For the servo that is microseconds, from 1000 to 2000. For the LED it is a fraction of TOP + 1.</p>
+    <p>The level is a count of ticks, not a percentage, which for the servo means microseconds from 1 000 to 2 000 and for the LED a fraction of TOP + 1.</p>
   </details>
-  <p>The reference solution is in <code>projects/0059-pwm/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0059-pwm/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You set up three PWM slices from the clock, the divider and the wrap value, and checked each frequency with the formula. You can now produce any PWM frequency the 16-bit counter reaches.</div>
+  <div class="win">You set up three PWM slices from the clock, the divider and the wrap value and checked each frequency with the formula, so you can now produce any PWM frequency within reach of the 16-bit counter.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>TOP taken as the tick count</h3>
   <p>
-    <strong>Mistake 1: TOP is the count, not the period.</strong> Symptom: the servo frequency is twice what you wanted. Setting TOP to 1999 gives 2000 ticks, which is 2 ms, so the frame is 500 Hz, and a servo that expects 20 ms may jitter or not settle. Fix: the number of ticks in one period is TOP + 1, so set TOP to that count minus one, and check the frequency with the formula.
+    The servo frame runs at ten times the intended rate, so a servo that expects 20 ms may jitter or fail to settle, because TOP set to 1999 gives 2 000 ticks, 2 ms, or 500 Hz. The number of ticks per period is TOP + 1, so set TOP to that count minus one and check the frequency with the formula.
   </p>
+  <h3>The compare written as a percentage</h3>
   <p>
-    <strong>Mistake 2: the compare is a count, not a percentage.</strong> Symptom: the servo hardly moves. A compare of 50 is 50 ticks, which is 50 µs at a 1 MHz tick, far shorter than the 1 ms pulse a servo needs. Fix: compute the compare from the tick count, so 1.5 ms at 1 µs per tick is 1500.
+    The servo hardly moves, because a compare of 50 is 50 ticks, 50 µs at a 1 MHz tick, far shorter than the 1 ms pulse a servo needs. Compute the compare from the tick count, so 1.5 ms at 1 µs per tick is 1 500.
   </p>
+  <h3>Two frequencies on one slice</h3>
   <p>
-    <strong>Mistake 3: two outputs on one slice with different frequencies.</strong> Symptom: the second output runs at the first one's frequency, however you set it. The two channels share TOP and DIV, so one setting covers both. Fix: put the outputs that need different frequencies on different slices. The starter's three outputs are on three slices for exactly this reason. Check the pin map before you assign pins.
+    The second output runs at the first one's frequency however it is set, because the two channels share TOP and DIV. Put outputs that need different frequencies on different slices, as the starter's three outputs are, and check the pin map before assigning pins.
   </p>
+  <h3>An assumed system clock</h3>
   <p>
-    <strong>Mistake 4: assuming the clock.</strong> Symptom: all the frequencies are off by the same ratio after you change the clock setting. The formula uses the system clock, and the constant 125 MHz is only the default. Fix: read the clock with <code>clock_get_hz(clk_sys)</code>, as the solution does.
+    All the frequencies are off by the same ratio after a change to the clock setting, because the formula depends on the system clock and 125 MHz is only the default. Read the clock with <code>clock_get_hz(clk_sys)</code>, as the solution does.
   </p>
+  <h3>No PWM function on the pin</h3>
   <p>
-    <strong>Mistake 5: no function set on the pin.</strong> Symptom: the LED stays on or off and never dims, and the PWM registers look right in the debugger. The pin is still an ordinary GPIO output, so the PWM block drives nothing. Fix: call <code>gpio_set_function(pin, GPIO_FUNC_PWM)</code> before starting the slice, as <code>pwm_start()</code> does.
+    The LED stays on or off and never dims although the PWM registers look right in the debugger, because the pin is still an ordinary GPIO output that the PWM block does not drive. Call <code>gpio_set_function(pin, GPIO_FUNC_PWM)</code> before starting the slice, as <code>pwm_start()</code> does.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>PWM power stages and driver reviews</h2></summary>
   <p>
-    Professional PWM use is about the power stage, not the pin. A heater, a fan or a motor is driven through a MOSFET or a motor driver, and the PWM frequency is chosen to avoid audible whine and to keep the switching losses low. The datasheet mentions this use: the PWM block is used for switch-mode power electronics, and its 0 % and 100 % outputs are glitch-free, which the datasheet says matters when a MOSFET is driven at its minimum and maximum current levels <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, sections 4.5.1 and 4.5.2.2</a>.
+    Professional PWM work concerns the power stage more than the pin. A heater, fan or motor is driven through a MOSFET or a motor driver, with the PWM frequency chosen to avoid audible whine and to keep switching losses low, and the datasheet mentions this use, describing the PWM block as suitable for switch-mode power electronics and its glitch-free 0 % and 100 % outputs as important when a MOSFET is driven at its minimum and maximum current levels <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, sections 4.5.1 and 4.5.2.2</a>.
   </p>
   <p>
-    A reviewer expects three things in a PWM driver. The frequency is computed from the clock, not written as a constant. The compare is clamped to the range from 0 to TOP + 1, so a bad input cannot produce a wrong pulse. And the duty cycle is documented in the unit the caller uses, which is percent for a fan and microseconds for a servo.
+    A reviewer expects a PWM driver to compute its frequency from the clock rather than a constant, to clamp the compare to the range 0 to TOP + 1 so that a bad input cannot produce a wrong pulse, and to document the duty cycle in the caller's unit, percent for a fan and microseconds for a servo.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>PWM sets an average voltage by switching a pin, and the duty cycle is the fraction of each period the output is high.</li>
-    <li>The RP2040 has eight slices and 16 channels, and all 30 GPIO pins can drive PWM. Table 515 maps each pin to its slice and channel.</li>
-    <li>The period is (TOP + 1) × DIV system clock cycles, so the frequency is the clock divided by that. The SDK's header gives the counter rate as the clock divided by DIV.</li>
-    <li>The compare is a count of ticks, and the duty cycle is CC ÷ (TOP + 1). CC = 0 gives 0 %, and CC = TOP + 1 gives 100 %.</li>
-    <li>Both outputs of a slice share one period. Put outputs with different frequencies on different slices.</li>
-    <li>Read the clock with <code>clock_get_hz(clk_sys)</code>. Set the pin's function to PWM before starting the slice.</li>
-    <li>A servo reads the pulse width in a 20 ms frame. The usual pulse range is about 1 to 2 ms, but check the datasheet of the servo you use.</li>
+    <li>PWM sets an average voltage by switching a pin, the duty cycle being the fraction of each period the output is high.</li>
+    <li>The RP2040 has eight slices and 16 channels, all 30 GPIO pins can drive PWM, and Table 515 maps each pin to its slice and channel.</li>
+    <li>The period is (TOP + 1) × DIV system clock cycles, so the frequency is the clock divided by that, and the SDK's header gives the counter rate as the clock divided by DIV.</li>
+    <li>The compare is a count of ticks and the duty cycle CC ÷ (TOP + 1), with CC = 0 giving 0 % and CC = TOP + 1 giving 100 %.</li>
+    <li>Both outputs of a slice share one period, so outputs with different frequencies belong on different slices.</li>
+    <li>The clock is read with <code>clock_get_hz(clk_sys)</code>, and the pin's function is set to PWM before the slice starts.</li>
+    <li>A servo reads the pulse width in a 20 ms frame, usually about 1 to 2 ms, but the datasheet of the servo in use has the final say.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

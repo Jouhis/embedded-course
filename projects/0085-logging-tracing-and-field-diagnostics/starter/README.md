@@ -6,16 +6,16 @@ Lesson: [Logging, tracing and field diagnostics](https://jouhis.github.io/embedd
 
 ## Try it: a crash log that survives a reset
 
-The project has two parts. The crash log logic is a pure C module (`src/crash_log.c`) with host tests. The firmware (`main.c`) places the log in no-init RAM, reads the reset reason, and crashes once on purpose with an assertion.
+The project has two parts, a pure C module for the crash log logic (`src/crash_log.c`) with host tests, and firmware (`main.c`) that places the log in no-init RAM, reads the reset reason and crashes once on purpose with an assertion.
 
-1. Run the host tests from the workspace root: `python -I tools/build.py projects/0085-logging-tracing-and-field-diagnostics/starter/host-tests --test`. Two of six fail. The failing lines show the wrong line order after the ring wraps: *Expected 'line 2' Was 'line 8'* and *Expected 'line 1' Was 'line 8'*.
-2. Your task: fix `crash_log_line()` in `starter/src/crash_log.c`. The comment marked TODO(learner) gives the slot formula. Rebuild and rerun the tests until the summary reads *6 Tests 0 Failures 0 Ignored*.
-3. Your task: in `starter/main.c`, at the TODO(learner) comment, call `crash_assert_failed(__FILE__, __LINE__)` on the third tick of the first boot only. Build the firmware with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
-4. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. On the first boot you should see ticks 1 to 3, then *ASSERT main.c* and *resetting*. On the second boot you should see *software-reset* in the reason line, and the log lines. The solution's second boot prints the line *previous reset: log from the last run follows*.
+1. Run the host tests from the workspace root with `python -I tools/build.py projects/0085-logging-tracing-and-field-diagnostics/starter/host-tests --test`, and two of six fail, their lines showing the wrong order after the ring wraps, *Expected 'line 2' Was 'line 8'* and *Expected 'line 1' Was 'line 8'*.
+2. Fix `crash_log_line()` in `starter/src/crash_log.c` with the slot formula given in the comment marked TODO(learner), rebuilding and rerunning the tests until the summary reads *6 Tests 0 Failures 0 Ignored*.
+3. In `starter/main.c`, at the TODO(learner) comment, call `crash_assert_failed(__FILE__, __LINE__)` on the third tick of the first boot only, and build the firmware with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
+4. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, and the first boot should show ticks 1 to 3, then *ASSERT main.c* and *resetting*, the second boot *software-reset* in the reason line followed by the log lines, the solution's second boot printing the line *previous reset: log from the last run follows*.
 
 The simulator run has not been checked for this lesson. Two things are unverified for Wokwi: whether its Blue Pill model sets the RCC_CSR reset flags after NVIC_SystemReset, and whether it keeps RAM across that reset. If the second boot prints *no valid log in RAM*, the simulator clears RAM, and the logic is still tested by the host tests. Say so in your own notes, and use the host tests as the evidence.
 
-What the host tests printed before the fix, from a real run of the starter:
+A real run of the starter's host tests printed the following before the fix.
 
 ```plaintext
 test_crash_log.c:50:test_ring_keeps_the_newest_lines:FAIL: Expected 'line 2' Was 'line 8'
@@ -24,7 +24,7 @@ test_crash_log.c:64:test_line_order_after_wrap:FAIL: Expected 'line 1' Was 'line
 FAIL
 ```
 
-And the solution's host tests print *6 Tests 0 Failures 0 Ignored*, followed by *OK*. The memory layout check, from the solution's `blink.map`: `.noinit` starts at `0x200001bc`, and `_ebss` is at `0x200001bc`. The log is outside the zeroed range.
+The solution's host tests print *6 Tests 0 Failures 0 Ignored* followed by *OK*, and the memory layout check in the solution's `blink.map` shows `.noinit` starting at `0x200001bc` with `_ebss` at `0x200001bc`, so the log lies outside the zeroed range.
 
 ## Files you work on
 
@@ -40,7 +40,7 @@ The serial monitor prints `previous reset`.
 <details>
 <summary>Hint</summary>
 
-The oldest kept line sits at slot `(head + LINES - count) % LINES`. Line `i` is at slot `(oldest + i) % LINES`. Write the formula in one line, then test it with the failing test.
+The oldest kept line sits at slot `(head + LINES - count) % LINES` and line `i` at slot `(oldest + i) % LINES`, so write the formula in one line and test it with the failing test.
 
 </details>
 

@@ -6,15 +6,15 @@ Lesson: [The build pipeline: compile, link, and the linker script](https://jouhi
 
 ## Try it in Wokwi and the terminal
 
-Open `projects/0041-build-pipeline` in VS Code. Build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open a terminal in that folder, and run the size tool. The demo has one initialised global, one zero-initialised global and a `const` table. The toolchain must be on your path, which the VS Code build task arranges.
+Open `projects/0041-build-pipeline` in VS Code and build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then open a terminal in that folder to run the size tool, which the VS Code build task puts on the path. The demo has one initialised global, one zero-initialised global and a `const` table.
 
-1. Run `arm-none-eabi-size -A build/blink.elf`. Find the `.data` line, which should read 8 bytes, and the `.bss` line, which should read 32 bytes.
-2. Open `main.c` and change `uint32_t g_initialised = 0x1234ABCDU;` to `uint32_t g_initialised;`. This removes the initial value.
-3. Before you rebuild, predict the new `.data` and `.bss` sizes. Then rebuild and run the size tool again. You should see `.data` at 4 bytes and `.bss` at 36 bytes.
-4. Find `g_initialised` in `build/blink.map`. It should be in `.bss` now, not `.data`, and it should have no load address of its own.
-5. Run the simulator. The serial line `g_initialised value: 0x00000000` should now print, because a zero-initialised global starts at zero.
+1. Run `arm-none-eabi-size -A build/blink.elf` and find the `.data` line, which should read 8 bytes, and the `.bss` line, which should read 32 bytes.
+2. Open `main.c` and change `uint32_t g_initialised = 0x1234ABCDU;` to `uint32_t g_initialised;`, removing the initial value.
+3. Predict the new `.data` and `.bss` sizes before rebuilding, then rebuild and run the size tool again; `.data` should now be 4 bytes and `.bss` 36 bytes.
+4. Find `g_initialised` in `build/blink.map`, where it should now be in `.bss` rather than `.data`, with no load address of its own.
+5. Run the simulator, which should now print `g_initialised value: 0x00000000`, because a zero-initialised global starts at zero.
 
-Put the file back when you finish. The lab and the next lesson assume the demo still prints `g_initialised` with the value `0x1234ABCD`.
+Restore the file when you finish, because the lab and the next lesson assume that the demo still prints `g_initialised` with the value `0x1234ABCD`.
 
 ## Done when
 
@@ -25,6 +25,6 @@ The serial monitor prints `g_initialised value: 0x1234ABCD`.
 <details>
 <summary>Hint</summary>
 
-A 4-byte `uint32_t` moves from `.data` to `.bss`. Count the change: `.data` shrinks by 4 bytes, and `.bss` grows by 4 bytes. Revert the change afterwards, or copy the file back from the solution folder.
+A 4-byte `uint32_t` moves from `.data` to `.bss`, so `.data` shrinks by 4 bytes and `.bss` grows by 4. Revert the change afterwards, or copy the file back from the solution folder.
 
 </details>

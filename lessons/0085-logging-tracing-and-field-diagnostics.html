@@ -11,30 +11,30 @@
 <body data-lesson="0085">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Logging, tracing and field diagnostics</h1>
-  <p class="subtitle">A device in the field cannot be debugged with a cable. Its logs and its reset reason are often the only evidence you get, so design them before the first crash.</p>
+  <h1>Logging, tracing, and field diagnostics</h1>
+  <p class="subtitle">Evidence that survives a reset</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>keep the last few log lines in no-init RAM, read the reset reason from RCC_CSR, and print both after a software reset</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Evidence from a reset nobody watched</h2>
   <p>
-    Lesson <a href="0084-robustness.html">84</a> ended with a fault that prints its own address. That output is useful only while the device is on your bench. The next question is harder. A device was reset last Tuesday, and nobody was watching. What did it do before the reset, and why did the reset happen? The answer has to be stored somewhere that survives the reset, and the reset itself has to leave a trace. This lesson is about those two things, and about the memory layout from <a href="0078-memory.html">lesson 78</a> that makes the first one possible.
+    Lesson <a href="0084-robustness.html">84</a> ended with a fault that prints its own address, which helps only while the device is on your bench. The harder question concerns a device that reset last Tuesday with nobody watching, what it did before the reset and why the reset happened, which requires the answer to be stored somewhere that survives the reset and the reset itself to leave a trace. This lesson covers those two things together with the memory layout from <a href="0078-memory.html">lesson 78</a> that makes the first possible.
   </p>
   <p>
-    A typical case is a support ticket. A customer reports that a controller restarted during the night. The support engineer has the device's log, a short text printed over a serial port in the lab, and the release number. Nothing else. If the firmware was designed for this, the log holds the last few lines before the restart, the reset reason says whether it was a watchdog, a software reset or a power loss, and the release's ELF file turns any address into a line of source. If it was not designed for this, the ticket is closed as "cannot reproduce". This lesson teaches the design.
+    A typical case is a support ticket reporting that a controller restarted during the night, the support engineer having nothing but the device's log, a short text printed over a serial port in the lab, and the release number. Firmware designed for this keeps the last few lines before the restart in the log, a reset reason saying whether a watchdog, a software reset or a power loss caused it, and a release ELF file that turns any address into a line of source, whereas without that design the ticket is closed as "cannot reproduce".
   </p>
   <p>
-    The lesson has four parts. First, how logs are filtered and what they cost. Second, how a log stays in RAM across a reset. Third, how the reset reason is read from a register. Fourth, how the crash record and the trace tools fit together. The hands-on task puts the first three into one small program.
+    The lesson covers how logs are filtered and what they cost, how a log stays in RAM across a reset, how the reset reason is read from a register, and how the crash record and the trace tools fit together, and the hands-on task puts the first three into one small program.
   </p>
 
-  <h2>Log levels and what they cost</h2>
+  <h2>Log levels and compile-time filtering</h2>
   <p>
-    A <strong>log</strong> is a line of text the firmware writes to explain what it is doing. Logs have <strong>levels</strong> that say how important a line is: error, warning, info, debug and trace, from most to least important. A level is a threshold. A build keeps the lines at or above its threshold, and it drops the rest. A release build of a small device usually keeps errors, warnings and information, and drops debug and trace.
+    A <strong>log</strong> is a line of text the firmware writes to explain what it is doing, and its <strong>level</strong> says how important it is, from error, warning and info down to debug and trace. A level acts as a threshold, a build keeping the lines at or above it and dropping the rest, so a release build of a small device usually keeps errors, warnings and information while dropping debug and trace.
   </p>
   <p>
-    On a small chip, the important question is where the filter runs. A run-time filter is an <code>if</code> that checks the level when the program reaches the log call. The string and the call are still in the flash image, so they cost flash, and the check costs time on every call. A compile-time filter uses the preprocessor. A <code>#if</code> around a debug call removes the string and the call from the image before it is built, so the removed code costs no flash and no time. The example below uses that approach:
+    On a small chip the important question is where the filter runs. A run-time filter is an <code>if</code> checking the level when the program reaches the log call, so the string and the call stay in the flash image, costing flash, and the check costs time on every call, whereas a compile-time filter uses the preprocessor, a <code>#if</code> around a debug call removing the string and the call from the image before it is built, so the removed code costs neither flash nor time. The example below takes that approach.
   </p>
   <pre><code class="language-c">#define LOG_LEVEL_ERROR  1
 #define LOG_LEVEL_INFO   3
@@ -46,10 +46,16 @@
 #define LOG_DEBUG(msg) ((void)0)
 #endif</code></pre>
   <p>
-    With <code>LOG_LEVEL</code> set to info, the number is 3, the test <code>LOG_LEVEL &gt;= 4</code> is false, and <code>LOG_DEBUG</code> expands to <code>((void)0)</code>. The compiler sees a statement that does nothing, and removes it. The string never reaches the image. Change the level to 4 and the debug calls return, with their strings, in the next build.
+    With <code>LOG_LEVEL</code> set to info, the number is 3, so the test <code>LOG_LEVEL &gt;= 4</code> is false and <code>LOG_DEBUG</code> expands to <code>((void)0)</code>, a statement doing nothing that the compiler removes, so the string never reaches the image, while changing the level to 4 brings the debug calls and their strings back in the next build.
   </p>
+
+  <h2>The time cost of a serial log line</h2>
   <p>
-    Cost matters because the serial port is slow. A UART sends each byte as a frame: one start bit, eight data bits and one stop bit, which is ten bit times on the wire with the usual 8N1 format. At 115200 baud, that is 11520 bytes per second, or about 87 microseconds per byte. A 40-character line therefore takes about 3.5 milliseconds to leave the chip, even if the code that prints it is fast. That is the reason the serial port is a poor place for a log in a timing-critical path, and it is the reason the next warning matters.
+    Cost matters because the serial port is slow, a UART sending each byte as a frame of one start bit, eight data bits and one stop bit, ten bit times on the wire with the usual 8N1 format, so the byte rate is
+  </p>
+  <p class="eq"><span>bytes per second = baud rate ÷ bits per frame = 115 200 ÷ 10 = 11 520</span><span class="eq-n">(1)</span></p>
+  <p>
+    where the baud rate is the number of bits per second on the line and the frame has 10 bits, giving about 87 µs per byte. A 40-character line therefore takes about 3.5 ms to leave the chip however fast the printing code is, which makes the serial port a poor place for a log in a timing-critical path and explains the warning below.
   </p>
   <div class="warning">
     A <code>printf</code> in an interrupt handler can take milliseconds at 115200 baud. Logs in a handler that has a deadline change the behaviour you are trying to observe. Log from the main loop, or into a buffer that the main loop prints.
@@ -57,34 +63,34 @@
 
   <h2>Binary and deferred logging</h2>
   <p>
-    Text logs are expensive in flash, because every line carries its format string. Binary logging sends a small numeric ID and the raw argument values. A host program turns them back into text using a table that the build creates. Systems in this family include defmt (Rust) and Trice (C). This course has not checked their current APIs, so read their own documentation before you adopt one.
+    Text logs are expensive in flash, because every line carries its format string, whereas binary logging sends a small numeric ID and the raw argument values, which a host program turns back into text using a table the build creates. Systems in this family include defmt (Rust) and Trice (C), whose current APIs this course has not checked, so their own documentation should be read before adopting one.
   </p>
   <p>
-    A second idea is <strong>deferred</strong> logging. The handler or the critical code only copies a record into a buffer, and the main loop prints it later. The buffer costs RAM and the copy costs a little time, but the slow part, the UART, runs where its delay does not matter. The crash log in this lesson is a deferred log in its simplest form, because its contents are kept in memory and only printed after the reset.
-  </p>
-
-  <h2>A log that survives a reset</h2>
-  <p>
-    A crash is almost always at the end of a log. So the part worth keeping is the last few lines of the log. A <strong>ring buffer</strong> (glossary: <a href="../reference/glossary.html#ring-buffer">ring buffer</a>) is a fixed array with a write position that wraps back to the start when it reaches the end. It holds the newest lines and overwrites the oldest. Its size is fixed at build time, so its RAM cost is known.
+    A second idea is <strong>deferred</strong> logging, in which the handler or critical code only copies a record into a buffer that the main loop prints later, so the buffer costs RAM and the copy a little time while the slow part, the UART, runs where its delay does not matter. The crash log of this lesson is a deferred log in its simplest form, its contents kept in memory and printed only after the reset.
   </p>
 
-  <div class="analogy">
-    <p>A log in RAM that survives a reset is an aircraft's flight recorder. It keeps the last moments in a place the crash does not destroy, so the investigators can read them afterwards. Here the place is a RAM section that the startup code does not clear, and the investigator is the firmware after the reboot.</p>
-  </div>
+  <h2>A ring buffer in no-init RAM</h2>
   <p>
-    The ring must live in RAM that the startup code does not clear. Lesson <a href="0078-memory.html">78</a> showed where that RAM sits among the static data, the heap and the stack. Lesson <a href="0042-startup-code-and-the-vector.html">42</a> showed what the startup code does before <code>main</code>. It copies <code>.data</code> from flash and clears <code>.bss</code>, the zero-initialised variables. The startup code's loop clears from the symbol <code>_sbss</code> up to <code>_ebss</code>, and the program's <code>.bss</code> lies in that range. A variable placed in a different section is not in that range, so it keeps its value across a reset. In GCC, the section is set with an attribute:
+    A crash almost always lies at the end of a log, so the part worth keeping is its last few lines, which a <strong>ring buffer</strong> (glossary: <a href="../reference/glossary.html#ring-buffer">ring buffer</a>) holds, a fixed array with a write position wrapping back to the start at the end, keeping the newest lines and overwriting the oldest, with a size fixed at build time, so its RAM cost is known.
+  </p>
+  <p>
+    The ring must live in RAM that the startup code does not clear. Lesson <a href="0078-memory.html">78</a> showed where that RAM sits among the static data, the heap and the stack, and lesson <a href="0042-startup-code-and-the-vector.html">42</a> what the startup code does before <code>main</code>, copying <code>.data</code> from flash and clearing <code>.bss</code>, the zero-initialised variables, in a loop running from the symbol <code>_sbss</code> up to <code>_ebss</code>, so a variable placed in a different section lies outside that range and keeps its value across a reset. In GCC the section is set with an attribute.
   </p>
   <pre><code class="language-c">static crash_log_t g_crash_log __attribute__((section(".noinit")));</code></pre>
   <p>
-    The attribute puts the variable in a section named <code>.noinit</code>. The linker script in this project has no output section with that name. GCC then emits an orphan section, which is a section the linker script does not mention, and the linker places it after the sections it knows. In this build, the map file shows the result. The <code>.noinit</code> section starts at 0x200001bc, which is the same address as <code>_ebss</code>. The clear loop stops at <code>_ebss</code>, so the log is outside the range the loop clears. A production linker script would give the section its own output section, marked as not loaded, so its placement does not depend on the linker's orphan rules.
+    The attribute puts the variable in a section named <code>.noinit</code>, which the project's linker script does not name, so GCC emits an orphan section, one the linker script does not mention, and the linker places it after the sections it knows. The map file of this build shows the <code>.noinit</code> section starting at 0x200001bc, the same address as <code>_ebss</code>, so the log lies outside the range the clear loop covers, whereas a production linker script would give the section its own output section, marked as not loaded, so that its placement does not depend on the linker's orphan rules.
   </p>
-  <div class="warning">
-    A power-on reset leaves RAM with random contents, so the log might look valid by chance. The sample stores a magic number and checks the ring indices before it trusts the contents. A checksum is stronger if the log must survive a brown-out, which is a dip in the supply voltage that does not fully reset the chip.
-  </div>
 
-  <h2>Reset reason: RCC_CSR on the STM32F1</h2>
+  <div class="analogy">
+    <p>A log in RAM that survives a reset resembles an aircraft's flight recorder, keeping the last moments in a place the crash does not destroy so that investigators can read them afterwards, the place here being a RAM section the startup code does not clear and the investigator the firmware after the reboot. The comparison breaks on power loss, though, because a flight recorder is built to survive any crash, whereas no-init RAM loses its contents when the supply fails, so a power cut leaves nothing to read.</p>
+  </div>
   <p>
-    The STM32F1 reports why it last reset in the RCC control and status register, <code>RCC_CSR</code> (glossary: <a href="../reference/glossary.html#reset-reason">reset reason</a>). The reset sets a flag for its source. The flags stay set until software writes the RMVF bit, which clears them, so a reset can be read after it happens (RM0008 Rev 21, section 7.3.10). The reference manual RM0008 describes the register in section 7.3.10 of its RCC chapter. The bit positions below are read from the device header in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, which the course build uses, and they match the register description in that section.
+    Power-on RAM holds random contents, so a log could look valid by chance, which is why the sample stores a magic number and checks the ring indices before trusting the contents, and a checksum is stronger if the log must survive a brown-out, a dip in the supply voltage that does not fully reset the chip.
+  </p>
+
+  <h2>Reset flags in RCC_CSR on the STM32F1</h2>
+  <p>
+    The STM32F1 reports why it last reset in the RCC control and status register, <code>RCC_CSR</code> (glossary: <a href="../reference/glossary.html#reset-reason">reset reason</a>), each reset setting a flag for its source, which stays set until software writes the RMVF bit to clear it, so a reset can be read after it happens (RM0008 Rev 21, section 7.3.10). The reference manual RM0008 describes the register in that section of its RCC chapter, and the bit positions below are read from the device header <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code> used by the course build, matching the register description.
   </p>
   <table>
     <thead><tr><th>Flag</th><th>Bit</th><th>Meaning</th></tr></thead>
@@ -100,36 +106,36 @@
   </table>
   <p>
     <span class="sidenote">The header defines each flag's mask as <code>0x1UL &lt;&lt; RCC_CSR_..._Pos</code>. The mask for SFTRSTF is 0x10000000, which is what a number quiz in this lesson asks for.</span>
-    The order of the flags matters for reading. Read the register once, at the start of <code>main()</code>, before anything else clears it. Then write RMVF, so the next boot shows only its own reset. A software reset is the one the crash log depends on, because <code>NVIC_SystemReset()</code> is the request that the handler and the assertion make. The chip resets, the SFTRSTF flag is set, and the log in RAM is still there to be read.
+    The order of operations matters, the register being read once at the start of <code>main()</code>, before anything else clears it, and RMVF written afterwards, so that the next boot shows only its own reset. A software reset is the one the crash log depends on, because <code>NVIC_SystemReset()</code> is the request the handler and the assertion make, after which the chip resets, the SFTRSTF flag is set and the log in RAM remains to be read.
   </p>
 
-  <h2>Crash dumps, trace and debug output</h2>
+  <h2>Crash dumps, SWO, ITM and RTT</h2>
   <p>
-    A crash dump is the state at the fault: the eight stacked words (lesson 84), the fault registers, and the last log lines. The device prints it or stores it, and the PC decode from lesson 84 turns it into source lines. The crash log in this lesson is a small dump, and it records the failing assertion's file and line in the same ring as the normal lines.
+    A crash dump is the state at the fault, the eight stacked words (lesson 84), the fault registers and the last log lines, which the device prints or stores and which the PC decode of lesson 84 turns into source lines. The crash log of this lesson is a small dump, recording the failing assertion's file and line in the same ring as the normal lines.
   </p>
   <p>
-    <strong>SWO and ITM</strong> (concept, not simulated in Wokwi) let the Cortex-M core send trace bytes over a single pin to the debugger, through the Instrumentation Trace Macrocell. You need a debug probe that supports SWO. <strong>Segger RTT</strong> (concept, not simulated in Wokwi) is a log buffer in RAM that the debugger reads over the debug link, without a UART. Both need hardware that this course does not have, so the hands-on uses the UART and a no-init buffer. On a real product the same ideas apply: the trace is for the bench, and the no-init record is for the field.
+    <strong>SWO and ITM</strong> (concept, not simulated in Wokwi) let the Cortex-M core send trace bytes over a single pin to the debugger through the Instrumentation Trace Macrocell, which needs a debug probe supporting SWO, while <strong>Segger RTT</strong> (concept, not simulated in Wokwi) is a log buffer in RAM that the debugger reads over the debug link without a UART. Both need hardware this course does not have, so the hands-on uses the UART and a no-init buffer, and on a real product the same ideas apply, the trace serving the bench and the no-init record the field.
   </p>
 
-  <h2>A worked example: the ring, with numbers</h2>
+  <h2>Worked example: ten lines in an eight-slot ring</h2>
   <p>
-    The ring in the sample holds 8 lines, and each line is up to 23 characters plus the terminating zero. The struct keeps a <code>head</code>, the index of the slot the next line goes into, and a <code>count</code>, the number of valid lines. Follow ten calls to <code>crash_log_add</code>, numbered 0 to 9, with a ring of 8 slots.
+    The ring in the sample holds 8 lines of up to 23 characters plus the terminating zero, its struct keeping a <code>head</code>, the index of the slot the next line goes into, and a <code>count</code>, the number of valid lines. We follow ten calls to <code>crash_log_add</code>, numbered 0 to 9, and before reading on, predict which line comes out first after the ring has wrapped.
   </p>
-  <ol>
-    <li>Lines 0 to 7 fill slots 0 to 7. After each call the head moves on by one, so after line 7 the head is 0 again, and the count is 8.</li>
-    <li>Line 8 goes into slot 0, which held line 0. The head moves to 1. Line 9 goes into slot 1, which held line 1. The head moves to 2. The count stays at 8, because the ring is full.</li>
-    <li>Now find the oldest kept line. The formula in <code>crash_log_line</code> is <code>(head + LINES - count) % LINES</code>. With head 2, LINES 8 and count 8, the sum is 2 + 8 - 8 = 2, and 2 modulo 8 is 2. The oldest kept line is in slot 2, and that slot holds line 2.</li>
-    <li>Line index <code>i</code> is in slot <code>(oldest + i) % LINES</code>. For <code>i</code> equal to 7, the slot is (2 + 7) % 8 = 1, which holds line 9, the newest. So the lines come out in order: 2, 3, 4, 5, 6, 7, 8, 9.</li>
+  <ol class="steps">
+    <li><strong>Fill the ring.</strong> Lines 0 to 7 fill slots 0 to 7, the head moving on by one after each call, so after line 7 the head is 0 again and the count is 8.</li>
+    <li><strong>Wrap.</strong> Line 8 goes into slot 0, overwriting line 0, and moves the head to 1, then line 9 goes into slot 1, overwriting line 1, and moves it to 2, while the count stays at 8, because the ring is full.</li>
+    <li><strong>Find the oldest line.</strong> The formula in <code>crash_log_line</code> is <code>(head + LINES - count) % LINES</code>, which with head 2, LINES 8 and count 8 gives 2 + 8 - 8 = 2 and 2 modulo 8 = 2, so the oldest kept line, line 2, is in slot 2.</li>
+    <li><strong>Read in order.</strong> Line index <code>i</code> lies in slot <code>(oldest + i) % LINES</code>, so for <code>i</code> = 7 the slot is (2 + 7) % 8 = 1, holding line 9, the newest, and the lines come out in the order 2, 3, 4, 5, 6, 7, 8, 9.</li>
   </ol>
   <p>
-    The formula has one job, which is to find where the oldest line lives when the ring has wrapped. A ring that has not wrapped has its oldest line in slot 0, and the same formula returns 0 in that case, because the count equals the head. The host tests check both cases. The starter's bug ignores the wrap and returns slot <code>i</code> directly. Its output on the ten-line test is the symptom: the test expects <em>line 2</em> at index 0, and the starter returns the content of slot 0, which holds <em>line 8</em>. The real starter run prints that exact message.
+    The formula's one job is to find the oldest line once the ring has wrapped, and for a ring that has not wrapped, whose oldest line is in slot 0, it returns 0, because the count equals the head, the host tests checking both cases. The starter's bug ignores the wrap and returns slot <code>i</code> directly, so on the ten-line test, which expects <em>line 2</em> at index 0, it returns the content of slot 0, <em>line 8</em>, the exact message the real starter run prints.
   </p>
   <pre><code class="language-plaintext">test_crash_log.c:50:test_ring_keeps_the_newest_lines:FAIL: Expected 'line 2' Was 'line 8'</code></pre>
   <p>
-    The reset reason has a worked number too. When the software reset happens, the SFTRSTF flag is bit 28. One shifted left 28 places is 0x10000000, which is 268435456 in decimal. The host test passes the value 0x10000000 as the reset flags of a simulated second boot, and it reads the same value back from the log's <code>reset_flags</code> field. The test checks the number, not the name, because the RCC register is not on the PC.
+    The reset reason has a worked number too, the software-reset flag SFTRSTF being bit 28, so one shifted left 28 places gives 0x10000000, 268 435 456 in decimal. The host test passes 0x10000000 as the reset flags of a simulated second boot and reads the same value back from the log's <code>reset_flags</code> field, checking the number rather than the name, because the RCC register does not exist on the PC.
   </p>
   <p>
-    Now the whole sequence in the sample. On the first boot, the magic number is random or missing, so <code>crash_log_boot</code> clears the log and returns false. The program prints <em>tick 1</em>, <em>tick 2</em> and <em>tick 3</em>, and each tick is added to the ring. On the third tick, <code>crash_assert_failed</code> adds the line <em>ASSERT main.c:125</em> to the ring, prints it, and calls <code>NVIC_SystemReset()</code>. On the second boot, the magic and the indices are valid, so the log is kept, the reset reason shows <em>software-reset</em>, and the program prints the four saved lines before it adds its own. Reading the code, that is the expected output. The simulator has not been observed to produce it, which the warning in the hands-on section explains.
+    The whole sequence of the sample runs as follows. On the first boot the magic number is random or missing, so <code>crash_log_boot</code> clears the log and returns false, the program prints <em>tick 1</em>, <em>tick 2</em> and <em>tick 3</em>, adding each to the ring, and on the third tick <code>crash_assert_failed</code> adds the line <em>ASSERT main.c:125</em> to the ring, prints it and calls <code>NVIC_SystemReset()</code>. On the second boot the magic and the indices are valid, so the log is kept, the reset reason shows <em>software-reset</em> and the program prints the four saved lines before adding its own, which is the output expected from reading the code, though the simulator has not been observed to produce it, as the warning in the hands-on section explains.
   </p>
 
   <div class="widget anim" data-title="Ten log lines in eight slots: which ones survive">
@@ -182,9 +188,9 @@
     </ol>
   </div>
 
-  <h2>The code, line by line</h2>
+  <h2>The crash log code line by line</h2>
   <p>
-    The crash log is a struct, and the header defines it in a few lines. Each field has one purpose:
+    The crash log is a struct that the header defines in a few lines, each field having one purpose.
   </p>
   <pre><code class="language-c">typedef struct {
     uint32_t magic;                /* valid only when equal to CRASH_LOG_MAGIC */
@@ -195,13 +201,13 @@
     char lines[CRASH_LOG_LINES][CRASH_LOG_LINE_LEN];
 } crash_log_t;</code></pre>
   <p>
-    The magic number is the first check. It is a value unlikely to appear in random RAM by chance, here 0xC0DEFA11. The boot count and the reset flags are the record of each boot, and they are written at every start. The head and the count describe the ring, and the array holds the text. Because the struct is one object, one <code>memset</code> clears all of it, and one attribute places all of it in the no-init section.
+    The magic number, 0xC0DEFA11, is the first check, a value unlikely to appear in random RAM, the boot count and the reset flags record each boot and are written at every start, and the head and the count describe the ring whose array holds the text. Because the struct is one object, a single <code>memset</code> clears all of it and a single attribute places all of it in the no-init section.
   </p>
   <pre><code class="language-c">static bool looks_valid(const crash_log_t *log) {
     return log-&gt;magic == CRASH_LOG_MAGIC &amp;&amp; log-&gt;head &lt; CRASH_LOG_LINES &amp;&amp; log-&gt;count &lt;= CRASH_LOG_LINES;
 }</code></pre>
   <p>
-    The magic alone can match by chance, so the function also checks that the head and the count are inside the array. A head of 99 cannot come from a working program, and a count above 8 is impossible in an 8-slot ring. The test <code>test_corrupt_indices_are_cleared</code> sets the head to 99 and checks that the log is cleared.
+    The magic alone can match by chance, so the function also checks that the head and the count lie inside the array, since a head of 99 cannot come from a working program and a count above 8 is impossible in an 8-slot ring, and the test <code>test_corrupt_indices_are_cleared</code> sets the head to 99 and checks that the log is cleared.
   </p>
   <pre><code class="language-c">bool crash_log_boot(crash_log_t *log, uint32_t reset_flags) {
     bool valid = looks_valid(log);
@@ -214,7 +220,7 @@
     return valid;
 }</code></pre>
   <p>
-    <code>crash_log_boot</code> runs once per boot, before anything else logs. If the RAM is valid, it keeps the log. If not, it clears the whole struct and sets the magic, so the next boot will trust it. The boot count always goes up, because it counts boots whether or not the log survived. The function returns the validity, and <code>main</code> uses that result to choose the message it prints.
+    <code>crash_log_boot</code> runs once per boot, before anything else logs, keeping the log if the RAM is valid and otherwise clearing the whole struct and setting the magic, so the next boot will trust it. The boot count always goes up, counting boots whether or not the log survived, and the function returns the validity, which <code>main</code> uses to choose the message it prints.
   </p>
   <pre><code class="language-c">void crash_log_add(crash_log_t *log, const char *text) {
     char *slot = log-&gt;lines[log-&gt;head];
@@ -231,7 +237,7 @@
     }
 }</code></pre>
   <p>
-    The function copies the text into the slot under the head, cutting it to 23 characters and adding the terminating zero. The head then moves forward, and the modulo operation wraps it to 0 at the end of the array. The count goes up until the ring is full, and then it stays at 8. Because the count stops, the oldest line is overwritten, which is what a ring should do.
+    The function copies the text into the slot under the head, cutting it to 23 characters and adding the terminating zero, then moves the head forward, the modulo wrapping it to 0 at the end of the array, while the count rises until the ring is full and then stays at 8, so the oldest line gets overwritten, as a ring should.
   </p>
   <pre><code class="language-c">const char *crash_log_line(const crash_log_t *log, uint32_t i) {
     if (i &gt;= log-&gt;count) {
@@ -241,88 +247,94 @@
     return log-&gt;lines[(oldest + i) % CRASH_LOG_LINES];
 }</code></pre>
   <p>
-    This is the formula from the worked example. The check at the top returns <code>NULL</code> past the last line, which lets the caller loop until it gets <code>NULL</code>. The <code>+ CRASH_LOG_LINES</code> inside the first modulo keeps the subtraction from going negative, because the count can be as large as the array. Without that addition, an unsigned subtraction would wrap to a huge value and the modulo would return a meaningless slot.
+    This is the formula of the worked example, the check at the top returning <code>NULL</code> past the last line, which lets the caller loop until it gets <code>NULL</code>. The <code>+ CRASH_LOG_LINES</code> inside the first modulo keeps the subtraction from going negative, because the count can be as large as the array, and without it an unsigned subtraction would wrap to a huge value and the modulo would return a meaningless slot.
   </p>
   <pre><code class="language-c">uint32_t flags = RCC-&gt;CSR &amp; RESET_FLAGS_MASK;
 RCC-&gt;CSR |= RCC_CSR_RMVF;</code></pre>
   <p>
-    These two lines are the first two statements of <code>main</code>, after the clock setup. The first reads the register and keeps only the reset flags. The second writes 1 to RMVF, which clears the flags in the hardware. The order matters: the read has to come first. After the write, the register reads as zero until the next reset. The mask <code>RESET_FLAGS_MASK</code> combines the six flags the program reports, so the value passed to the log is exactly the reset reason.
+    These two lines are the first statements of <code>main</code> after the clock setup, the first reading the register and keeping only the reset flags and the second writing 1 to RMVF, which clears the flags in the hardware, so the read must come first, since after the write the register reads as zero until the next reset. The mask <code>RESET_FLAGS_MASK</code> combines the six flags the program reports, so the value passed to the log is exactly the reset reason.
   </p>
   <pre><code class="language-c">static crash_log_t g_crash_log __attribute__((section(".noinit")));</code></pre>
   <p>
-    The declaration is the one shown in the explainer. The <code>static</code> keyword keeps the name inside the file, and the attribute moves the storage out of <code>.bss</code>. The sample's comment in <code>main.c</code> says that the map file must show <code>_ebss</code> before this variable. Check that after each build, because a change to the linker script can move the section.
+    The declaration is the one shown earlier, the <code>static</code> keyword keeping the name inside the file while the attribute moves the storage out of <code>.bss</code>. The sample's comment in <code>main.c</code> says that the map file must show <code>_ebss</code> before this variable, which should be checked after each build, because a change to the linker script can move the section.
   </p>
 
   <h2>Try it: a crash log that survives a reset</h2>
   <p>
-    The project has two parts. The crash log logic is a pure C module (<code>src/crash_log.c</code>) with host tests. The firmware (<code>main.c</code>) places the log in no-init RAM, reads the reset reason, and crashes once on purpose with an assertion.
+    The project has two parts, a pure C module for the crash log logic (<code>src/crash_log.c</code>) with host tests, and firmware (<code>main.c</code>) that places the log in no-init RAM, reads the reset reason and crashes once on purpose with an assertion.
   </p>
   <ol class="steps">
-    <li>Run the host tests from the workspace root: <code>python -I tools/build.py projects/0085-logging-tracing-and-field-diagnostics/starter/host-tests --test</code>. Two of six fail. The failing lines show the wrong line order after the ring wraps: <em>Expected 'line 2' Was 'line 8'</em> and <em>Expected 'line 1' Was 'line 8'</em>.</li>
-    <li>Your task: fix <code>crash_log_line()</code> in <code>starter/src/crash_log.c</code>. The comment marked TODO(learner) gives the slot formula. Rebuild and rerun the tests until the summary reads <em>6 Tests 0 Failures 0 Ignored</em>.</li>
-    <li>Your task: in <code>starter/main.c</code>, at the TODO(learner) comment, call <code>crash_assert_failed(__FILE__, __LINE__)</code> on the third tick of the first boot only. Build the firmware with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
-    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. On the first boot you should see ticks 1 to 3, then <em>ASSERT main.c</em> and <em>resetting</em>. On the second boot you should see <em>software-reset</em> in the reason line, and the log lines. The solution's second boot prints the line <em>previous reset: log from the last run follows</em>.</li>
+    <li>Run the host tests from the workspace root with <code>python -I tools/build.py projects/0085-logging-tracing-and-field-diagnostics/starter/host-tests --test</code>, and two of six fail, their lines showing the wrong order after the ring wraps, <em>Expected 'line 2' Was 'line 8'</em> and <em>Expected 'line 1' Was 'line 8'</em>.</li>
+    <li>Fix <code>crash_log_line()</code> in <code>starter/src/crash_log.c</code> with the slot formula given in the comment marked TODO(learner), rebuilding and rerunning the tests until the summary reads <em>6 Tests 0 Failures 0 Ignored</em>.</li>
+    <li>In <code>starter/main.c</code>, at the TODO(learner) comment, call <code>crash_assert_failed(__FILE__, __LINE__)</code> on the third tick of the first boot only, and build the firmware with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>, and the first boot should show ticks 1 to 3, then <em>ASSERT main.c</em> and <em>resetting</em>, the second boot <em>software-reset</em> in the reason line followed by the log lines, the solution's second boot printing the line <em>previous reset: log from the last run follows</em>.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>The oldest kept line sits at slot <code>(head + LINES - count) % LINES</code>. Line <code>i</code> is at slot <code>(oldest + i) % LINES</code>. Write the formula in one line, then test it with the failing test.</p>
+    <p>The oldest kept line sits at slot <code>(head + LINES - count) % LINES</code> and line <code>i</code> at slot <code>(oldest + i) % LINES</code>, so write the formula in one line and test it with the failing test.</p>
   </details>
   <div class="warning">
     The simulator run has not been checked for this lesson. Two things are unverified for Wokwi: whether its Blue Pill model sets the RCC_CSR reset flags after NVIC_SystemReset, and whether it keeps RAM across that reset. If the second boot prints <em>no valid log in RAM</em>, the simulator clears RAM, and the logic is still tested by the host tests. Say so in your own notes, and use the host tests as the evidence.
   </div>
 
   <p>
-    What the host tests printed before the fix, from a real run of the starter:
+    A real run of the starter's host tests printed the following before the fix.
   </p>
   <pre><code class="language-plaintext">test_crash_log.c:50:test_ring_keeps_the_newest_lines:FAIL: Expected 'line 2' Was 'line 8'
 test_crash_log.c:64:test_line_order_after_wrap:FAIL: Expected 'line 1' Was 'line 8'
 6 Tests 2 Failures 0 Ignored
 FAIL</code></pre>
   <p>
-    And the solution's host tests print <em>6 Tests 0 Failures 0 Ignored</em>, followed by <em>OK</em>. The memory layout check, from the solution's <code>blink.map</code>: <code>.noinit</code> starts at <code>0x200001bc</code>, and <code>_ebss</code> is at <code>0x200001bc</code>. The log is outside the zeroed range.
+    The solution's host tests print <em>6 Tests 0 Failures 0 Ignored</em> followed by <em>OK</em>, and the memory layout check in the solution's <code>blink.map</code> shows <code>.noinit</code> starting at <code>0x200001bc</code> with <code>_ebss</code> at <code>0x200001bc</code>, so the log lies outside the zeroed range.
   </p>
 
-  <div class="win">You can build a log that the startup code does not clear, read the reset reason before it is cleared, and check the layout in the map file. A field report can now say why the device restarted.</div>
+  <div class="win">You can build a log that the startup code does not clear, read the reset reason before it is cleared and check the layout in the map file, so a field report can now say why the device restarted.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>A log in ordinary static memory</h3>
   <p>
-    <strong>Mistake 1: a log in ordinary static memory.</strong> The developer writes <code>static crash_log_t g_crash_log;</code>, without the section attribute. The startup code zeroes <code>.bss</code> at every boot, so the magic is zero after every reset. The symptom is a second boot that prints <em>no valid log in RAM</em>, even after a crash. The fix is the <code>.noinit</code> section, and the check is the map file.
+    The second boot prints <em>no valid log in RAM</em> even after a crash, because the developer wrote <code>static crash_log_t g_crash_log;</code> without the section attribute, and the startup code zeroes <code>.bss</code> at every boot, so the magic is zero after every reset. Place the log in the <code>.noinit</code> section and confirm the placement in the map file.
   </p>
+  <h3>Reset flags cleared before they are read</h3>
   <p>
-    <strong>Mistake 2: clearing the reset flags before reading them.</strong> The developer writes RMVF at the top of <code>main</code>, and then reads the flags. The flags are already cleared, so every boot reports <em>none recorded</em>, which the print function shows when the value is zero. The symptom is that the reason is always missing. The fix is the order in the sample: read first, clear second.
+    Every boot reports <em>none recorded</em>, which the print function shows for a zero value, because the developer writes RMVF at the top of <code>main</code> and reads the flags afterwards, when they are already cleared. Keep the order of the sample, reading first and clearing second.
   </p>
+  <h3>A ring that ignores the wrap</h3>
   <p>
-    <strong>Mistake 3: a ring that ignores the wrap.</strong> The developer returns <code>lines[i]</code> directly, as the starter does. The first line printed is then whatever is in slot 0, which is the newest line once the ring has wrapped. The symptom is the out-of-order output in the host test, <em>Expected 'line 2' Was 'line 8'</em>. The fix is the formula with the head and the count. The host test is the evidence, and it should run after every change to the ring.
+    The host test shows out-of-order output, <em>Expected 'line 2' Was 'line 8'</em>, because the code returns <code>lines[i]</code> directly, as the starter does, so the first line printed is whatever slot 0 holds, the newest line once the ring has wrapped. Use the formula with the head and the count, and run the host test, the evidence, after every change to the ring.
   </p>
+  <h3>RAM trusted without checks</h3>
   <p>
-    <strong>Mistake 4: trusting the RAM without checks.</strong> The developer checks only the magic number, and a random value in the RAM passes by chance on a rare power-on. The symptom is a garbage line in the log, or a count that is larger than the array. The fix is the index check in <code>looks_valid</code>, and the test that writes a bad head and expects the log to be cleared.
+    A garbage line appears in the log, or a count larger than the array, because only the magic number was checked and a random RAM value matched it by chance on a rare power-on. Add the index check of <code>looks_valid</code> and the test that writes a bad head and expects the log to be cleared.
   </p>
+  <h3>Printing from the fault or the interrupt</h3>
   <p>
-    <strong>Mistake 5: printing from the fault or the interrupt.</strong> The developer prints the crash record inside the handler, with <code>printf</code>, to see it faster. Each line takes milliseconds at 115200 baud, and the reset may come before the output is complete. The symptom is a partial report, or a device that reboots before the message ends. The fix is to store the record in the no-init buffer, which costs almost nothing, and to print it on the next boot.
+    The report comes out partial, or the device reboots before the message ends, because the developer printed the crash record inside the handler with <code>printf</code> to see it sooner, and each line takes milliseconds at 115 200 baud. Store the record in the no-init buffer, which costs almost nothing, and print it on the next boot.
   </p>
+  <h3>No build record kept</h3>
   <p>
-    <strong>Mistake 6: no build record.</strong> The team keeps the log, and throws away the ELF file after each release to save disk space. A field report then names a line that nobody can find in the release. The symptom is an address that decodes to nothing useful. The fix is to archive the ELF and the map for every release, as lesson 84 says.
+    A field address decodes to nothing useful, because the team kept the logs but threw away the ELF file after each release to save disk space, so a reported line cannot be found in the release. Archive the ELF and the map of every release, as lesson 84 says.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Field diagnostics designed into products</h2></summary>
   <p>
-    Field diagnostics in a product team are designed up front. The firmware writes the release identifier into the log at boot, so every report names its build. It keeps a boot counter, so a field engineer can see how often the device has restarted. It stores the reset reason, and a short ring of recent events, in no-init RAM. The on-device log is small on purpose: a few hundred bytes is enough to explain most resets. When the bench is available, the same firmware uses a richer trace, such as SWO or RTT, which the field build leaves out.
+    Product teams design field diagnostics up front, the firmware writing the release identifier into the log at boot, so that every report names its build, keeping a boot counter, so that a field engineer can see how often the device has restarted, and storing the reset reason and a short ring of recent events in no-init RAM. The on-device log is small on purpose, a few hundred bytes explaining most resets, while on the bench the same firmware uses a richer trace such as SWO or RTT, which the field build leaves out.
   </p>
   <p>
-    Reviewers look for the same things. They ask whether the record survives the reset, whether the reset reason is read before it is cleared, whether the ring handles the wrap, and whether the ELF is kept. They also ask what the device does when the record is invalid, because a crash log that is wrong is worse than none.
+    Reviewers ask whether the record survives the reset, whether the reset reason is read before it is cleared, whether the ring handles the wrap and whether the ELF is kept, and also what the device does when the record is invalid, because a crash log that is wrong is worse than none.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A compile-time log filter removes debug code from the image. A run-time check still stores the strings and costs time on every call.</li>
-    <li>A UART at 115200 baud sends about 87 microseconds per byte with 8N1 framing, so a log in a timing-critical path is a problem.</li>
-    <li>A ring buffer keeps the newest lines in a fixed array. The oldest line is at <code>(head + LINES - count) % LINES</code>.</li>
-    <li>The startup code clears only <code>.bss</code>, which runs from <code>_sbss</code> to <code>_ebss</code>. A variable in <code>.noinit</code> keeps its value across a reset.</li>
-    <li>RCC_CSR holds the reset flags. SFTRSTF is bit 28, with the mask 0x10000000. Read the flags first, then write RMVF to clear them.</li>
-    <li>Check the magic number and the indices before you trust the RAM, because power-on RAM is random.</li>
-    <li>Keep the ELF and the map file for every release, so that any field address can be decoded later.</li>
+    <li>A compile-time log filter removes debug code from the image, whereas a run-time check still stores the strings and costs time on every call.</li>
+    <li>A UART at 115 200 baud with 8N1 framing takes about 87 µs per byte, so a log in a timing-critical path is a problem.</li>
+    <li>A ring buffer keeps the newest lines in a fixed array, its oldest line lying at <code>(head + LINES - count) % LINES</code>.</li>
+    <li>The startup code clears only <code>.bss</code>, from <code>_sbss</code> to <code>_ebss</code>, so a variable in <code>.noinit</code> keeps its value across a reset.</li>
+    <li>RCC_CSR holds the reset flags, SFTRSTF being bit 28 with the mask 0x10000000, and the flags are read first and then cleared by writing RMVF.</li>
+    <li>The magic number and the indices are checked before the RAM is trusted, because power-on RAM is random.</li>
+    <li>The ELF and the map file of every release are kept, so that any field address can be decoded later.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

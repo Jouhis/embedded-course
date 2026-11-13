@@ -11,82 +11,76 @@
 <body data-lesson="0078">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Memory: stack vs heap, static allocation, and detecting stack overflow</h1>
-  <p class="subtitle">A stack overflow in firmware prints nothing. It overwrites a variable, or a return address, and the bug shows up several functions later. This lesson shows how to see how deep the stack really goes, and why most embedded standards avoid the heap after startup.</p>
+  <h1>Memory</h1>
+  <p class="subtitle">Stack, heap and static allocation</p>
 
   <div class="goal">
     By the end of this lesson you can read the Pico's stack bounds from the linker symbols, paint the unused stack and report its high-water mark, and say why <code>malloc()</code> is banned in most firmware after startup.
   </div>
 
-  <h2>Why memory is the first thing to design</h2>
+  <h2>A fixed amount of RAM</h2>
   <p>
-    Lessons 33 and 41 showed the stack and the linker from the outside: what a call pushes, and where the linker places the code. This lesson is about the RAM itself. On a PC, a running program can ask the operating system for more memory when it needs it, and the operating system pages it in from disk. An MCU has no such help. It has a fixed amount of RAM, set when the chip was made, and the program must fit inside it on every run, including the worst run. The RP2040 on the Pico has 256 KB of SRAM, and the STM32F103 on the Blue Pill has less. If a program overflows its RAM, nothing tells you at compile time, and the failure may show up much later.
+    Lessons 33 and 41 showed the stack and the linker from the outside, what a call pushes and where the linker places the code, while this lesson concerns the RAM itself. A PC program can ask the operating system for more memory, which pages it in from disk, but an MCU has a fixed amount of RAM set when the chip was made, and the program must fit inside it on every run, including the worst. The RP2040 on the Pico has 256 KB of SRAM and the STM32F103 on the Blue Pill less, and since nothing reports an overflow at compile time, the failure may surface much later.
   </p>
   <p>
-    That is why firmware designs memory before it writes code. The question to ask is how much the program uses in the worst case, and where each byte lives. This lesson gives the vocabulary for that question.
-  </p>
-
-  <h2>The concepts, one at a time</h2>
-  <h3>Static storage</h3>
-  <p>
-    A <strong>global</strong> variable, or a <code>static</code> variable inside a function, has <em>static storage duration</em>: it exists for the whole run of the program, and its address is fixed by the linker. The linker groups it into two sections. <code>.data</code> holds the initial values, which are copied from flash into RAM at start-up. <code>.bss</code> holds the variables that start at zero, which the start-up code clears to zero. Lesson 42 shows the copy. In both cases the size is known at link time, so the linker can tell you the total before the program runs. That number is the fixed part of your RAM budget.
+    Firmware therefore designs its memory before writing code, asking how much the program uses in the worst case and where each byte lives, and this lesson provides the vocabulary for that question.
   </p>
 
-  <h3>The stack</h3>
+  <h2>Static storage in .data and .bss</h2>
   <p>
-    The <strong>stack</strong> holds the frames of the functions that are running: the return address, saved registers and local variables. Each call pushes a frame and each return pops it. The stack pointer, SP, marks the current end. On the Cortex-M the stack grows downward, so a push lowers SP, which is what lesson 33 describes. The size of the stack is fixed by the linker, and nothing checks it while the program runs. If a frame writes below the bottom of the stack, the write goes into whatever is there.
+    A <strong>global</strong> variable, or a <code>static</code> variable inside a function, has <em>static storage duration</em>, existing for the whole run at an address fixed by the linker, which groups it into one of two sections. <code>.data</code> holds variables with initial values, copied from flash into RAM at start-up, and <code>.bss</code> those starting at zero, which the start-up code clears, as lesson 42 shows. In both cases the size is known at link time, so the linker can report the total before the program runs, and that number is the fixed part of the RAM budget.
   </p>
 
-  <h3>The heap</h3>
+  <h2>The stack</h2>
   <p>
-    The <strong>heap</strong> is the region that <code>malloc()</code> manages. A call asks for a number of bytes and receives a pointer to a block, and a call to <code>free()</code> returns the block. The allocator must track which blocks are free and how big they are, and that bookkeeping is the source of the problems below. On the Pico, the heap starts at the symbol <code>__end__</code>, after the static data, and it ends at <code>__HeapLimit</code>, the end of the main RAM.
+    The <strong>stack</strong> holds the frames of the running functions, their return addresses, saved registers and local variables, each call pushing a frame and each return popping it, with the stack pointer, SP, marking the current end. On the Cortex-M the stack grows downward, so a push lowers SP, as lesson 33 describes, and its size is fixed by the linker and checked by nothing at run time, so a frame written below the bottom of the stack lands in whatever lies there.
   </p>
 
-  <h3>Fragmentation</h3>
+  <h2>The heap</h2>
   <p>
-    <strong>Fragmentation</strong> is what happens when free memory is split into pieces that are too small. The total can be large while no single request fits. Here is a worked example with a heap of 300 bytes.
+    The <strong>heap</strong> is the region that <code>malloc()</code> manages, a call asking for a number of bytes and receiving a pointer to a block, which <code>free()</code> later returns. The allocator must track which blocks are free and how big they are, and that bookkeeping is the source of the problems below. On the Pico the heap starts at the symbol <code>__end__</code>, after the static data, and ends at <code>__HeapLimit</code>, the end of the main RAM.
   </p>
 
-  <div class="analogy">
-    <p>Fragmentation is a car park where cars of different sizes come and go all day. By evening the free spaces add up to room for a bus, but they are scattered gaps between parked cars, so the bus does not fit. A heap that has served many <code>malloc</code> and <code>free</code> calls of different sizes ends up the same way.</p>
-  </div>
+  <h2>Heap fragmentation</h2>
+  <p>
+    <strong>Fragmentation</strong> happens when free memory is split into pieces that are too small, so that the total can be large while no single request fits. We follow a heap of 300 bytes through six calls, and before reading the last step, predict whether a 150-byte request succeeds with 200 bytes free.
+  </p>
   <ol class="steps">
-    <li>Allocate A, 100 bytes. It takes bytes 0 to 99. Free space: bytes 100 to 299, 200 bytes.</li>
-    <li>Allocate B, 100 bytes. It takes bytes 100 to 199. Free space: bytes 200 to 299, 100 bytes.</li>
-    <li>Allocate C, 100 bytes. It takes bytes 200 to 299. Free space: none.</li>
-    <li>Free A. Bytes 0 to 99 are free. Free space: 100 bytes in one block.</li>
-    <li>Free C. Bytes 200 to 299 are free. Free space: two blocks of 100 bytes each, 200 bytes in total.</li>
-    <li>Request D, 150 bytes. The total free space is 200 bytes, but the largest block is 100 bytes. The request fails.</li>
+    <li><strong>Allocate A.</strong> A takes 100 bytes, bytes 0 to 99, leaving bytes 100 to 299, 200 bytes, free.</li>
+    <li><strong>Allocate B.</strong> B takes bytes 100 to 199, leaving bytes 200 to 299, 100 bytes, free.</li>
+    <li><strong>Allocate C.</strong> C takes bytes 200 to 299, leaving no free space.</li>
+    <li><strong>Free A.</strong> Bytes 0 to 99 become free, 100 bytes in one block.</li>
+    <li><strong>Free C.</strong> Bytes 200 to 299 become free, giving two blocks of 100 bytes, 200 bytes in total.</li>
+    <li><strong>Request D.</strong> D asks for 150 bytes, and although 200 bytes are free, the largest block is 100 bytes, so the request fails.</li>
   </ol>
   <p>
-    Step 6 is the one that surprises people. A test that frees everything at the end passes, and the failure appears only after a long run with a particular pattern of sizes. The failure is also not reproducible by reading the code, because it depends on the order of the calls.
-  </p>
-
-  <h3>Predictability</h3>
-  <p>
-    A second reason to avoid <code>malloc()</code> is time. A real-time task has a deadline, and the allocator's search for a free block takes a number of steps that depends on the state of the heap. Two calls with the same size can take different times. A deadline needs a bound, and the heap does not give one in general. Lesson 55 introduced deadlines, and this is one of the things that breaks them.
-  </p>
-
-  <h3>A memory pool, with numbers</h3>
-  <p>
-    A <strong>memory pool</strong> avoids both problems. It is an array of blocks of one size, and a free list that links the free ones together. Taking a block is one step, and returning one is one step, so the time is fixed. Because all blocks are the same size, no block can be too small for a request, and no free space splits into unusable pieces. On the Cortex-M, a pointer is 4 bytes, and the <code>msg_t</code> struct in the code below holds 32 bytes of payload and one pointer, so its size is 36 bytes. Eight blocks take 8 × 36 = 288 bytes, and that number is known when the program is compiled.
-  </p>
-
-  <h3>The high-water mark</h3>
-  <p>
-    The <strong>high-water mark</strong> is the deepest the stack has ever been. It is the most useful number a firmware team can measure, because the stack size is a design choice and the mark tells you how much margin you have. A tool can measure it only if it can tell used memory from unused. Painting provides that: fill the free stack with a known value, run the program, and look for the first place where the value has changed. The value <code>0xA5A5A5A5</code> is an arbitrary pattern that real code does not produce by accident.
+    Step 6 is the one that surprises people, because a test that frees everything at the end passes and the failure appears only after a long run with a particular pattern of sizes, which reading the code cannot reproduce, since it depends on the order of the calls.
   </p>
 
   <div class="analogy">
-    <p>Painting the stack is the tide line on a harbour wall. You cannot watch the water all day, but the line it leaves shows the highest it ever reached. Fill the stack with a known pattern at startup, and later the first word that no longer holds the pattern shows how deep the stack has ever gone.</p>
+    <p>Fragmentation resembles a car park where cars of different sizes come and go all day, so that by evening the free spaces add up to room for a bus but lie scattered between parked cars, and the bus does not fit, which is how a heap ends up after many <code>malloc</code> and <code>free</code> calls of different sizes. The comparison breaks because the parked cars eventually leave, whereas a long-lived allocation can pin a gap in place for the whole run.</p>
   </div>
 
-  <h2>The idea: three regions in one RAM</h2>
+  <h2>Allocation time and deadlines</h2>
   <p>
-    The RP2040 has 256 KB of SRAM starting at <code>0x20000000</code>. The program uses three parts of it. The <strong>static data</strong> (globals and <code>static</code> variables) has a fixed size and lives for the whole run (lessons 41 and 42 show how the linker places it). The <strong>stack</strong> holds the call frames, and it grows downward from the top (lesson 33). The <strong>heap</strong> is the area that <code>malloc()</code> hands out, and it grows upward. The stack and the heap grow toward each other, so a deep stack and a large heap can collide. That is the general case the figure below shows. On the Pico's default layout the core 0 stack is in SCRATCH_Y and the heap is limited to the main RAM, so the two never share an address range; the figure is a schematic of the general rule, not a map of this linker script.
+    A second reason to avoid <code>malloc()</code> is time. A real-time task has a deadline, while the allocator's search for a free block takes a number of steps that depends on the state of the heap, so two calls of the same size can take different times, and since a deadline needs a bound that the heap does not give in general, this is one of the things that breaks the deadlines introduced in lesson 55.
+  </p>
+
+  <h2>Memory pools</h2>
+  <p>
+    A <strong>memory pool</strong> avoids both problems, being an array of equal-sized blocks with a free list linking the free ones, so that taking or returning a block is one step and its time fixed, and because all blocks share one size, none is too small for a request and no free space splits into unusable pieces. On the Cortex-M a pointer is 4 bytes and the <code>msg_t</code> struct in the code below holds 32 bytes of payload and one pointer, so it occupies 36 bytes, and eight blocks take
+  </p>
+  <p class="eq"><span>RAM<sub>pool</sub> = N × size<sub>block</sub> = 8 × 36 B = 288 B</span><span class="eq-n">(1)</span></p>
+  <p>
+    where N is the number of blocks and size<sub>block</sub> the size of one block, a number known when the program is compiled.
+  </p>
+
+  <h2>Three regions in one RAM</h2>
+  <p>
+    The RP2040 has 256 KB of SRAM starting at <code>0x20000000</code>, of which the program uses three parts: the <strong>static data</strong> (globals and <code>static</code> variables), with a fixed size and a lifetime of the whole run (lessons 41 and 42 show how the linker places it), the <strong>stack</strong>, holding the call frames and growing downward from the top (lesson 33), and the <strong>heap</strong>, the area <code>malloc()</code> hands out, growing upward. The stack and the heap therefore grow toward each other, so a deep stack and a large heap can collide, which is the general case the figure shows, whereas on the Pico's default layout the core 0 stack lies in SCRATCH_Y and the heap is limited to the main RAM, so the two never share an address range, the figure being a schematic of the general rule rather than a map of this linker script.
   </p>
   <p>
-    On the Pico, the SDK's linker script reserves a fixed stack for core 0. The default is <code>PICO_STACK_SIZE</code>, which is <code>0x800</code>, or 2048 bytes, and the stack starts at the top of SCRATCH_Y, a 4 KB bank that ends at <code>0x20042000</code>, just above the 256 KB main RAM (<a href="https://github.com/raspberrypi/pico-sdk" target="_blank" rel="noopener">pico-sdk, src/rp2040/pico_platform/memmap_default.ld and rp2_common/pico_standard_link/script_include</a>; the RP2040 default for <code>PICO_STACK_SIZE</code> is in <code>src/rp2040/pico_platform/include/pico/platform.h</code>, read in the SDK 2.3.1 copy).
+    On the Pico the SDK's linker script reserves a fixed stack for core 0, by default <code>PICO_STACK_SIZE</code>, which is <code>0x800</code>, or 2 048 bytes, starting at the top of SCRATCH_Y, a 4 KB bank that ends at <code>0x20042000</code>, just above the 256 KB main RAM (<a href="https://github.com/raspberrypi/pico-sdk" target="_blank" rel="noopener">pico-sdk, src/rp2040/pico_platform/memmap_default.ld and rp2_common/pico_standard_link/script_include</a>; the RP2040 default for <code>PICO_STACK_SIZE</code> is in <code>src/rp2040/pico_platform/include/pico/platform.h</code>, read in the SDK 2.3.1 copy).
   </p>
 
   <figure>
@@ -113,16 +107,16 @@
     <figcaption>Figure 1. A schematic of RAM, not to scale. The stack starts at the top and grows down; the heap starts above the static data and grows up. The canary sits at the lowest reserved word of the stack.</figcaption>
   </figure>
 
-  <h2>Why most standards ban malloc after startup</h2>
+  <h2>Firmware rules against malloc after startup</h2>
   <p>
-    <code>malloc()</code> is convenient on a PC, where the heap is large and paged. On a microcontroller it causes three problems. First, the heap can <strong>fragment</strong>: after many allocations and frees of different sizes, there can be enough free bytes in total but no single block big enough, so the call fails late and at random. Second, the time an allocation takes is not fixed, which breaks a real-time deadline. Third, a failed call returns a null pointer that the code must check on every path, and the failure often happens only after months of uptime.
+    <code>malloc()</code> is convenient on a PC, where the heap is large and paged, but on a microcontroller it causes three problems. The heap can <strong>fragment</strong>, so that after many allocations and frees of different sizes enough bytes are free in total but no single block is big enough, and the call fails late and at random, the time an allocation takes is not fixed, which breaks a real-time deadline, and a failed call returns a null pointer that the code must check on every path, the failure often coming only after months of uptime.
     <span class="sidenote">MISRA C:2012 rule 21.3 prohibits the allocation and free functions of <code>&lt;stdlib.h&gt;</code>. The rule text is in the paid MISRA document; a tool vendor's summary of it is in the <a href="https://www.mathworks.com/help/bugfinder/ref/misrac2012rule21.3.html" target="_blank" rel="noopener">Polyspace rule page</a>.</span>
   </p>
   <div class="warning">A common claim is that malloc is "slower". The stronger reason is that the failure happens at a time you do not choose, in a state you did not test.</div>
 
-  <h2>Static allocation and memory pools</h2>
+  <h2>Static allocation with a memory pool</h2>
   <p>
-    The usual alternative is to allocate everything at startup, from fixed-size arrays. A <strong>memory pool</strong> is an array of identical blocks with a free list: taking a block and returning one are a few pointer moves, the time is fixed, and no size fragments. The pool's size is part of the design, so the worst case is known before the device ships.
+    The usual alternative is to allocate everything at startup from fixed-size arrays, a pool of identical blocks with a free list in which taking and returning a block are a few pointer moves, the time is fixed and no size fragments. The pool's size is part of the design, so the worst case is known before the device ships.
   </p>
   <pre><code class="language-c">#define POOL_BLOCKS 8u
 
@@ -137,19 +131,26 @@ static msg_t *pool_take(void) {
     return m;
 }</code></pre>
 
-  <h2>Detecting stack overflow</h2>
+  <h2>Stack painting, canaries and MPU guards</h2>
   <p>
-    A stack overflow writes into whatever lies below the stack, so the damage can be silent. Three checks catch it.
+    The <strong>high-water mark</strong> is the deepest the stack has ever been, the most useful number a firmware team can measure, because the stack size is a design choice and the mark shows how much margin remains. A tool can measure it only by telling used memory from unused, which painting provides, the free stack being filled with a known value, the program run and the first place where the value changed located, the value <code>0xA5A5A5A5</code> being an arbitrary pattern that real code does not produce by accident.
+  </p>
+  <p>
+    A stack overflow writes into whatever lies below the stack, so the damage can be silent, and three checks catch it.
   </p>
   <ol class="steps">
-    <li><strong>Painting and high-water mark.</strong> Before the program runs, fill the unused stack with a known pattern. After it runs, the lowest word that no longer holds the pattern is the deepest point the stack reached. Its distance from the top is the high-water mark.</li>
-    <li><strong>A canary.</strong> Put a known word at the lowest reserved address. If the stack ever writes it, the stack has passed its limit. A canary only tells you after the damage. It does not stop the write.</li>
-    <li><strong>An MPU guard.</strong> The Cortex-M MPU can make the bottom of the stack unwritable, so the overflow faults at the moment it happens (lesson 39). The Pico SDK can install that guard for core 0 when <code>PICO_USE_STACK_GUARDS</code> is 1. Its default is 0: the PICO_CONFIG entry in <code>src/rp2350/pico_platform/include/pico/platform.h</code> says so, the RP2040 headers do not define it, and <code>runtime_init.h</code> compiles the guard code only when it is 1. The source is <code>src/rp2_common/pico_runtime_init/runtime_init_stack_guard.c</code> and <code>runtime_init.h</code> in the SDK 2.3.1 copy, and this lesson did not test the guard.</li>
+    <li><strong>Painting and high-water mark.</strong> Before the program runs, the unused stack is filled with a known pattern, and afterwards the lowest word no longer holding it marks the deepest point the stack reached, its distance from the top being the high-water mark.</li>
+    <li><strong>A canary.</strong> A known word placed at the lowest reserved address reveals that the stack passed its limit if it is ever overwritten, though a canary reports only after the damage and does not stop the write.</li>
+    <li><strong>An MPU guard.</strong> The Cortex-M MPU can make the bottom of the stack unwritable, so that the overflow faults at the moment it happens (lesson 39), and the Pico SDK can install that guard for core 0 when <code>PICO_USE_STACK_GUARDS</code> is 1. Its default is 0, as the PICO_CONFIG entry in <code>src/rp2350/pico_platform/include/pico/platform.h</code> says, the RP2040 headers not defining it and <code>runtime_init.h</code> compiling the guard code only when it is 1. The source is <code>src/rp2_common/pico_runtime_init/runtime_init_stack_guard.c</code> and <code>runtime_init.h</code> in the SDK 2.3.1 copy, and this lesson did not test the guard.</li>
   </ol>
 
-  <h2>The linker symbols</h2>
+  <div class="analogy">
+    <p>Painting the stack resembles the tide line on a harbour wall, since nobody can watch the water all day, but the line it leaves shows the highest it ever reached, just as the first word that no longer holds the startup pattern shows how deep the stack has ever gone. The comparison breaks on timing, though, because the tide line is permanent while the paint records only the runs that happened since startup, so a deeper path that the test never exercised leaves no mark at all.</p>
+  </div>
+
+  <h2>Linker symbols for the stack and heap bounds</h2>
   <p>
-    The linker defines the stack and heap bounds as symbols, so code can read them without hard-coding addresses. These are the values from the built Pico ELF for this lesson, read with <code>arm-none-eabi-nm</code>.
+    The linker defines the stack and heap bounds as symbols, so code can read them without hard-coding addresses, and the values below come from the built Pico ELF for this lesson, read with <code>arm-none-eabi-nm</code>.
   </p>
   <table>
     <thead><tr><th>Symbol</th><th>Value on the Pico</th><th>Meaning</th></tr></thead>
@@ -162,68 +163,79 @@ static msg_t *pool_take(void) {
     </tbody>
   </table>
   <p>
-    Lesson 68 explains how these are defined in a script you write yourself. The symbols in this table are defined by the SDK's script, and <code>__end__</code> depends on the size of the static data in your build.
+    Lesson 68 explains how such symbols are defined in a script you write yourself, whereas those in this table are defined by the SDK's script, and <code>__end__</code> depends on the size of the static data in your build.
   </p>
 
-  <h2>The code, line by line</h2>
-  <p>The painting code is short, and each line has one job.</p>
+  <h2>The painting code line by line</h2>
+  <p>The painting code is short, each line having one job.</p>
   <ol class="steps">
-    <li><code>extern char __StackBottom;</code> declares the symbol, which the linker defines. The code takes its address, not its value, and the contents are never read. The type is <code>char</code> only because it is a placeholder for a byte address.</li>
-    <li><code>__asm volatile ("mov %0, sp" : "=r"(sp));</code> reads the stack pointer directly. The painting must know where SP is now, so that it stops above the current frames. The <code>volatile</code> keeps the compiler from moving the read.</li>
-    <li><code>*lo = CANARY_WORD;</code> writes the canary into the lowest reserved word. It is written first so that the paint loop, which starts one word higher, does not overwrite it.</li>
-    <li><code>for (volatile uint32_t *p = lo + 1; p &lt; hi; p++) *p = PAINT_WORD;</code> fills every word from the canary up to SP minus 64 bytes. The 64-byte margin protects the frames that are still in use.</li>
-    <li><code>s_paint_limit = (uint32_t *)hi;</code> remembers where the painted part ends, so the scan later stops there.</li>
-    <li>In <code>high_water_bytes()</code>, the loop compares each word with the paint. The first word that differs is the lowest word the stack wrote. <code>(uintptr_t)&amp;__StackTop - (uintptr_t)p</code> converts its address into a distance from the top, in bytes.</li>
+    <li><code>extern char __StackBottom;</code> declares the symbol that the linker defines, the code taking its address rather than its value and never reading its contents, the type <code>char</code> serving only as a placeholder for a byte address.</li>
+    <li><code>__asm volatile ("mov %0, sp" : "=r"(sp));</code> reads the stack pointer directly, because the painting must know where SP is now in order to stop above the current frames, and the <code>volatile</code> keeps the compiler from moving the read.</li>
+    <li><code>*lo = CANARY_WORD;</code> writes the canary into the lowest reserved word first, so that the paint loop, starting one word higher, does not overwrite it.</li>
+    <li><code>for (volatile uint32_t *p = lo + 1; p &lt; hi; p++) *p = PAINT_WORD;</code> fills every word from the canary up to SP minus 64 bytes, the 64-byte margin protecting the frames still in use.</li>
+    <li><code>s_paint_limit = (uint32_t *)hi;</code> remembers where the painted part ends, so that the later scan stops there.</li>
+    <li>In <code>high_water_bytes()</code>, the loop compares each word with the paint, the first word that differs being the lowest the stack wrote, and <code>(uintptr_t)&amp;__StackTop - (uintptr_t)p</code> converts its address into a distance from the top in bytes.</li>
   </ol>
   <p>
-    The stack-frame arithmetic in the disassembly of this build is <code>push {lr}</code> followed by <code>sub sp, #20</code>, which is 4 + 20 = 24 bytes per call. You can check the same thing in the Debug disassembly of your build with <code>arm-none-eabi-objdump -d</code>.
+    The disassembly of this build shows each frame as <code>push {lr}</code> followed by <code>sub sp, #20</code>, 4 + 20 = 24 bytes per call, which you can check in the Debug disassembly of your own build with <code>arm-none-eabi-objdump -d</code>.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project is <code>projects/0078-stack-painting</code>. The starter prints a stack report, but its painting and measurement functions are stubs marked <code>TODO(learner)</code>, so it prints <code>STACK PAINT FAIL</code>. The recursion is written for you. In the course's Debug build each call uses a 24-byte frame, and <code>recurse(16)</code> makes 17 calls, so the recursion alone uses 408 bytes of the 2048-byte stack.
+    The project is <code>projects/0078-stack-painting</code>, whose starter prints a stack report but has its painting and measurement functions stubbed out with <code>TODO(learner)</code>, so it prints <code>STACK PAINT FAIL</code>. The recursion is written for you, and since each call uses a 24-byte frame in the course's Debug build and <code>recurse(16)</code> makes 17 calls, the recursion alone uses 408 bytes of the 2 048-byte stack.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0078-stack-painting/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>STACK PAINT FAIL</code>.</li>
-    <li>Your task, part 1: in <code>paint_unused_stack()</code>, write the canary into the word at <code>&amp;__StackBottom</code>. Then paint every word from the next one up to <code>current_sp() - PAINT_MARGIN_BYTES</code> with <code>PAINT_WORD</code>. Set <code>s_paint_limit</code> to the top of the painted range.</li>
-    <li>Your task, part 2: in <code>high_water_bytes()</code>, scan the painted words from the bottom up, skipping the canary. The first word that is not the paint is the deepest point. Return the distance from <code>&amp;__StackTop</code>, or 0 if every word still has the paint.</li>
-    <li>Build and run. The monitor prints the reserved size and the high-water mark, and then <code>STACK PAINT OK</code>. The high-water mark must be at least 408 bytes, the 17 frames of the recursion. In the solution's Debug build it should read 440 bytes: the 408 plus the 32-byte frame of <code>main()</code>, which sits above the painted region. If your number differs, check the frame sizes in the disassembly before you change the code.</li>
-    <li>Optional: in <code>canary_intact()</code>, return whether the word at <code>&amp;__StackBottom</code> still holds <code>CANARY_WORD</code>. The last line of the program prints <code>CANARY OK</code> or <code>CANARY HIT</code> after a 128-deep recursion, which writes about 1 KB below the reserved stack. In the starter, <code>canary_intact()</code> is a stub that always returns true, so the line says <code>CANARY OK</code> until you write the check. In the solution, the disassembly places the canary exactly on the depth word of the 85th frame of the overflow, so the solution should print <code>CANARY HIT</code>. This lesson could not run the simulator to confirm that, so treat it as the expected result to check on your run.</li>
+    <li>Open <code>projects/0078-stack-painting/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>, and the monitor prints <code>STACK PAINT FAIL</code>.</li>
+    <li>In <code>paint_unused_stack()</code>, write the canary into the word at <code>&amp;__StackBottom</code>, paint every word from the next one up to <code>current_sp() - PAINT_MARGIN_BYTES</code> with <code>PAINT_WORD</code> and set <code>s_paint_limit</code> to the top of the painted range.</li>
+    <li>In <code>high_water_bytes()</code>, scan the painted words from the bottom up, skipping the canary, and return the distance of the first word that is not paint from <code>&amp;__StackTop</code>, or 0 if every word still holds the paint.</li>
+    <li>Build and run, and the monitor prints the reserved size and the high-water mark, then <code>STACK PAINT OK</code>. The high-water mark must be at least 408 bytes, the 17 frames of the recursion, and in the solution's Debug build it should read 440 bytes, the 408 plus the 32-byte frame of <code>main()</code>, which sits above the painted region, so a different number calls for checking the frame sizes in the disassembly before changing the code.</li>
+    <li>Optionally, make <code>canary_intact()</code> return whether the word at <code>&amp;__StackBottom</code> still holds <code>CANARY_WORD</code>. The program's last line prints <code>CANARY OK</code> or <code>CANARY HIT</code> after a 128-deep recursion that writes about 1 KB below the reserved stack, and since the starter's stub always returns true, the line says <code>CANARY OK</code> until you write the check. In the solution the disassembly places the canary exactly on the depth word of the 85th frame of the overflow, so the solution should print <code>CANARY HIT</code>, but this lesson could not run the simulator to confirm it, so treat it as the expected result to check on your run.</li>
   </ol>
   <details>
     <summary>Hint for the scan</summary>
-    <p>Walk from <code>lo + 1</code> up to <code>s_paint_limit</code>, comparing each word with <code>PAINT_WORD</code>. The stack grows down, so the first changed word, reached from the bottom, is the lowest one that the stack wrote. Subtract its address from <code>&amp;__StackTop</code>, cast to <code>uintptr_t</code>, to get bytes.</p>
+    <p>Walk from <code>lo + 1</code> up to <code>s_paint_limit</code>, comparing each word with <code>PAINT_WORD</code>, and since the stack grows down, the first changed word reached from the bottom is the lowest one the stack wrote, whose address subtracted from <code>&amp;__StackTop</code>, both cast to <code>uintptr_t</code>, gives the bytes.</p>
   </details>
   <details>
     <summary>Hint if the report says 0 bytes</summary>
-    <p>The scan stops at <code>s_paint_limit</code>, so the paint must reach up to that point. If <code>s_paint_limit</code> was never set, the loop does nothing and returns 0. Also check that <code>current_sp()</code> is read in <code>paint_unused_stack()</code>, not earlier in <code>main()</code>.</p>
+    <p>The scan stops at <code>s_paint_limit</code>, so the paint must reach up to that point, and if <code>s_paint_limit</code> was never set, the loop does nothing and returns 0. Check also that <code>current_sp()</code> is read in <code>paint_unused_stack()</code> rather than earlier in <code>main()</code>.</p>
   </details>
-  <p>The reference solution is in <code>projects/0078-stack-painting/solution</code>. Try first, compare after. The solution's expected line is <code>STACK PAINT OK</code>; the high-water number itself is for you to read, not to copy.</p>
+  <p>The reference solution is in <code>projects/0078-stack-painting/solution</code>, so try first and compare afterwards. The solution's expected line is <code>STACK PAINT OK</code>, while the high-water number itself is for you to read rather than copy.</p>
 
-  <div class="win">You painted the unused stack, ran code that used it, and measured how deep it went, from the linker's own bounds. You can say why a canary is a detector and not a guard.</div>
+  <div class="win">You painted the unused stack, ran code that used it and measured how deep it went from the linker's own bounds, and you can say why a canary is a detector and not a guard.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <ol class="steps">
-    <li><strong>The heap works for a day, then fails.</strong> A device calls <code>malloc()</code> for each message. Tests pass, and after a day in the field <code>malloc()</code> returns NULL, which the code does not expect. The symptom is a rare failure with no matching input. The fix is a pool allocated at start-up, as above, with a check for an empty free list.</li>
-    <li><strong>The canary is painted over.</strong> The paint loop starts at <code>&amp;__StackBottom</code> instead of one word above it. The symptom is <code>CANARY HIT</code> on the first run, before any overflow. The fix is the order in the code: write the canary, then paint from the next word.</li>
-    <li><strong>The high-water report says 0 bytes.</strong> The scan stops at <code>s_paint_limit</code>, and that is never set, or it is set before the paint runs. The symptom is a report of 0 bytes, even though the recursion clearly ran. The fix is to read the stack pointer inside <code>paint_unused_stack()</code>, and to set the limit at the end of the paint.</li>
-    <li><strong>The canary is taken as protection.</strong> A team sees <code>CANARY OK</code> at the end of a test and assumes the stack is safe. The canary only sees a write after it has happened, and a stack overflow can corrupt a variable and return a wrong value long before the canary is checked. The fix is to measure the high-water mark under the worst test, leave margin, and where the hardware offers a guard, enable it.</li>
-  </ol>
+  <h3>A heap that works for a day and then fails</h3>
+  <p>
+    Tests pass, but after a day in the field a rare failure with no matching input appears, because the device calls <code>malloc()</code> for each message and eventually receives a NULL the code does not expect. Replace the heap with a pool allocated at start-up, as above, with a check for an empty free list.
+  </p>
+  <h3>A canary painted over</h3>
+  <p>
+    The program prints <code>CANARY HIT</code> on the first run, before any overflow, because the paint loop starts at <code>&amp;__StackBottom</code> instead of one word above it. Keep the order of the code, writing the canary first and painting from the next word.
+  </p>
+  <h3>A high-water report of 0 bytes</h3>
+  <p>
+    The report says 0 bytes although the recursion clearly ran, because the scan stops at <code>s_paint_limit</code>, which was never set or was set before the paint ran. Read the stack pointer inside <code>paint_unused_stack()</code> and set the limit at the end of the paint.
+  </p>
+  <h3>A canary taken as protection</h3>
+  <p>
+    A team sees <code>CANARY OK</code> at the end of a test and assumes the stack is safe, although the canary only sees a write after it has happened and an overflow can corrupt a variable and return a wrong value long before the canary is checked. Measure the high-water mark under the worst test, leave margin and, where the hardware offers a guard, enable it.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Dynamic memory rules in code standards</h2></summary>
   <p>
-    Most embedded code standards restrict dynamic memory. MISRA C:2012 has a rule that prohibits the allocation and free functions in <code>&lt;stdlib.h&gt;</code> (rule 21.3, as summarised in the Polyspace page cited above). In a review, a reviewer who sees <code>malloc()</code> in firmware asks where the memory comes from, what happens when it returns NULL, and what the worst-case heap use is. A good answer is a static bound. Teams also run the high-water measurement in their test builds, record the number, and fail the build when the margin shrinks below an agreed limit. That is the process that turns a stack size into a number someone checked.</p>
+    Most embedded code standards restrict dynamic memory, MISRA C:2012 prohibiting the allocation and free functions of <code>&lt;stdlib.h&gt;</code> (rule 21.3, as summarised in the Polyspace page cited above). A reviewer who sees <code>malloc()</code> in firmware asks where the memory comes from, what happens when it returns NULL and what the worst-case heap use is, and a good answer is a static bound. Teams also run the high-water measurement in their test builds, record the number and fail the build when the margin shrinks below an agreed limit, which is the process that turns a stack size into a number someone checked.
+  </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>RAM on an MCU is fixed. Designing its use means finding the worst case of each region.</li>
-    <li>Static data is sized at link time. The stack is fixed by the linker and not checked at run time.</li>
-    <li>Fragmentation can leave enough free bytes in total and no block big enough. A pool of equal blocks avoids it and has a fixed time per call.</li>
-    <li>Paint the free stack, run, and find the first changed word to measure the high-water mark.</li>
-    <li>A canary detects an overflow after it happens. An MPU guard can stop the write, where the hardware has one.</li>
-    <li>On the Pico, the stack is in SCRATCH_Y, the main heap ends at the top of main RAM, and the linker symbols give both bounds.</li>
+    <li>RAM on an MCU is fixed, so designing its use means finding the worst case of each region.</li>
+    <li>Static data is sized at link time, while the stack is fixed by the linker and not checked at run time.</li>
+    <li>Fragmentation can leave enough free bytes in total with no block big enough, which a pool of equal blocks avoids while also taking a fixed time per call.</li>
+    <li>The high-water mark is measured by painting the free stack, running and finding the first changed word.</li>
+    <li>A canary detects an overflow after it happens, whereas an MPU guard, where the hardware has one, can stop the write.</li>
+    <li>On the Pico the stack lies in SCRATCH_Y, the main heap ends at the top of main RAM, and the linker symbols give both bounds.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

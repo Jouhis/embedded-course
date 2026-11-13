@@ -12,44 +12,42 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Pointers to registers and struct overlays</h1>
-  <p class="subtitle">A peripheral register is a fixed address on the bus. In C you reach it with a pointer, and a struct lets you name its fields. Vendor headers do exactly this, and you can write the same thing yourself.</p>
+  <p class="subtitle">Typed C access to peripheral registers at fixed addresses</p>
 
   <div class="goal">
     By the end of this lesson you can write a register struct for the STM32F1 GPIO port, turn a fixed address into a pointer to it, and set PC13 with a single atomic BSRR write instead of a read-modify-write.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>From addresses to named registers</h2>
   <p>
-    <a href="0038-the-memory-map-and-memory.html">Lesson 38</a> explained the memory map: the chip places flash, SRAM and the peripherals at fixed addresses, and the CPU reaches all of them with ordinary loads and stores. <a href="0046-volatile-const-and-static.html">Lesson 46</a> showed that a value the hardware can change must be read and written with <code>volatile</code>, so the compiler does not cache it. <a href="0002-first-blink-in-wokwi.html">Lesson 2</a> blinked the on-board LED by writing to a GPIO pin, and this lesson shows what those writes actually are.
+    <a href="0038-the-memory-map-and-memory.html">Lesson 38</a> explained the memory map, in which the chip places flash, SRAM and the peripherals at fixed addresses that the CPU reaches with ordinary loads and stores, and <a href="0046-volatile-const-and-static.html">lesson 46</a> showed that a value the hardware can change must be accessed through <code>volatile</code> so that the compiler does not cache it. <a href="0002-first-blink-in-wokwi.html">Lesson 2</a> blinked the on-board LED by writing to a GPIO pin, and this lesson shows what those writes actually are.
   </p>
   <p>
-    Every driver deals with this. A firmware engineer must configure a pin as an output, drive it high or low, and do that safely while an interrupt may be running. The vendor header hides the detail behind names such as <code>GPIOC-&gt;BSRR</code>. When a bug happens in that code, a developer who does not know what the names stand for can only guess. Once you can write the struct yourself, the vendor code stops being magic, and you can check it against the reference manual.
+    Every driver deals with this. A firmware engineer must configure a pin as an output and drive it high or low, safely, while an interrupt may be running, and the vendor header hides the detail behind names such as <code>GPIOC-&gt;BSRR</code>. When a bug appears in that code, a developer who does not know what the names stand for can only guess, whereas once you can write the struct yourself, the vendor code stops being opaque and can be checked against the reference manual.
   </p>
 
-  <h2>Concepts, one at a time</h2>
-
-  <h3>A register is a fixed address</h3>
+  <h2>Registers as fixed addresses</h2>
   <p>
-    The CPU reaches a peripheral the same way it reaches RAM: a load instruction reads an address, and a store instruction writes one. The bus carries the address and the data, and the peripheral at that address decides what the access means. A <strong>peripheral register</strong> is a memory location of this kind. It configures a peripheral, or it reflects the state of one. Reading or writing its address talks to the hardware, and no memory cell stores the value in the usual sense.
+    The CPU reaches a peripheral the same way it reaches RAM, a load instruction reading an address and a store writing one, while the bus carries the address and data and the peripheral at that address decides what the access means. A <strong>peripheral register</strong> is a location of this kind that configures a peripheral or reflects its state, so reading or writing its address talks to the hardware, and no memory cell stores the value in the usual sense.
   </p>
   <p>
-    In C, the address is written as an integer constant. A <strong>pointer</strong> is a variable that holds an address and remembers the type of the object at that address. Casting an integer to a pointer type tells the compiler that the integer is an address of that type. The expression <code>(*(volatile uint32_t *)0x40011010u)</code> casts the number to a pointer to a <code>volatile uint32_t</code> and then dereferences it. The dereference names the register itself. Reading it performs a load from that address, and writing it performs a store.
+    In C the address is written as an integer constant. A <strong>pointer</strong> is a variable that holds an address and remembers the type of the object there, so casting an integer to a pointer type tells the compiler that the integer is an address of that type. The expression <code>(*(volatile uint32_t *)0x40011010u)</code> casts the number to a pointer to a <code>volatile uint32_t</code> and dereferences it, naming the register itself, so reading it performs a load from that address and writing it a store.
   </p>
   <pre><code class="language-c">/* The GPIOC BSRR register sits at 0x40011000 + 0x10. */
 #define GPIOC_BSRR  (*(volatile uint32_t *)0x40011010u)
 
 GPIOC_BSRR = 1u &lt;&lt; 13;      /* one store to the register: sets bit 13 */</code></pre>
   <p>
-    The cast does not create memory, and it does not run any code. It tells the compiler two facts. The access goes to a fixed address, and every access is a real event, not a value the compiler may reuse. The <code>volatile</code> qualifier supplies the second fact, as lesson 46 explained. Without it, the compiler might merge two stores or drop one that it thinks has no effect.
+    The cast creates no memory and runs no code, but tells the compiler two facts: that the access goes to a fixed address, and that every access is a real event rather than a value it may reuse. The <code>volatile</code> qualifier supplies the second fact, as lesson 46 explained, and without it the compiler might merge two stores or drop one it believes has no effect.
   </p>
 
-  <h3>A struct is a list of offsets</h3>
+  <h2>Structs as lists of offsets</h2>
   <p>
-    A GPIO port is not one register. It is a block of seven 32-bit registers at consecutive addresses. The struct is the C way to describe such a block. A struct lays its members out in the order they are declared, and each member sits at an offset from the start of the struct. When every member is a 32-bit value, each offset is 4 bytes after the previous one. A member at offset <code>0x10</code> is the fifth member, because 4 members come before it, and <code>4 × 4 = 16 = 0x10</code>.
-    <span class="sidenote">A struct's members are placed in declaration order, with padding only where alignment requires it. All members here are 4-byte values at 4-byte alignment, so no padding appears and the offsets are exactly the register offsets.</span>
+    A GPIO port is not one register but a block of seven 32-bit registers at consecutive addresses, and a struct is the C way to describe such a block. A struct lays out its members in declaration order, each at an offset from its start, so when every member is a 32-bit value each offset lies 4 bytes after the previous one, and the member at offset <code>0x10</code> is the fifth, with four members before it, since <code>4 × 4 = 16 = 0x10</code>.
+    <span class="sidenote">A struct's members are placed in declaration order, with padding only where alignment requires it. Here every member is a 4-byte value at 4-byte alignment, so no padding appears and the offsets equal the register offsets.</span>
   </p>
   <p>
-    If a pointer points at the start of the port, then <code>port-&gt;ODR</code> is the member at the offset of ODR. The compiler adds the offset to the base address when it builds the access. You write a name and the compiler produces the same load or store as the explicit address form. The struct is only a naming device. It does not add anything to the hardware.
+    If a pointer points at the start of the port, then <code>port-&gt;ODR</code> is the member at ODR's offset, which the compiler adds to the base address when it builds the access. You write a name and the compiler produces the same load or store as the explicit address form, so the struct is purely a naming device that adds nothing to the hardware.
   </p>
   <pre><code class="language-c">typedef struct {
   __IO uint32_t CRL;    /* offset 0x00: configuration, pins 0 to 7 */
@@ -65,62 +63,58 @@ GPIOC_BSRR = 1u &lt;&lt; 13;      /* one store to the register: sets bit 13 */</
 
 GPIOC-&gt;BSRR = 1u &lt;&lt; 13;   /* the same store as above, now named */</code></pre>
   <p>
-    The vendor header is a real example of this struct. In <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code> the GPIO structure has the same seven members in the same order, and the base addresses are defined as <code>GPIOA_BASE</code> and <code>GPIOC_BASE</code>. The header computes them from the APB2 peripheral base, which is <code>0x40010000</code>, plus an offset of <code>0x800</code> for port A and <code>0x1000</code> for port C. Those two numbers give <code>0x40010800</code> and <code>0x40011000</code> (RM0008 Rev 21, Table 3 in section 3.3).
+    The vendor header contains a real example of this struct. In <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code> the GPIO structure has the same seven members in the same order, and the base addresses <code>GPIOA_BASE</code> and <code>GPIOC_BASE</code> are computed from the APB2 peripheral base of <code>0x40010000</code> plus <code>0x800</code> for port A and <code>0x1000</code> for port C, giving <code>0x40010800</code> and <code>0x40011000</code> (RM0008 Rev 21, Table 3 in section 3.3).
   </p>
 
   <div class="analogy">
-    <p>A struct overlay is a transparent template laid over a paper form. The template has a label at each box: CRL here, ODR there, BSRR further down. On its own it is just labels at offsets. Lay it down at the right corner, the peripheral's base address, and every label sits on the real register. Lay it at the wrong base and every label is wrong in the same way.</p>
+    <p>A struct overlay resembles a transparent template laid over a paper form, with a label at each box: CRL here, ODR there, BSRR further down. On its own the template is only labels at offsets, but laid at the right corner, the peripheral's base address, each label sits on the real register, and laid at the wrong base, every label is wrong in the same way. Unlike a paper form, though, reading some of these boxes changes them, which is why the template needs <code>volatile</code>.</p>
   </div>
 
-  <h3>__IO means volatile</h3>
+  <h2>The __IO macro</h2>
   <p>
-    The members in the vendor struct are not written as plain <code>uint32_t</code>. They are written as <code>__IO uint32_t</code>. The macro <code>__IO</code> is defined in the Arm CMSIS core header <code>core_cm3.h</code> as <code>volatile</code>. So every register field carries the qualifier from lesson 46, and you do not write it at each use. The macro is a naming convention, and the qualifier is what does the work.
+    The members of the vendor struct are written as <code>__IO uint32_t</code> rather than plain <code>uint32_t</code>, and the macro <code>__IO</code> is defined in the Arm CMSIS core header <code>core_cm3.h</code> as <code>volatile</code>. Every register field therefore carries the qualifier from lesson 46 without it being written at each use, the macro being a naming convention and the qualifier doing the work.
     <a href="https://arm-software.github.io/CMSIS_5/Core/html/index.html" target="_blank" rel="noopener">CMSIS documentation</a>
   </p>
   <p>
-    A struct overlay works only when the compiler lays out the fields exactly as the reference manual lists them. Every field here is a 4-byte register, and the struct has no padding, so the offsets come out right. Lesson 48 covers when this breaks, and why bit-fields are not a safe substitute for a register map.
+    A struct overlay works only when the compiler lays out the fields exactly as the reference manual lists them. Here every field is a 4-byte register and the struct has no padding, so the offsets come out right, and lesson 48 covers when this breaks and why bit-fields are no safe substitute for a register map.
   </p>
 
-  <h3>Read-modify-write, and why BSRR avoids it</h3>
+  <h2>Read-modify-write and the BSRR register</h2>
   <p>
-    A <strong>read-modify-write</strong> changes one bit of a register in three steps: load the whole register, change the bit in the copy, and store the copy back. The code <code>GPIOC-&gt;ODR |= 1u &lt;&lt; 13;</code> does exactly this. The problem is that the store writes back every bit of the register, including the bits that other code might have changed in the meantime. If an interrupt runs between the load and the store, its change is lost.
+    A <strong>read-modify-write</strong> changes one bit of a register in three steps, loading the whole register, changing the bit in the copy and storing the copy back, which is exactly what <code>GPIOC-&gt;ODR |= 1u &lt;&lt; 13;</code> does. The store writes back every bit of the register, including bits that other code may have changed meanwhile, so if an interrupt runs between the load and the store, its change is lost.
   </p>
   <p>
-    The BSRR register avoids the load. Its name stands for bit set and reset. Writing a 1 to bit <em>n</em> from 0 to 15 sets pin <em>n</em> high. Writing a 1 to bit <em>n</em> + 16 resets pin <em>n</em>, which drives it low (RM0008 Rev 21, section 9.2.5). A 0 in any bit does nothing to that pin. So one store changes only the pins you name, and the hardware never needs the old state. The CMSIS header defines the same layout: <code>GPIO_BSRR_BS13</code> is bit 13 and <code>GPIO_BSRR_BR13</code> is bit 29, which is 13 plus 16.
+    The BSRR register, whose name stands for bit set and reset, avoids the load. Writing a 1 to bit <em>n</em>, for <em>n</em> from 0 to 15, sets pin <em>n</em> high, writing a 1 to bit <em>n</em> + 16 resets pin <em>n</em> and drives it low (RM0008 Rev 21, section 9.2.5), and a 0 in any bit leaves that pin alone. One store therefore changes only the named pins, and the hardware never needs the old state. The CMSIS header defines the same layout, with <code>GPIO_BSRR_BS13</code> as bit 13 and <code>GPIO_BSRR_BR13</code> as bit 29, which is 13 plus 16.
   </p>
 
-  <h2>Worked example: what one BSRR write does</h2>
+  <h2>Worked example: one BSRR write</h2>
   <p>
-    Suppose the program wants PC13 driven low, which turns the active-low LED on. We will follow the two ways to do it, with real numbers, and see where they differ.
+    Suppose the program wants PC13 driven low, which turns the active-low LED on. We follow both ways of doing it with real numbers to see where they differ, starting with BSRR.
   </p>
+  <ol class="steps">
+    <li><strong>Find the address.</strong> The base of port C is <code>0x40011000</code> and BSRR is the fifth member, at offset <code>0x10</code>, so the store goes to <code>0x40011000 + 0x10 = 0x40011010</code>.</li>
+    <li><strong>Build the value.</strong> Driving PC13 low uses the reset half of BSRR, bit 13 + 16 = 29, so the value is <code>1u &lt;&lt; 29</code>, which is <code>0x20000000</code>, a single 1 in bit 29, while bit 13 is 0 and the set half does nothing.</li>
+    <li><strong>Perform the store.</strong> The CPU stores <code>0x20000000</code> to <code>0x40011010</code>, and the hardware resets PC13 and leaves the other 31 bits alone. The write needed no read and cannot lose a change made by an interrupt, because the hardware never reads the old state of the port.</li>
+  </ol>
   <p>
-    Step 1: find the address. The base of port C is <code>0x40011000</code>. BSRR is the fifth member, at offset <code>0x10</code>. The sum is <code>0x40011000 + 0x10 = 0x40011010</code>. That is the address of the store.
-  </p>
-  <p>
-    Step 2: build the value. Driving PC13 low is the reset half of BSRR, which is bit 13 + 16 = 29. The value is <code>1u &lt;&lt; 29</code>. In hexadecimal, 29 is 0x1D, and <code>1 &lt;&lt; 29</code> is <code>0x20000000</code>, a single 1 in bit 29. Bit 13 is 0, so the set half does nothing.
-  </p>
-  <p>
-    Step 3: perform the store. The CPU stores <code>0x20000000</code> to <code>0x40011010</code>. The hardware resets PC13 and leaves the other 31 bits alone. The write needed no read, and it cannot lose a change made by an interrupt, because the hardware never reads the old state of the port.
-  </p>
-  <p>
-    Now the read-modify-write version, to set PC13 high instead. Suppose <code>ODR</code> currently holds <code>0x00000000</code>, and the program wants bit 13 set, which is <code>0x00002000</code>. The steps run as follows:
+    The read-modify-write version is shown setting PC13 high instead. Suppose <code>ODR</code> holds <code>0x00000000</code> and the program wants bit 13 set, which is <code>0x00002000</code>; before reading the steps, predict what happens to PC5 if an interrupt sets it midway.
   </p>
   <pre><code class="language-plaintext">1. load  ODR  from 0x4001100C       -&gt; 0x00000000   (main reads the old value)
 2. ISR runs: it sets PC5 by writing ODR -&gt; 0x00000020
 3. main ORs bit 13 into its copy: 0x00000000 | 0x00002000 = 0x00002000
 4. main stores the copy to ODR      -&gt; 0x00002000   (PC5 is now low again)</code></pre>
   <p>
-    The interrupt's change to PC5 is lost, and nothing reports it. The same code is correct when no interrupt touches the port, which is why the bug appears only sometimes. The BSRR version has no step 1 and no step 4 that could overwrite another bit. Its single store writes <code>0x00002000</code> to BSRR, which sets PC13 and leaves PC5 alone. Setup code can use read-modify-write, because it runs before any interrupt is enabled. Code that changes a pin at run time should use BSRR.
+    The interrupt's change to PC5 is lost without any report, and since the same code is correct when no interrupt touches the port, the bug appears only sometimes. The BSRR version has no load and no full-register store that could overwrite another bit, its single store of <code>0x00002000</code> to BSRR setting PC13 and leaving PC5 alone. Setup code may use read-modify-write, because it runs before any interrupt is enabled, but code that changes a pin at run time should use BSRR.
   </p>
 
   <p>
-    Step the worked example yourself. You decide when the interrupt fires. Fire it between main's load and its store and watch PC5 disappear, then switch to BSRR and try to break it again.
+    The widget below lets you step through the worked example and decide when the interrupt fires. Fire it between main's load and store and watch PC5 disappear, then switch to BSRR and try to break it again.
   </p>
   <div class="widget racestep" data-preset="odr"></div>
 
-  <h2>The code, explained line by line</h2>
+  <h2>The register-pointers project line by line</h2>
   <p>
-    The starter in <code>projects/0047-register-pointers</code> asks you to finish a short program that uses your own struct for port C. The solution shows the finished version, and its key lines are below. The file keeps the CMSIS header for the rest of the chip, so only the GPIO port is written by hand.
+    The starter in <code>projects/0047-register-pointers</code> asks you to finish a short program that uses your own struct for port C, and the key lines of the finished solution are below. The file keeps the CMSIS header for the rest of the chip, so only the GPIO port is written by hand.
   </p>
   <pre><code class="language-c">/* GPIOA is at 0x40010800 and GPIOC at 0x40011000 (CMSIS header: APB2 base plus 0x800 and 0x1000). */
 #define MY_GPIOA_BASE  0x40010800UL
@@ -138,13 +132,13 @@ typedef struct {
 
 #define MY_GPIOC  ((MyGpio *)MY_GPIOC_BASE)</code></pre>
   <p>
-    The first two defines are the base addresses. The ports are placed in order inside the APB2 region, 0x400 bytes apart, so port A is at offset <code>0x800</code>, port B at <code>0xC00</code> and port C at <code>0x1000</code>. A typo of one port for the other gives an address that is valid, so the compiler and linker accept it. Nothing warns you.
+    The first two defines are the base addresses. The ports lie in order inside the APB2 region, 0x400 bytes apart, so port A is at offset <code>0x800</code>, port B at <code>0xC00</code> and port C at <code>0x1000</code>, and a slip from one port to another still gives a valid address, which the compiler and linker accept without any warning.
   </p>
   <p>
-    The struct declares each member as <code>volatile uint32_t</code>, so every access is a real load or store. The member order matches the offsets in the comments. Because each member is 4 bytes, the struct's size is 7 × 4 = 28 bytes, which is 0x1C, and the last member LCKR sits at 0x18. The comments are there for review: a reader can check each name against the reference manual's table (RM0008 Rev 21, section 9.2 and Table 59).
+    The struct declares each member as <code>volatile uint32_t</code>, so every access is a real load or store, and the member order matches the offsets in the comments. With 4 bytes per member the struct is 7 × 4 = 28 bytes, or 0x1C, with the last member LCKR at 0x18, and the comments serve the review, letting a reader check each name against the reference manual's table (RM0008 Rev 21, section 9.2 and Table 59).
   </p>
   <p>
-    The last define casts the base address to a pointer to the struct. The macro is a constant expression, so <code>MY_GPIOC-&gt;BSRR</code> compiles to a store at <code>0x40011010</code>. The cast from integer to pointer is the step that turns an address into a typed view of the hardware.
+    The last define casts the base address to a pointer to the struct, and because the macro is a constant expression, <code>MY_GPIOC-&gt;BSRR</code> compiles to a store at <code>0x40011010</code>. This cast from integer to pointer is the step that turns an address into a typed view of the hardware.
   </p>
   <pre><code class="language-c">RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;   /* clock the GPIOC block first */
 
@@ -155,66 +149,79 @@ MY_GPIOC-&gt;CRH = (MY_GPIOC-&gt;CRH &amp; ~(0xFU &lt;&lt; 20)) | (0x2U &lt;&lt;
 MY_GPIOC-&gt;BSRR = 1U &lt;&lt; (LED_PIN_BIT + 16U);   /* PC13 low: LED on */
 MY_GPIOC-&gt;BSRR = 1U &lt;&lt; LED_PIN_BIT;           /* PC13 high: LED off */</code></pre>
   <p>
-    The clock line comes first. The RCC block, which is the reset and clock controller, has an enable bit for each peripheral. The GPIOC block does not respond to accesses until its clock is on, so the write to the enable bit must come before any write to the port. The vendor headers name the bit <code>RCC_APB2ENR_IOPCEN</code>, which is bit 4 of RCC_APB2ENR (RM0008 Rev 21, section 7.3.7).
+    The clock line comes first. The RCC block, the reset and clock controller, has an enable bit for each peripheral, and the GPIOC block ignores accesses until its clock is on, so the enable bit must be written before the port. The vendor headers name the bit <code>RCC_APB2ENR_IOPCEN</code>, bit 4 of RCC_APB2ENR (RM0008 Rev 21, section 7.3.7).
   </p>
   <p>
-    The CRH line is the configuration step, and it is a read-modify-write on purpose. It clears the 4-bit field for pin 13 and sets it to a new value. The field for pin 13 starts at bit 20, which is the value the vendor header gives as <code>GPIO_CRH_MODE13_Pos</code>, and the configuration bits CNF13 start at bit 22, from <code>GPIO_CRH_CNF13_Pos</code>. The mask <code>0xFU &lt;&lt; 20</code> covers bits 23 to 20, and the inverted mask clears them. The new value <code>0x2U &lt;&lt; 20</code> sets MODE13 to 10, an output at 2 MHz, and leaves CNF13 at 00, general-purpose push-pull. The meaning of the value 0x2 in this field is in the port configuration table of RM0008 Rev 21 (Table 20 in section 9.1, and Table 21 for the MODE bits), and the field layout is in section 9.2.2, where MODE13 is bits 21:20 and CNF13 is bits 23:22. Setup runs before any interrupt, so the read-modify-write is safe here.
+    The CRH line is the configuration step and deliberately a read-modify-write, clearing the 4-bit field for pin 13 and setting a new value. The field starts at bit 20, which the vendor header gives as <code>GPIO_CRH_MODE13_Pos</code>, with the configuration bits CNF13 from bit 22, given as <code>GPIO_CRH_CNF13_Pos</code>, so the mask <code>0xFU &lt;&lt; 20</code> covers bits 23 to 20 and its inverse clears them. The new value <code>0x2U &lt;&lt; 20</code> sets MODE13 to 10, an output at 2 MHz, and leaves CNF13 at 00, general-purpose push-pull, as the port configuration table of RM0008 Rev 21 defines (Table 20 in section 9.1, and Table 21 for the MODE bits), with the field layout in section 9.2.2, where MODE13 is bits 21:20 and CNF13 bits 23:22. Setup runs before any interrupt, so the read-modify-write is safe here.
   </p>
   <p>
-    The BSRR lines are the run-time step. <code>1U &lt;&lt; (LED_PIN_BIT + 16U)</code> is <code>1U &lt;&lt; 29</code>, which resets PC13 and drives it low. The second line sets bit 13 and drives PC13 high. Each line is a single store, so an interrupt that uses another pin cannot disturb PC13, and PC13 cannot disturb another pin.
+    The BSRR lines are the run-time step. <code>1U &lt;&lt; (LED_PIN_BIT + 16U)</code> is <code>1U &lt;&lt; 29</code>, which resets PC13 and drives it low, while the second line sets bit 13 and drives PC13 high. Each is a single store, so an interrupt using another pin cannot disturb PC13, and PC13 cannot disturb another pin.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0047-register-pointers</code> is a Blue Pill. The starter gives you the register struct and the base addresses, and it has two mistakes in them. The CMSIS GPIO definitions are not used in this project: RCC, SysTick and USART1 still come from CMSIS, and the GPIO port is yours to write.
+    The project <code>projects/0047-register-pointers</code> is a Blue Pill whose starter provides the register struct and base addresses with two mistakes in them. The CMSIS GPIO definitions are not used: RCC, SysTick and USART1 still come from CMSIS, while the GPIO port is yours to write.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0047-register-pointers/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>LED on</code> and <code>LED off</code> lines, but the on-board LED does not blink, because the loop only prints: it does not write BSRR yet.</li>
-    <li>Your task has two parts. First, correct the base address of <code>MY_GPIOC_BASE</code>: it is GPIOA's address in the starter. Second, put the struct fields in the offset order from the reference manual (RM0008 Rev 21, section 9.2 and Table 59), because the starter swaps <code>CRL</code> and <code>CRH</code>.</li>
-    <li>Then write the PC13 configuration line in <code>main</code>, using the value from the worked example, and the BSRR toggling in the loop. The comments marked <code>TODO(learner)</code> in the starter say where.</li>
-    <li>Add the line <code>uart_puts("OWN STRUCT OK\r\n");</code> directly after <code>uart_init();</code> in <code>main</code>. The solution makes the same call, and it tells you that the struct is in use before the LED starts.</li>
-    <li>You will know it works when the serial monitor prints <code>OWN STRUCT OK</code>, followed by <code>LED on</code> and <code>LED off</code> lines every 500 ms, and the on-board LED blinks.</li>
+    <li>Open <code>projects/0047-register-pointers/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor prints <code>LED on</code> and <code>LED off</code> lines, but the on-board LED does not blink, because the loop only prints and does not yet write BSRR.</li>
+    <li>The task has two parts. First correct <code>MY_GPIOC_BASE</code>, which holds GPIOA's address in the starter, and then put the struct fields in the offset order of the reference manual (RM0008 Rev 21, section 9.2 and Table 59), because the starter swaps <code>CRL</code> and <code>CRH</code>.</li>
+    <li>Then write the PC13 configuration line in <code>main</code> with the value from the worked example, and the BSRR toggling in the loop, where the comments marked <code>TODO(learner)</code> indicate.</li>
+    <li>Add the line <code>uart_puts("OWN STRUCT OK\r\n");</code> directly after <code>uart_init();</code> in <code>main</code>, the same call the solution makes, which shows that the struct is in use before the LED starts.</li>
+    <li>The program works when the serial monitor prints <code>OWN STRUCT OK</code>, followed by <code>LED on</code> and <code>LED off</code> lines every 500 ms, and the on-board LED blinks.</li>
   </ol>
   <details>
     <summary>Hint for the base address and offsets</summary>
-    <p>GPIOA and GPIOC are different ports, so their base addresses differ by 0x800 (the CMSIS header gives GPIOA_BASE and GPIOC_BASE as APB2 base plus 0x800 and 0x1000). Check the field order against the offset comments in the struct: each field is 4 bytes, so the declaration order sets the offsets.</p>
+    <p>GPIOA and GPIOC are different ports whose base addresses differ by 0x800, since the CMSIS header gives GPIOA_BASE and GPIOC_BASE as the APB2 base plus 0x800 and 0x1000. Check the field order against the offset comments in the struct, remembering that each field is 4 bytes, so the declaration order sets the offsets.</p>
   </details>
   <details>
     <summary>Hint for BSRR</summary>
-    <p>PC13 is pin 13. Its set bit is 13, and its reset bit is 13 + 16 = 29. The LED is wired active low, so the LED is on when PC13 is low. Use the reset bit to turn it on, and the set bit to turn it off.</p>
+    <p>PC13 is pin 13, with set bit 13 and reset bit 13 + 16 = 29. The LED is wired active low, so it is on when PC13 is low, which means the reset bit turns it on and the set bit turns it off.</p>
   </details>
-  <p>The reference solution is in <code>projects/0047-register-pointers/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0047-register-pointers/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You turned a fixed address into a typed register block, wrote the struct for the GPIO port yourself, and drove PC13 with single BSRR writes. That is what the vendor headers do underneath every <code>GPIOC-&gt;</code> you have seen.</div>
+  <div class="win">You turned a fixed address into a typed register block, wrote the GPIO port struct yourself and drove PC13 with single BSRR writes, which is what the vendor headers do underneath every <code>GPIOC-&gt;</code> you have seen.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <ol>
-    <li><strong>A wrong base address that is still a valid address.</strong> The code uses GPIOA's base for port C. The compiler and linker accept it, and the program runs. The symptom is that the LED never blinks, while the serial monitor shows the expected lines. The fix is to compare each base address with the CMSIS header, where GPIOC_BASE is <code>0x40011000</code>. A quick check is to print the pointer value on the serial monitor.</li>
-    <li><strong>Struct members in the wrong order.</strong> Swapping <code>CRL</code> and <code>CRH</code> moves every later member by one slot, so <code>ODR</code> is read and written at the offset of <code>IDR</code>. The symptom is that the pin you configured is not the pin that changes, and the output is wrong in a way that is hard to see. The fix is to check each member against its offset comment. A <code>static_assert</code> on <code>offsetof(MyGpio, ODR) == 0x0C</code> would catch it at compile time.</li>
-    <li><strong>A read-modify-write on a pin that an interrupt also changes.</strong> <code>GPIOC-&gt;ODR |= bit</code> looks correct and works most of the time. The symptom is a rare lost change: a second output pin drops to its old value, with no error. The fix is to use BSRR for any pin that run-time code changes.</li>
-    <li><strong>Forgetting the clock enable.</strong> The port's registers do not respond until its clock is on, so the configuration write does nothing. The symptom is a pin that never changes state, while the code reads back the value it wrote. The fix is to set the enable bit in RCC first, and to check it before debugging the port.</li>
-    <li><strong>Writing 0 to BSRR and expecting a change.</strong> A 0 in a BSRR bit does nothing, so <code>GPIOC-&gt;BSRR = 0</code> leaves every pin as it was. The symptom is a pin that stays where it was after a "turn off" write. The fix is to write the 1 in the half that does the job: the set half to drive high, the reset half to drive low.</li>
-  </ol>
+  <h3>A wrong base address that is still valid</h3>
+  <p>
+    The LED never blinks while the serial monitor shows the expected lines, because the code uses GPIOA's base for port C, which the compiler and linker accept and the program runs with. Compare each base address with the CMSIS header, where GPIOC_BASE is <code>0x40011000</code>, or print the pointer value on the serial monitor as a quick check.
+  </p>
+  <h3>Struct members in the wrong order</h3>
+  <p>
+    The pin that changes is not the pin you configured, and the output is wrong in a way that is hard to see, because with <code>CRL</code> and <code>CRH</code> swapped, the configuration meant for pins 8 to 15 lands in the register for pins 0 to 7, and a dropped or doubled member would shift every later member by one slot. Check each member against its offset comment, and add <code>static_assert</code> checks such as <code>offsetof(MyGpio, CRH) == 0x04</code> and <code>offsetof(MyGpio, ODR) == 0x0C</code> to catch the error at compile time.
+  </p>
+  <h3>A read-modify-write on a pin an interrupt also changes</h3>
+  <p>
+    A second output pin occasionally drops back to its old value with no error, because <code>GPIOC-&gt;ODR |= bit</code>, which looks correct and works most of the time, overwrote an interrupt's change. Use BSRR for every pin that run-time code changes.
+  </p>
+  <h3>The clock enable forgotten</h3>
+  <p>
+    A pin never changes state, although the code believes it wrote the configuration, because the port's registers ignore accesses until its clock is on. Set the enable bit in RCC first, and check it before debugging the port.
+  </p>
+  <h3>A zero written to BSRR</h3>
+  <p>
+    A pin stays where it was after a "turn off" write, because <code>GPIOC-&gt;BSRR = 0</code> leaves every pin unchanged, a 0 in a BSRR bit doing nothing. Write the 1 into the half that does the job, the set half to drive high and the reset half to drive low.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Register access in vendor headers and reviews</h2></summary>
   <p>
-    Most STM32 projects reach their registers through the vendor header, and many drivers use the same pattern as this lesson. The HAL and the low-layer functions write to these structs, and they use BSRR for pins that change at run time. A driver that writes raw addresses is unusual, and a reviewer asks why.
+    Most STM32 projects reach their registers through the vendor header, and many drivers use the pattern of this lesson, the HAL and the low-layer functions writing to these structs and using BSRR for pins that change at run time. A driver that writes raw addresses is unusual, and a reviewer will ask why.
   </p>
   <p>
-    A code review of a register access checks four things. The address must come from the header or the reference manual's memory map, not from a number typed by hand. The struct members must match the offsets, which a compile-time check can verify. Any pin that an interrupt or another task can change must use BSRR or a critical section, not a read-modify-write. And the peripheral clock must be on before the first access. A reviewer who finds a raw address with no comment will ask for the source.
+    A code review of a register access checks four things: that the address comes from the header or the reference manual's memory map rather than a hand-typed number, that the struct members match the offsets, which a compile-time check can verify, that any pin an interrupt or another task can change uses BSRR or a critical section rather than a read-modify-write, and that the peripheral clock is on before the first access. A raw address without a comment prompts a request for its source.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A peripheral register is a fixed address. A load or store to it talks to the hardware, so the access must be <code>volatile</code>.</li>
-    <li>A struct whose members are 4-byte registers, in the reference manual's order, overlays the port: each member sits at its register offset.</li>
-    <li>The GPIO port C block starts at <code>0x40011000</code>, and its ODR is at <code>0x4001100C</code> and its BSRR at <code>0x40011010</code>.</li>
-    <li>BSRR sets a pin with bit <em>n</em> and resets it with bit <em>n</em> + 16. A 0 in any bit does nothing, so one store touches only the named pin.</li>
-    <li>A read-modify-write on ODR can lose a change made by an interrupt between its load and its store. Use BSRR for pins that change at run time.</li>
-    <li>Enable the port's clock in RCC before the first access, and set the configuration field of the pin with a read-modify-write during setup.</li>
-    <li>In the vendor header, <code>__IO</code> is <code>volatile</code>, so the struct members are volatile without extra typing.</li>
+    <li>A peripheral register is a fixed address whose loads and stores talk to the hardware, so every access must be <code>volatile</code>.</li>
+    <li>A struct of 4-byte members in the reference manual's order overlays the port, each member sitting at its register offset.</li>
+    <li>The GPIO port C block starts at <code>0x40011000</code>, with ODR at <code>0x4001100C</code> and BSRR at <code>0x40011010</code>.</li>
+    <li>BSRR sets a pin with bit <em>n</em> and resets it with bit <em>n</em> + 16, and a 0 does nothing, so one store touches only the named pin.</li>
+    <li>A read-modify-write on ODR can lose a change an interrupt made between its load and store, so pins that change at run time should use BSRR.</li>
+    <li>The port's clock must be enabled in RCC before the first access, and the pin's configuration field is set with a read-modify-write during setup.</li>
+    <li>In the vendor header <code>__IO</code> is <code>volatile</code>, so the struct members are volatile without extra typing.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

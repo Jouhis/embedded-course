@@ -11,42 +11,42 @@
 <body data-lesson="0062">
 <main>
   <p class="lesson-meta"></p>
-  <h1>SPI: displays and shift registers</h1>
-  <p class="subtitle">Lesson 25 shifted a byte into a 74HC595 by toggling two pins in software. SPI does the same job in hardware: the peripheral shifts the bits, and the CPU is free until the byte has gone out.</p>
+  <h1>SPI</h1>
+  <p class="subtitle">A clocked four-wire bus for fast peripherals</p>
 
   <div class="goal">
     By the end of this lesson you can set the SPI clock polarity and phase for a device, compute the SPI bit rate from the SDK's divider, drive a 74HC595 with <code>spi_write_blocking()</code> and a latch pin, and compare bit-bang and hardware timing in a logic-analyzer capture.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>The third common serial bus</h2>
   <p>
-    Lesson <a href="0025-registers-counters-shift-registers.html">25</a> built a shift register from flip-flops, then drove a 74HC595 from the Pico by setting a data pin and a clock pin in a loop. Lesson <a href="0060-the-i2c-protocol.html">60</a> introduced I2C, which needs only two wires but spends bits on addresses and acknowledge bits. Lesson <a href="0061-an-i2c-oled-display-and.html">61</a> sent a 1 KB picture to a display over I2C, and that took about 25 ms per frame.
+    Lesson <a href="0025-registers-counters-shift-registers.html">25</a> built a shift register from flip-flops and then drove a 74HC595 from the Pico by setting a data pin and a clock pin in a loop. Lesson <a href="0060-the-i2c-protocol.html">60</a> introduced I2C, which needs only two wires but spends bits on addresses and acknowledges, and lesson <a href="0061-an-i2c-oled-display-and.html">61</a> sent a 1 024-byte picture to a display over I2C at about 25 ms per frame.
   </p>
   <p>
-    Many other parts are built around the third common bus, SPI: flash memory chips, ADCs, sensors, SD cards in SPI mode, and display controllers. The SSD1306 from lesson 61 also has a 4-wire SPI interface. SPI has no addresses and no acknowledge bits, so every clock pulse carries data. Firmware engineers meet it on most boards, so the questions in this lesson come up often in embedded work.
+    Many other parts are built around the third common bus, SPI, among them flash memory chips, ADCs, sensors, SD cards in SPI mode and display controllers, and even the SSD1306 of lesson 61 has a 4-wire SPI interface. SPI has no addresses and no acknowledge bits, so every clock pulse carries data, and since firmware engineers meet it on most boards, the questions in this lesson come up often.
   </p>
 
-  <h2>Concept 1: four wires, and each clock pulse moves a bit both ways</h2>
+  <h2>The four SPI wires and full-duplex shifting</h2>
   <p>
-    <a href="../reference/glossary.html#spi">SPI</a>, the Serial Peripheral Interface, connects one <strong>master</strong> to one or more <strong>devices</strong> with four wires. The master generates the clock on SCK (serial clock). <a href="../reference/glossary.html#mosi-and-miso">MOSI</a> (master out, slave in) carries bits from the master to the device. MISO (master in, slave out) carries bits back. The fourth wire is <a href="../reference/glossary.html#chip-select-cs">chip select</a> (CS), which the master pulls low to say that this device should listen. Some devices have no MISO, because they only receive data.
+    <a href="../reference/glossary.html#spi">SPI</a>, the Serial Peripheral Interface, connects one <strong>master</strong> to one or more <strong>devices</strong> with four wires. The master generates the clock on SCK (serial clock), <a href="../reference/glossary.html#mosi-and-miso">MOSI</a> (master out, slave in) carries bits from the master to the device and MISO (master in, slave out) carries bits back, while the fourth wire, <a href="../reference/glossary.html#chip-select-cs">chip select</a> (CS), is pulled low by the master to tell the device to listen. Devices that only receive data have no MISO.
   </p>
   <p>
-    SPI is <a href="../reference/glossary.html#full-duplex">full duplex</a>. Each clock pulse moves one bit from the master to the device and one bit from the device to the master. Inside each side there is a shift register. The master's register holds the byte it sends, and the device's register holds the byte it sends. After eight pulses, the two registers have swapped contents. A computer architecture course would call this a ring of shifts: the bits move one place per clock, and the byte that leaves one side enters the other.
+    SPI is <a href="../reference/glossary.html#full-duplex">full duplex</a>, each clock pulse moving one bit from the master to the device and one from the device to the master. Each side contains a shift register holding the byte it sends, and after eight pulses the two registers have swapped contents, so the arrangement forms a ring of shifts in which the bits move one place per clock and the byte that leaves one side enters the other.
   </p>
   <p>
-    The data order is most-significant bit first in this course, so the bit at position 7 of the byte goes out first. The Pico's SPI peripheral can shift only in that order, which the SDK enforces in <code>spi_set_format()</code>. When a device needs another order, you do it in software.
+    In this course the data order is most significant bit first, so bit 7 of the byte goes out first. The Pico's SPI peripheral can shift only in that order, which the SDK enforces in <code>spi_set_format()</code>, so a device needing the other order has its bytes reversed in software.
   </p>
 
   <div class="analogy">
-    <p>SPI is two people swapping cards across a table, one card per beat of a metronome. On each beat both slide a card over at the same moment, so after eight beats each has the other's eight cards. Nobody can receive without sending: to read a byte from a device, the master sends a byte too, often a dummy 0x00 or 0xFF.</p>
+    <p>SPI resembles two people swapping cards across a table, one card per beat of a metronome: on each beat both slide a card across at the same moment, so after eight beats each holds the other's eight cards. Neither can receive without sending, so to read a byte from a device the master sends one too, often a dummy 0x00 or 0xFF. The picture breaks with devices that have no MISO wire, where the master's cards go across and nothing comes back.</p>
   </div>
 
-  <h2>Concept 2: clock polarity and phase decide the sampling edge</h2>
+  <h2>Clock polarity and phase</h2>
   <p>
-    The two settings that matter for every SPI device are clock polarity and clock phase. Polarity, written CPOL, is the level the clock rests at when no transfer is running: 0 means low, 1 means high. Phase, written CPHA, is which clock edge the device samples its input on. The first edge is the first change after the clock leaves its idle level, and the second edge is the change back. "Sample" means reading the input pin at that instant, and the value must be stable then.
+    Two settings matter for every SPI device, clock polarity and clock phase. Polarity, CPOL, is the level at which the clock rests between transfers, 0 meaning low and 1 high, and phase, CPHA, selects the clock edge on which the device samples its input, the first edge being the first change away from the idle level and the second the change back. Sampling means reading the input pin at that instant, so the value must be stable then.
   </p>
   <p>
-    The RP2040 datasheet names these bits SPO for clock polarity and SPH for clock phase. SPO = 0 holds the clock low when idle. SPH = 0 means data is captured on the first clock edge, and SPH = 1 means the second <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, sections 4.4.3.9.1 (SPO) and 4.4.3.9.2 (SPH)</a>. Combining the two bits gives four modes:
+    The RP2040 datasheet names these bits SPO for clock polarity and SPH for clock phase, SPO = 0 holding the clock low when idle, SPH = 0 capturing data on the first clock edge and SPH = 1 on the second <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, sections 4.4.3.9.1 (SPO) and 4.4.3.9.2 (SPH)</a>. Combining the two bits gives four modes.
   </p>
   <table>
     <thead><tr><th>Mode</th><th>CPOL</th><th>CPHA</th><th>Idle clock</th><th>Device samples on</th></tr></thead>
@@ -58,48 +58,54 @@
     </tbody>
   </table>
   <p>
-    The master and the device must agree on the mode, and the device's datasheet states which one it expects. The master cannot detect a mismatch by itself, because SPI has no handshake. A mismatch shows up only as wrong data, which is why the first thing to check in a bad SPI capture is the mode.
+    The master and the device must agree on the mode, which the device's datasheet states. SPI has no handshake, so the master cannot detect a mismatch by itself, and a mismatch shows up only as wrong data, which is why the mode is the first thing to check in a bad SPI capture.
   </p>
 
-  <h2>Concept 3: the 74HC595 samples on the rising edge</h2>
+  <h2>The 74HC595 shift and storage clocks</h2>
   <p>
-    The 74HC595 has three inputs that matter here. DS is the serial data input. SHCP is the shift clock, and a low-to-high transition on it moves the bit on DS into the shift register. STCP is the storage clock, and a low-to-high transition on it copies the shift register into the eight output latches. The outputs drive the LEDs, so they change only when STCP rises <a href="https://www.onsemi.com/pdf/datasheet/mc74hc595a-d.pdf" target="_blank" rel="noopener">onsemi MC74HC595A datasheet, pin descriptions for A, Shift Clock and Latch Clock</a>. The 74HC595 has no separate chip-select pin.
+    Three inputs of the 74HC595 matter here: DS is the serial data input, SHCP the shift clock, on whose low-to-high transition the bit on DS moves into the shift register, and STCP the storage clock, whose low-to-high transition copies the shift register into the eight output latches. The outputs drive the LEDs, so they change only when STCP rises <a href="https://www.onsemi.com/pdf/datasheet/mc74hc595a-d.pdf" target="_blank" rel="noopener">onsemi MC74HC595A datasheet, pin descriptions for A, Shift Clock and Latch Clock</a>, and the chip has no separate chip-select pin.
   </p>
   <p>
-    The data bit must be stable when SHCP rises, so the 595 samples on the rising edge. With the clock idle low, the rising edge is the first edge. That is CPOL = 0 and CPHA = 0, which is mode 0, so mode 0 (which the project uses) works. The SDK's <code>spi_init()</code> sets mode 0 as its default, and the solution keeps it.
+    The data bit must be stable when SHCP rises, so the 595 samples on the rising edge, which with the clock idle low is the first edge. That is CPOL = 0 and CPHA = 0, mode 0, the mode the project uses, and since the SDK's <code>spi_init()</code> sets mode 0 by default, the solution keeps it.
   </p>
   <p>
-    The wiring in this project is GP19 to DS, GP18 to SHCP and GP17 to STCP. GP17 is the 74HC595's latch, and the project uses it as the chip select: it goes low before a byte and high after it. For this chip the rule that matters is the rising edge of STCP, which copies the shift register to the outputs. A low level on STCP does nothing, so holding it low during the transfer is safe. The rising edge after the last bit is the moment the new pattern appears on the LEDs.
-  </p>
-
-  <h2>Concept 4: the bit rate is a divider on the peripheral clock</h2>
-  <p>
-    The SPI clock, called SSPCLKOUT in the datasheet, is made by dividing the peripheral clock, clk_peri, by two integers. The first divider, the prescale, is an even number from 2 to 254. The second, the post-divide, is a number from 1 to 256 that is stored as one more than the register value SCR <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4.3.6.1, bit rate generation</a>. So the rate is clk_peri ÷ (prescale × post-divide). The datasheet's own example is a 125 MHz peripheral clock with a prescale of 2, which gives a range up to 62.5 MHz.
-  </p>
-  <p>
-    With the SDK's default clocks, clk_peri runs at 125 MHz. You do not normally set this yourself. You ask for a rate, and the SDK finds the divider. <code>spi_init()</code> calls <code>spi_set_baudrate()</code>, which searches for the prescale and the post-divide in two loops, then writes both values to the registers. It returns the rate it actually set, and that returned value is the one to trust. The search is in the SDK source at <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_spi/spi.c" target="_blank" rel="noopener">pico-sdk, hardware_spi/spi.c, lines 42 to 74</a>, with the two search loops at lines 51 to 64.
-  </p>
-  <p>
-    The SDK does not always hit the rate you asked for, because the divider is a whole number. That is the reason the function returns a value. The solution prints it as <code>at %u Hz</code>, so the learner sees the rate that was really set.
+    The project wires GP19 to DS, GP18 to SHCP and GP17 to STCP, using the latch on GP17 as the chip select, low before a byte and high after it. What matters for this chip is the rising edge of STCP, which copies the shift register to the outputs, while a low level on STCP does nothing, so holding it low during the transfer is safe, and the rising edge after the last bit is the moment the new pattern appears on the LEDs.
   </p>
 
-  <h3>Worked example: asking for 1 MHz</h3>
+  <h2>The SPI bit-rate divider</h2>
   <p>
-    Take a 125 MHz clk_peri and ask for 1,000,000 Hz. The first loop in <code>spi_set_baudrate()</code> finds the smallest prescale that puts the output in range. Its test is whether clk_peri is below prescale × 256 × requested rate. For prescale 2 the right side is 2 × 256 × 1,000,000 = 512,000,000, which is more than 125,000,000, so the loop stops at prescale 2.
+    The SPI clock, SSPCLKOUT in the datasheet, is made by dividing the peripheral clock, clk_peri, by two integers, the prescale, an even number from 2 to 254, and the post-divide, from 1 to 256, stored as one more than the register value SCR <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4.3.6.1, bit rate generation</a>. The bit rate is therefore
+  </p>
+  <p class="eq"><span>f<sub>SCK</sub> = f<sub>peri</sub> ÷ (CPSDVSR × (SCR + 1))</span><span class="eq-n">(1)</span></p>
+  <p>
+    where f<sub>peri</sub> is clk_peri, CPSDVSR the prescale and SCR + 1 the post-divide. The datasheet's own example takes a 125 MHz peripheral clock with a prescale of 2, which gives a range up to 62.5 MHz.
   </p>
   <p>
-    The second loop starts at a post-divide of 256 and steps down. At each step it tests 125,000,000 ÷ (2 × (post − 1)), and it stops at the first post-divide where that test is above 1,000,000. At post-divide 64 the test is 125,000,000 ÷ 126 = 992,063, which is not above 1,000,000, so the loop goes on. At post-divide 63 the test is 125,000,000 ÷ 124 = 1,008,064, which is above 1,000,000, so the loop stops with post-divide 63. The rate the code then sets is 125,000,000 ÷ (2 × 63) = 992,063 Hz.
+    With the SDK's default clocks clk_peri runs at 125 MHz, and the divider is not normally set by hand: the code asks for a rate and the SDK finds the divider. <code>spi_init()</code> calls <code>spi_set_baudrate()</code>, which searches for the prescale and the post-divide in two loops, writes both to the registers and returns the rate it actually set, the value to trust. The search is in the SDK source at <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_spi/spi.c" target="_blank" rel="noopener">pico-sdk, hardware_spi/spi.c, lines 42 to 74</a>, with the two loops at lines 51 to 64.
   </p>
   <p>
-    So a request for 1 MHz returns 992,063 Hz, about 0.8 % slower, and the register holds SCR = 62. This is the same arithmetic the datasheet describes, and it is why the learner should read the returned value. The numbers here come from reading the SDK code. They are not from a measured run.
+    Because the divider is a whole number, the SDK does not always hit the requested rate, which is why the function returns a value, and the solution prints it as <code>at %u Hz</code> so that the rate really set is visible.
   </p>
 
-  <h2>Concept 5: bit-bang and hardware SPI do the same job at different costs</h2>
+  <h2>Worked example: a 1 MHz request</h2>
   <p>
-    <a href="../reference/glossary.html#bit-bang">Bit-bang</a> means the CPU drives the pins itself, one GPIO write at a time. To send one bit it puts the data on MOSI, raises SCK, and lowers SCK again. Each step is an instruction, and the delays in the code set the clock speed. The method works with any pins, but the clock is only as steady as the code, and interrupts or other work can stretch any bit. Lesson 25 used this method.
+    We take a 125 MHz clk_peri and ask for 1 000 000 Hz, following the two loops of <code>spi_set_baudrate()</code>. Before reading on, predict whether the rate returned will be exactly 1 MHz, slightly above or slightly below.
+  </p>
+  <ol class="steps">
+    <li><strong>Find the prescale.</strong> The first loop finds the smallest prescale that puts the output in range, testing whether clk_peri is below prescale × 256 × requested rate. For prescale 2 the right side is 2 × 256 × 1 000 000 = 512 000 000, more than 125 000 000, so the loop stops at prescale 2.</li>
+    <li><strong>Step down the post-divide.</strong> The second loop starts at 256 and steps down, testing 125 000 000 ÷ (2 × (post − 1)) and stopping at the first post-divide where the result exceeds 1 000 000. At 64 the test gives 125 000 000 ÷ 126 = 992 063, not above 1 000 000, so the loop continues, and at 63 it gives 125 000 000 ÷ 124 = 1 008 064, above 1 000 000, so the loop stops with a post-divide of 63.</li>
+    <li><strong>Compute the rate.</strong> Equation (1) gives 125 000 000 ÷ (2 × 63) = 992 063 Hz, with SCR = 62 in the register.</li>
+  </ol>
+  <p>
+    A request for 1 MHz therefore returns 992 063 Hz, about 0.8 % slower, which matches the datasheet's arithmetic and is why the returned value should be read. These numbers come from reading the SDK code, not from a measured run.
+  </p>
+
+  <h2>Bit-bang and hardware SPI compared</h2>
+  <p>
+    <a href="../reference/glossary.html#bit-bang">Bit-bang</a> means the CPU drives the pins itself, one GPIO write at a time, sending a bit by putting the data on MOSI, raising SCK and lowering it again. Each step is an instruction and the delays in the code set the clock speed, so the method works with any pins, but the clock is only as steady as the code, and interrupts or other work can stretch any bit. Lesson 25 used this method.
   </p>
   <p>
-    Hardware SPI moves that work into the peripheral. The RP2040 has two SPI controllers, both based on the ARM PrimeCell SSP (PL022) design <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4</a>. Each has an 8-entry <a href="../reference/glossary.html#transmit-fifo">transmit FIFO</a>, which is a small hardware queue of bytes waiting to be shifted <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4.1</a>. The CPU writes a byte into the FIFO, and the controller shifts it out with an evenly spaced clock. The CPU does no per-bit work. It can even do other things while the bits go out, and it checks the busy flag, which <code>spi_is_busy()</code> reports, only when it needs the bus to be idle.
+    Hardware SPI moves that work into the peripheral. The RP2040 has two SPI controllers based on the ARM PrimeCell SSP (PL022) design <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4</a>, each with an 8-entry <a href="../reference/glossary.html#transmit-fifo">transmit FIFO</a>, a small hardware queue of bytes waiting to be shifted <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.4.1</a>. The CPU writes a byte into the FIFO and the controller shifts it out with an evenly spaced clock, so the CPU does no per-bit work and can do other things while the bits go out, checking the busy flag, which <code>spi_is_busy()</code> reports, only when it needs the bus to be idle.
   </p>
   <figure>
     <svg viewBox="0 0 460 210" role="img" aria-label="Two timing traces for one byte: bit-bang has irregular gaps set by software delays, and hardware SPI has evenly spaced clock edges" style="max-width:598px">
@@ -118,28 +124,28 @@
     <figcaption>Figure 1. The shape of the two clocks. Bit-bang edges come from software timing. Hardware SPI edges come from the peripheral's divider, which is even, and the CPU does not touch them.</figcaption>
   </figure>
 
-  <h2>Worked example: one byte, bit by bit</h2>
+  <h2>Worked example: one byte through the 74HC595</h2>
   <p>
-    The chase in this lesson sends the bytes 0x01, 0x02, 0x04 and so on, one per LED. Follow the first byte, 0x01, which is 0000 0001 in binary. With MSB first, the bits leave in the order 0, 0, 0, 0, 0, 0, 0, 1. Assume the shift register holds zeros to start with. The first seven bits do not show on the LEDs, because the outputs do not change until the latch rises.
+    The chase in this lesson sends the bytes 0x01, 0x02, 0x04 and so on, one per LED, and we follow the first, 0x01, or 0000 0001 in binary, assuming the shift register starts at zero. Before tracing it, predict on which edge the first LED lights.
   </p>
+  <ol class="steps">
+    <li><strong>Order the bits.</strong> With MSB first the bits leave as 0, 0, 0, 0, 0, 0, 0, 1, and the first seven do not show on the LEDs, because the outputs stay unchanged until the latch rises.</li>
+    <li><strong>Shift them in.</strong> On each rising edge of SHCP the chip takes the bit on DS into the shift register and pushes the older bits one place along, so after the seventh edge the register holds seven zeros with the last bit still to come, and after the eighth it holds 0000 0001, while the LEDs still follow only the storage register.</li>
+    <li><strong>Latch the result.</strong> The latch goes low before the byte starts and high after the last bit, so the rising edge of STCP at the end copies 0000 0001 to the output latches and Q0 lights the first LED.</li>
+    <li><strong>Stream the next byte.</strong> The next byte, 0x02, follows the same steps, its bits passing through the shift register while the old pattern still shows on the LEDs, which is how the chip can stream bytes and still show a clean pattern.</li>
+  </ol>
   <p>
-    On each rising edge of SHCP, the chip takes the bit on DS into the shift register and pushes the older bits one place along. After the seventh rising edge, the register holds 0000 000 and the last bit is still to come. After the eighth rising edge, the register holds 0000 0001. The LEDs have not changed yet, because the outputs follow only the storage register.
-  </p>
-  <p>
-    The storage register is copied when STCP rises. In the software, the latch goes low before the byte starts and high after the last bit. So the rising edge of STCP at the end copies 0000 0001 to the output latches, and Q0 lights the first LED. The next byte, 0x02, follows the same steps, and its bit-by-bit pattern leaves the shift register while the old pattern still shows on the LEDs. That overlap is why the chip can stream bytes and still show a clean pattern.
-  </p>
-  <p>
-    The timing is what differs. Bit-bang does two <code>sleep_us(1)</code> calls per bit, so eight bits take at least 2 × 8 × 1 = 16 µs before the GPIO writes are counted. Hardware SPI at 992,063 Hz takes 8 ÷ 992,063 = 8.06 µs of clock per byte. The solution measures both with <code>time_us_32()</code> and prints the two times, so the learner can see the gap on the serial monitor.
+    The timing is where the two methods differ. Bit-bang makes two <code>sleep_us(1)</code> calls per bit, so eight bits take at least 2 × 8 × 1 = 16 µs before the GPIO writes are counted, whereas hardware SPI at 992 063 Hz takes 8 ÷ 992 063 = 8.06 µs of clock per byte. The solution measures both with <code>time_us_32()</code> and prints the two times, so the gap shows on the serial monitor.
   </p>
 
   <p>
-    Send the first byte of the chase, 0x01, and look at the edges where the device samples MOSI. Then set the device to expect another mode. Mode 1 reads 0x03, because its edges fall where the master changes the data. Mode 3 happens to read the byte correctly, because it samples on the same rising edge.
+    The widget below sends the first byte of the chase, 0x01, and marks the edges on which the device samples MOSI. Set the device to expect another mode and compare: mode 1 reads 0x03, because its edges fall where the master changes the data, while mode 3 happens to read the byte correctly, because it samples on the same rising edge.
   </p>
   <div class="widget buswave" data-bus="spi" data-title="One SPI byte on the wire"></div>
 
-  <h2>The code, explained line by line</h2>
+  <h2>The SPI code line by line</h2>
   <p>
-    The excerpts come from the reference solution. First, the bit-bang byte. It is the reference that the hardware version must match.
+    The excerpts come from the reference solution, starting with the bit-bang byte, the reference that the hardware version must match.
   </p>
   <pre><code class="language-c">static void bitbang_byte(uint8_t value) {
     gpio_put(PIN_LATCH, 0);                  /* chip select low: the 595 will shift, not latch */
@@ -153,7 +159,7 @@
     gpio_put(PIN_LATCH, 1);                  /* rising edge on the latch: outputs change now */
 }</code></pre>
   <p>
-    The loop runs from bit 7 down to bit 0, which is MSB first. <code>(value &gt;&gt; bit) &amp; 1u</code> extracts one bit, and it goes to MOSI while SCK is still low, so it is stable before the edge. Setting SCK high is the rising edge, and that is the moment the 74HC595 samples DS. Setting SCK low finishes the clock period. The two <code>sleep_us()</code> calls are the half-periods, so the whole bit takes about 2 µs. The latch is low during the transfer and rises at the end, which copies the byte to the LEDs.
+    The loop runs from bit 7 down to bit 0, MSB first, <code>(value &gt;&gt; bit) &amp; 1u</code> extracting one bit, which goes to MOSI while SCK is still low so that it is stable before the edge. Setting SCK high makes the rising edge on which the 74HC595 samples DS, and setting it low completes the clock period, the two <code>sleep_us()</code> calls being the half-periods, so the whole bit takes about 2 µs. The latch stays low during the transfer and rises at the end, copying the byte to the LEDs.
   </p>
   <pre><code class="language-c">static void hw_byte(uint8_t value) {
     gpio_put(PIN_LATCH, 0);
@@ -164,80 +170,80 @@
     gpio_put(PIN_LATCH, 1);
 }</code></pre>
   <p>
-    This is the same sequence as the bit-bang version, but with one call in the middle. <code>spi_write_blocking()</code> sends one byte. The SDK's implementation writes the byte into the FIFO, then waits until the controller's busy flag clears, so the bit has left the shifter when the call returns <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_spi/spi.c" target="_blank" rel="noopener">pico-sdk, hardware_spi/spi.c, lines 107 to 125</a>. The explicit <code>spi_is_busy()</code> loop repeats that wait, so the learner can see the rule in the code. The latch goes high only after the wait, because a rising edge on STCP copies whatever is in the shift register at that moment.
+    The sequence is the same as the bit-bang version with one call in the middle, <code>spi_write_blocking()</code>, which sends one byte. The SDK's implementation writes the byte into the FIFO and then waits until the controller's busy flag clears, so the last bit has left the shifter when the call returns <a href="https://github.com/raspberrypi/pico-sdk/blob/master/src/rp2_common/hardware_spi/spi.c" target="_blank" rel="noopener">pico-sdk, hardware_spi/spi.c, lines 107 to 125</a>, and the explicit <code>spi_is_busy()</code> loop repeats that wait to make the rule visible in the code. The latch goes high only after the wait, because a rising edge on STCP copies whatever the shift register holds at that moment.
   </p>
   <pre><code class="language-c">static void pins_to_spi(void) {
     gpio_set_function(PIN_SCK, GPIO_FUNC_SPI);     /* SCK is now driven by SPI0 */
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);    /* MOSI is now driven by SPI0 */
 }</code></pre>
   <p>
-    A GPIO pin can be an ordinary output or one of the peripheral's functions. The bit-bang phase used the first kind, so the pins must be switched to the second kind before the hardware phase. <code>gpio_set_function()</code> changes the pin's multiplexer setting. The RP2040 datasheet's Table 279 lists GP18 as SPI0 SCK and GP19 as SPI0 TX, which are the two pins switched here <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 2.19.2, Table 279</a>. GP17 is also the SPI0 chip-select function, but this project drives it as a plain GPIO, so the peripheral does not touch it.
+    A GPIO pin can be an ordinary output or one of a peripheral's functions, and since the bit-bang phase used the first kind, the pins must be switched to the second before the hardware phase. <code>gpio_set_function()</code> changes the pin's multiplexer setting, and the RP2040 datasheet's Table 279 lists GP18 as SPI0 SCK and GP19 as SPI0 TX, the two pins switched here <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 2.19.2, Table 279</a>. GP17 also has an SPI0 chip-select function, but this project drives it as a plain GPIO, so the peripheral never touches it.
   </p>
   <pre><code class="language-c">uint actual_hz = spi_init(SPI_PORT, SPI_HZ);      /* returns the rate it actually set */
 spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);</code></pre>
   <p>
-    <code>spi_init()</code> takes the requested rate, sets the divider, and enables the peripheral. It returns the rate, which the solution stores for printing. <code>spi_set_format()</code> sets 8 bits per frame, the clock polarity and phase, and the bit order. The format is the mode from Concept 2, written as CPOL 0 and CPHA 0. The starter sets CPHA 1 here, and that is the bug the learner must fix. The SDK's own <code>spi_init()</code> already sets this mode, so the explicit call makes the choice visible.
+    <code>spi_init()</code> takes the requested rate, sets the divider and enables the peripheral, returning the rate, which the solution stores for printing. <code>spi_set_format()</code> sets 8 bits per frame, the clock polarity and phase and the bit order, the format being mode 0 from the table above, written as CPOL 0 and CPHA 0. The starter sets CPHA 1 here, the bug to fix, and although the SDK's own <code>spi_init()</code> already sets mode 0, the explicit call makes the choice visible.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0062-spi</code> uses the lesson 25 74HC595 with the SPI0 pins. SCK is GP18, MOSI is GP19, and GP17 is the latch, driven by hand as chip select. A logic analyzer records the three lines on D0 (SCK), D1 (MOSI) and D2 (latch). The solution first runs the chase with bit-bang, then with hardware SPI at 1 MHz, and prints both times.
+    The project <code>projects/0062-spi</code> uses the 74HC595 of lesson 25 on the SPI0 pins, SCK on GP18, MOSI on GP19 and the latch on GP17, driven by hand as chip select, while a logic analyser records the three lines on D0 (SCK), D1 (MOSI) and D2 (latch). The solution runs the chase first with bit-bang and then with hardware SPI at 1 MHz, and prints both times.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0062-spi/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The bit-bang phase runs first, so the LEDs chase once before the hardware phase starts.</li>
-    <li>Your task: write <code>hw_byte()</code>. Pull the latch low, send one byte with <code>spi_write_blocking()</code>, wait with <code>spi_is_busy()</code>, then raise the latch. Mirror <code>bitbang_byte()</code>. Then fix the mode: the starter sets CPHA 1, which is wrong for the 74HC595. Change it to CPHA 0, and write a comment that names the edge the 595 samples on.</li>
-    <li>Expected result: the serial monitor prints <code>SPI OK</code>, and a line such as <code>8 bytes: bit-bang ... us, hardware SPI ... us at 992063 Hz</code>. The LEDs chase on the hardware path. The bit-bang time is at least 16 µs, and the hardware time is about 8 µs.</li>
-    <li>Stop the simulator and open the capture file <code>wokwi.vcd</code> in PulseView. Use the SPI decoder with SCK on D0, MOSI on D1 and CS on D2. The MOSI bytes should read 0x01, 0x02, 0x04 and so on, MSB first. If the decoder's mode does not match the capture, the bytes come out wrong, which is the same mismatch problem from Concept 2.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The bit-bang phase runs first, so the LEDs chase once before the hardware phase starts.</li>
+    <li>Write <code>hw_byte()</code> to mirror <code>bitbang_byte()</code>, pulling the latch low, sending one byte with <code>spi_write_blocking()</code>, waiting with <code>spi_is_busy()</code> and raising the latch. Then fix the mode, changing the starter's CPHA 1, which is wrong for the 74HC595, to CPHA 0, with a comment naming the edge on which the 595 samples.</li>
+    <li>The serial monitor should print <code>SPI OK</code> and a line such as <code>8 bytes: bit-bang ... us, hardware SPI ... us at 992063 Hz</code>, with the LEDs chasing on the hardware path, a bit-bang time of at least 16 µs and a hardware time of about 8 µs.</li>
+    <li>Stop the simulator, open the capture file <code>wokwi.vcd</code> in PulseView and use the SPI decoder with SCK on D0, MOSI on D1 and CS on D2. The MOSI bytes should read 0x01, 0x02, 0x04 and so on, MSB first, and if the decoder's mode does not match the capture, the bytes come out wrong, the same mismatch as between master and device.</li>
   </ol>
   <details>
     <summary>Hint for the mode</summary>
-    <p>The 74HC595 samples its data on the rising edge of SHCP, which is SCK here. Work out which mode samples on the first, rising edge with the clock idle low. The table in Concept 2 gives it.</p>
+    <p>The 74HC595 samples its data on the rising edge of SHCP, which is SCK here, so find the mode in the table that samples on the first, rising edge with the clock idle low.</p>
   </details>
   <details>
     <summary>Hint for the timing</summary>
-    <p>Compare the two numbers the solution prints. Bit-bang has two 1 µs delays per bit, so a byte takes at least 16 µs. Hardware SPI at 992,063 Hz takes about 8 µs per byte. Both numbers come from <code>time_us_32()</code>, so they include the overhead of the code around each byte.</p>
+    <p>Compare the two numbers the solution prints: bit-bang has two 1 µs delays per bit, so a byte takes at least 16 µs, while hardware SPI at 992 063 Hz takes about 8 µs per byte. Both come from <code>time_us_32()</code>, so they include the overhead of the code around each byte.</p>
   </details>
-  <p>The reference solution is in <code>projects/0062-spi/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0062-spi/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You chose the SPI clock mode from the device's edge, derived the bit rate from the SDK source, drove a 74HC595 through a latch and chip select, and compared the software and hardware timing on a logic analyzer. Any SPI display, flash chip or sensor uses the same steps.</div>
+  <div class="win">You chose the SPI clock mode from the device's sampling edge, derived the bit rate from the SDK source, drove a 74HC595 through a latch used as chip select and compared software and hardware timing on a logic analyser, the same steps that any SPI display, flash chip or sensor needs.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <h3>Mistake 1: the wrong SPI mode</h3>
+  <h3>The wrong SPI mode</h3>
   <p>
-    <strong>Symptom:</strong> the chase looks shifted, or it stops being a clean one-LED pattern. On a logic analyzer, the data changes on the same edge the chip samples. <strong>Cause:</strong> the starter's CPHA 1 makes the master change MOSI on the rising edge, which is also when the 74HC595 samples it, so the chip reads each bit one step late. <strong>Fix:</strong> use mode 0 for the 74HC595, and check the mode in the datasheet of every new device before you wire it up.
+    The chase looks shifted or stops being a clean one-LED pattern, and the logic analyser shows the data changing on the edge the chip samples, because the starter's CPHA 1 makes the master change MOSI on the rising edge, the very moment the 74HC595 samples it, so the chip reads each bit one step late. Use mode 0 for the 74HC595, and check the mode in the datasheet of every new device before wiring it up.
   </p>
-  <h3>Mistake 2: the latch rises before the last bit has shifted</h3>
+  <h3>The latch raised before the last bit has shifted</h3>
   <p>
-    <strong>Symptom:</strong> the LEDs flicker through partial patterns during the chase, or a byte appears one step early. <strong>Cause:</strong> a rising edge on STCP copies whatever is in the shift register at that moment. If the latch rises while the last bit is still shifting, the copy holds an incomplete byte. <strong>Fix:</strong> wait for the busy flag to clear before raising the latch, which is what the <code>spi_is_busy()</code> loop does.
+    The LEDs flicker through partial patterns during the chase, or a byte appears one step early, because a rising edge on STCP copies whatever the shift register holds at that moment, so a latch that rises while the last bit is still shifting captures an incomplete byte. Wait for the busy flag to clear before raising the latch, as the <code>spi_is_busy()</code> loop does.
   </p>
-  <h3>Mistake 3: the pins are still plain GPIO after the bit-bang phase</h3>
+  <h3>Pins left as plain GPIO after the bit-bang phase</h3>
   <p>
-    <strong>Symptom:</strong> the hardware phase prints <code>SPI OK</code>, but the LEDs stop on the last bit-bang pattern, and the logic analyzer shows no clock on D0 during the hardware phase. <strong>Cause:</strong> SCK and MOSI are still ordinary GPIO outputs, so the SPI peripheral has no pin to drive. <strong>Fix:</strong> call <code>pins_to_spi()</code>, which sets both pins to <code>GPIO_FUNC_SPI</code>, before the first hardware byte.
+    The hardware phase prints <code>SPI OK</code>, but the LEDs stop on the last bit-bang pattern and the logic analyser shows no clock on D0 during the hardware phase, because SCK and MOSI are still ordinary GPIO outputs and the SPI peripheral has no pin to drive. Call <code>pins_to_spi()</code>, which sets both pins to <code>GPIO_FUNC_SPI</code>, before the first hardware byte.
   </p>
-  <h3>Mistake 4: using the requested rate in the timing budget</h3>
+  <h3>The requested rate used in a timing budget</h3>
   <p>
-    <strong>Symptom:</strong> a timing calculation that assumes 1 MHz is about 0.8 % too short, so a tight protocol budget fails by a small margin. The serial output shows 992063 Hz, not 1000000 Hz. <strong>Cause:</strong> the divider is a whole number, so <code>spi_init()</code> returns the rate it actually set. <strong>Fix:</strong> store the return value and use it in every calculation, as the solution does.
+    A timing calculation that assumes 1 MHz comes out about 0.8 % too short, so a tight protocol budget fails by a small margin, while the serial output shows 992063 Hz rather than 1000000 Hz, because the divider is a whole number and <code>spi_init()</code> returns the rate it actually set. Store the return value and use it in every calculation, as the solution does.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>SPI device bring-up and decoding in practice</h2></summary>
   <p>
-    On a real board, the first step with any SPI device is the datasheet's timing section. It names the mode, the largest clock, and the rule for the chip select, which some devices sample on a rising edge and others on a falling edge. Engineers write the mode and the clock limit next to the init code, and reviewers check both. A driver that uses the SDK's returned rate, and a comment that names the device's mode, passes review quickly.
+    On a real board the first step with any SPI device is the timing section of its datasheet, which names the mode, the largest clock and the rule for the chip select, sampled on a rising edge by some devices and a falling edge by others. Engineers write the mode and the clock limit next to the init code and reviewers check both, so a driver that uses the SDK's returned rate and names the device's mode in a comment passes review quickly.
   </p>
   <p>
-    A logic analyzer decodes SPI, but it needs the right mode and the right chip-select polarity to show correct bytes. This is the same debugging method as lesson 60, applied to a faster clock. Keep the capture next to the datasheet, and check the first byte. A decoder that shows the bytes shifted by one bit almost always has the wrong mode.
+    A logic analyser decodes SPI, but it needs the right mode and the right chip-select polarity to show correct bytes, the same debugging method as in lesson 60 applied to a faster clock. Keep the capture next to the datasheet and check the first byte, because a decoder showing the bytes shifted by one bit almost always has the wrong mode.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>SPI uses SCK, MOSI, MISO and chip select. Each clock pulse moves one bit each way, so a byte leaves and arrives in eight pulses.</li>
-    <li>CPOL sets the idle clock level, and CPHA sets which edge the device samples on. Together they give modes 0 to 3, and the device's datasheet sets the mode.</li>
-    <li>The 74HC595 shifts on the rising edge of SHCP and copies to the outputs on the rising edge of STCP, so it needs mode 0.</li>
-    <li>The bit rate is clk_peri ÷ (prescale × post-divide). The SDK searches for both values and returns the rate it actually set, such as 992,063 Hz for a 1 MHz request.</li>
-    <li>Bit-bang costs CPU time per bit, and its timing depends on the code. Hardware SPI shifts the byte from the 8-entry FIFO with an even clock.</li>
-    <li>Switch SCK and MOSI to the SPI function before the hardware transfer, and wait for the busy flag before raising the latch.</li>
+    <li>SPI uses SCK, MOSI, MISO and chip select, each clock pulse moving one bit each way, so a byte leaves and arrives in eight pulses.</li>
+    <li>CPOL sets the idle clock level and CPHA the edge on which the device samples, together giving modes 0 to 3, with the device's datasheet setting the mode.</li>
+    <li>The 74HC595 shifts on the rising edge of SHCP and copies to its outputs on the rising edge of STCP, so it needs mode 0.</li>
+    <li>The bit rate is clk_peri ÷ (prescale × post-divide), and the SDK searches for both values and returns the rate actually set, such as 992 063 Hz for a 1 MHz request.</li>
+    <li>Bit-bang costs CPU time per bit with timing that depends on the code, while hardware SPI shifts bytes from its 8-entry FIFO with an even clock.</li>
+    <li>SCK and MOSI must be switched to the SPI function before a hardware transfer, and the latch raised only after the busy flag clears.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

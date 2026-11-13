@@ -6,14 +6,14 @@ Lesson: [Sequential logic](https://jouhis.github.io/embedded-course/lessons/0024
 
 ## Try it in Wokwi
 
-The project in `projects/0024-d-flip-flop` drives D from GP2 and CLK from GP3, and reads Q on GP10. The test first clocks a 0 into the flip-flop, so its starting state does not matter. Then, for five values of D, it changes D while the clock is low and checks that Q does not change, then makes one rising edge and checks that Q now equals D. Each check prints one line, `ok` or `WRONG`.
+The project in `projects/0024-d-flip-flop` drives D from GP2 and CLK from GP3 and reads Q on GP10. The test first clocks a 0 into the flip-flop, so that its starting state does not matter. Then, for five values of D, it changes D while the clock is low and checks that Q stays unchanged, makes one rising edge, and checks that Q now equals D. Each check prints one line ending in `ok` or `WRONG`.
 
 1. Open the `starter` folder in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints a line for each check and then `D FLIP-FLOP FAILED`. The "rising edge (must copy D)" lines end in `WRONG`, because Q never changes when no clock reaches the flip-flop.
-2. Find the missing wire. The clock input of the flip-flop, `CLK`, must connect to GP3. Add this line to the `connections` list in `diagram.json`, then save: `["pico:GP3", "ff1:CLK", "blue", []]`
-3. In `main.c`, write the body of `pulse_clock()`. It must make a rising edge: drive CLK low, then high (this is the edge), then low again, with `sleep_us()` between the steps. The comments say which is which.
-4. Restart the simulator. The load line should now print `ok`. You will know it works when the serial monitor prints `D FLIP-FLOP OK` after the five test steps.
+2. Add the missing wire. The flip-flop's clock input, `CLK`, must connect to GP3, so add this line to the `connections` list in `diagram.json` and save: `["pico:GP3", "ff1:CLK", "blue", []]`
+3. In `main.c`, write the body of `pulse_clock()`. It must make a rising edge by driving CLK low, then high (this is the edge), then low again, with `sleep_us()` between the steps; the comments mark which is which.
+4. Restart the simulator. The load line should now print `ok`, and it works when the serial monitor prints `D FLIP-FLOP OK` after the five test steps.
 
-The flip-flop's pins are named `D`, `CLK` and `Q` in this project. Check the pin names on the Wokwi part's documentation page when you edit the connections. Wokwi is a digital simulator, so the test checks the logic of the edge, not the setup and hold times in nanoseconds.
+The flip-flop's pins are named `D`, `CLK` and `Q` in this project, so check the pin names on the Wokwi part's documentation page when editing the connections. Wokwi is a digital simulator, so the test checks the logic of the edge, not the setup and hold times in nanoseconds.
 
 ## Files you work on
 
@@ -31,7 +31,7 @@ The serial monitor prints `D FLIP-FLOP OK`.
 <details>
 <summary>Hint for the edge</summary>
 
-The copy happens when CLK goes from 0 to 1. Setting CLK to 1 and then leaving it at 1 is not enough: the next pulse needs a 0 first, so the flip-flop sees a new rising edge. The starter's `pulse_clock()` ends with CLK at 0 for that reason.
+The copy happens when CLK goes from 0 to 1. Setting CLK to 1 and leaving it there is not enough, because the next pulse needs a 0 first so that the flip-flop sees a new rising edge, which is why the starter's `pulse_clock()` ends with CLK at 0.
 
 </details>
 

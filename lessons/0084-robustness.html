@@ -11,31 +11,27 @@
 <body data-lesson="0084">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Robustness: watchdogs, HardFault analysis and assertions</h1>
-  <p class="subtitle">A field device fails at 3 a.m. with no debugger attached. Three tools make that failure recoverable and explainable: a watchdog that resets a hung chip, a HardFault handler that records where the crash was, and assertions that name the line that broke an invariant.</p>
+  <h1>Robustness</h1>
+  <p class="subtitle">Watchdogs, fault handlers and assertions</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>write a HardFault handler that prints the stacked PC and the fault registers, and decode that PC to a source line with <code>arm-none-eabi-addr2line</code></strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>A field failure without a debugger</h2>
   <p>
-    This lesson builds on four earlier ones. <a href="0034-exceptions-and-interrupt-entry.html">Lesson 34</a> showed how the core enters an exception and pushes registers onto the stack. <a href="0039-the-mpu-and-how-faults.html">Lesson 39</a> introduced the faults and the System Control Block (SCB) that reports them. <a href="0042-startup-code-and-the-vector.html">Lesson 42</a> showed the vector table, which decides where the core goes when a fault happens. <a href="0078-memory.html">Lesson 78</a> showed how the stack grows into memory, and how a stack that is too deep becomes a hang or a corrupted variable.
+    This lesson builds on four earlier ones, <a href="0034-exceptions-and-interrupt-entry.html">lesson 34</a> having shown how the core enters an exception and pushes registers onto the stack, <a href="0039-the-mpu-and-how-faults.html">lesson 39</a> the faults and the System Control Block (SCB) that reports them, <a href="0042-startup-code-and-the-vector.html">lesson 42</a> the vector table deciding where the core goes on a fault, and <a href="0078-memory.html">lesson 78</a> how a stack that grows too deep becomes a hang or a corrupted variable.
   </p>
   <p>
-    This situation is common in the field. A product runs in a customer's building. It resets a few times a month, and a support engineer asks why. No debugger is attached, the serial port is unplugged, and the device is in a cabinet. The firmware has to do three jobs on its own. It must recover, so the device keeps working. It must record evidence, so the next engineer knows what happened. It must check its own assumptions, so that a broken invariant is found where it breaks and not three functions later. Each job has a tool in this lesson: a watchdog, a HardFault handler and an assertion.
-  </p>
-
-  <h2>Watchdogs: what they are for</h2>
-  <p>
-    A <strong>watchdog</strong> is a counter that resets the chip if software does not clear it in time (glossary: <a href="../reference/glossary.html#watchdog">watchdog</a>). Normal code clears the counter on a schedule. Clearing it is called a <strong>kick</strong> or a refresh. If the program hangs in a loop, waits on a lock that never opens, or sits in a fault handler that never returns, the kick stops. The counter reaches zero and resets the system. A reset recovers the device. A hung device does not recover. A stack overflow is one common cause of such a hang, and lesson 78 shows how to see the stack depth before it becomes one.
+    A product in a customer's building resets a few times a month and a support engineer asks why, but no debugger is attached, the serial port is unplugged and the device sits in a cabinet. The firmware must therefore recover on its own, so that the device keeps working, record evidence, so that the next engineer knows what happened, and check its own assumptions, so that a broken invariant is found where it breaks rather than three functions later, each job having a tool in this lesson, a watchdog, a HardFault handler and an assertion.
   </p>
 
-  <div class="analogy">
-    <p>A watchdog is a train's dead man's switch. The driver must press a pedal every so often; if the pedal is not pressed, the system assumes the driver is unable to act and stops the train. Kicking the watchdog from a timer interrupt that keeps running while the main loop is stuck is taping the pedal down: the switch is satisfied and protects nothing.</p>
-  </div>
+  <h2>Watchdog timers</h2>
   <p>
-    The STM32F1 has two watchdogs. Both are described in the reference manual RM0008 Rev 21, in chapter 19 (the independent watchdog, IWDG) and chapter 20 (the window watchdog, WWDG). The two differ in their clock and in their rules:
+    A <strong>watchdog</strong> is a counter that resets the chip unless software clears it in time (glossary: <a href="../reference/glossary.html#watchdog">watchdog</a>), normal code clearing it on a schedule, which is called a <strong>kick</strong> or a refresh. If the program hangs in a loop, waits on a lock that never opens or sits in a fault handler that never returns, the kicks stop and the counter reaches zero and resets the system, which recovers the device where a hung one would not. A stack overflow is one common cause of such a hang, and lesson 78 shows how to see the stack depth before it becomes one.
+  </p>
+  <p>
+    The STM32F1 has two watchdogs, described in the reference manual RM0008 Rev 21 in chapter 19 (the independent watchdog, IWDG) and chapter 20 (the window watchdog, WWDG), which differ in their clock and their rules.
   </p>
   <table>
     <thead><tr><th>Watchdog</th><th>Clock</th><th>Rule</th><th>Use it for</th></tr></thead>
@@ -45,18 +41,21 @@
     </tbody>
   </table>
   <p>
-    The IWDG's counter is a 12-bit value. Its reload register, <code>IWDG_RLR</code>, has a field <code>RL</code> with a mask of 0xFFF, which the device header in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code> defines. The manual gives the same field as RL[11:0], with a reset value of 0x0FFF (RM0008 Rev 21, section 19.4.3). The largest reload value is therefore 4095, and the counter counts down from it (section 19.3). That is the number the quiz asks about.
+    The IWDG's counter is a 12-bit value, its reload register <code>IWDG_RLR</code> having a field <code>RL</code> with a mask of 0xFFF, defined in the device header <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>, which the manual gives as RL[11:0] with a reset value of 0x0FFF (RM0008 Rev 21, section 19.4.3). The largest reload value is therefore 4 095, from which the counter counts down (section 19.3), the number the quiz asks about.
   </p>
   <div class="note">
     In this course's simulator, NOTES.md records that the Blue Pill's IWDG is <em>not</em> simulated, and WWDG is. The Pico's watchdog (<code>hardware_watchdog</code> in the SDK) has not been checked in the simulator, so treat its behaviour here as unverified.
   </div>
 
-  <h2>Kick strategies: check in before kicking</h2>
+  <h2>Task check-in before the watchdog kick</h2>
   <p>
-    A watchdog kicked from one timer interrupt proves only that the interrupt runs. The main loop could be stuck, and the interrupt would keep the watchdog happy. A better design checks in. Each task sets its own bit when it has made progress. A supervisor kicks the watchdog only when every expected bit is set, and then clears the bits for the next round. If one task hangs, its bit never sets, the kick stops, and the chip resets. This is the task check-in pattern (glossary: <a href="../reference/glossary.html#task-check-in">task check-in</a>). It also tells you which task was stuck when you read the log in lesson 85.
+    A watchdog kicked from one timer interrupt proves only that the interrupt runs, since the main loop could be stuck while the interrupt keeps the watchdog satisfied. A better design checks in, each task setting its own bit when it has made progress and a supervisor kicking the watchdog only when every expected bit is set, then clearing the bits for the next round, so that a hung task never sets its bit, the kick stops and the chip resets. This task check-in pattern (glossary: <a href="../reference/glossary.html#task-check-in">task check-in</a>) also reveals which task was stuck when the log of lesson 85 is read.
   </p>
+  <div class="analogy">
+    <p>A watchdog resembles a train's dead man's switch, a pedal the driver must press every so often, the system assuming that a driver who stops pressing is unable to act and stopping the train, so kicking the watchdog from a timer interrupt that keeps running while the main loop is stuck amounts to taping the pedal down, satisfying the switch while protecting nothing. The comparison breaks on the response, though, because the train stops and waits for help, whereas a watchdog restarts the chip at once, and a fault that recurs at every boot turns into a reset loop.</p>
+  </div>
   <p>
-    Check-in works best when each task has its own event queue and never blocks the others, which is the design of <a href="0077-layered-and-event-driven-architecture.html">lesson 77</a>. A task that blocks on a slow sensor can miss its check-in window, and then the watchdog resets the device for a reason that is not a bug in the task. The design question is how long each task may take between check-ins, and that is a number you write down.
+    Check-in works best when each task has its own event queue and never blocks the others, the design of <a href="0077-layered-and-event-driven-architecture.html">lesson 77</a>, because a task blocking on a slow sensor can miss its check-in window, and the watchdog then resets the device for a reason that is not a bug in the task. The design question is how long each task may take between check-ins, a number that should be written down.
   </p>
 
   <div class="widget anim" data-title="Check in before kicking: one stuck task resets the chip">
@@ -112,20 +111,20 @@
     </ol>
   </div>
 
-  <h2>Concepts: the stacked frame and EXC_RETURN</h2>
+  <h2>The stacked exception frame and EXC_RETURN</h2>
   <p>
-    When a fault happens, the core behaves like any other exception entry. It pushes a fixed set of eight words onto the active stack before it runs the handler (lesson 34; PM0056 Rev 7, section 2.3.7). This set is the <strong>stacked frame</strong> (glossary: <a href="../reference/glossary.html#stacked-frame">stacked frame</a>). The eight words are R0, R1, R2, R3, R12, LR, PC and xPSR, in that order from the lowest address. Word 0 is at the frame pointer, word 6 is at the frame pointer plus 24 bytes, and word 7 is at 28 bytes.
+    On a fault the core behaves as on any other exception entry, pushing a fixed set of eight words onto the active stack before it runs the handler (lesson 34; PM0056 Rev 7, section 2.3.7). This <strong>stacked frame</strong> (glossary: <a href="../reference/glossary.html#stacked-frame">stacked frame</a>) holds R0, R1, R2, R3, R12, LR, PC and xPSR in that order from the lowest address, word 0 lying at the frame pointer, word 6 at the frame pointer plus 24 bytes and word 7 at 28 bytes.
   </p>
   <p>
-    The PC in the frame is the address of the instruction that was running when the fault happened. For a precise fault, which is the case in this lesson, the instruction that caused the fault is the one whose address is stacked. That is why the PC is the main clue: it tells you where the code was. The LR word holds whatever the link register held, which is not the caller in general, so it is a weaker clue.
+    The PC in the frame is the address of the instruction running when the fault happened, and for a precise fault, the case in this lesson, the instruction that caused the fault is the one whose address is stacked, which makes the PC the main clue to where the code was. The LR word holds whatever the link register held, which in general is not the caller, so it is a weaker clue.
   </p>
   <p>
-    The handler needs to know which stack the frame went to. The core chooses the main stack pointer (MSP) or the process stack pointer (PSP) depending on the mode it was in, and it reports the choice in the exception return value, called EXC_RETURN (glossary: <a href="../reference/glossary.html#exc-return">EXC_RETURN</a>). Bit 2 of EXC_RETURN is 0 when the frame is on the MSP, and 1 when it is on the PSP (PM0056 Rev 7, section 2.3.7, Table 17). Because the firmware in this lesson has no operating system, the frame goes to the MSP.
+    The handler needs to know which stack received the frame, the core choosing the main stack pointer (MSP) or the process stack pointer (PSP) by the mode it was in and reporting the choice in the exception return value EXC_RETURN (glossary: <a href="../reference/glossary.html#exc-return">EXC_RETURN</a>), whose bit 2 is 0 when the frame is on the MSP and 1 when it is on the PSP (PM0056 Rev 7, section 2.3.7, Table 17). The firmware in this lesson has no operating system, so the frame goes to the MSP.
   </p>
 
-  <h2>Concepts: the fault status registers</h2>
+  <h2>The fault status registers</h2>
   <p>
-    The stacked frame says where the code was. The fault status registers say why. They live in the System Control Block (SCB), a block of registers at address 0xE000ED00 (PM0056 Rev 7, section 4.4.15). The CMSIS header defines the SCB as a structure, and each register sits at a fixed offset from that base. The offsets that matter here are these (PM0056 Rev 7, sections 4.4.10 to 4.4.13):
+    The stacked frame says where the code was, and the fault status registers say why. They live in the System Control Block (SCB), a block of registers at address 0xE000ED00 (PM0056 Rev 7, section 4.4.15), which the CMSIS header defines as a structure with each register at a fixed offset from the base, and the offsets that matter here are listed below (PM0056 Rev 7, sections 4.4.10 to 4.4.13).
   </p>
   <table>
     <thead><tr><th>Register</th><th>Address</th><th>What to look at</th></tr></thead>
@@ -137,18 +136,18 @@
     </tbody>
   </table>
   <p>
-    The CFSR is one 32-bit word with three fields. Each field starts at a fixed bit. The MemManage field starts at bit 0, the BusFault field at bit 8, and the UsageFault field at bit 16. Inside those fields, the bits have their own names. The header gives the positions in the same way for each field: BFARVALID is bit 7 of the BusFault field, so it is bit 15 of CFSR. UNALIGNED is bit 8 of the UsageFault field, so it is bit 24 of CFSR. The header also defines MMARVALID, which is bit 7 of the MemManage field, so bit 7 of CFSR. The manual gives the same field layout (PM0056 Rev 7, section 4.4.10).
+    The CFSR is one 32-bit word with three fields, the MemManage field starting at bit 0, the BusFault field at bit 8 and the UsageFault field at bit 16, each with its own named bits, which the header positions the same way for every field. BFARVALID is bit 7 of the BusFault field, so bit 15 of CFSR, UNALIGNED bit 8 of the UsageFault field, so bit 24 of CFSR, and MMARVALID, also defined in the header, bit 7 of the MemManage field, so bit 7 of CFSR, the manual giving the same layout (PM0056 Rev 7, section 4.4.10).
   </p>
   <p>
-    The bit positions come from the CMSIS header <code>third_party/CMSIS_5/CMSIS/Core/Include/core_cm3.h</code>. For the fault section of the register descriptions, the reference is the Cortex-M3 programming manual PM0056 Rev 7, sections 4.4.9 to 4.4.13. The offsets and bit positions in this lesson were read from that header, which the course build uses, and they match the names in the code and the values in PM0056.
+    The bit positions come from the CMSIS header <code>third_party/CMSIS_5/CMSIS/Core/Include/core_cm3.h</code>, while the reference for the fault register descriptions is the Cortex-M3 programming manual PM0056 Rev 7, sections 4.4.9 to 4.4.13. The offsets and bit positions in this lesson were read from the header the course build uses, and they match the names in the code and the values in PM0056.
   </p>
   <p>
-    One more register matters for the lesson's fault. The configuration control register, CCR, sits at offset 0x14 in the SCB. Its bit 3, UNALIGN_TRP, makes an unaligned access fault instead of being fixed up by the core (PM0056 Rev 7, section 4.4.7). The header calls the mask <code>SCB_CCR_UNALIGN_TRP_Msk</code>, and its value is 8. The solution sets this bit on purpose, to create a fault.
+    One more register matters for the lesson's fault, the configuration control register, CCR, at offset 0x14 in the SCB, whose bit 3, UNALIGN_TRP, makes an unaligned access fault instead of being fixed up by the core (PM0056 Rev 7, section 4.4.7). The header calls the mask <code>SCB_CCR_UNALIGN_TRP_Msk</code>, with the value 8, and the solution sets this bit on purpose to create a fault.
   </p>
 
-  <h2>The handler stub: why it is naked</h2>
+  <h2>A naked HardFault handler stub</h2>
   <p>
-    The handler has two parts. The first is a small assembly stub that finds the stacked frame. The second is a C function that reads the frame and prints it. The stub must come first, and it must be written so that the compiler does not add anything in front of it. A C function starts with a prologue, which is code the compiler adds to save registers and set up the stack. If the prologue runs before the handler reads the stack pointer, the registers it saves can change the stack the handler is about to read. A <strong>naked function</strong> (glossary: <a href="../reference/glossary.html#naked-function">naked function</a>) has no prologue, so its body controls every register.
+    The handler has two parts, a small assembly stub that finds the stacked frame and a C function that reads and prints it, and the stub must come first, written so that the compiler adds nothing in front of it. A C function starts with a prologue, code the compiler adds to save registers and set up the stack, and a prologue running before the handler reads the stack pointer can change the very stack the handler is about to read, whereas a <strong>naked function</strong> (glossary: <a href="../reference/glossary.html#naked-function">naked function</a>) has no prologue, so its body controls every register.
   </p>
   <pre><code class="language-c">void HardFault_Handler(void) __attribute__((naked));
 void HardFault_Handler(void) {
@@ -161,7 +160,7 @@ void HardFault_Handler(void) {
     );
 }</code></pre>
   <p>
-    The stub's four instructions do the whole job. <code>tst</code> sets the zero flag if bit 2 of LR is clear. <code>ite</code> is the if-then-else instruction for the next two, and <code>mrseq</code> and <code>mrsne</code> copy MSP or PSP into R0, depending on that flag. R0 is the first argument of a C function under the Arm procedure call standard, so <code>b</code> jumps into <code>hard_fault_report</code> with the frame pointer in R0. The jump is a branch and not a call, so no return address is pushed, and the handler never returns to the fault.
+    The stub's four instructions do the whole job. <code>tst</code> sets the zero flag if bit 2 of LR is clear, <code>ite</code> is the if-then-else instruction for the next two, and <code>mrseq</code> and <code>mrsne</code> copy MSP or PSP into R0 according to that flag, R0 being the first argument of a C function under the Arm procedure call standard, so <code>b</code> jumps into <code>hard_fault_report</code> with the frame pointer in R0. The jump is a branch rather than a call, so no return address is pushed and the handler never returns to the fault.
   </p>
   <div class="warning">
     The startup file gives <code>HardFault_Handler</code> a weak default that loops forever. The default is an alias of <code>Default_Handler</code>, which runs <code>b Infinite_Loop</code>. Your own definition with the same name overrides the default, so you do not edit the startup file. If you forget to define it, a fault makes the chip hang silently, and the serial monitor shows nothing after the last line the program printed.
@@ -169,7 +168,7 @@ void HardFault_Handler(void) {
 
   <h2>Assertions that log and reset</h2>
   <p>
-    An <strong>assertion</strong> checks an invariant and stops the program when it is false (glossary: <a href="../reference/glossary.html#assertion-firmware">assertion</a>). An invariant is a condition the code assumes is always true, such as "this pointer is not null because the caller checked it". In firmware, the useful version records the file and line, and then resets, so the device recovers and the log explains why. A sketch looks like this. Lesson 85 implements the full version, with a log that survives the reset.
+    An <strong>assertion</strong> checks an invariant and stops the program when it is false (glossary: <a href="../reference/glossary.html#assertion-firmware">assertion</a>), an invariant being a condition the code assumes always holds, such as "this pointer is not null because the caller checked it". In firmware the useful version records the file and line and then resets, so the device recovers while the log explains why, and the sketch below shows the idea, which lesson 85 implements in full with a log that survives the reset.
   </p>
   <pre><code class="language-c">#define ASSERT(expr) do { if (!(expr)) assert_failed(__FILE__, __LINE__); } while (0)
 
@@ -178,49 +177,49 @@ void assert_failed(const char *file, int line) {
     NVIC_SystemReset();         /* does not return */
 }</code></pre>
   <p>
-    <code>NVIC_SystemReset</code> is a CMSIS function. It writes the system reset request bit, <code>SCB_AIRCR_SYSRESETREQ</code>, which is bit 2 of the application interrupt and reset control register. The core then resets. Nothing after the call runs, which is why the function is marked as not returning in the header.
+    <code>NVIC_SystemReset</code> is a CMSIS function that writes the system reset request bit, <code>SCB_AIRCR_SYSRESETREQ</code>, bit 2 of the application interrupt and reset control register, after which the core resets, so nothing after the call runs, which is why the header marks the function as not returning.
   </p>
   <p>
     <span class="sidenote">Use assertions for bugs, such as a pointer that should never be null. Do not use them for input from the outside world. A bad sensor reading needs an error path, not a reset.</span>
-    Compile-time assertions, written with <code>_Static_assert</code>, catch layout bugs before the build succeeds, and they cost nothing at run time. The two kinds of assertion answer different questions. A static assertion checks the program's structure, and a run-time assertion checks the state the program reaches.
+    Compile-time assertions, written with <code>_Static_assert</code>, catch layout bugs before the build succeeds at no run-time cost, the two kinds answering different questions, a static assertion checking the program's structure and a run-time assertion the state the program reaches.
   </p>
 
-  <h2>Decoding the stacked PC</h2>
+  <h2>Decoding the stacked PC with addr2line</h2>
   <p>
-    The PC in the frame is an address in flash. The tool <code>arm-none-eabi-addr2line</code> maps that address to a function and a source line, using the debug information in the <code>.elf</code> file. The debugger does the same job when you break on a fault, but addr2line works on a log printed from the field, where no debugger is attached. Its options are: <code>-e</code> names the ELF file, <code>-f</code> prints the function name, <code>-C</code> demangles names, and <code>-i</code> follows inlined code.
+    The PC in the frame is an address in flash, which the tool <code>arm-none-eabi-addr2line</code> maps to a function and a source line using the debug information in the <code>.elf</code> file. A debugger does the same when breaking on a fault, but addr2line works on a log printed in the field without any debugger, and its options are <code>-e</code> naming the ELF file, <code>-f</code> printing the function name, <code>-C</code> demangling names and <code>-i</code> following inlined code.
   </p>
 
-  <h2>A worked example: the crash in the solution</h2>
+  <h2>Worked example: the deliberate crash in the solution</h2>
   <p>
-    The solution causes a fault on purpose, and the steps are worth following one by one, because each one is a fact you can check in the build.
+    The solution causes a fault on purpose, and each step is a fact that can be checked in the build. Before following them, predict which fault the core finally reports, given that the UsageFault is never enabled.
   </p>
-  <ol>
-    <li><strong>The fault is armed.</strong> <code>trigger_unaligned_load</code> sets bit 3 of the CCR, with <code>SCB-&gt;CCR |= SCB_CCR_UNALIGN_TRP_Msk</code>. In the disassembly, this is the <code>orr.w r3, r3, #8</code> followed by the store to offset 20 (0x14). Bit 3 is the value 8, so the store is the CCR write.</li>
-    <li><strong>The address is odd.</strong> The code makes a pointer to 0x20000001. That address is in RAM, which starts at 0x20000000, and it is one byte past a word boundary. The instruction <code>ldr.w r3, [r3, #1]</code> loads a 32-bit word from that address.</li>
-    <li><strong>The core refuses the access.</strong> With UNALIGN_TRP set, an unaligned word access raises a UsageFault and sets the UNALIGNED bit, bit 24 of CFSR. The solution never sets USGFAULTENA, bit 18 of SHCSR, so the UsageFault is disabled. The core escalates the fault to HardFault and sets HFSR bit 30, FORCED. The solution's comment in <code>main.c</code> describes this path.</li>
-    <li><strong>The frame is pushed.</strong> <code>main</code> runs on the main stack, so the core pushes eight words to MSP. The PC word is the address of the faulting load, 0x08000262, because the fault is precise. The stub reads EXC_RETURN bit 2, finds it clear, and passes MSP to C in R0.</li>
-    <li><strong>The handler prints.</strong> <code>hard_fault_report</code> prints frame word 6, which is the PC. By the bit positions above, the expected CFSR is 0x01000000, with only UNALIGNED set, and the expected HFSR is 0x40000000, with only FORCED set. Those are predictions from the register layout. Check them on a run that reaches the fault, and do not assume them.</li>
-    <li><strong>The decode checks the address.</strong> You can find the faulting instruction with objdump, and then decode the PC with addr2line. Both steps are in the next section.</li>
+  <ol class="steps">
+    <li><strong>Arm the fault.</strong> <code>trigger_unaligned_load</code> sets bit 3 of the CCR with <code>SCB-&gt;CCR |= SCB_CCR_UNALIGN_TRP_Msk</code>, which in the disassembly is the <code>orr.w r3, r3, #8</code> followed by the store to offset 20 (0x14), bit 3 being the value 8, so the store is the CCR write.</li>
+    <li><strong>Use an odd address.</strong> The code makes a pointer to 0x20000001, an address in RAM, which starts at 0x20000000, lying one byte past a word boundary, and the instruction <code>ldr.w r3, [r3, #1]</code> loads a 32-bit word from it.</li>
+    <li><strong>Escalate the fault.</strong> With UNALIGN_TRP set, an unaligned word access raises a UsageFault and sets the UNALIGNED bit, bit 24 of CFSR, but since the solution never sets USGFAULTENA, bit 18 of SHCSR, the UsageFault is disabled, so the core escalates the fault to HardFault and sets HFSR bit 30, FORCED, the path described by the solution's comment in <code>main.c</code>.</li>
+    <li><strong>Push the frame.</strong> <code>main</code> runs on the main stack, so the core pushes eight words to MSP, the PC word being the address of the faulting load, 0x08000262, because the fault is precise, and the stub reads EXC_RETURN bit 2, finds it clear and passes MSP to C in R0.</li>
+    <li><strong>Print the report.</strong> <code>hard_fault_report</code> prints frame word 6, the PC, and by the bit positions above the expected CFSR is 0x01000000, with only UNALIGNED set, and the expected HFSR 0x40000000, with only FORCED set, predictions from the register layout that must be checked on a run reaching the fault rather than assumed.</li>
+    <li><strong>Check the decode.</strong> The faulting instruction is found with objdump and the PC decoded with addr2line, both steps following in the hands-on section.</li>
   </ol>
 
   <h2>Try it on the Blue Pill</h2>
   <ol class="steps">
-    <li>Open <code>projects/0084-robustness/starter</code> in VS Code and build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build passes, with one warning, <code>'uart_put_hex32' defined but not used</code>. Your code will use that function, so the warning goes away when you do.</li>
-    <li>Read <code>main.c</code>. The program prints <em>boot: triggering a fault</em>, and then calls <code>trigger_unaligned_load()</code>. That function sets <code>UNALIGN_TRP</code>, then does a word load from the odd address <code>0x20000001</code>.</li>
-    <li>Your task: write <code>hard_fault_report()</code> so it prints <em>HardFault PC=</em> followed by the value of <code>frame[6]</code>, then loops forever. The comment marked TODO(learner) has the four steps.</li>
-    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Your handler should print the line <em>HardFault PC=0x</em> followed by eight hex digits. <strong>In the simulator this line does not appear.</strong> Wokwi's STM32 core does not raise fault exceptions: the unaligned load simply runs and the program carries on, so no handler is called, yours or the solution's. The simulator can still check that your code builds. Then go to the decode steps below, which run on your PC without the simulator. On a real Blue Pill the line appears.</li>
+    <li>Open <code>projects/0084-robustness/starter</code> in VS Code and build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, which passes with one warning, <code>'uart_put_hex32' defined but not used</code>, a function your code will use, so the warning disappears once you do.</li>
+    <li>Read <code>main.c</code>, in which the program prints <em>boot: triggering a fault</em> and then calls <code>trigger_unaligned_load()</code>, which sets <code>UNALIGN_TRP</code> and does a word load from the odd address <code>0x20000001</code>.</li>
+    <li>Write <code>hard_fault_report()</code> so that it prints <em>HardFault PC=</em> followed by the value of <code>frame[6]</code> and then loops forever, following the four steps in the comment marked TODO(learner).</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>, where your handler would print <em>HardFault PC=0x</em> followed by eight hex digits, but <strong>in the simulator this line does not appear</strong>, because Wokwi's STM32 core raises no fault exceptions, so the unaligned load simply runs and the program carries on without calling any handler, yours or the solution's. The simulator still checks that your code builds, the decode steps below run on your PC without it, and on a real Blue Pill the line appears.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Use <code>uart_puts</code> for the label and <code>uart_put_hex32(frame[6])</code> for the value. Do not use <code>printf</code> in a fault handler: it may depend on state the fault has left broken, such as a heap or a lock that the fault interrupted.</p>
+    <p>Use <code>uart_puts</code> for the label and <code>uart_put_hex32(frame[6])</code> for the value, and avoid <code>printf</code> in a fault handler, since it may depend on state the fault left broken, such as a heap or a lock that the fault interrupted.</p>
   </details>
   <div class="warning">
     Why the simulator shows nothing: probing Wokwi's STM32 core found that it raises no fault exceptions. An unaligned load with <code>UNALIGN_TRP</code> set, a <code>udf</code> instruction, a divide by zero with <code>DIV_0_TRP</code> set, and loads from unmapped addresses all run without a fault, and a call to an even (non-Thumb) address resets the chip instead. Exceptions as such do work there (an <code>svc</code> reaches <code>SVC_Handler</code>). So a fault handler can only be tested on a real board. The decode steps below work on the solution's <code>.elf</code> without one.
   </div>
 
-  <h3>Decode the address with addr2line</h3>
+  <h3>Decoding the address with objdump and addr2line</h3>
   <p>
-    The solution's faulting load is the instruction at <code>0x08000262</code>. You can find it yourself with objdump, from Git Bash, after building the solution. The command below prints the function and the instructions that follow its label. The real output of the build is shown:
+    The solution's faulting load is the instruction at <code>0x08000262</code>, which you can find yourself with objdump from Git Bash after building the solution, the command below printing the function and the instructions following its label, with the real output of the build.
   </p>
   <pre><code class="language-armasm">"/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-objdump.exe" -d build/blink.elf | grep -A7 "&lt;trigger_unaligned_load&gt;:"
 08000254 &lt;trigger_unaligned_load&gt;:
@@ -232,69 +231,76 @@ void assert_failed(const char *file, int line) {
  8000262:	f8d3 3001 	ldr.w	r3, [r3, #1]
  8000266:	4770      	bx	lr</code></pre>
   <p>
-    Read the listing as the steps above. The <code>ldr r2</code> loads the SCB base address from a literal pool, the <code>ldr</code> and <code>str</code> at offset 20 read and write the CCR, and <code>orr.w ... #8</code> sets bit 3. Then <code>mov.w r3, #536870912</code> loads 0x20000000, the start of RAM, and <code>ldr.w r3, [r3, #1]</code> at 0x08000262 reads the word at 0x20000001. That load is the fault.
+    The listing follows the steps above, the <code>ldr r2</code> loading the SCB base address from a literal pool, the <code>ldr</code> and <code>str</code> at offset 20 reading and writing the CCR and <code>orr.w ... #8</code> setting bit 3. Then <code>mov.w r3, #536870912</code> loads 0x20000000, the start of RAM, and <code>ldr.w r3, [r3, #1]</code> at 0x08000262 reads the word at 0x20000001, the load that faults.
   </p>
   <p>
-    Now decode the address itself. Your build puts the <code>.elf</code> in <code>build/</code>. Run this from the solution folder:
+    The address itself is decoded from the <code>.elf</code> that your build puts in <code>build/</code>, with the following command run from the solution folder.
   </p>
   <pre><code class="language-plaintext">"/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-addr2line.exe" -e build/blink.elf -f -C -i 0x08000262
 trigger_unaligned_load
 C:/Users/juhos/embedded-course/projects/0084-robustness/solution/main.c:90</code></pre>
   <p>
-    The output names the function, <code>trigger_unaligned_load</code>, and the source line, 90. Line 90 is <code>(void)*p;</code>, the faulting read. Line 89 is the declaration of the pointer <code>p</code>, which does not run a load, so the line that faults is the one below it. These two lines are the real output of the solution's build on this machine. On a real board, the PC that your handler prints should be the same address as the faulting instruction you found with objdump. That is the check to make before you trust the decode.
-  </p>
-  <p>
-    The same method works on a field log. A crash log prints <em>HardFault PC=0x</em> and an address, and you run addr2line on the matching <code>.elf</code> from that exact build. A different build has a different <code>.elf</code>, so keep the <code>.elf</code> for every release.
+    The output names the function, <code>trigger_unaligned_load</code>, and the source line, 90, which is <code>(void)*p;</code>, the faulting read, while line 89 declares the pointer <code>p</code> without running a load, so the faulting line is the one below it. These two lines are the real output of the solution's build on this machine, and on a real board the PC your handler prints should equal the address of the faulting instruction found with objdump, the check to make before trusting the decode.
   </p>
   <div class="note">
     Check the mapping before you trust it. The map file (<code>blink.map</code>, lesson 41) shows where each function sits, and objdump shows the instruction. Two sources agreeing is the evidence you want in a fault report.
   </div>
+  <p>
+    The same method works on a field log, a crash log printing <em>HardFault PC=0x</em> and an address on which addr2line is run with the matching <code>.elf</code> from that exact build, and since a different build has a different <code>.elf</code>, the <code>.elf</code> of every release must be kept.
+  </p>
 
-  <div class="win">You can make a fault announce itself with the address that caused it, and turn that address into a source line. That is the first thing a field crash report needs.</div>
+  <div class="win">You can make a fault announce itself with the address that caused it and turn that address into a source line, the first thing a field crash report needs.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>No HardFault_Handler defined</h3>
   <p>
-    <strong>Mistake 1: no HardFault_Handler.</strong> The developer writes the rest of the program and never defines the handler. The startup file's weak default takes over, and it loops forever. The symptom is a device that stops with no output: the last line printed is the last line before the fault, and nothing else appears. The fix is to define <code>HardFault_Handler</code> in your own code, with the same name, and let it override the default. Do not edit the startup file.
+    The device stops without output, the last printed line being the last before the fault, because the developer never defined the handler, so the startup file's weak default took over and looped forever. Define <code>HardFault_Handler</code> in your own code under the same name, letting it override the default, without editing the startup file.
   </p>
+  <h3>A C handler with a prologue</h3>
   <p>
-    <strong>Mistake 2: a C handler with a prologue.</strong> The developer writes <code>void HardFault_Handler(void)</code> as an ordinary C function, and reads the stack inside it. The compiler adds a prologue, the prologue saves registers and moves the stack pointer, and the frame the handler reads is no longer the frame the core pushed. The symptom is a PC value that does not match the faulting instruction, or a handler that hangs or prints garbage. The fix is the naked stub above, which passes the true frame pointer to C.
+    The printed PC does not match the faulting instruction, or the handler hangs or prints garbage, because the developer wrote <code>void HardFault_Handler(void)</code> as an ordinary C function reading the stack, and the compiler's prologue saved registers and moved the stack pointer, so the frame read is no longer the one the core pushed. Use the naked stub above, which passes the true frame pointer to C.
   </p>
+  <h3>printf in the fault handler</h3>
   <p>
-    <strong>Mistake 3: printing with printf in the handler.</strong> The developer uses <code>printf</code> to make the report look tidy. The library may need a heap, a lock or a buffer that the fault left in an unknown state, so the output can be partial or the device can hang. The symptom is a report that stops after the first line, or no report at all. The fix is a plain routine that writes bytes to the UART, as in <code>uart_puts</code> and <code>uart_put_hex32</code>, which depend on nothing else.
+    The report stops after its first line, or never appears, because the developer used <code>printf</code> for a tidy report, and the library may need a heap, a lock or a buffer that the fault left in an unknown state. Write bytes to the UART with a plain routine such as <code>uart_puts</code> and <code>uart_put_hex32</code>, which depend on nothing else.
   </p>
+  <h3>BFAR read without checking BFARVALID</h3>
   <p>
-    <strong>Mistake 4: reading BFAR without checking BFARVALID.</strong> The developer prints BFAR after every BusFault. The register holds an address only when CFSR bit 15 is set, and otherwise it holds stale or meaningless data. The symptom is an address in the report that has no relation to the crash. The fix is to read CFSR first and print BFAR only when bit 15 is set.
+    The report contains an address unrelated to the crash, because the developer prints BFAR after every BusFault, although the register holds a valid address only when CFSR bit 15 is set and stale or meaningless data otherwise. Read CFSR first and print BFAR only when bit 15 is set.
   </p>
+  <h3>A decode with the wrong ELF</h3>
   <p>
-    <strong>Mistake 5: decoding with the wrong ELF.</strong> A field report comes in from release 2.3, and the engineer runs addr2line on the ELF from release 2.4, which is the one on their desk. The tool returns a function and a line that look plausible, and the fix is in the wrong place. The symptom is a fix that does nothing in the field. The fix is to keep the ELF for every release, and to check the decode with objdump on the same file.
+    A fix does nothing in the field, because a report came in from release 2.3 and the engineer ran addr2line on the ELF of release 2.4, the one on their desk, which returned a plausible function and line in the wrong place. Keep the ELF of every release and check the decode with objdump on the same file.
   </p>
+  <h3>An assertion for bad input</h3>
   <p>
-    <strong>Mistake 6: an assertion for bad input.</strong> A developer asserts that the sensor reading is in range, and the sensor occasionally reports a bad value. The device resets, and the customer sees a reboot every time the sensor glitches. The symptom is a log full of assertions for values the hardware is allowed to produce. The fix is an error path that rejects the value, and an assertion only where the code itself has broken its own rule.
+    The log fills with assertions for values the hardware is allowed to produce and the customer sees a reboot at every sensor glitch, because a developer asserted that the sensor reading is in range. Give bad input an error path that rejects the value, and keep assertions for places where the code itself has broken its own rule.
   </p>
+  <h3>The watchdog kicked from an interrupt</h3>
   <p>
-    <strong>Mistake 7: kicking the watchdog from an interrupt.</strong> The developer kicks the watchdog in a timer interrupt, so the watchdog never resets. The main loop could be stuck, and the report would still be clean. The symptom is a device that hangs in the field and never resets. The fix is task check-in, where each task reports progress and the kick waits for all of them.
+    The device hangs in the field and never resets, because the watchdog is kicked from a timer interrupt that keeps running while the main loop is stuck. Use task check-in, in which each task reports progress and the kick waits for all of them.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Reset records and watchdog timing in products</h2></summary>
   <p>
-    A product team treats a reset as data. The firmware records the reset reason at boot (lesson 85), and the crash record survives the reset. The team keeps the ELF and the map file for every release, usually in the same archive as the firmware image, so the decode can always be repeated. A field report is then a short list of facts: the reset reason, the PC, the fault registers and the release number. The engineer reads that list before asking the customer for anything else.
+    A product team treats a reset as data, the firmware recording the reset reason at boot (lesson 85) while the crash record survives the reset, and the team keeps the ELF and the map file of every release, usually in the same archive as the firmware image, so that the decode can always be repeated. A field report then becomes a short list of facts, the reset reason, the PC, the fault registers and the release number, which the engineer reads before asking the customer for anything else.
   </p>
   <p>
-    Teams also design the watchdog timing as a requirement. Each task has a maximum time between check-ins, the supervisor's kick interval is shorter than the shortest of those, and the values are written in the design document. A reviewer asks what happens when a task is slow as well as when it is stuck.
+    Teams also design the watchdog timing as a requirement, each task having a maximum time between check-ins and the supervisor's kick interval being shorter than the shortest of them, with the values written into the design document, and a reviewer asks what happens when a task is slow as well as when it is stuck.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A watchdog resets a hung chip unless software kicks it in time. The IWDG runs from its own clock and cannot be stopped once started. The WWDG must be kicked inside a window.</li>
-    <li>Check in from every task before the kick, so one stuck task causes a reset.</li>
-    <li>On a fault, the core pushes eight words, and word 6 is the PC of the faulting instruction for a precise fault.</li>
-    <li>EXC_RETURN bit 2 says whether the frame is on MSP or PSP. A naked stub passes the right pointer to C without a prologue.</li>
-    <li>Read HFSR for the escalation, CFSR for the cause, and BFAR only when BFARVALID (CFSR bit 15) is set.</li>
-    <li>A weak HardFault_Handler default loops forever, so define your own handler.</li>
-    <li>Decode the stacked PC with addr2line and the ELF from the same build, then check it with objdump.</li>
-    <li>Assertions are for bugs. Bad input needs an error path, not a reset.</li>
+    <li>A watchdog resets a hung chip unless software kicks it in time, the IWDG running from its own clock and unstoppable once started, while the WWDG must be kicked inside a window.</li>
+    <li>Every task checks in before the kick, so that one stuck task causes a reset.</li>
+    <li>On a fault the core pushes eight words, word 6 being the PC of the faulting instruction for a precise fault.</li>
+    <li>EXC_RETURN bit 2 says whether the frame is on MSP or PSP, and a naked stub passes the right pointer to C without a prologue.</li>
+    <li>HFSR shows the escalation and CFSR the cause, while BFAR is read only when BFARVALID (CFSR bit 15) is set.</li>
+    <li>The weak HardFault_Handler default loops forever, so firmware defines its own handler.</li>
+    <li>The stacked PC is decoded with addr2line and the ELF of the same build, then checked with objdump.</li>
+    <li>Assertions are for bugs, whereas bad input needs an error path rather than a reset.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

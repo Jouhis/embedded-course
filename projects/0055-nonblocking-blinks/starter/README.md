@@ -6,12 +6,12 @@ Lesson: [Timing and non-blocking super-loops](https://jouhis.github.io/embedded-
 
 ## Try it in Wokwi
 
-The project is `projects/0055-nonblocking-blinks`. Three LEDs sit on GP2, GP3 and GP4. The starter blinks only the first one, in a blocking loop.
+The project is `projects/0055-nonblocking-blinks`, with three LEDs on GP2, GP3 and GP4, and its starter blinks only the first one, in a blocking loop.
 
-1. Open `projects/0055-nonblocking-blinks/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Observe the starter. Only LED A blinks, and the serial monitor prints `NONBLOCKING starter` once. The loop is stuck in `sleep_ms()`.
-3. Your task: replace the blocking loop with the deadline pattern. Keep three `blink_t` values, one for each LED, with a half period of 500 ms, 250 ms and 125 ms. Call `blink_service()` for each one in a loop with no sleep. Then check the wraparound with `is_due()` at the top of `main()` before you start the blinks.
-4. Build and start the simulator again. You will know it works when the serial monitor prints `NONBLOCKING OK` at startup and the three LEDs blink at 1, 2 and 4 Hz, all at once. Every two seconds it prints an `uptime` line.
+1. Open `projects/0055-nonblocking-blinks/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Observe the starter: only LED A blinks and the serial monitor prints `NONBLOCKING starter` once, because the loop is stuck in `sleep_ms()`.
+3. Replace the blocking loop with the deadline pattern, keeping three `blink_t` values, one per LED, with half periods of 500 ms, 250 ms and 125 ms, and calling `blink_service()` for each in a loop with no sleep. Then check the wraparound with `is_due()` at the top of `main()` before starting the blinks.
+4. Build and start the simulator again. The program works when the serial monitor prints `NONBLOCKING OK` at startup and the three LEDs blink at 1, 2 and 4 Hz simultaneously, with an `uptime` line every two seconds.
 
 ## Files you work on
 
@@ -26,7 +26,7 @@ The serial monitor prints `NONBLOCKING OK`.
 <details>
 <summary>Hint for the half period</summary>
 
-A 1 Hz blink has a period of 1 s, so each half is 500 000 µs. Halve the period for each doubling of the rate. The solution's `blink_t` lines show the three values.
+A 1 Hz blink has a period of 1 s, so each half is 500 000 µs, and each doubling of the rate halves it. The solution's `blink_t` lines show the three values.
 
 </details>
 

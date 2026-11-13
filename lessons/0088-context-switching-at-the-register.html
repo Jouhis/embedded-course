@@ -12,43 +12,43 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Context switching at the register level</h1>
-  <p class="subtitle">A context switch saves one task's registers and loads another's. The core saves eight of the registers on the stack by itself, the kernel saves the other eight, and then it swaps one stack pointer. You will build that in the CPU simulator. Lesson 89 reads the same steps in the FreeRTOS port.</p>
+  <p class="subtitle">Saving and restoring task registers</p>
 
   <div class="goal">
     By the end of this lesson you can explain which registers the hardware stacks and which the software saves, describe the stack layout after a switch, and step through a two-task round-robin in the simulator, predicting each task's PSP and R4 before you check them.
   </div>
 
-  <h2>Where we are, and why it matters</h2>
+  <h2>The mechanics behind a task switch</h2>
   <p>
-    Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> created tasks and showed the scheduler choose the highest-priority ready task. It said that a switch happens, and it left the mechanics for this lesson. A switch has to do something very specific. A task is its registers and its stack. When the kernel moves the core from task A to task B, the values in R0 to R15 belong to A, and B's values must be restored before B runs, without A noticing that it stopped.
+    Lesson <a href="0087-freertos-setup-tasks-and-scheduling.html">87</a> created tasks and showed the scheduler choosing the highest-priority ready task, saying that a switch happens while leaving its mechanics for this lesson. A switch has a very specific job, because a task is its registers and its stack, so when the kernel moves the core from task A to task B, the values in R0 to R15 belong to A and B's values must be restored before B runs, without A noticing that it stopped.
   </p>
   <p>
-    The mechanics build on three earlier lessons. Lesson <a href="0033-the-stack-and-the-aapcs.html">33</a> defined the stack and the calling convention that splits the registers into two groups. Lesson <a href="0034-exceptions-and-interrupt-entry.html">34</a> showed that the core stacks registers itself when an exception starts. Lesson <a href="0035-privilege-modes.html">35</a> introduced the two stack pointers, MSP and PSP, that a task and an exception use. A context switch is what happens when those three ideas are used together, once per switch, in a few dozen instructions.
+    The mechanics build on three earlier lessons, lesson <a href="0033-the-stack-and-the-aapcs.html">33</a> having defined the stack and the calling convention that splits the registers into two groups, lesson <a href="0034-exceptions-and-interrupt-entry.html">34</a> having shown that the core stacks registers itself when an exception starts, and lesson <a href="0035-privilege-modes.html">35</a> having introduced the two stack pointers, MSP and PSP, used by tasks and exceptions. A context switch combines those three ideas, once per switch, in a few dozen instructions.
   </p>
   <p>
-    This lesson covers the registers, the stacks and the simulator program. Lesson <a href="0089-context-switching-in-the-freertos.html">89</a> takes the switch handler from this lesson line by line, maps it to the FreeRTOS port, and explains why the switch runs at the lowest interrupt priority. Read this lesson first. Lesson 89 uses the stack layout, the saved block and the EXC_RETURN values defined here without defining them again.
-  </p>
-
-  <h2>Concept 1: what a task is made of</h2>
-  <p>
-    The Cortex-M3 has sixteen core registers that a program can see: R0 to R12, the stack pointer SP (which is R13), the link register LR (R14) and the program counter PC (R15). The processor also has the program status register xPSR, which holds the condition flags and the number of the exception being handled. There is only one set of these registers. When the core runs task A, they hold A's values. When it runs task B, they hold B's.
-  </p>
-  <p>
-    So a task's state is its registers at the moment it stopped, plus the stack those registers point into. A context switch is the act of saving one task's state somewhere, loading another's, and making the core continue from there. The <a href="../reference/glossary.html#context-switch">context switch</a> entry in the glossary gives the Cortex-M3 split in one line, and the rest of this lesson explains why the split falls where it does.
-  </p>
-  <p>
-    The stack is part of the state for a practical reason. A task's local variables, the return addresses of the functions it has called, and its saved registers all sit on its stack (lesson 33). If the core resumed task B with B's registers but with A's stack, B would read A's local variables and return to the wrong place. That is why the kernel gives each task its own stack, and why a switch changes both the register values and the stack pointer.
+    This lesson covers the registers, the stacks and the simulator program, while lesson <a href="0089-context-switching-in-the-freertos.html">89</a> takes the switch handler line by line, maps it to the FreeRTOS port and explains why the switch runs at the lowest interrupt priority. This lesson comes first, because lesson 89 uses the stack layout, the saved block and the EXC_RETURN values defined here without defining them again.
   </p>
 
-  <h2>Concept 2: why the registers are split</h2>
+  <h2>Core registers as task state</h2>
   <p>
-    The Arm Procedure Call Standard, the <a href="../reference/glossary.html#aapcs">AAPCS</a>, is the contract that C functions follow. A function may change R0 to R3 and R12 freely, because the caller does not expect them to be preserved. These are the caller-saved registers. A function must give back R4 to R11, and SP, with the same values it was given, because the caller relies on them. These are the callee-saved registers.
+    The Cortex-M3 has sixteen core registers visible to a program, R0 to R12, the stack pointer SP (R13), the link register LR (R14) and the program counter PC (R15), together with the program status register xPSR, which holds the condition flags and the number of the exception being handled. There is only one set of these registers, holding A's values while the core runs task A and B's while it runs B.
   </p>
   <p>
-    The hardware uses the same split when an exception starts. On exception entry the core stacks eight words: the PC, the xPSR, R0 to R3, R12 and LR. The Cortex-M3 Technical Reference Manual lists them in that order in section 5.5.1, <em>Stacking</em> (DDI0337G, the copy hosted by Keil; the list is the same as Figure 5-1 of that section). Those are the registers a handler is allowed to change, so the core saves them for the handler, and does it in a fixed number of cycles before any of your code runs. The eight callee-saved registers R4 to R11 are not touched by the hardware at all. A C handler that uses them must save and restore them itself.
+    A task's state is therefore its registers at the moment it stopped plus the stack those registers point into, and a context switch saves one task's state somewhere, loads another's and makes the core continue from there. The glossary's <a href="../reference/glossary.html#context-switch">context switch</a> entry gives the Cortex-M3 split in one line, and the rest of this lesson explains why the split falls where it does.
   </p>
   <p>
-    A context switch is different from a handler. A handler returns to the code it interrupted, which has the same registers it had before. A switch returns to a different task, and that task's R4 to R11 were lost when the core moved to the other one. Only the kernel can save them, so the kernel's handler does. That is why R4 to R11 appear in the switch code.
+    The stack belongs to the state for a practical reason, a task's local variables, the return addresses of the functions it called and its saved registers all sitting on its stack (lesson 33), so a task B resumed with B's registers but A's stack would read A's local variables and return to the wrong place. The kernel therefore gives each task its own stack, and a switch changes both the register values and the stack pointer.
+  </p>
+
+  <h2>Caller-saved and callee-saved registers</h2>
+  <p>
+    The Arm Procedure Call Standard, the <a href="../reference/glossary.html#aapcs">AAPCS</a>, is the contract C functions follow, under which a function may change R0 to R3 and R12 freely, because the caller does not expect them preserved, these being the caller-saved registers, while it must return R4 to R11 and SP with the values it was given, because the caller relies on them, these being the callee-saved registers.
+  </p>
+  <p>
+    The hardware uses the same split when an exception starts, stacking eight words, the PC, the xPSR, R0 to R3, R12 and LR, which the Cortex-M3 Technical Reference Manual lists in that order in section 5.5.1, <em>Stacking</em> (DDI0337G, the copy hosted by Keil, the list matching Figure 5-1 of that section). Those are the registers a handler may change, so the core saves them for the handler in a fixed number of cycles before any of your code runs, while the hardware leaves the eight callee-saved registers R4 to R11 alone, so a C handler using them must save and restore them itself.
+  </p>
+  <p>
+    A context switch differs from a handler, because a handler returns to the code it interrupted, which still has the registers it had before, whereas a switch returns to a different task whose R4 to R11 were lost when the core moved to the other one. Only the kernel can save them, so the kernel's handler does, which is why R4 to R11 appear in the switch code.
   </p>
   <table>
     <thead>
@@ -60,42 +60,42 @@
     </tbody>
   </table>
   <p>
-    The hardware list is the set of registers a handler may use freely. The software list is the set a task expects to find unchanged after a call. A switch must keep the second list intact for each task, because the task that resumes next is not the one that was interrupted.
+    The hardware list is the set of registers a handler may use freely, and the software list the set a task expects to find unchanged after a call, which a switch must keep intact for each task, because the task resuming next is not the one that was interrupted.
   </p>
 
-  <h2>Concept 3: two stacks and two pointers</h2>
+  <h2>The main and process stack pointers</h2>
   <p>
-    The Cortex-M3 has two stack pointers. The <a href="../reference/glossary.html#main-stack-pointer-msp">main stack pointer (MSP)</a> is used by all exception handlers, and by thread mode after reset. The <a href="../reference/glossary.html#process-stack-pointer-psp">process stack pointer (PSP)</a> can be selected for thread mode through the CONTROL register. The RTOS gives each task its own stack and runs the tasks on the PSP, so the handler always uses the MSP and the tasks always use the PSP (lesson 35).
+    The Cortex-M3 has two stack pointers, the <a href="../reference/glossary.html#main-stack-pointer-msp">main stack pointer (MSP)</a>, used by all exception handlers and by thread mode after reset, and the <a href="../reference/glossary.html#process-stack-pointer-psp">process stack pointer (PSP)</a>, which the CONTROL register can select for thread mode. The RTOS gives each task its own stack and runs the tasks on the PSP, so the handler always uses the MSP and the tasks always the PSP (lesson 35).
   </p>
   <p>
-    This is why a switch works. When task A is interrupted, the hardware pushes A's eight-word frame onto A's PSP. The switch handler then runs on the MSP, and it pushes R4 to R11 below that frame, on A's stack. It saves the new top of A's stack in a variable. It loads B's saved top of stack, pops B's R4 to R11, sets PSP to point at B's frame, and returns. The exception return then pops B's eight-word frame from PSP, and B continues. At no point does the handler's own MSP hold a task's data.
+    This is what makes a switch work. When task A is interrupted, the hardware pushes A's eight-word frame onto A's PSP, and the switch handler, running on the MSP, pushes R4 to R11 below that frame on A's stack and saves the new top of A's stack in a variable. It then loads B's saved top of stack, pops B's R4 to R11, sets PSP to point at B's frame and returns, the exception return popping B's eight-word frame from PSP so that B continues, while at no point does the handler's own MSP hold a task's data.
   </p>
   <p>
-    The return is driven by the link register. When an exception starts, LR is loaded with a special value called EXC_RETURN, which says where to return. The course's simulator uses <code>0xFFFFFFF9</code> to return to thread mode on the MSP, and <code>0xFFFFFFFD</code> to return to thread mode on the PSP. The port makes exactly that change in <code>vPortSVCHandler</code>, the handler that the first start reaches through <code>svc 0</code>. It ORs <code>0xD</code> into LR (<code>orr r14, #0xd</code>, in <code>port.c</code>, line 239), which turns the <code>0xFFFFFFF9</code> left by the SVC entry into <code>0xFFFFFFFD</code>. A return with the wrong value pops the frame from the wrong stack, and that is one of the mistakes below.
+    The return is driven by the link register, loaded on exception entry with a special value called EXC_RETURN that says where to return, the course's simulator using <code>0xFFFFFFF9</code> to return to thread mode on the MSP and <code>0xFFFFFFFD</code> to return to thread mode on the PSP. The port makes exactly that change in <code>vPortSVCHandler</code>, the handler the first start reaches through <code>svc 0</code>, ORing <code>0xD</code> into LR (<code>orr r14, #0xd</code>, in <code>port.c</code>, line 239), which turns the <code>0xFFFFFFF9</code> left by the SVC entry into <code>0xFFFFFFFD</code>. A return with the wrong value pops the frame from the wrong stack, one of the mistakes described below.
   </p>
 
-  <h2>Concept 4: the switch handler's three jobs</h2>
+  <h2>The three jobs of the switch handler</h2>
   <p>
-    Every switch does three things, and it helps to keep them apart.
+    Every switch does three things, which are easiest to follow when kept apart.
+  </p>
+  <ol class="steps">
+    <li><strong>Save the running task.</strong> Push R4 to R11 below its frame and store the new top of stack in a variable.</li>
+    <li><strong>Choose the next task.</strong> In the simulator a small piece of code flips a slot in memory, while in FreeRTOS a call to <code>vTaskSwitchContext()</code> sets the current task pointer.</li>
+    <li><strong>Restore the next task.</strong> Load its stack top, pop its R4 to R11, set PSP to its frame and return, so that the exception return pops that frame.</li>
+  </ol>
+  <p>
+    The order matters, because the choice changes which task is current, so the save must happen before it and the restore after it. The simulator's handler reads the slot naming the running task once, at its start, and writes the slot naming the next task once, before it restores, so with these three jobs in mind its instructions fall into clear groups, the same groups lesson 89 follows in the FreeRTOS handler with line numbers.
   </p>
 
   <div class="analogy">
-    <p>A context switch is a shift change at a single desk. The leaving worker puts every paper on the desk into their own drawer, the task's stack, and writes on a card where the pile ends, the saved stack pointer in the TCB. The next worker reads their card, takes their papers out of their drawer and carries on in the middle of the sentence they were writing.</p>
+    <p>A context switch resembles a shift change at a single desk, the leaving worker putting every paper on the desk into their own drawer, the task's stack, and writing on a card where the pile ends, the saved stack pointer in the TCB, while the next worker reads their own card, takes their papers out of their drawer and carries on in the middle of the sentence they were writing. The comparison breaks on who does the work, though, because the workers tidy their own desks, whereas the leaving task does nothing at all, the hardware and the kernel saving its state for it.</p>
   </div>
-  <ol>
-    <li><strong>Save the running task.</strong> Push R4 to R11 below its frame, and store the new top of stack in a variable.</li>
-    <li><strong>Choose the next task.</strong> In the simulator this is a small piece of code that flips a slot in memory. In FreeRTOS it is a call to <code>vTaskSwitchContext()</code>, which sets the current task pointer.</li>
-    <li><strong>Restore the next task.</strong> Load its stack top, pop its R4 to R11, set PSP to its frame, and return so that the exception return pops that frame.</li>
-  </ol>
-  <p>
-    The order matters. The save has to happen before the choice, because the choice changes which task is current. The restore has to come after the choice, for the same reason. The simulator's handler reads the slot that names the running task once, at its start, and writes the slot that names the next task once, before it restores. Read the handler with these three jobs in mind, and the instructions fall into clear groups. Lesson 89 goes through the same groups in the FreeRTOS handler, with line numbers.
-  </p>
 
-  <h2>Concept 5: the stack layout after a switch</h2>
+  <h2>The task stack layout after a switch</h2>
   <p>
-    The figure shows task A's stack after its first switch, in the simulator's memory map. The stack grows downward, so the frame is at the top, at higher addresses, and the saved R4 to R11 block is below it. The PSP points at the lowest word of the frame, which is R0. Each word is 4 bytes. The frame is at 0x20000060 to 0x2000007F, and the saved block is at 0x20000040 to 0x2000005F.
+    The figure shows task A's stack after its first switch in the simulator's memory map. The stack grows downward, so the frame lies at the top, at higher addresses, with the saved R4 to R11 block below it, and the PSP points at the lowest word of the frame, R0, each word being 4 bytes, the frame occupying 0x20000060 to 0x2000007F and the saved block 0x20000040 to 0x2000005F.
   </p>
-    <figure>
+  <figure>
     <svg viewBox="0 0 520 300" role="img" aria-label="Task A's stack after its first switch. From the top: the hardware frame of eight words at 0x20000060 to 0x2000007F (R0 at the bottom, xPSR at the top), with PSP pointing at its lowest word; below it, the saved block of R4 to R11 from 0x20000040 to 0x2000005F, which the switch handler pushed." style="max-width:676px">
       <g fill="none" stroke="currentColor" stroke-width="1.4">
         <rect x="150" y="40" width="150" height="16" rx="0"/>
@@ -144,36 +144,36 @@
     <figcaption>Figure 2. Task A's stack after its first switch. The hardware frame is at the top, and PSP points at its lowest word, R0. The switch handler pushed R4 to R11 below the frame, at 0x20000040. The stack grows down, so each push moves the pointer to a lower address.</figcaption>
   </figure>
   <p>
-    Two things in the figure are worth checking against the code. The saved block starts at 0x20000040, not at the frame, and the frame begins 32 bytes higher. That 32-byte gap is eight words, the size of the R4 to R11 block. The second thing is that the PSP the kernel stores is the address of the saved block, not the address of the frame. When the switch restores the task, it reads the saved block's address, pops R4 to R11, and then adds 32 to find the frame. The gap in the figure is the reason that add is there.
+    Two details of the figure are worth checking against the code. The saved block starts at 0x20000040 and the frame 32 bytes higher, a gap of eight words, the size of the R4 to R11 block, and the PSP the kernel stores is the address of the saved block rather than the frame, so restoring the task reads the saved block's address, pops R4 to R11 and then adds 32 to find the frame, the gap in the figure being the reason for that addition.
   </p>
 
-  <h2>Concept 6: what the first switch has to fake</h2>
+  <h2>A hand-built frame for the first switch</h2>
   <p>
-    A task that has never run has no saved state yet. The first switch still has to end with an exception return, and that return pops a frame from the PSP. So the setup code in the simulator builds one frame for each task by hand, before the first switch. The frame is only a list of values in RAM, and the core does not know that it was written by a program rather than by an interrupt.
+    A task that has never run has no saved state, yet the first switch must still end with an exception return, which pops a frame from the PSP, so the simulator's setup code builds one frame per task by hand before the first switch. The frame is only a list of values in RAM, and the core cannot tell that a program rather than an interrupt wrote it.
   </p>
   <p>
-    Two of the eight words matter for the first run. The PC slot holds the address of the task's entry point, so the return jumps to the start of the task. The xPSR slot holds <code>0x01000000</code>, which has only bit 24 set. That is the Thumb bit. The Cortex-M3 runs only Thumb code, so a return with the Thumb bit clear would fault. The other six words, R0 to R3, R12 and LR, start at zero, because the task has not set them yet.
+    Two of the eight words matter for the first run, the PC slot holding the address of the task's entry point, so that the return jumps to the start of the task, and the xPSR slot holding <code>0x01000000</code>, with only bit 24, the Thumb bit, set, since the Cortex-M3 runs only Thumb code and a return with the Thumb bit clear would fault. The other six words, R0 to R3, R12 and LR, start at zero, because the task has not set them yet.
   </p>
   <p>
-    A worked check makes the layout concrete. The frame of task A starts at 0x60. The PC slot is at 0x78. The difference is 0x18, which is 24 bytes, or six words above the frame's lowest word, and the six words below the PC slot are R0, R1, R2, R3, R12 and LR. So the PC slot is the seventh word of the frame, which matches the order the hardware stacks. The same reasoning places the xPSR slot at 0x7C, one word higher.
+    A worked check makes the layout concrete. Task A's frame starts at 0x60 and its PC slot lies at 0x78, a difference of 0x18, 24 bytes or six words above the frame's lowest word, the six words below the PC slot being R0, R1, R2, R3, R12 and LR, so the PC slot is the seventh word of the frame, matching the order the hardware stacks, and the same reasoning places the xPSR slot at 0x7C, one word higher.
   </p>
   <p>
-    A real kernel does the same job in C and assembly. The FreeRTOS port builds this frame in <code>pxPortInitialiseStack</code>, which lesson 89 reads line by line.
+    A real kernel does the same job in C and assembly, the FreeRTOS port building this frame in <code>pxPortInitialiseStack</code>, which lesson 89 reads line by line.
   </p>
 
   <h2>Try it in the CPU simulator</h2>
   <p>
-    The program below has two tasks. Each adds to its own R4, which is the only state the test checks: task A adds 1 and task B adds 100. The handler is the switch. It saves the running task's R4–R11 under its hardware frame, saves the PSP, loads the other task's PSP and registers, and returns. The first switch starts task A, because nothing has run yet.
+    The program below has two tasks, each adding to its own R4, the only state the test checks, task A adding 1 and task B 100. The handler is the switch, saving the running task's R4–R11 under its hardware frame, saving the PSP, loading the other task's PSP and registers and returning, and the first switch starts task A, because nothing has run yet.
   </p>
   <p>
-    <code>LDR R0, =task_a</code> loads the <em>address</em> of the label <code>task_a</code>, exactly as the GNU assembler does. That address becomes the stacked PC, so the first exception return lands at the start of the task. The RAM layout is: the slots at <code>0x20000000</code> (current task, PSP of A, PSP of B), task A's stack ending at <code>0x20000080</code>, and task B's stack ending at <code>0x200000C0</code>.
+    <code>LDR R0, =task_a</code> loads the <em>address</em> of the label <code>task_a</code>, exactly as the GNU assembler does, and that address becomes the stacked PC, so the first exception return lands at the start of the task. The RAM layout has the slots at <code>0x20000000</code> (current task, PSP of A, PSP of B), task A's stack ending at <code>0x20000080</code> and task B's stack ending at <code>0x200000C0</code>.
   </p>
   <ol class="steps">
-    <li>Press <em>Instruction</em> repeatedly. Watch the PSP in the system panel. It changes at each <code>SVC</code>, and the mem panel shows the current task in the first word at <code>0x20000000</code>.</li>
-    <li>Press <em>Instruction</em> until <code>SVC_Handler</code> runs for the first time. Predict first: which task starts, and what PSP will the task run on? Then check: task A, at <code>0x20000060</code>.</li>
-    <li>Run the program for a while. Each task's R4 counts up in its own steps, and R4 holds the task's value while the other task runs. Predict R4 for task B at its second visit before you check.</li>
+    <li>Press <em>Instruction</em> repeatedly and watch the PSP in the system panel, which changes at each <code>SVC</code>, while the mem panel shows the current task in the first word at <code>0x20000000</code>.</li>
+    <li>Press <em>Instruction</em> until <code>SVC_Handler</code> runs for the first time, predicting first which task starts and on what PSP it will run, then check, the answer being task A at <code>0x20000060</code>.</li>
+    <li>Run the program for a while, and each task's R4 counts up in its own steps, holding the task's value while the other task runs, so predict R4 for task B at its second visit before you check.</li>
   </ol>
-    <div class="widget cpusim" data-title="Two tasks, one switch handler" data-show="regs,sys,mem,phases">
+  <div class="widget cpusim" data-title="Two tasks, one switch handler" data-show="regs,sys,mem,phases">
     <script type="text/plain">
 main:   LDR  R1, =0x20000000     @ CUR: which task runs (0 = A, 1 = B, 2 = none yet)
         MOV  R0, #2
@@ -254,25 +254,28 @@ restore: LDR R0, [R3]            @ R0 = the next task's saved block
   </div>
   <details>
     <summary>Hint</summary>
-    <p>Task A's hardware frame starts at <code>0x20000060</code>, which is 32 bytes below its stack top. The handler saves R4–R11 in the 32 bytes below that, so task A's saved block starts at <code>0x20000040</code>. The PSP that a task runs on is always its hardware frame, so the PSP values you see alternate between <code>0x20000060</code> and <code>0x200000A0</code>.</p>
+    <p>Task A's hardware frame starts at <code>0x20000060</code>, 32 bytes below its stack top, and the handler saves R4–R11 in the 32 bytes below that, so task A's saved block starts at <code>0x20000040</code>. The PSP a task runs on is always its hardware frame, so the PSP values you see alternate between <code>0x20000060</code> and <code>0x200000A0</code>.</p>
   </details>
-  <p class="sidenote">The simulator's <code>data-show</code> list here includes <code>mem</code>, which shows the first 16 words of RAM: the current task and the two saved PSPs are visible there. The task stacks are above that range, so use the system panel for the PSP.</p>
+  <p>
+    While stepping, the three slots at the start of RAM show which task is current and where each one's saved block lies.
+    <span class="sidenote">The simulator's <code>data-show</code> list here includes <code>mem</code>, which shows the first 16 words of RAM: the current task and the two saved PSPs are visible there. The task stacks are above that range, so use the system panel for the PSP.</span>
+  </p>
 
-  <h2>Following the program, step by step</h2>
+  <h2>The simulator program step by step</h2>
   <p>
-    The setup at the top of <code>main</code> builds two fake hardware frames, one per task, so that the first switch has something to return from. Each store is a word write into the simulator's RAM. The first pair of stores writes the slot at <code>0x20000000</code>, which holds the current task, with 2, meaning none yet. Then the PSP slots at <code>0x20000004</code> and <code>0x20000008</code> get the saved-block addresses of the two tasks.
+    The setup at the top of <code>main</code> builds two fake hardware frames, one per task, so that the first switch has something to return from, each store being a word write into the simulator's RAM. The first pair of stores writes 2, meaning no task yet, into the current-task slot at <code>0x20000000</code>, and the PSP slots at <code>0x20000004</code> and <code>0x20000008</code> then receive the saved-block addresses of the two tasks.
   </p>
   <p>
-    The frame for task A is written next. <code>LDR R0, =task_a</code> loads the address of the label, and the store to <code>0x20000078</code> puts it in the PC slot of the frame, 0x18 bytes above the frame's base at 0x60, which is 0x38 bytes above the saved block at 0x40. The store to <code>0x2000007C</code> puts the value <code>0x01000000</code> in the xPSR slot. That value has only the Thumb bit set, which is the state a Cortex-M3 must be in to run this code. The R0 to R3, R12 and LR slots keep zero, because nothing has set them. Task B's frame is written the same way at <code>0x200000B8</code> and <code>0x200000BC</code>, which is 32 bytes above its saved block at <code>0x20000080</code>.
+    Task A's frame comes next, <code>LDR R0, =task_a</code> loading the address of the label and the store to <code>0x20000078</code> putting it in the frame's PC slot, 0x18 bytes above the frame's base at 0x60 and 0x38 bytes above the saved block at 0x40, while the store to <code>0x2000007C</code> puts <code>0x01000000</code> in the xPSR slot, with only the Thumb bit set, the state a Cortex-M3 must be in to run this code. The R0 to R3, R12 and LR slots stay zero, because nothing has set them, and task B's frame is written the same way at <code>0x200000B8</code> and <code>0x200000BC</code>, 32 bytes above its saved block at <code>0x20000080</code>.
   </p>
   <p>
-    <code>SVC #0</code> is a supervisor call. It is an exception, and on the simulator it jumps to the label <code>SVC_Handler</code>. The core stacks its own frame on the MSP, because it was in thread mode on the MSP at reset, and sets LR to <code>0xFFFFFFF9</code>. The handler then sees CUR equal to 2 and takes the <code>first</code> path, which sets the next task to A and loads A's registers. Its saved block at <code>0x20000040</code> holds zeros, so R4 starts at 0. The restore adds 32 to the block's address to find A's frame at <code>0x20000060</code>, writes that into PSP, and returns with <code>0xFFFFFFFD</code>. That return pops the frame, which loads PC with <code>task_a</code>, and task A runs for the first time.
+    <code>SVC #0</code> is a supervisor call, an exception that on the simulator jumps to the label <code>SVC_Handler</code>, the core stacking its own frame on the MSP, since it was in thread mode on the MSP at reset, and setting LR to <code>0xFFFFFFF9</code>. The handler sees CUR equal to 2 and takes the <code>first</code> path, setting the next task to A and loading A's registers from its saved block at <code>0x20000040</code>, which holds zeros, so R4 starts at 0, and the restore adds 32 to the block's address to find A's frame at <code>0x20000060</code>, writes that into PSP and returns with <code>0xFFFFFFFD</code>, which pops the frame, loading PC with <code>task_a</code>, so task A runs for the first time.
   </p>
   <p>
-    Task A executes <code>ADD R4, R4, #1</code>, which makes R4 equal to 1, and then <code>SVC #0</code> again. This time the handler reads CUR as 0, so it saves R4 to R11 below A's frame, at <code>0x20000040</code>, and stores A's new PSP, which is the saved block's address. It sets the next task to B, because the test is on CUR. It restores B's block, which holds the R4 that B saved when it yielded (100, from its first visit), and returns to B. B adds 100 and yields again, and A returns with its R4 restored to 1. Each visit adds to the value that was saved on the previous visit, and the other task's value is never lost.
+    Task A executes <code>ADD R4, R4, #1</code>, making R4 equal to 1, and then <code>SVC #0</code> again, and this time the handler reads CUR as 0, saves R4 to R11 below A's frame at <code>0x20000040</code> and stores A's new PSP, the saved block's address. Testing CUR, it sets the next task to B and restores B's block, which holds the R4 that B saved when it yielded (100, from its first visit), and returns to B, which adds 100 and yields again, after which A returns with its R4 restored to 1, so each visit adds to the value saved on the previous visit and the other task's value is never lost.
   </p>
   <p>
-    Running the same program through a script that drives the simulator's model for about 220 steps gives the values below, which you can check against the system panel as you step.
+    Running the same program through a script that drives the simulator's model for about 220 steps gives the values below, which can be checked against the system panel while stepping.
   </p>
   <table>
     <thead>
@@ -286,43 +289,47 @@ restore: LDR R0, [R3]            @ R0 = the next task's saved block
     </tbody>
   </table>
   <p>
-    The PSP alternates between the two frames, and each task's R4 counts up in its own steps. Task B's second visit starts from 100 and ends at 200, which answers the prediction in step 3 of the Try-it.
+    The PSP alternates between the two frames while each task's R4 counts up in its own steps, task B's second visit starting from 100 and ending at 200, which answers the prediction in step 3 of the hands-on task.
   </p>
 
-  <div class="win">You built a two-task round-robin where each task keeps its own registers across switches, followed the PSP through the handler, and can say which registers the hardware saves and which the kernel saves.</div>
+  <div class="win">You built a two-task round-robin in which each task keeps its own registers across switches, followed the PSP through the handler and can say which registers the hardware saves and which the kernel saves.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>R4 to R11 left unsaved</h3>
   <p>
-    <strong>Mistake 1: not saving R4 to R11.</strong> The handler stores the stack top and restores the next task, but it skips the eight <code>STR</code> lines. The symptom in the simulator is that task A's R4 shows a value from task B after the switch, for example 100 where A should have 2. On hardware the symptom is a loop counter or a pointer in the task that jumps when another task runs. The fix is to save the block below the frame and restore it from the same offsets.
+    After a switch task A's R4 shows a value from task B in the simulator, for example 100 where A should have 2, and on hardware a loop counter or pointer in a task jumps when another task runs, because the handler stores the stack top and restores the next task while skipping the eight <code>STR</code> lines. Save the block below the frame and restore it from the same offsets.
   </p>
+  <h3>A saved-block address off by 32 bytes</h3>
   <p>
-    <strong>Mistake 2: an address off by 32 bytes.</strong> The saved block is written at the frame address, not 32 bytes below it, so the restore reads the frame as if it were R4 to R11. The symptom is a task that resumes with the wrong PC or xPSR, or a fault with the PSP pointing at a strange address. The fix is to keep the subtract and the add symmetrical: the value stored as the PSP must be the address of the saved block, and the restore must add 32 to reach the frame. The figure above shows the two addresses.
+    A task resumes with the wrong PC or xPSR, or faults with the PSP pointing at a strange address, because the saved block was written at the frame address rather than 32 bytes below it, so the restore reads the frame as if it were R4 to R11. Keep the subtraction and the addition symmetrical, the value stored as the PSP being the address of the saved block and the restore adding 32 to reach the frame, as the figure's two addresses show.
   </p>
+  <h3>The wrong EXC_RETURN value</h3>
   <p>
-    <strong>Mistake 3: the wrong EXC_RETURN.</strong> The handler returns with <code>0xFFFFFFF9</code>, which pops the frame from the MSP, when the task is running on the PSP. The symptom is that the handler's own stack gets mixed with the task's, and the task's PC is read from the wrong place. The simulator reports the stack it unstacked from in its log, which makes this easy to see. The fix is to return with <code>0xFFFFFFFD</code> for a task on the PSP.
+    The handler's own stack gets mixed with the task's and the task's PC is read from the wrong place, because the handler returns with <code>0xFFFFFFF9</code>, popping the frame from the MSP, while the task runs on the PSP, something the simulator's log makes easy to see by naming the stack it unstacked from. Return with <code>0xFFFFFFFD</code> for a task on the PSP.
   </p>
+  <h3>A global variable expected to travel with the task</h3>
   <p>
-    <strong>Mistake 4: expecting a global variable to travel with the task.</strong> A developer shares a counter between two tasks through a global variable, and assumes the switch keeps it per task, as it does for R4. The switch saves registers and stack pointers, not globals. Both tasks write the same memory, so the total can come out lower than expected, and the error depends on the timing of the switches. The fix is to keep per-task state in the task's own variables or stack, and to pass shared data through a kernel object such as a queue (lesson 90), not a bare global.
+    A counter shared between two tasks through a global variable comes out lower than expected, by an amount depending on the timing of the switches, because the developer assumed the switch keeps it per task, as it does R4, whereas the switch saves registers and stack pointers rather than globals, so both tasks write the same memory. Keep per-task state in the task's own variables or stack, and pass shared data through a kernel object such as a queue (lesson 90) rather than a bare global.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Debugging and reviewing an RTOS port</h2></summary>
   <p>
-    Engineers who debug an RTOS port rarely step through the switch line by line on hardware. They look at the stack around the saved PSP, check the EXC_RETURN value at the exception return, and confirm that the saved block and the frame are where the layout says. A debugger shows the PSP in a register view, and a stack dump around it shows whether the frame is intact. With the layout from this lesson, a stack dump answers the question.
+    Engineers debugging an RTOS port rarely step through the switch line by line on hardware, looking instead at the stack around the saved PSP, checking the EXC_RETURN value at the exception return and confirming that the saved block and the frame lie where the layout says. A debugger shows the PSP in a register view and a stack dump around it shows whether the frame is intact, so with the layout from this lesson a stack dump answers the question.
   </p>
   <p>
-    Reviewers of a port look for the same things. They check that the saved registers are the callee-saved set, that the stored PSP is the saved block and not the frame, and that every return uses the EXC_RETURN value for the stack the task runs on. Those checks need no knowledge of the scheduler. They need only the register split from Concept 2 and the layout from Concept 5.
+    Reviewers of a port check that the saved registers are the callee-saved set, that the stored PSP is the saved block rather than the frame and that every return uses the EXC_RETURN value for the stack the task runs on, checks that need no knowledge of the scheduler, only the register split and the stack layout of this lesson.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A task is its registers and its stack. A context switch saves one set and restores another.</li>
-    <li>The hardware stacks R0 to R3, R12, LR, PC and xPSR on exception entry. The kernel saves R4 to R11, because only a switch needs to preserve them for a task that is leaving.</li>
-    <li>Tasks run on the PSP and handlers on the MSP. The switch saves the stack top of the leaving task and loads the stack top of the arriving one.</li>
-    <li>The saved block sits 32 bytes below the hardware frame, so the PSP stored for a task points at the block, and the restore adds 32 to reach the frame.</li>
-    <li>A first task has a frame built by hand, with the PC set to its entry point and xPSR set to <code>0x01000000</code>.</li>
-    <li>EXC_RETURN chooses the stack for the return: <code>0xFFFFFFFD</code> for thread mode on the PSP, <code>0xFFFFFFF9</code> for the MSP.</li>
+    <li>A task is its registers and its stack, and a context switch saves one set and restores another.</li>
+    <li>The hardware stacks R0 to R3, R12, LR, PC and xPSR on exception entry, while the kernel saves R4 to R11, because only a switch needs to preserve them for a leaving task.</li>
+    <li>Tasks run on the PSP and handlers on the MSP, and the switch saves the leaving task's stack top and loads the arriving task's.</li>
+    <li>The saved block sits 32 bytes below the hardware frame, so a task's stored PSP points at the block and the restore adds 32 to reach the frame.</li>
+    <li>A first task has a hand-built frame with the PC set to its entry point and xPSR set to <code>0x01000000</code>.</li>
+    <li>EXC_RETURN chooses the stack for the return, <code>0xFFFFFFFD</code> for thread mode on the PSP and <code>0xFFFFFFF9</code> for the MSP.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

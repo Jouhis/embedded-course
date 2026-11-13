@@ -6,14 +6,14 @@ Lesson: [Storing data in flash](https://jouhis.github.io/embedded-course/lessons
 
 ## Try it on the PC
 
-The project is `projects/0105-flash-settings`, a host-test project like lessons 80 and 81. A power cut is hard to time on a board, so the tests use a fake flash in `test/fake_flash.c`. It is 8 KB of RAM that follows the three rules: erase sets 0xFF, program ANDs the new bytes into the old ones, and both check their alignment. A test can schedule a power cut for the next erase (the erase finishes, then the power goes) or the next program (only the first 10 bytes are written). "The power goes" is a `longjmp` back into the test, which then loads the setting as a fresh boot would.
+The project `projects/0105-flash-settings` is a host-test project like those of lessons 80 and 81, and since a power cut is hard to time on a board, the tests use a fake flash in `test/fake_flash.c`, 8 KB of RAM that follows the three rules, erase setting 0xFF, program ANDing the new bytes into the old ones and both checking their alignment. A test can schedule a power cut for the next erase, which finishes before the power goes, or the next program, of which only the first 10 bytes are written, the power going being a `longjmp` back into the test, which then loads the setting as a fresh boot would.
 
-1. Open `projects/0105-flash-settings/starter` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run `python -I tools/build.py projects/0105-flash-settings/starter --test`. The starter uses the obvious save, and 5 of the 9 tests fail.
-2. Read the failures. Each one is a field problem from this lesson: 21 erases for 21 saves, the torn record's 81 °C loaded as if it were complete, the default 50 °C after a cut during the erase, and a flipped bit with no older copy to fall back on.
-3. Your task: finish the three functions marked `TODO(learner)` in `src/settings.c`. Check the CRC in `record_valid()`, scan all 32 slots in `newest_slot()`, and make `settings_save()` write the next slot, erase only at a sector's first slot, and skip slots that are not blank.
-4. Run the tests again. You will know it works when the summary reads *9 Tests 0 Failures 0 Ignored* and *OK*.
+1. Open `projects/0105-flash-settings/starter` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run `python -I tools/build.py projects/0105-flash-settings/starter --test`, the starter using the obvious save, so that 5 of the 9 tests fail.
+2. Read the failures, each a field problem from this lesson, 21 erases for 21 saves, the torn record's 81 °C loaded as if it were complete, the default 50 °C after a cut during the erase and a flipped bit with no older copy to fall back on.
+3. Finish the three functions marked `TODO(learner)` in `src/settings.c`, checking the CRC in `record_valid()`, scanning all 32 slots in `newest_slot()` and making `settings_save()` write the next slot, erase only at a sector's first slot and skip slots that are not blank.
+4. Run the tests again, the changes having worked when the summary reads *9 Tests 0 Failures 0 Ignored* and *OK*.
 
-The starter prints these lines (paths shortened):
+The starter prints these lines (paths shortened).
 
 ```plaintext
 test_settings.c:56:test_21_saves_cost_at_most_2_erases:FAIL: Expected 21 to be less than or equal to 2

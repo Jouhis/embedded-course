@@ -6,13 +6,13 @@ Lesson: [Unit testing on the host with Unity; TDD for firmware](https://jouhis.g
 
 ## Try it on the PC
 
-The project is `projects/0080-debounce-tdd`. It is a host-test project: no Wokwi and no board, only the PC's gcc, Unity, and CTest. The starter has the debounce header, an empty `debounce_update()` marked `TODO(learner)`, and seven tests. Three of the tests fail on the starter, by design.
+The project is `projects/0080-debounce-tdd`, a host-test project with no Wokwi and no board, only the PC's gcc, Unity and CTest. The starter has the debounce header, an empty `debounce_update()` marked `TODO(learner)` and seven tests, three of which fail on the starter by design.
 
-1. From the workspace root, run the starter's tests: `python -I tools/build.py projects/0080-debounce-tdd/starter --test`. Three tests fail. The output names them, and ends with `0% tests passed, 1 tests failed out of 1`.
-2. Read the three failing tests in `test/test_debounce.c`. Each names a behaviour: a press needs three samples, a release needs three lows, and a bounce during a press keeps it pressed.
-3. Your task: in `src/debounce.c`, implement `debounce_update()`. Keep the integrator in `d->count`. Count up on a high sample and down on a low one, stop at `DEBOUNCE_MAX` and at 0, and set `d->stable` only at those two ends. Return `d->stable`.
-4. Run the tests again with the same command. You will know it works when the output ends with `100% tests passed out of 1`, and the Unity summary above it reads `7 Tests 0 Failures 0 Ignored` followed by `OK`.
-5. Refactor: rename the variables if the names are unclear, and keep the tests green after each change. Then run the command once more.
+1. From the workspace root, run the starter's tests with `python -I tools/build.py projects/0080-debounce-tdd/starter --test`, and three tests fail, the output naming them and ending with `0% tests passed, 1 tests failed out of 1`.
+2. Read the three failing tests in `test/test_debounce.c`, each naming a behaviour, a press needing three samples, a release three lows and a bounce during a press keeping it pressed.
+3. In `src/debounce.c`, implement `debounce_update()`, keeping the integrator in `d->count`, counting up on a high sample and down on a low one, stopping at `DEBOUNCE_MAX` and at 0, setting `d->stable` only at those two ends and returning `d->stable`.
+4. Run the tests again with the same command, and the implementation works when the output ends with `100% tests passed out of 1` and the Unity summary above it reads `7 Tests 0 Failures 0 Ignored` followed by `OK`.
+5. Refactor by renaming any unclear variables while keeping the tests green after each change, then run the command once more.
 
 ## Files you work on
 
@@ -23,14 +23,14 @@ The project is `projects/0080-debounce-tdd`. It is a host-test project: no Wokwi
 <details>
 <summary>Hint for the two ends of the integrator</summary>
 
-The stable level must change only when the count reaches `DEBOUNCE_MAX` (becomes 1) or 0 (becomes 0). Between the two ends, the output keeps its old value. Test that rule with the bounce test before you change anything else.
+The stable level must change only when the count reaches `DEBOUNCE_MAX` (becoming 1) or 0 (becoming 0), the output keeping its old value between the two ends, and the bounce test checks that rule before anything else changes.
 
 </details>
 
 <details>
 <summary>Hint if the release test fails</summary>
 
-Check the release with the counter at the top. After three presses the count is `DEBOUNCE_MAX`, so the stable level stays 1 until the count falls to 0. Count the lows by hand: the first two keep the press, and the third releases it.
+Check the release with the counter at the top, since after three presses the count is `DEBOUNCE_MAX` and the stable level stays 1 until the count falls to 0. Counting the lows by hand, the first two keep the press and the third releases it.
 
 </details>
 

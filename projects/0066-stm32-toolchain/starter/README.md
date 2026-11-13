@@ -6,11 +6,11 @@ Lesson: [Setting up the STM32 toolchain](https://jouhis.github.io/embedded-cours
 
 ## Try it in Wokwi
 
-Build and simulate the template, then make two changes: a 250 ms half period, and a message printed once at startup.
+Build and simulate the template, then make two changes, a 250 ms half period and a message printed once at startup.
 
-1. Open `projects/0066-stm32-toolchain/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The LED blinks and the monitor shows `LED on` and `LED off`. The build output ends with a size summary that lists `text`, `data` and `bss`.
-2. Your task, marked `TODO(learner)` in `main.c`: print `STM32 TOOLCHAIN OK` once, before the loop. Then change the half period from 500 ms to 250 ms. The solution uses a named constant, so the blink rate is one edit.
-3. You will know it works when the monitor's first line is `STM32 TOOLCHAIN OK`, and the LED blinks twice as fast as before. Rebuild after each change, because the simulator loads the HEX file from `build/`.
+1. Open `projects/0066-stm32-toolchain/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The LED blinks, the monitor shows `LED on` and `LED off`, and the build output ends with a size summary listing `text`, `data` and `bss`.
+2. At the `TODO(learner)` in `main.c`, print `STM32 TOOLCHAIN OK` once before the loop, then change the half period from 500 ms to 250 ms, which with the named constant is a single edit.
+3. The program works when the monitor's first line is `STM32 TOOLCHAIN OK` and the LED blinks twice as fast as before. Rebuild after each change, because the simulator loads the HEX file from `build/`.
 
 ## Files you work on
 
@@ -25,7 +25,7 @@ The serial monitor prints `STM32 TOOLCHAIN OK`.
 <details>
 <summary>Hint</summary>
 
-The message goes after `uart_init()`, because `uart_puts()` writes to USART1 and USART1 must be enabled first. Put it just before the `while (1)` loop.
+The message goes after `uart_init()`, because `uart_puts()` writes to USART1, which must be enabled first, so place it just before the `while (1)` loop.
 
 </details>
 

@@ -6,12 +6,12 @@ Lesson: [The preprocessor and multi-target builds](https://jouhis.github.io/embe
 
 ## Try it in Wokwi
 
-The project `projects/0050-multi-target` is a Pico program with a board header, an X-macro list and a `SQUARE` macro that is wrong for its argument. The starter has the macro and prints the wrong value, and the solution replaces it.
+The project `projects/0050-multi-target` is a Pico program with a board header, an X-macro list and a `SQUARE` macro that is wrong for its argument. The starter keeps the macro and prints the wrong value, and the solution replaces it.
 
-1. Open `projects/0050-multi-target/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Read the printed value for `square(2+1)`. The starter prints `square(2+1)=5 expected 9`. The 5 is the macro's result from the worked example.
-3. Your task: replace the `SQUARE` macro in `main.c` with the `static inline int square(int x)` function from this lesson. Then replace the three `printf` lines in `main` with the single `MULTI-TARGET OK` call from the solution, so the line is printed in one place.
-4. Build again. You will know it works when the serial monitor prints `MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)`, and the on-board LED blinks every 500 ms.
+1. Open `projects/0050-multi-target/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Read the printed value for `square(2+1)`. The starter prints `square(2+1)=5 expected 9`, the 5 being the macro's result from the worked example.
+3. Replace the `SQUARE` macro in `main.c` with the `static inline int square(int x)` function from this lesson, then replace the three `printf` lines in `main` with the single `MULTI-TARGET OK` call from the solution, so that the line is printed in one place.
+4. Build again. The fix works when the serial monitor prints `MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)` and the on-board LED blinks every 500 ms.
 
 ## Files you work on
 
@@ -26,7 +26,7 @@ The serial monitor prints `MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)`
 <details>
 <summary>Hint</summary>
 
-Look at what the macro expands to for the argument `2 + 1`: it becomes `2 + 1 * 2 + 1`. Then write a function that takes one `int` and returns its square. The call site stays almost the same, and the function receives 3.
+For the argument `2 + 1` the macro expands to `2 + 1 * 2 + 1`, so write a function that takes one `int` and returns its square. The call site stays almost the same, and the function receives 3.
 
 </details>
 

@@ -10,58 +10,58 @@
 <body data-lesson="lab06">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Lab 6: Port the monitor to Zephyr, and compare the two RTOSes</h1>
-  <p class="subtitle">The Lab 4 monitor already runs on a Pico and a Blue Pill through one HAL. In this lab the same application runs as Zephyr threads on the Pico, and you measure what changed.</p>
+  <h1>Lab 6: Port Lab 5 to Zephyr and compare the two RTOSes</h1>
+  <p class="subtitle">The monitor as Zephyr threads, measured against FreeRTOS</p>
 
   <div class="goal">
     By the end of this lab you can run one application as threads on Zephyr, write the board file <code>hal_zephyr.c</code> on Zephyr's GPIO and I2C APIs, describe the OLED and the sensor in a devicetree overlay, and write a structured comparison of Zephyr and FreeRTOS with build-report numbers.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>The cost of changing RTOS</h2>
   <p>
-    <a href="lab04-port-lab-3-to-the.html">Lab 4</a> gave the monitor a hardware abstraction layer (HAL). Its application code, in <code>projects/lab04-port-lab3-to-stm32/app</code>, calls functions such as <code>hal_gpio_read</code> and <code>hal_i2c_write</code>, and each board supplies its own implementation of those functions. Lab 5 (<a href="lab05-move-lab-4-onto-freertos.html">lab 5</a>) moved the same monitor onto FreeRTOS. Lesson <a href="0086-why-use-an-rtos.html">86</a> gave the reasons for an RTOS, and lessons <a href="0097-threads-and-kernel-services.html">97</a> to <a href="0099-logging-the-shell-and-testing.html">99</a> gave you Zephyr's threads, the devicetree-based drivers, the logger and the test tools.
+    The Lab 4 monitor already runs on a Pico and a Blue Pill through one HAL, and in this lab the same application runs as Zephyr threads on the Pico while you measure what changed. <a href="lab04-port-lab-3-to-the.html">Lab 4</a> gave the monitor a hardware abstraction layer (HAL), its application code in <code>projects/lab04-port-lab3-to-stm32/app</code> calling functions such as <code>hal_gpio_read</code> and <code>hal_i2c_write</code> that each board implements, and <a href="lab05-move-lab-4-onto-freertos.html">lab 5</a> moved the same monitor onto FreeRTOS. Lesson <a href="0086-why-use-an-rtos.html">86</a> gave the reasons for an RTOS, and lessons <a href="0097-threads-and-kernel-services.html">97</a> to <a href="0099-logging-the-shell-and-testing.html">99</a> gave you Zephyr's threads, the devicetree-based drivers, the logger and the test tools.
   </p>
   <p>
-    This lab asks the question a team asks when it changes RTOS. The application already works, so what does a port cost, what does it gain, and can the change be measured? You keep the application source unchanged, write only the board side and the threads, and then compare the two builds with the same tools. The comparison matters because a product team chooses a kernel for years, and the choice has to rest on numbers and on how the code is organised.
+    This lab works through what a team weighs when it changes RTOS, the cost of a port, its gains and how to measure the change, given an application that already works. You keep the application source unchanged, write only the board side and the threads, and then compare the two builds with the same tools, a comparison that matters because a product team chooses a kernel for years, so the choice has to rest on numbers and on how the code is organised.
   </p>
 
-  <h2>The concepts, one at a time</h2>
+  <h2>Threads, gates and a shared bus</h2>
   <h3>Splitting a super-loop into threads</h3>
   <p>
-    The application's <code>app_run()</code> is a <em>super-loop</em>: one function that polls every input, updates the state and draws the screen, in turn. It is simple, and it has one weakness. A slow step delays all the others. The OLED flush takes about 25 ms at 400 kHz, so a button press that arrives during a flush waits for it. Threads fix that by giving each job its own stack and its own schedule, as lesson <a href="0097-threads-and-kernel-services.html">97</a> showed. The sensor thread, the UI thread and the button thread then run independently, and the kernel decides which one has the CPU.
+    The application's <code>app_run()</code> is a <em>super-loop</em>, one function that polls every input, updates the state and draws the screen in turn, which is simple but has one weakness, because a slow step delays all the others. The OLED flush takes about 25 ms at 400 kHz, so a button press that arrives during a flush waits for it. Threads fix that by giving each job its own stack and its own schedule, as lesson <a href="0097-threads-and-kernel-services.html">97</a> showed, so the sensor thread, the UI thread and the button thread run independently and the kernel decides which one has the CPU.
   </p>
   <p>
-    The threads still share state, so they still need the tools from lesson 97: a message queue for samples and events, and a mutex for the I2C bus. The application code is shared unchanged, and the port adds the threads in <code>src/main.c</code>. Each thread calls the application's public functions, such as <code>sensor_poll</code>, <code>ui_on_sample</code> and <code>ui_poll</code>, and does nothing else.
+    The threads still share state, so they still need the tools from lesson 97, a message queue for samples and events and a mutex for the I2C bus. The application code is shared unchanged, and the port adds the threads in <code>src/main.c</code>, each thread calling the application's public functions, such as <code>sensor_poll</code>, <code>ui_on_sample</code> and <code>ui_poll</code>, and doing nothing else.
   </p>
 
   <h3>The start gate</h3>
   <p>
-    A thread created with <code>K_THREAD_DEFINE</code> starts when the kernel starts it, and it can begin before <code>main()</code> has set up the sensor and the display. The delay argument of the macro is a number of milliseconds, so it cannot wait for an event. The solution uses a <a href="../reference/glossary.html#start-gate">start gate</a>: a semaphore, <code>app_ready</code>, that starts at zero. Each thread takes it and gives it straight back, and <code>main()</code> gives it once the devices are up. Until that give, every thread waits in <code>wait_for_start()</code>, and after it, all of them pass.
+    A thread created with <code>K_THREAD_DEFINE</code> starts when the kernel starts it, and it can begin before <code>main()</code> has set up the sensor and the display, while the delay argument of the macro is a number of milliseconds, so it cannot wait for an event. The solution therefore uses a <a href="../reference/glossary.html#start-gate">start gate</a>, a semaphore, <code>app_ready</code>, that starts at zero, which each thread takes and gives straight back, and which <code>main()</code> gives once the devices are up. Until that give every thread waits in <code>wait_for_start()</code>, and after it all of them pass.
   </p>
 
-  <h3>Doorbells, not data</h3>
+  <h3>Doorbell messages</h3>
   <p>
-    The button thread posts a bit mask on <code>button_q</code> when the buttons change, but the UI thread reads the buttons again itself. The message is only a wake-up call, which the solution calls a doorbell. If the message is lost, the UI still polls every 5 ms, so nothing breaks, and the message arrives sooner than the poll would. This is a design choice worth noticing: the message carries a hint, and the state lives where it belongs.
+    The button thread posts a bit mask on <code>button_q</code> when the buttons change, but the UI thread reads the buttons again itself, so the message is only a wake-up call, which the solution calls a doorbell. If the message is lost, the UI still polls every 5 ms, so nothing breaks, and when it arrives, it wakes the UI sooner than the poll would, a design in which the message carries a hint while the state lives where it belongs.
   </p>
 
-  <h3>Interrupts, polling and the choice in this port</h3>
+  <h3>Polled buttons</h3>
   <p>
-    Lab 5 read the buttons with an interrupt on EXTI12 and EXTI13, as the comparison table below says. Lab 6 polls them every 5 ms in a thread, which ports more simply because the overlay describes each button and the code needs no interrupt setup. Polling is simple and deterministic, but it can miss a press shorter than the scan period. The debounce in <code>ui_poll</code> then works on the samples it sees. A reviewer should ask whether 5 ms is short enough for the product, and the answer depends on the switch.
+    Lab 5 read the buttons with an interrupt on EXTI12 and EXTI13, as the comparison table below says, whereas Lab 6 polls them every 5 ms in a thread, which ports more simply, because the overlay describes each button and the code needs no interrupt setup. Polling is simple and deterministic, but it can miss a press shorter than the scan period, the debounce in <code>ui_poll</code> then working on the samples it sees, so a reviewer should ask whether 5 ms is short enough for the product, which depends on the switch.
   </p>
 
   <h3>An I2C bus shared by two threads</h3>
   <p>
-    The OLED and the MYS-1 share the bus <code>i2c0</code>. The sensor thread and the UI thread both transfer on it, so each transfer must take the lock <code>i2c_lock</code>, and no two transfers may overlap. The lock is a mutex with a timeout, so a stuck device cannot freeze the monitor: <code>hal_i2c_write</code> returns -1 after <code>I2C_LOCK_TIMEOUT_MS</code> (100 ms), as <code>kernel/mutex.c</code> returns <code>-EAGAIN</code> when a timeout expires. The port's <code>hal_i2c_write</code> turns that into -1 (<code>hal_zephyr.c:105-106</code>).
+    The OLED and the MYS-1 share the bus <code>i2c0</code>, and since the sensor thread and the UI thread both transfer on it, each transfer must take the lock <code>i2c_lock</code>, so that no two transfers overlap. The lock is a mutex with a timeout, so a stuck device cannot freeze the monitor, <code>hal_i2c_write</code> returning -1 after <code>I2C_LOCK_TIMEOUT_MS</code> (100 ms), because <code>kernel/mutex.c</code> returns <code>-EAGAIN</code> when a timeout expires, which the port's <code>hal_i2c_write</code> turns into -1 (<code>hal_zephyr.c:105-106</code>).
   </p>
 
   <h3>Checks at build time</h3>
   <p>
-    The application expects the OLED at 0x3C and the MYS-1 at 0x48, and the overlay says the same. The solution makes sure they agree with <code>BUILD_ASSERT</code>. This macro evaluates a constant expression while the program is compiled, and it stops the build if the expression is false (<code>include/zephyr/toolchain/common.h:229</code>). <code>DT_REG_ADDR(DT_NODELABEL(oled))</code> reads the devicetree address at compile time, so a wrong <code>reg</code> fails the build instead of showing up as <code>SENSOR ERR</code> on a screen.
+    The application expects the OLED at 0x3C and the MYS-1 at 0x48, the overlay says the same, and the solution makes sure they agree with <code>BUILD_ASSERT</code>, a macro that evaluates a constant expression while the program is compiled and stops the build if the expression is false (<code>include/zephyr/toolchain/common.h:229</code>). <code>DT_REG_ADDR(DT_NODELABEL(oled))</code> reads the devicetree address at compile time, so a wrong <code>reg</code> fails the build instead of showing up as <code>SENSOR ERR</code> on a screen.
   </p>
 
   <h3>One application, two ports</h3>
   <p>
-    The Zephyr <code>CMakeLists.txt</code> compiles the application sources from <code>../../lab04-port-lab3-to-stm32/app</code> directly, and adds that folder to the include path. Nothing is copied, so a fix in <code>app/</code> reaches both the FreeRTOS port and the Zephyr port. The only Zephyr-side files are <code>src/main.c</code> and <code>hal_zephyr.c</code>, and the comparison at the end of the lab counts exactly those.
+    The Zephyr <code>CMakeLists.txt</code> compiles the application sources from <code>../../lab04-port-lab3-to-stm32/app</code> directly and adds that folder to the include path, so nothing is copied and a fix in <code>app/</code> reaches both the FreeRTOS port and the Zephyr port. The only Zephyr-side files are <code>src/main.c</code> and <code>hal_zephyr.c</code>, which are exactly the files the comparison at the end of the lab counts.
   </p>
 
   <h2>The project layout</h2>
@@ -105,28 +105,32 @@
 
   <h2>Worked example: the cost of one display flush</h2>
   <p>
-    The lab's hint about the I2C lock timeout needs a number, so work it out from the code. The SSD1306 framebuffer is 8 pages of 128 bytes, and <code>ssd1306_flush()</code> sends it one page at a time (<code>projects/lab04-port-lab3-to-stm32/app/ssd1306.c</code>). Each page costs four I2C transfers: three 2-byte commands that select the page and the column, and one frame of 129 bytes, which is a control byte followed by the 128 data bytes.
+    The lab's hint about the I2C lock timeout needs a number, so we work it out from the code, and before reading on, estimate how long a full flush holds the bus at 400 kHz. The SSD1306 framebuffer is 8 pages of 128 bytes, and <code>ssd1306_flush()</code> sends it one page at a time (<code>projects/lab04-port-lab3-to-stm32/app/ssd1306.c</code>), each page costing four I2C transfers, three 2-byte commands that select the page and the column and one frame of 129 bytes, a control byte followed by the 128 data bytes.
   </p>
-  <ol>
+  <ol class="steps">
     <li><strong>Bytes per page.</strong> <code>3 × 2 + 129 = 135</code> bytes.</li>
     <li><strong>Bytes per flush.</strong> <code>8 × 135 = 1080</code> bytes, in <code>8 × 4 = 32</code> transfers.</li>
     <li><strong>Bits on the wire.</strong> Each byte is 8 data bits and one acknowledge bit, so 9 clock pulses. That gives <code>1080 × 9 = 9720</code> clock pulses.</li>
     <li><strong>Time at 400 kHz.</strong> <code>9720 / 400000 = 0.0243 s</code>, which is about 24 ms. Each transfer also sends a start, an address and a stop, so the real time is a little longer, and the lab's figure of about 25 ms is the right size.</li>
   </ol>
   <p>
-    Now place the flush on the timeline. The UI thread starts a flush at t = 500 ms, and it runs for about 25 ms. The sensor thread asks for a sample at t = 501 ms. Its read queues behind the flush, and it waits up to about 24 ms for the bus. A lock timeout of 100 ms covers that wait with room to spare, so the read succeeds. A timeout of 10 ms would fail during every redraw, and the LIVE screen would show <code>SENSOR ERR</code> at each 500 ms frame. The 100 ms figure is therefore a reasoned choice: about four times the flush time, which leaves room for the sensor's own transfer.
+    The steps add up to
+  </p>
+  <p class="eq"><span>t<sub>flush</sub> = N<sub>bytes</sub> × 9 ÷ f<sub>SCL</sub> = 1080 × 9 ÷ 400 000 Hz ≈ 24 ms</span><span class="eq-n">(1)</span></p>
+  <p>
+    where N<sub>bytes</sub> is the number of bytes in one flush and f<sub>SCL</sub> the I2C clock. On the timeline, the UI thread starts a flush at t = 500 ms that runs for about 25 ms, and the sensor thread asks for a sample at t = 501 ms, so its read queues behind the flush and waits up to about 24 ms for the bus. A lock timeout of 100 ms covers that wait with room to spare, so the read succeeds, whereas a timeout of 10 ms would fail during every redraw, and the LIVE screen would show <code>SENSOR ERR</code> at each 500 ms frame. The 100 ms figure is therefore a reasoned choice, about four times the flush time, which leaves room for the sensor's own transfer.
   </p>
 
   <h2>Code, line by line</h2>
   <pre><code class="language-c">BUILD_ASSERT(DT_REG_ADDR(DT_NODELABEL(oled)) == 0x3C, "the Lab 4 application expects the OLED at 0x3C");</code></pre>
   <p>
-    <code>DT_NODELABEL(oled)</code> refers to the overlay node with that label, and <code>DT_REG_ADDR</code> reads its first <code>reg</code> cell. The comparison is made at compile time, and the message is printed only when it fails. The same line appears for the MYS-1 at 0x48.
+    <code>DT_NODELABEL(oled)</code> refers to the overlay node with that label, and <code>DT_REG_ADDR</code> reads its first <code>reg</code> cell. The comparison is made at compile time and the message is printed only when it fails, and the same line appears for the MYS-1 at 0x48.
   </p>
   <pre><code class="language-c">K_MSGQ_DEFINE(button_q, sizeof(uint8_t), 8, 1);
 K_MSGQ_DEFINE(sample_q, sizeof(int32_t), 4, 4);
 K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
   <p>
-    The button queue holds one byte per message, with room for 8 messages, and it is a doorbell, so a small queue is enough. The sample queue holds one <code>int32_t</code> per sample, in hundredths of a degree, with room for 4 samples. The start gate is a semaphore that starts at 0 and has a limit of 1, so <code>main()</code> gives it once and the threads pass one at a time.
+    The button queue holds one byte per message, with room for 8 messages, which is enough for a doorbell, and the sample queue holds one <code>int32_t</code> per sample, in hundredths of a degree, with room for 4 samples. The start gate is a semaphore that starts at 0 and has a limit of 1, so <code>main()</code> gives it once and the threads pass one at a time.
   </p>
   <pre><code class="language-c">static void wait_for_start(void)
 {
@@ -134,7 +138,7 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     k_sem_give(&amp;app_ready);
 }</code></pre>
   <p>
-    Each thread calls this before its loop. It takes the gate and returns it at once, so the next thread can pass. Taking and giving the same semaphore is the way to let every waiter through with one give.
+    Each thread calls this before its loop, taking the gate and returning it at once, so that the next thread can pass, which is how one give lets every waiter through.
   </p>
   <pre><code class="language-c">static void button_thread(void *p1, void *p2, void *p3)
 {
@@ -150,13 +154,13 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     }
 }</code></pre>
   <p>
-    The thread reads the level of both buttons every 5 ms. When the mask changes, it posts the new mask, and the <code>K_NO_WAIT</code> means a full queue drops the doorbell, while the UI still reads the button state itself. The <code>(void)</code> cast tells the reader that the return value is ignored on purpose.
+    The thread reads the level of both buttons every 5 ms and posts the new mask when it changes, <code>K_NO_WAIT</code> meaning that a full queue drops the doorbell while the UI still reads the button state itself. The <code>(void)</code> cast tells the reader that the return value is ignored on purpose.
   </p>
   <pre><code class="language-c">while (k_msgq_get(&amp;sample_q, &amp;centi, K_NO_WAIT) == 0) {
     ui_on_sample(centi);
 }</code></pre>
   <p>
-    The UI thread drains the sample queue with <code>K_NO_WAIT</code> in a loop, so it handles every sample that arrived since the last pass and then carries on. A <code>K_FOREVER</code> here would block the UI when there was nothing to show, and the buttons would wait.
+    The UI thread drains the sample queue with <code>K_NO_WAIT</code> in a loop, so it handles every sample that arrived since the last pass and then carries on, whereas a <code>K_FOREVER</code> here would block the UI when there was nothing to show, and the buttons would wait.
   </p>
   <pre><code class="language-c">void hal_log(const char *line)
 {
@@ -166,7 +170,7 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     }
 }</code></pre>
   <p>
-    <code>hal_log</code> copies the line into the queue and returns. The UART is slow, so the printing happens in the log thread, which waits with <code>K_FOREVER</code> on the same queue. A full queue drops the line and counts it in <code>log_dropped</code>, instead of holding the UI until the UART has room.
+    <code>hal_log</code> copies the line into the queue and returns, and since the UART is slow, the printing happens in the log thread, which waits with <code>K_FOREVER</code> on the same queue. A full queue drops the line and counts it in <code>log_dropped</code>, instead of holding the UI until the UART has room.
   </p>
   <pre><code class="language-c">int main(void)
 {
@@ -181,7 +185,7 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     return 0;
 }</code></pre>
   <p>
-    The order matters. The hardware is set up first, the sensor and display are initialised, and only then does <code>main()</code> open the gate. If either initialisation fails, the threads never start, and the monitor prints the failure. The final <code>k_sem_give</code> is the line that makes the three threads run, so a missing give is the most common cause of a silent monitor.
+    The order matters, because the hardware is set up first, the sensor and display are initialised, and only then does <code>main()</code> open the gate, so if either initialisation fails, the threads never start and the monitor prints the failure. The final <code>k_sem_give</code> is the line that makes the three threads run, so a missing give is the most common cause of a silent monitor.
   </p>
 
   <h2>Hints</h2>
@@ -204,7 +208,7 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
 
   <h2>The comparison</h2>
   <p>
-    Every number below comes from a build in this workspace: the Lab 5 solution (<a href="lab05-move-lab-4-onto-freertos.html">Lab 5</a>, FreeRTOS on the Blue Pill) and this lab's solution (Zephyr on the Pico). The chips differ: the STM32F103 is a Cortex-M3 and the RP2040 is a Cortex-M0+. The two monitors also have their own application code, so the comparison is indicative, not exact.
+    Every number below comes from a build in this workspace, the Lab 5 solution (<a href="lab05-move-lab-4-onto-freertos.html">Lab 5</a>, FreeRTOS on the Blue Pill) and this lab's solution (Zephyr on the Pico). The chips differ, the STM32F103 being a Cortex-M3 and the RP2040 a Cortex-M0+, and the two monitors also have their own application code, so the comparison is indicative rather than exact.
   </p>
   <table>
     <tr><th>Measure</th><th>FreeRTOS, Lab 5 (Blue Pill, M3)</th><th>Zephyr, Lab 6 (Pico, M0+)</th></tr>
@@ -214,7 +218,7 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     <tr><td>The Zephyr memory report for the same build</td><td>not produced by the FreeRTOS build</td><td>FLASH 26,516 B and RAM 14,792 B (the <code>FLASH</code> and <code>RAM</code> lines, also seen with <code>rom_report</code> and <code>ram_report</code>)</td></tr>
   </table>
   <p>
-    Read the RAM figure as reserved memory. Both kernels allocate their stacks at build time, the FreeRTOS ones from a heap that the link always reserves, and the Zephyr ones as static arrays. So the static figure is a fair measure for both. Neither figure counts the stack a thread uses at run time, which is what lesson <a href="0092-stack-sizing.html">92</a> measures with a high-water mark.
+    The RAM figure is reserved memory. Both kernels allocate their stacks at build time, the FreeRTOS ones from a heap that the link always reserves and the Zephyr ones as static arrays, so the static figure is a fair measure for both, although neither counts the stack a thread uses at run time, which is what lesson <a href="0092-stack-sizing.html">92</a> measures with a high-water mark.
   </p>
 
   <h3>Structure and primitives, Lab 5 against Lab 6</h3>
@@ -230,10 +234,10 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     <tr><td>Lines of thread code</td><td>240 lines in <code>app.c</code>, which include the UI and the sensor code</td><td>202 lines in <code>src/main.c</code>, plus 144 in <code>hal_zephyr.c</code></td></tr>
   </table>
   <p>
-    The line counts are not like for like. Lab 5's <code>app.c</code> holds its UI and sensor code too, while Lab 6 keeps that code in the shared <code>app/</code> folder. The structure table is the better guide to the threading layer. The main difference is the button path: Lab 5 handles the press in an interrupt and Lab 6 polls it, which is why Lab 6 needs the 5 ms thread.
+    The line counts are not like for like, because Lab 5's <code>app.c</code> holds its UI and sensor code too, while Lab 6 keeps that code in the shared <code>app/</code> folder, so the structure table is the better guide to the threading layer. The main difference is the button path, Lab 5 handling the press in an interrupt while Lab 6 polls it, which is why Lab 6 needs the 5 ms thread.
   </p>
 
-  <h2>The other comparisons</h2>
+  <h2>Portability, debugging and code shape</h2>
   <ul>
     <li><strong>Portability.</strong> Zephyr's board file is the devicetree plus a small HAL, and the application uses the same APIs on every board that Zephyr supports. FreeRTOS's port is one kernel with a port layer for each core; the board code is yours.</li>
     <li><strong>Debugging.</strong> Zephyr prints a devicetree trace in <code>zephyr.dts</code> and checks addresses at build time; a wrong <code>reg</code> stops the build. FreeRTOS gives you the raw task list and stack high-water marks, and the code is closer to the registers.</li>
@@ -241,52 +245,53 @@ K_SEM_DEFINE(app_ready, 0, 1);</code></pre>
     <li><strong>When to choose each.</strong> Choose Zephyr for a product with several boards, a need for devicetree and Kconfig, and a vendor that ships a Zephyr port (Nordic and NXP do). Choose FreeRTOS for a small kernel with a tiny footprint and a large body of existing code, or when the team already knows it.</li>
   </ul>
 
-  <div class="win">You ran one application on Zephyr threads, kept the application source unchanged, and measured it against the FreeRTOS port from Lab 5 with the same tools, reading the numbers as indicative because the chips differ.</div>
+  <div class="win">You ran one application on Zephyr threads, kept the application source unchanged and measured it against the FreeRTOS port from Lab 5 with the same tools, reading the numbers as indicative because the chips differ.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
   <h3>A thread that skips the start gate</h3>
   <p>
-    If one thread, say the sensor thread, does not call <code>wait_for_start()</code>, it runs before <code>main()</code> has initialised the sensor. Its first reads fail, and the screen shows <code>SENSOR ERR</code> for a moment, or the first status lines report errors that then go away. The fix is to call <code>wait_for_start()</code> at the top of every thread, as the solution does.
+    The screen shows <code>SENSOR ERR</code> for a moment, or the first status lines report errors that then go away, because a thread, say the sensor thread, that does not call <code>wait_for_start()</code> runs before <code>main()</code> has initialised the sensor, so its first reads fail. Call <code>wait_for_start()</code> at the top of every thread, as the solution does.
   </p>
   <h3>A lock timeout shorter than the flush</h3>
   <p>
-    If <code>I2C_LOCK_TIMEOUT_MS</code> is set to 10, the sensor read waits behind the display flush for longer than 10 ms, and <code>hal_i2c_read</code> returns -1. The LIVE screen then shows <code>SENSOR ERR</code> at every redraw, and the flicker lines up with the 500 ms frame. The symptom is a regular flicker, not a dead sensor. The fix is the timeout reasoned out in the worked example.
+    The LIVE screen flickers to <code>SENSOR ERR</code> at every redraw, in step with the 500 ms frame, a regular flicker rather than a dead sensor, because with <code>I2C_LOCK_TIMEOUT_MS</code> at 10 the sensor read waits behind the display flush for longer than 10 ms and <code>hal_i2c_read</code> returns -1. Use the timeout reasoned out in the worked example.
   </p>
   <h3>A blocking log call</h3>
   <p>
-    If <code>hal_log</code> used <code>K_FOREVER</code> instead of <code>K_NO_WAIT</code>, the UI thread would stop whenever the log queue was full, which happens when the UART is slow and several lines arrive together. The symptom is that the buttons respond late, but only while the log is busy. The fix is the non-blocking put, and the dropped-line counter makes the loss visible rather than silent.
+    The buttons respond late, but only while the log is busy, because a <code>hal_log</code> using <code>K_FOREVER</code> instead of <code>K_NO_WAIT</code> stops the UI thread whenever the log queue is full, which happens when the UART is slow and several lines arrive together. Use the non-blocking put, whose dropped-line counter makes the loss visible rather than silent.
   </p>
   <h3>A wrong address in the overlay</h3>
   <p>
-    If the overlay says <code>reg = &lt;0x3d&gt;</code> for the OLED, the build stops with the <code>BUILD_ASSERT</code> message, <code>the Lab 4 application expects the OLED at 0x3C</code>. You see the problem before you flash anything. Restore the address, and the build passes again.
+    The build stops with the <code>BUILD_ASSERT</code> message <code>the Lab 4 application expects the OLED at 0x3C</code>, because the overlay says <code>reg = &lt;0x3d&gt;</code> for the OLED, so you see the problem before you flash anything. Restore the address, and the build passes again.
   </p>
   <h3>Missing CONFIG_I2C</h3>
   <p>
-    Without <code>CONFIG_I2C=y</code>, the I2C driver is not built, and <code>hal_init()</code> prints <code>hal: i2c0 is not ready</code>. The sensor and display then fail to initialise, and the monitor prints <code>LAB6 init failed</code>. The fix is the line in <code>prj.conf</code>, as lesson 98 showed.</p>
+    <code>hal_init()</code> prints <code>hal: i2c0 is not ready</code>, the sensor and display fail to initialise and the monitor prints <code>LAB6 init failed</code>, because without <code>CONFIG_I2C=y</code> the I2C driver is not built. Add the line to <code>prj.conf</code>, as lesson 98 showed.
+  </p>
   <h3>A missing give on the start gate</h3>
   <p>
-    If <code>LAB6 OK</code> prints but nothing else does, the gate was never opened. Every thread is waiting in <code>wait_for_start()</code>, so the kernel has nothing to run. The fix is the <code>k_sem_give(&amp;app_ready)</code> at the end of <code>main()</code>, which the hint below describes.
+    <code>LAB6 OK</code> prints but nothing else does, because the gate was never opened, so every thread waits in <code>wait_for_start()</code> and the kernel has nothing to run. Add the <code>k_sem_give(&amp;app_ready)</code> at the end of <code>main()</code>, as the hint above describes.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>RTOS ports in embedded teams</h2></summary>
   <p>
-    A port like this is a routine task in embedded teams. The application is kept free of kernel calls, so the same code runs on the bench, in a simulator and on another RTOS. A reviewer checks the port for three things: that the application source has no kernel calls, that every shared bus has one lock with a reasoned timeout, and that every log call is non-blocking. Those checks are short, and they catch most of the problems this lab shows.
+    A port like this is a routine task in embedded teams. The application is kept free of kernel calls, so the same code runs on the bench, in a simulator and on another RTOS, and a reviewer checks the port for three things, that the application source has no kernel calls, that every shared bus has one lock with a reasoned timeout and that every log call is non-blocking, short checks that catch most of the problems this lab shows.
   </p>
   <p>
-    The comparison table is the part a manager reads. It shows the cost in flash and RAM, the number of queues and threads, and the code that the team must maintain. Numbers from two different chips are never exact, so the table gives both figures and the reason for each, and it says plainly what cannot be compared.
+    The comparison table is the part a manager reads, showing the cost in flash and RAM, the number of queues and threads and the code the team must maintain. Numbers from two different chips are never exact, so the table gives both figures and the reason for each, and it says plainly what cannot be compared.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A port splits the super-loop into threads, and the application source stays unchanged.</li>
+    <li>A port splits the super-loop into threads while the application source stays unchanged.</li>
     <li>A start gate, a semaphore that <code>main()</code> gives once the devices are up, holds the threads until they can run.</li>
     <li>Buttons travel as doorbell messages, and the state is read where it lives.</li>
-    <li>One mutex with a reasoned timeout guards the I2C bus, and the timeout must exceed one display flush (about 25 ms, 1,080 bytes at 400 kHz).</li>
-    <li>The log is non-blocking: <code>K_NO_WAIT</code> drops and counts a line rather than stall the UI.</li>
+    <li>One mutex with a reasoned timeout guards the I2C bus, the timeout exceeding one display flush (about 25 ms, 1 080 bytes at 400 kHz).</li>
+    <li>The log is non-blocking, <code>K_NO_WAIT</code> dropping and counting a line rather than stalling the UI.</li>
     <li><code>BUILD_ASSERT</code> turns a wrong devicetree address into a build error.</li>
-    <li>Compare the two ports with the same tools, and report the numbers with the reasons they cannot be compared exactly.</li>
+    <li>The two ports are compared with the same tools, and the numbers are reported with the reasons they cannot be compared exactly.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

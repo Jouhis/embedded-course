@@ -6,11 +6,11 @@ Lesson: [Interrupts in practice](https://jouhis.github.io/embedded-course/lesson
 
 ## Try it in Wokwi
 
-The project `projects/0057-interrupts-in-practice` wires a pushbutton to GP14 with the internal pull-up enabled, as in lesson 16. Pressing the button pulls the pin low, so the press is a falling edge. The starter has three problems: its ISR calls `printf`, its shared flag is not `volatile`, and the main loop does not yet register the callback or read the flag safely.
+The project `projects/0057-interrupts-in-practice` wires a pushbutton to GP14 with the internal pull-up enabled, as in lesson 16, so a press pulls the pin low and produces a falling edge. The starter has three problems: its ISR calls `printf`, its shared flag is not `volatile`, and the main loop neither registers the callback nor reads the flag safely.
 
 1. Open `projects/0057-interrupts-in-practice/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-3. Your task: call `gpio_set_irq_enabled_with_callback()` in `main`. Delete the `printf` from the ISR. Fix the shared variables, and read and clear the flag inside `save_and_disable_interrupts()` and `restore_interrupts()`. Then print `presses=N` when a press is pending. You will know it works when a press prints `presses=1`, and the next press prints `presses=2`.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+3. Call `gpio_set_irq_enabled_with_callback()` in `main`, delete the `printf` from the ISR, fix the shared variables, and read and clear the flag between `save_and_disable_interrupts()` and `restore_interrupts()`, printing `presses=N` when a press is pending. The fix works when a press prints `presses=1` and the next press `presses=2`.
 
 ## Files you work on
 
@@ -25,14 +25,14 @@ The serial monitor prints `presses=1`.
 <details>
 <summary>Hint for the callback</summary>
 
-The callback signature is `void f(uint gpio, uint32_t events)`. Pass `GPIO_IRQ_EDGE_FALL` for the event and `true` to enable it. The SDK calls your function, so you do not register it with the NVIC yourself.
+The callback signature is `void f(uint gpio, uint32_t events)`. Pass `GPIO_IRQ_EDGE_FALL` for the event and `true` to enable it; the SDK calls your function, so there is nothing to register with the NVIC yourself.
 
 </details>
 
 <details>
 <summary>Hint for the volatile qualifier</summary>
 
-Look at the declarations: the flag and the count are written in the ISR and read in `main`. Lesson 46 explains why that needs `volatile`.
+Look at the declarations: the flag and the count are written in the ISR and read in `main`, which lesson 46 explains requires `volatile`.
 
 </details>
 

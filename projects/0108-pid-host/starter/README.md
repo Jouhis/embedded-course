@@ -6,13 +6,13 @@ Lesson: [PID control](https://jouhis.github.io/embedded-course/lessons/0108-pid-
 
 ## Try it: the host tests and the simulated heater
 
-The project `projects/0108-pid-host` has a PID module, a first-order heater model, and a closed-loop runner. The setpoint is 60 °C, the room is 25 °C, and the heater's full-power rise is 80 °C. A pass needs a settling time of 600 s or less, an overshoot of 3 °C or less, and a final temperature within 1 °C of the setpoint.
+The project `projects/0108-pid-host` has a PID module, a first-order heater model and a closed-loop runner, with the setpoint at 60 °C, the room at 25 °C and a full-power rise of 80 °C, and a pass needs a settling time of 600 s or less, an overshoot of 3 °C or less and a final temperature within 1 °C of the setpoint.
 
-1. Open `projects/0108-pid-host/starter` in VS Code, or run `python -I tools/build.py projects/0108-pid-host/starter --test` from the workspace root. Expected output: the plant tests already pass, and the arithmetic, anti-windup and derivative tests fail. Those failures are correct at this point.
-2. Your task: write `pid_update` in `src/pid.c`. Make the arithmetic tests pass first, then the anti-windup test, then the derivative tests. The plant tests already pass. You will know it works when the Unity summary reads `12 Tests 0 Failures 0 Ignored`, which is the line the reference solution prints.
-3. Then tune `src/tuning.h`. With the starting gains, the loop reaches the setpoint but overshoots by 6.18 °C. Lower the proportional gain or the integral gain until the overshoot test passes, and keep the settling test passing.
+1. Open `projects/0108-pid-host/starter` in VS Code, or run `python -I tools/build.py projects/0108-pid-host/starter --test` from the workspace root, after which the plant tests already pass while the arithmetic, anti-windup and derivative tests fail, correctly at this point.
+2. Write `pid_update` in `src/pid.c`, making the arithmetic tests pass first, then the anti-windup test and then the derivative tests, the change having worked when the Unity summary reads `12 Tests 0 Failures 0 Ignored`, the line the reference solution prints.
+3. Then tune `src/tuning.h`, whose starting gains reach the setpoint but overshoot by 6.18 °C, lowering the proportional or the integral gain until the overshoot test passes while the settling test keeps passing.
 
-Print the response. The program `app/pid_sim.c` prints a CSV row per simulated second and its metrics on stderr. Expected output: the terminal shows `final=60.00 C overshoot=0.63 C settle=83 s`, and `response.csv` has 1201 lines, the header and 1200 rows. From the workspace root, run `projects/0108-pid-host/solution/build/pid_sim.exe > response.csv` after building. Open `response.csv` in a spreadsheet, select the columns `t_s`, `setpoint_c` and `temp_c`, and insert a line chart with `t_s` on the horizontal axis. The curve should rise, touch the setpoint, and settle.
+To print the response, run `projects/0108-pid-host/solution/build/pid_sim.exe > response.csv` from the workspace root after building, the program `app/pid_sim.c` printing a CSV row per simulated second and its metrics on stderr, so the terminal shows `final=60.00 C overshoot=0.63 C settle=83 s` and `response.csv` has 1201 lines, the header and 1200 rows. Open `response.csv` in a spreadsheet, select the columns `t_s`, `setpoint_c` and `temp_c` and insert a line chart with `t_s` on the horizontal axis, whose curve should rise, touch the setpoint and settle.
 
 ## Files you work on
 

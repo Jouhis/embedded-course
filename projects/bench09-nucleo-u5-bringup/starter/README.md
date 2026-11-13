@@ -6,9 +6,9 @@ Lesson: [Bench lab 9: Bring up the Nucleo-U5](https://jouhis.github.io/embedded-
 
 ## Build and flash
 
-1. Build the starter: `python tools/build.py projects/bench09-nucleo-u5-bringup/starter`. The build writes `build/blink.elf` and `build/blink.bin`. There is no Wokwi stage: Wokwi has no STM32U5 model.
-2. Plug the board in. A USB drive appears (the ST-LINK's mass storage), and a new serial port (the VCP). Copy `blink.bin` onto the drive. The ST-LINK's COM LED flickers while it programs the flash, the drive reconnects, and the chip runs the new program. STM32CubeProgrammer or OpenOCD over SWD do the same job if you prefer a tool.
-3. Open the Serial Monitor on the VCP at 115200 baud. With the starter: no LED, no text. The program runs, but every write goes to a port with no clock, a pin in analog mode, or a USART at the wrong speed.
+1. Build the starter with `python tools/build.py projects/bench09-nucleo-u5-bringup/starter`, which writes `build/blink.elf` and `build/blink.bin`. There is no Wokwi stage, because Wokwi has no STM32U5 model.
+2. Plug the board in, after which a USB drive (the ST-LINK's mass storage) and a new serial port (the VCP) appear. Copy `blink.bin` onto the drive: the ST-LINK's COM LED flickers while it programs the flash, the drive reconnects, and the chip runs the new program. STM32CubeProgrammer or OpenOCD over SWD do the same job if you prefer a tool.
+3. Open the Serial Monitor on the VCP at 115200 baud. The starter gives no LED and no text, because although the program runs, every write goes to a port with no clock, a pin in analog mode or a USART at the wrong speed.
 
 ## Files you work on
 

@@ -6,11 +6,13 @@ Lesson: [Static analysis](https://jouhis.github.io/embedded-course/lessons/0083-
 
 ## Try it on the starter
 
-1. Open `projects/0083-static-analysis/starter` in VS Code. Read `src/analysis.c` once, without fixing anything. The file has five planted defects, marked with comments.
-2. In Git Bash, run the GCC flags on the file. This uses the Arm compiler from the lesson 1 setup, with the same flags as the host:  `cd projects/0083-static-analysis/starter`  `"/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-gcc.exe" -std=c11 -O2 -mcpu=cortex-m3 -mthumb -Wall -Wextra -Wshadow -Wconversion -Wdouble-promotion -Wformat=2 -Wcast-align -Wimplicit-fallthrough -c src/analysis.c -o /dev/null`  You should see four warning lines, the same ones printed above. The command ends without an error, because warnings do not stop the compile.
-3. Run cppcheck: `"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet src/analysis.c`. You should see seven lines, three of them marked *error* or *warning* and the rest *style*. The exit code is 0 even though the findings are there, so read the output rather than the exit code.
-4. Your task: fix each defect so the tests pass. Start with the warnings, then the cppcheck findings. Use the solution as a check only after you have tried. Then run `python -I tools/build.py projects/0083-static-analysis/starter --test`. Before your fixes the summary reads *6 Tests 2 Failures 0 Ignored*. You will know you are done when it reads *6 Tests 0 Failures 0 Ignored*, and the GCC command prints no warnings.
-5. When the starter is clean, run the same cppcheck command again. It should print nothing. Then say which of the five defects the tests alone would have missed, and why.
+1. Open `projects/0083-static-analysis/starter` in VS Code and read `src/analysis.c` once without fixing anything, the file holding five planted defects marked with comments.
+2. In Git Bash, run the GCC flags on the file with the Arm compiler from the lesson 1 setup and the same flags as the host:  `cd projects/0083-static-analysis/starter`  `"/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-gcc.exe" -std=c11 -O2 -mcpu=cortex-m3 -mthumb -Wall -Wextra -Wshadow -Wconversion -Wdouble-promotion -Wformat=2 -Wcast-align -Wimplicit-fallthrough -c src/analysis.c -o /dev/null`  and you should see the four warning lines printed above, the command ending without an error, because warnings do not stop the compile.
+3. Run cppcheck with `"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet src/analysis.c`, which should print seven lines, three marked *error* or *warning* and the rest *style*, with an exit code of 0 despite the findings, so read the output rather than the exit code.
+4. Fix each defect so that the tests pass, starting with the warnings and then the cppcheck findings, consulting the solution only after trying, and run `python -I tools/build.py projects/0083-static-analysis/starter --test`. Before your fixes the summary reads *6 Tests 2 Failures 0 Ignored*, and you are done when it reads *6 Tests 0 Failures 0 Ignored* and the GCC command prints no warnings.
+5. With the starter clean, run the same cppcheck command again, which should print nothing, and say which of the five defects the tests alone would have missed, and why.
+
+The reference solution in `projects/0083-static-analysis/solution` has nine tests rather than six, adding the three the starter lacks, and its tests pass with *9 Tests 0 Failures 0 Ignored* and *OK*, so try first and compare afterwards.
 
 ## Files you work on
 
@@ -22,7 +24,7 @@ Lesson: [Static analysis](https://jouhis.github.io/embedded-course/lessons/0083-
 <details>
 <summary>Hint</summary>
 
-Each defect is a single line, or two lines in the case of the fall-through. The fallthrough needs a `break` or a `return` in the case. The uninitialised variable needs a value before the first use. The buffer defect is an array with three elements that is written at index 3, so declare it with four, and make sure the output loop copies all four bytes. The shadowed total needs the inner declaration removed.
+Each defect is a single line, or two lines for the fall-through, which needs a `break` or a `return` in the case. The uninitialised variable needs a value before its first use, the buffer defect is a three-element array written at index 3, so declare it with four and make sure the output loop copies all four bytes, and the shadowed total needs its inner declaration removed.
 
 </details>
 

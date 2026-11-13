@@ -6,13 +6,13 @@ Lesson: [GPIO output](https://jouhis.github.io/embedded-course/lessons/0051-gpio
 
 ## Try it in Wokwi
 
-The project is `projects/0051-gpio-output`. Four LEDs are wired from GP2 to GP5, each through a 220 Ω resistor to ground. The counter counts from 0 to 15, with bit 0 on GP2 and bit 3 on GP5.
+The project is `projects/0051-gpio-output`, with four LEDs wired from GP2 to GP5, each through a 220 Ω resistor to ground. The counter runs from 0 to 15, with bit 0 on GP2 and bit 3 on GP5.
 
 1. Open `projects/0051-gpio-output/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, but no LED lights.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `count = 0`, `count = 1` and so on, but the LEDs stay dark.
-4. Your task, in the two places marked `TODO(learner)`. First, make the four pins outputs: call `gpio_init_mask(LED_MASK)`, then `gpio_set_dir_out_masked(LED_MASK)`. Second, show the counter on them with one `gpio_put_masked()` call, shifted and masked. Use the worked example above as a guide.
-5. Build and start the simulator again. You will know it works when the serial monitor prints `BINARY COUNTER OK` at startup, and the LEDs count in binary once a second. Count 1 lights only GP2, count 2 lights only GP3, and count 15 lights all four.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, but no LED lights.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `count = 0`, `count = 1` and so on, while the LEDs stay dark.
+4. Complete the two places marked `TODO(learner)`. First make the four pins outputs by calling `gpio_init_mask(LED_MASK)` and then `gpio_set_dir_out_masked(LED_MASK)`, and then show the counter on them with one shifted and masked `gpio_put_masked()` call, using the worked example as a guide.
+5. Build and start the simulator again. The program works when the serial monitor prints `BINARY COUNTER OK` at startup and the LEDs count in binary once a second, count 1 lighting only GP2, count 2 only GP3 and count 15 all four.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `BINARY COUNTER OK`.
 <details>
 <summary>Hint for the shift and mask</summary>
 
-Bit 0 of `count` must go to GP2, so shift `count` left by `LED_FIRST_PIN`. `LED_MASK` is `0x3C`, which is bits 2 to 5. Anything the shift moves outside that range must not reach the pins, so AND the shifted value with the mask.
+Bit 0 of `count` must go to GP2, so shift `count` left by `LED_FIRST_PIN`. `LED_MASK` is `0x3C`, bits 2 to 5, and anything the shift moves outside that range must not reach the pins, so AND the shifted value with the mask.
 
 </details>
 
 <details>
 <summary>Hint for the direction</summary>
 
-`gpio_init_mask()` handles all four pins at once and leaves them as inputs. The second call, `gpio_set_dir_out_masked()`, makes the same four pins outputs. Each call is one store to the SIO.
+`gpio_init_mask()` handles all four pins at once and leaves them as inputs, and the second call, `gpio_set_dir_out_masked()`, makes the same four pins outputs, each call being one store to the SIO.
 
 </details>
 

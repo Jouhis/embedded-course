@@ -6,15 +6,13 @@ Lesson: [Zephyr setup: west, the toolchain, and a first app on the Pico](https:/
 
 ## Try it in Wokwi
 
-Zephyr runs on the Pico in Wokwi like any other firmware. The first step is to see the blink work. In the starter, the period is a named constant set to 500 ms, and there are three `TODO(learner)` comments in `src/main.c`. The solution uses 250 ms and prints each toggle.
+Zephyr runs on the Pico in Wokwi like any other firmware, and the first step is to see the blink work. In the starter the period is a named constant set to 500 ms, with three `TODO(learner)` comments in `src/main.c`, while the solution uses 250 ms and prints each toggle.
 
 1. Open `projects/0094-zephyr-setup/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The task calls `tools/build.py`, which calls `west build`. The build should finish with no errors, and it creates `build/zephyr/zephyr.elf`.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-4. Make the three changes. Change `BLINK_PERIOD_MS` from 500 to 250, print the line `ZEPHYR SETUP OK` once before the loop, and add the toggle counter. The counter is incremented after `gpio_pin_toggle_dt()`, and the message is `toggle N at X ms`, where N is the counter and X is `k_uptime_get()`.
-5. Build again and simulate. The serial monitor should first show `ZEPHYR SETUP OK`, then lines of the form `toggle 1 at ... ms`, one every 250 ms, and the LED should blink twice as fast as before.
-
-Wokwi is a digital simulator, and the Zephyr template runs in it through the same ELF file that the build produces. The simulator token is not set in this workspace, so the course could confirm the build, the ELF and the diagram lint, but not a live simulation run. If the serial monitor shows nothing, check that the build finished and that `build/zephyr/zephyr.elf` exists, then start the simulator again.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, the task calling `tools/build.py`, which calls `west build`, so the build should finish without errors and create `build/zephyr/zephyr.elf`.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+4. Make the three changes, changing `BLINK_PERIOD_MS` from 500 to 250, printing the line `ZEPHYR SETUP OK` once before the loop and adding the toggle counter, incremented after `gpio_pin_toggle_dt()` with the message `toggle N at X ms`, where N is the counter and X is `k_uptime_get()`.
+5. Build again and simulate, and the serial monitor should first show `ZEPHYR SETUP OK` and then lines of the form `toggle 1 at ... ms`, one every 250 ms, with the LED blinking twice as fast as before.
 
 ## Files you work on
 

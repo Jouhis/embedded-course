@@ -6,12 +6,14 @@ Lesson: [Capstone 2: layered architecture, tasks, and the pin map](https://jouhi
 
 ## Try it: the skeleton
 
-The skeleton is the architecture with empty modules. It builds, it wires the parts in the diagram, and it prints the banner. The later lessons fill it in: the drivers in lesson 115, the outputs and buttons in lesson 116, and the RTOS tasks in lesson 117.
+The skeleton is the architecture with empty modules, which builds, wires the parts in the diagram and prints the banner, the later lessons filling it in, the drivers in lesson 115, the outputs and buttons in lesson 116 and the RTOS tasks in lesson 117.
 
 1. Open `projects/0114-dryer-skeleton/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run `python -I tools/build.py projects/0114-dryer-skeleton/starter` from the workspace root. Expect no errors. The build finishes by writing an ELF file in the project's `build` folder, which the simulator loads.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. Open `diagram.json` and check the wiring against the pin table: the NTC output on PA0, the heater LED through a resistor on PA6, the fan through a resistor on PB0, the two buttons on PB12 and PB13, and the OLED on PB6 and PB7.
-4. Your task: in `main.c`, replace the `TODO(learner)` comment with a call to `materials_get(0)` that keeps the result in a variable, then the line `hal_log("DRYER SKELETON OK");`. Expect the serial monitor to show `DRYER SKELETON OK` on its own line, once, with no garbage characters. If you see garbage, read mistake 4 above.
+2. Build by pressing <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or by running `python -I tools/build.py projects/0114-dryer-skeleton/starter` from the workspace root, expecting no errors, the build finishing by writing an ELF file in the project's `build` folder, which the simulator loads.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, open `diagram.json` and check the wiring against the pin table, the NTC output on PA0, the heater LED through a resistor on PA6, the fan through a resistor on PB0, the two buttons on PB12 and PB13 and the OLED on PB6 and PB7.
+4. In `main.c`, replace the `TODO(learner)` comment with a call to `materials_get(0)` that keeps the result in a variable, followed by the line `hal_log("DRYER SKELETON OK");`, after which the serial monitor should show `DRYER SKELETON OK` on its own line, once, with no garbage characters, and if you see garbage, read the mistake about a garbled serial log below.
+
+The reference solution, to compare with after trying first, is in `projects/0114-dryer-skeleton/solution`.
 
 ## Files you work on
 

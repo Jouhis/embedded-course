@@ -6,16 +6,16 @@ Lesson: [Robustness](https://jouhis.github.io/embedded-course/lessons/0084-robus
 
 ## Try it on the Blue Pill
 
-1. Open `projects/0084-robustness/starter` in VS Code and build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build passes, with one warning, `'uart_put_hex32' defined but not used`. Your code will use that function, so the warning goes away when you do.
-2. Read `main.c`. The program prints *boot: triggering a fault*, and then calls `trigger_unaligned_load()`. That function sets `UNALIGN_TRP`, then does a word load from the odd address `0x20000001`.
-3. Your task: write `hard_fault_report()` so it prints *HardFault PC=* followed by the value of `frame[6]`, then loops forever. The comment marked TODO(learner) has the four steps.
-4. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Your handler should print the line *HardFault PC=0x* followed by eight hex digits. **In the simulator this line does not appear.** Wokwi's STM32 core does not raise fault exceptions: the unaligned load simply runs and the program carries on, so no handler is called, yours or the solution's. The simulator can still check that your code builds. Then go to the decode steps below, which run on your PC without the simulator. On a real Blue Pill the line appears.
+1. Open `projects/0084-robustness/starter` in VS Code and build it with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, which passes with one warning, `'uart_put_hex32' defined but not used`, a function your code will use, so the warning disappears once you do.
+2. Read `main.c`, in which the program prints *boot: triggering a fault* and then calls `trigger_unaligned_load()`, which sets `UNALIGN_TRP` and does a word load from the odd address `0x20000001`.
+3. Write `hard_fault_report()` so that it prints *HardFault PC=* followed by the value of `frame[6]` and then loops forever, following the four steps in the comment marked TODO(learner).
+4. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, where your handler would print *HardFault PC=0x* followed by eight hex digits, but **in the simulator this line does not appear**, because Wokwi's STM32 core raises no fault exceptions, so the unaligned load simply runs and the program carries on without calling any handler, yours or the solution's. The simulator still checks that your code builds, the decode steps below run on your PC without it, and on a real Blue Pill the line appears.
 
 Why the simulator shows nothing: probing Wokwi's STM32 core found that it raises no fault exceptions. An unaligned load with `UNALIGN_TRP` set, a `udf` instruction, a divide by zero with `DIV_0_TRP` set, and loads from unmapped addresses all run without a fault, and a call to an even (non-Thumb) address resets the chip instead. Exceptions as such do work there (an `svc` reaches `SVC_Handler`). So a fault handler can only be tested on a real board. The decode steps below work on the solution's `.elf` without one.
 
-Decode the address with addr2line
+Decoding the address with objdump and addr2line
 
-The solution's faulting load is the instruction at `0x08000262`. You can find it yourself with objdump, from Git Bash, after building the solution. The command below prints the function and the instructions that follow its label. The real output of the build is shown:
+The solution's faulting load is the instruction at `0x08000262`, which you can find yourself with objdump from Git Bash after building the solution, the command below printing the function and the instructions following its label, with the real output of the build.
 
 ```armasm
 "/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-objdump.exe" -d build/blink.elf | grep -A7 "<trigger_unaligned_load>:"
@@ -29,9 +29,9 @@ The solution's faulting load is the instruction at `0x08000262`. You can find it
  8000266:	4770      	bx	lr
 ```
 
-Read the listing as the steps above. The `ldr r2` loads the SCB base address from a literal pool, the `ldr` and `str` at offset 20 read and write the CCR, and `orr.w ... #8` sets bit 3. Then `mov.w r3, #536870912` loads 0x20000000, the start of RAM, and `ldr.w r3, [r3, #1]` at 0x08000262 reads the word at 0x20000001. That load is the fault.
+The listing follows the steps above, the `ldr r2` loading the SCB base address from a literal pool, the `ldr` and `str` at offset 20 reading and writing the CCR and `orr.w ... #8` setting bit 3. Then `mov.w r3, #536870912` loads 0x20000000, the start of RAM, and `ldr.w r3, [r3, #1]` at 0x08000262 reads the word at 0x20000001, the load that faults.
 
-Now decode the address itself. Your build puts the `.elf` in `build/`. Run this from the solution folder:
+The address itself is decoded from the `.elf` that your build puts in `build/`, with the following command run from the solution folder.
 
 ```plaintext
 "/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-addr2line.exe" -e build/blink.elf -f -C -i 0x08000262
@@ -39,11 +39,11 @@ trigger_unaligned_load
 C:/Users/juhos/embedded-course/projects/0084-robustness/solution/main.c:90
 ```
 
-The output names the function, `trigger_unaligned_load`, and the source line, 90. Line 90 is `(void)*p;`, the faulting read. Line 89 is the declaration of the pointer `p`, which does not run a load, so the line that faults is the one below it. These two lines are the real output of the solution's build on this machine. On a real board, the PC that your handler prints should be the same address as the faulting instruction you found with objdump. That is the check to make before you trust the decode.
-
-The same method works on a field log. A crash log prints *HardFault PC=0x* and an address, and you run addr2line on the matching `.elf` from that exact build. A different build has a different `.elf`, so keep the `.elf` for every release.
+The output names the function, `trigger_unaligned_load`, and the source line, 90, which is `(void)*p;`, the faulting read, while line 89 declares the pointer `p` without running a load, so the faulting line is the one below it. These two lines are the real output of the solution's build on this machine, and on a real board the PC your handler prints should equal the address of the faulting instruction found with objdump, the check to make before trusting the decode.
 
 Check the mapping before you trust it. The map file (`blink.map`, lesson 41) shows where each function sits, and objdump shows the instruction. Two sources agreeing is the evidence you want in a fault report.
+
+The same method works on a field log, a crash log printing *HardFault PC=0x* and an address on which addr2line is run with the matching `.elf` from that exact build, and since a different build has a different `.elf`, the `.elf` of every release must be kept.
 
 ## Files you work on
 
@@ -58,7 +58,7 @@ This project is not checked in the simulator (Wokwi's STM32 core raises no fault
 <details>
 <summary>Hint</summary>
 
-Use `uart_puts` for the label and `uart_put_hex32(frame[6])` for the value. Do not use `printf` in a fault handler: it may depend on state the fault has left broken, such as a heap or a lock that the fault interrupted.
+Use `uart_puts` for the label and `uart_put_hex32(frame[6])` for the value, and avoid `printf` in a fault handler, since it may depend on state the fault left broken, such as a heap or a lock that the fault interrupted.
 
 </details>
 

@@ -6,15 +6,13 @@ Lesson: [RS-485 and Modbus RTU](https://jouhis.github.io/embedded-course/lessons
 
 ## Try it on the Pico, through the simulated serial port
 
-The firmware is in `projects/0101-modbus-rtu-slave`. It uses the same `modbus.c` and `crc16.c`, copied from the host project. The Pico reads frames from UART0 on GP0 and GP1. Its register map is holding register 0 (a counter, +1 each second), register 1 (the LED, bit 0) and register 2 (a sensor value of 2250, which is 22.50 °C in hundredths).
+The firmware is in `projects/0101-modbus-rtu-slave` and uses the same `modbus.c` and `crc16.c`, copied from the host project, the Pico reading frames from UART0 on GP0 and GP1 with a register map of holding register 0, a counter rising by 1 each second, register 1, the LED in bit 0, and register 2, a sensor value of 2250, 22.50 °C in hundredths.
 
-1. Open `projects/0101-modbus-rtu-slave/starter` in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter builds, but it does not answer yet.
-2. In `main.c`, write the frame-end test where the `TODO(learner)` comment is: when the line has been silent for `FRAME_SILENCE_US` and `rx_len` is not zero, call `modbus_process()`, send any reply with `uart_write_blocking()`, and reset `rx_len`.
-3. Build again, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor shows `MODBUS SLAVE READY`. The simulator forwards UART0 on TCP port 4000 (`rfc2217ServerPort = 4000` in `wokwi.toml`).
-4. In a terminal, install pyserial yourself with `pip install pyserial`. Then, from the project folder, run `python master_modbus.py read 0 3`. You will know it works when the master prints three values, with the counter in the first one, and `2250` in the third.
-5. Write the LED register: `python master_modbus.py write 1 1` should print `echo ok`, and the LED on the Pico turns on.
-
-We did not run the simulator for this lesson, because the workspace has no `WOKWI_CLI_TOKEN`. The host tests and the firmware build were run. The RFC 2217 link, and whether the simulated UART0 answers the master, are the parts to confirm in VS Code. If the master gets no reply, check that the simulator tab is visible, because the docs say the simulation may pause without it.
+1. Open `projects/0101-modbus-rtu-slave/starter` in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, the starter building without answering yet.
+2. In `main.c`, write the frame-end test where the `TODO(learner)` comment is, calling `modbus_process()` when the line has been silent for `FRAME_SILENCE_US` and `rx_len` is not zero, sending any reply with `uart_write_blocking()` and resetting `rx_len`.
+3. Build again and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, the serial monitor showing `MODBUS SLAVE READY` while the simulator forwards UART0 on TCP port 4000 (`rfc2217ServerPort = 4000` in `wokwi.toml`).
+4. In a terminal, install pyserial yourself with `pip install pyserial` and run `python master_modbus.py read 0 3` from the project folder, which has worked when the master prints three values, the counter in the first and `2250` in the third.
+5. Write the LED register with `python master_modbus.py write 1 1`, which should print `echo ok` and turn on the LED on the Pico.
 
 ## Files you work on
 

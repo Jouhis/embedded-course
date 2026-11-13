@@ -6,12 +6,16 @@ Lesson: [Bench lab 15: Measure your deadlines](https://jouhis.github.io/embedded
 
 ## On the board: capture the starter
 
-1. Connect analyzer D0 to PA6, D1 to PA7, D2 to PC8, D3 to PC6, and GND to GND.
-2. Build `projects/bench15-measure-deadlines/starter` and copy `build/deadlines.bin` to the ST-LINK drive. Open the VCP: one `BENCH15 idle: ...` line per second, with misses and runs for each task.
-3. Capture 200 ms at 1 MS/s. Find a logger run (D2 high for about 8 ms). Measure the sensor's high time when a logger run starts just before it.
+1. Connect analyzer D0 to PA6, D1 to PA7, D2 to PC8, D3 to PC6 and GND to GND.
+2. Build `projects/bench15-measure-deadlines/starter`, copy `build/deadlines.bin` to the ST-LINK drive and open the VCP, which prints one `BENCH15 idle: ...` line per second with the misses and runs for each task.
+3. Capture 200 ms at 1 MS/s, find a logger run (D2 high for about 8 ms) and measure the sensor's high time when a logger run starts just before it.
 4. Hold B1 and capture again. The VCP switches to `LOAD`, and the sensor's miss count starts to climb.
 
-The starter's priorities are "by importance": control 4, logger 3, sensor 2. Work out the sensor's worst-case response time with the response-time equation (lesson 93 introduced response-time analysis): its own work, plus each higher-priority task's work for every release that falls inside the window.
+The starter's priorities go by importance, control 4, logger 3 and sensor 2. Before reading the capture, predict whether the sensor can meet its 20 ms deadline under load, then work out its worst-case response time with the response-time equation that lesson 93 introduced,
+
+R = C + Σj ⌈R ÷ Tj⌉ × Cj(1)
+
+where R is the task's response time, C its own work, and the sum runs over each higher-priority task j with period Tj and work Cj, counting every release that falls inside the window, iterated until R stops changing.
 
 - Without load: R = 4 + 8 + ⌈R/5⌉ × 1. Start with R = 12: 12 + ⌈12/5⌉ = 15; 4 + 8 + ⌈15/5⌉ = 15. **R = 15 ms ≤ 20 ms**: met.
 - With load: R = 4 + 16 + ⌈R/5⌉ × 1. Start with R = 20: 20 + 4 = 24; 20 + ⌈24/5⌉ = 25; 20 + 5 = 25. **R = 25 ms > 20 ms**: missed.

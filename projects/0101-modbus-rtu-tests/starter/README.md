@@ -6,12 +6,12 @@ Lesson: [RS-485 and Modbus RTU](https://jouhis.github.io/embedded-course/lessons
 
 ## Try it: the host tests first
 
-The frame handler is plain C with no hardware, so you test it on the PC before the board. The project is `projects/0101-modbus-rtu-tests`. Its starter has the same nine tests as the solution, and six of them fail, because the CRC loop and the function handlers are still marked `TODO(learner)`.
+The frame handler is plain C without hardware, so it is tested on the PC before the board, in the project `projects/0101-modbus-rtu-tests`, whose starter has the same nine tests as the solution, six of them failing, because the CRC loop and the function handlers are still marked `TODO(learner)`.
 
-1. From the workspace root, run `python -I tools/build.py projects/0101-modbus-rtu-tests/starter --test`. The output ends with `9 Tests 6 Failures 0 Ignored`, and `0% tests passed`.
-2. Open `src/crc16.c` and write the inner loop of `crc16_modbus()`. The CRC check-value test is one of the first to pass, because it only needs the CRC loop. Run the command again.
-3. Open `src/modbus.c` and handle functions 03 and 06 where the `TODO(learner)` comment is. Use `finish_frame()` for the CRC and `exception_response()` for every error.
-4. You will know it works when the output ends with `9 Tests 0 Failures 0 Ignored`, and ctest reports `100% tests passed`.
+1. From the workspace root, run `python -I tools/build.py projects/0101-modbus-rtu-tests/starter --test`, whose output ends with `9 Tests 6 Failures 0 Ignored` and `0% tests passed`.
+2. Open `src/crc16.c`, write the inner loop of `crc16_modbus()` and run the command again, the CRC check-value test being one of the first to pass, because it needs only the CRC loop.
+3. Open `src/modbus.c` and handle functions 03 and 06 where the `TODO(learner)` comment is, using `finish_frame()` for the CRC and `exception_response()` for every error.
+4. The changes have worked when the output ends with `9 Tests 0 Failures 0 Ignored` and ctest reports `100% tests passed`.
 
 ## Files you work on
 

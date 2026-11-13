@@ -6,11 +6,11 @@ Lesson: [Bus architecture: AHB, APB, and the bus matrix](https://jouhis.github.i
 
 ## Try it in Wokwi
 
-The project `projects/0037-bus-architecture` is a single demo. It prints the base address of each bus region and of two blocks on them, then sets the GPIOC clock enable and prints the RCC register.
+The project `projects/0037-bus-architecture` is a single demo that prints the base address of each bus region and of two blocks on them, then sets the GPIOC clock enable and prints the RCC register.
 
 1. Open `projects/0037-bus-architecture` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Before you read the output, work out which bus `GPIOC base` and `RCC base` belong to, using the header addresses above. The output should print `GPIOC base: 0x40011000` (APB2) and `RCC base: 0x40021000` (AHB).
-3. Check the `APB2ENR` line. It reads the register after three bits were set in this order: IOPAEN, USART1EN, then IOPCEN. On a real board the value is `0x00004014`. The simulator prints `0x00000000` for this line, as the last recorded run shows. That is a simulator limit, not a code error. Treat the header bits as the expected value.
+2. Before reading the output, work out from the header addresses above which bus `GPIOC base` and `RCC base` belong to. The output should print `GPIOC base: 0x40011000` (APB2) and `RCC base: 0x40021000` (AHB).
+3. Check the `APB2ENR` line, which reads the register after IOPAEN, USART1EN and IOPCEN have been set in that order. On a real board the value is `0x00004014`, but the simulator prints `0x00000000`, as the last recorded run shows. This is a simulator limit rather than a code error, so treat the header bits as the expected value.
 
 ## Done when
 
@@ -21,6 +21,6 @@ The serial monitor prints `RCC base:   0x40021000`.
 <details>
 <summary>Hint</summary>
 
-The bus region is the address with the offset removed. GPIOC base is `0x40011000`, which is in the APB2 region that starts at `0x40010000`. Bit 4 is the value `0x10`. The three bits are 0x4, 0x10 and 0x4000, which add to 0x4014.
+The bus region is the address with the offset removed: GPIOC base, `0x40011000`, lies in the APB2 region starting at `0x40010000`. Bit 4 is the value `0x10`, and the three bits 0x4, 0x10 and 0x4000 add up to 0x4014.
 
 </details>

@@ -12,55 +12,48 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Driver design and hardware abstraction layers</h1>
-  <p class="subtitle">A good driver hides the chip from the code that uses it. Then the same logic runs on two boards, and on your PC, without changes. This lesson shows where to draw that line, and it critiques the HAL from Lab 4.</p>
+  <p class="subtitle">Interfaces that separate product logic from the chip</p>
 
   <div class="goal">
     By the end of this lesson you can split an LED into an interface and two backends, choose one backend at link time, and name three weaknesses of a HAL header with the change that fixes each one.
   </div>
 
-  <h2>Why the seam matters for a beginner</h2>
+  <h2>The boundary between product logic and hardware</h2>
   <p>
-    Before this lesson, every program you have written in the course touched the chip directly. A blink calls <code>gpio_put()</code> from <code>main()</code>, and that is fine for one LED. It stops being fine when a second person needs the same LED on a different board, or when the logic has to run on a PC where no pin exists. The code that decides <em>when</em> the LED should be on is the same code in both cases. Only the code that decides <em>how</em> it is driven differs. A layer boundary separates those two kinds of code.
+    Every program in the course so far has touched the chip directly, a blink calling <code>gpio_put()</code> from <code>main()</code>, which is fine for one LED but stops being fine when a second person needs the same LED on a different board or the logic must run on a PC with no pin at all. The code deciding <em>when</em> the LED should be on is the same in both cases, and only the code deciding <em>how</em> it is driven differs, so a layer boundary separates the two kinds of code.
   </p>
   <p>
-    Earlier lessons put an LED on a pin with the SDK, and lesson 52 read a button the same way. Those lessons were about the hardware. This one is about the code that sits between the hardware and the product, which is where most firmware is written.
-  </p>
-
-  <h2>Concepts, one at a time</h2>
-  <h3>Header and source file</h3>
-  <p>
-    A C compiler works on one <strong>translation unit</strong> at a time: one <code>.c</code> file, with every header it includes pasted in. The result is an object file. The <strong>linker</strong> then joins the object files and resolves every name that one file uses and another defines. A <strong>symbol</strong> is that name, such as <code>led_set</code>, as the linker sees it. The header declares which symbols exist and what they take, and every file that includes it is checked against that declaration. The source file gives the definitions.
-  </p>
-  <p>
-    This split has a consequence that the rest of the lesson uses. If <code>main.c</code> includes only <code>led.h</code>, then <code>main.c</code> compiles without knowing which pin is used. The compiler never needs the pin number. Only the linker needs to know which definition of <code>led_set</code> to use.
+    Earlier lessons put an LED on a pin with the SDK, and lesson 52 read a button the same way, both concerned with the hardware. This lesson concerns the code between the hardware and the product, which is where most firmware is written.
   </p>
 
-  <h3>A call, at the level of the CPU</h3>
+  <h2>Header files, source files and the linker</h2>
   <p>
-    When <code>main.c</code> calls <code>led_set(true)</code>, the CPU core does what it does for any call. It saves the return address in the link register (LR), jumps to the function, and returns when the function finishes. Lesson 33 covers the stack frame that goes with the call. What matters here is the jump. A direct call names the target address in the instruction, so the linker can fill it in once. A call through a function pointer loads the address from memory first, then jumps to whatever it holds. That is one more memory access, and the compiler cannot see the target, so it cannot inline the body. Keep that difference in mind when you read the two designs below.
+    A C compiler works on one <strong>translation unit</strong> at a time, a single <code>.c</code> file with every header it includes pasted in, producing an object file, and the <strong>linker</strong> then joins the object files and resolves every name that one file uses and another defines. A <strong>symbol</strong> is such a name, like <code>led_set</code>, as the linker sees it, and the header declares which symbols exist and what they take, every file that includes it being checked against the declaration, while the source file provides the definitions.
+  </p>
+  <p>
+    The rest of the lesson relies on a consequence of this split: if <code>main.c</code> includes only <code>led.h</code>, it compiles without knowing which pin is used, the compiler never needing the pin number, and only the linker needs to know which definition of <code>led_set</code> to use.
   </p>
 
-  <h3>Opaque handle</h3>
+  <h2>Direct calls and calls through a pointer</h2>
   <p>
-    An <strong>opaque handle</strong> is a pointer to a struct whose fields the caller cannot read, because the struct is defined only in the source file. The header says <code>typedef struct hal hal_t;</code> and nothing more. The caller can hold a <code>hal_t *</code> and pass it back to the driver, but it cannot write <code>h-&gt;count</code>, because the compiler does not know that field exists. The benefit is that the state can change without every caller being rebuilt, and that a caller cannot corrupt the state by accident.
+    When <code>main.c</code> calls <code>led_set(true)</code>, the CPU core does what it does for any call, saving the return address in the link register (LR), jumping to the function and returning when it finishes, with the stack frame that lesson 33 describes. What matters here is the jump. A direct call names the target address in the instruction, so the linker fills it in once, whereas a call through a function pointer first loads the address from memory and then jumps to whatever it holds, which costs one more memory access and hides the target from the compiler, so it cannot inline the body, a difference that matters for the two designs below.
   </p>
 
-  <h3>Status return</h3>
+  <h2>Opaque handles and status returns</h2>
   <p>
-    A function that can fail returns a status code, and the real result, if any, goes out through a pointer argument. The caller writes <code>if (hal_init(&amp;h, &amp;cfg) != HAL_OK)</code>. A <code>void</code> function cannot report anything, so the only way to learn of a failure is a side effect such as a log line, which the application may not read. Lesson 84 covers what to do after a failure.
+    An <strong>opaque handle</strong> is a pointer to a struct whose fields the caller cannot read, because the struct is defined only in the source file while the header says no more than <code>typedef struct hal hal_t;</code>. The caller can hold a <code>hal_t *</code> and pass it back to the driver, but cannot write <code>h-&gt;count</code>, because the compiler does not know the field exists, so the state can change without every caller being rebuilt and no caller can corrupt it by accident.
+  </p>
+  <p>
+    A function that can fail returns a status code and passes any real result out through a pointer argument, so the caller writes <code>if (hal_init(&amp;h, &amp;cfg) != HAL_OK)</code>. A <code>void</code> function cannot report anything, leaving a side effect such as a log line, which the application may not read, as the only sign of a failure, and lesson 84 covers what to do after one.
   </p>
 
-  <h2>The idea: layers and one direction</h2>
+  <h2>Firmware layers and the dependency direction</h2>
   <p>
-    Firmware has layers. The top is the <strong>application</strong>, which says what the product does. Below it are <strong>services</strong>, which are reusable logic such as a filter, a menu or a protocol. Below those are <strong>drivers</strong>, which run one device, such as a sensor or a display. At the bottom is the <strong>HAL</strong> (hardware abstraction layer), or board support package, which talks to the chip and the board through the vendor SDK or the registers. The chip itself is the last layer.
+    Firmware has layers: the <strong>application</strong> at the top, saying what the product does, <strong>services</strong> below it, reusable logic such as a filter, a menu or a protocol, then <strong>drivers</strong>, each running one device such as a sensor or a display, and at the bottom the <strong>HAL</strong> (hardware abstraction layer), or board support package, which talks to the chip and the board through the vendor SDK or the registers, above the chip itself.
     <span class="sidenote">Elecia White's book is a practical overview of the profession, and its chapters on architecture cover this layering. <a href="https://www.oreilly.com/library/view/making-embedded-systems/9781098151539/" target="_blank" rel="noopener">Making Embedded Systems, 2nd ed. (O'Reilly)</a></span>
   </p>
-
-  <div class="analogy">
-    <p>A driver interface is a wall socket. Any appliance with the right plug works in any socket, and the appliance does not care whether the power behind the wall comes from a hydro plant or a wind farm. The header is the socket shape; <code>led_gpio.c</code> and <code>led_fake.c</code> are two power plants behind it, and the application is the appliance.</p>
-  </div>
   <p>
-    The rule that makes the layers useful is the <strong>dependency direction</strong>. An upper layer includes the header of the layer below it. A lower layer never includes anything above it. So the application can be tested on a PC with a fake HAL, and the HAL can be replaced for a new board without touching the application.
+    The rule that makes the layers useful is the <strong>dependency direction</strong>, an upper layer including the header of the layer below and a lower layer never including anything above it, so the application can be tested on a PC with a fake HAL and the HAL replaced for a new board without touching the application.
   </p>
 
   <figure>
@@ -93,12 +86,16 @@
   </figure>
 
   <p>
-    A HAL is a seam, and the seam has two faces. For the application it is an interface: a header with function declarations and no pins. For the board it is an implementation: a file, or a set of files, that defines those functions with one SDK or one register map. Lab 4 used exactly this split (<a href="lab04-port-lab-3-to-the.html">Lab 4</a>), with <code>hal.h</code> on one side and a board file per board on the other.
+    A HAL is a seam with two faces, an interface for the application, a header of function declarations without pins, and an implementation for the board, one or more files defining those functions with one SDK or one register map. Lab 4 used exactly this split (<a href="lab04-port-lab-3-to-the.html">Lab 4</a>), with <code>hal.h</code> on one side and a board file per board on the other.
   </p>
+
+  <div class="analogy">
+    <p>A driver interface resembles a wall socket: any appliance with the right plug works in any socket without caring whether the power behind the wall comes from a hydro plant or a wind farm, the header being the socket shape, <code>led_gpio.c</code> and <code>led_fake.c</code> two power plants behind it and the application the appliance. The comparison breaks on timing, however, because every socket delivers the same mains, whereas two backends behind one header can differ in speed and in how they fail, which the interface must state.</p>
+  </div>
 
   <h2>Interface, handle and error return</h2>
   <p>
-    A driver interface follows three habits. First, the header names what the driver does, not how. Second, the object the caller works on is an <strong>opaque handle</strong>: a pointer to a struct whose fields are hidden in the implementation file, so the caller cannot reach into it. Third, every call that can fail returns a status, so the caller can check it. The next code block is the LED interface you will build in the hands-on task.
+    A driver interface follows three habits: the header names what the driver does rather than how, the object the caller works on is an <strong>opaque handle</strong> whose fields are hidden in the implementation file, and every call that can fail returns a status for the caller to check. The next code block is the LED interface built in the hands-on task.
   </p>
   <pre><code class="language-c">/* led.h: the whole interface. No pins, no SDK calls, no printf. */
 #ifndef LED_H
@@ -110,17 +107,14 @@ void led_set(bool on);      /* true lights the LED */
 bool led_get(void);         /* the level the driver last applied */
 #endif</code></pre>
   <p>
-    The LED interface has no handle, because there is only one LED in the program. A sensor with two instances needs one. The handle form is the same idea with a struct pointer as the first argument, and it is the pattern used by the HAL in the critique below.
+    The LED interface has no handle, because the program has only one LED, whereas a sensor with two instances needs one, the handle form being the same idea with a struct pointer as the first argument, the pattern of the HAL in the critique below.
     <span class="sidenote">C has no classes, so "opaque" is a convention: the header forward-declares the struct, and the .c file defines it. Lab 4 meets the same idea in the STM32 HAL's <code>UART_HandleTypeDef</code> (see the <a href="../reference/glossary.html#hal-handle">HAL handle</a> entry).</span>
   </p>
   <div class="note">Keep the return type honest. A <code>void</code> init hides a failed bus. Lesson 84 covers how to report and recover from such failures in the field.</div>
 
   <h2>Choosing a backend at link time</h2>
   <p>
-    The application needs an LED that works on the board, and a fake for a test or for a board that has no LED. Both backends define the same three functions. Only one of them is linked into the program. The build makes that choice, so the cost at run time is zero: the call goes straight to the chosen function. This is <strong>link-time substitution</strong>.
-  </p>
-  <p>
-    CMake makes the choice from a cache variable, and it compiles one source file into the program:
+    The application needs an LED that works on the board and a fake for a test or a board without an LED, both backends defining the same three functions while only one is linked into the program. The build makes that choice, so it costs nothing at run time, each call going straight to the chosen function, which is <strong>link-time substitution</strong>, and CMake makes the choice from a cache variable, compiling one source file into the program.
   </p>
   <pre><code class="language-cmake">set(LED_BACKEND "gpio" CACHE STRING "LED backend: gpio or fake")
 if(LED_BACKEND STREQUAL "gpio")
@@ -130,13 +124,13 @@ elseif(LED_BACKEND STREQUAL "fake")
 endif()
 add_executable(blink main.c ${LED_SOURCE})</code></pre>
   <p>
-    If you add both files, the linker stops with <em>multiple definition</em> errors, because two functions share one name. That error is useful: it proves that the program has one backend, and it tells you which name to look for.
+    Adding both files makes the linker stop with <em>multiple definition</em> errors, because two functions share one name, an error that is useful because it proves the program has one backend and names the function to look for.
     <span class="sidenote">The duplicate-symbol error is the linker enforcing the rule that each global name has one definition. Lesson 41 shows the link step that does this.</span>
   </p>
 
-  <h2>Ops tables: choosing at run time</h2>
+  <h2>Ops tables for run-time choice</h2>
   <p>
-    The other way is an <strong>ops table</strong>: a struct of function pointers, plus a context pointer that the functions receive. The caller picks the table at run time, and each call goes through one pointer. Function pointers are lesson 49's callbacks; here they form the whole interface.
+    The alternative is an <strong>ops table</strong>, a struct of function pointers plus a context pointer that the functions receive, the caller picking the table at run time and each call going through one pointer, so the callbacks of lesson 49 here form the whole interface.
   </p>
   <pre><code class="language-c">typedef struct {
     void (*init)(void *ctx);
@@ -152,26 +146,26 @@ static inline void led_set(led_t *l, bool on) {
     l-&gt;ops-&gt;set(l-&gt;ctx, on);            /* one indirect call: a load and a branch */
 }</code></pre>
   <p>
-    The ops table can change the backend while the program runs, it can hold two LEDs with two different backends, and a test can pass in a fake without relinking. Its costs are one indirect call on every use, a context pointer for every object, and the table itself in flash. Most firmware uses link-time choice for a single board, and an ops table when one program must drive several devices of the same kind.
+    An ops table can change the backend while the program runs, hold two LEDs with two different backends and accept a fake from a test without relinking, at the cost of one indirect call per use, a context pointer per object and the table itself in flash. Most firmware uses link-time choice for a single board and an ops table when one program must drive several devices of the same kind.
   </p>
 
   <div class="warning">An ops table is not free polymorphism. If the caller can be given any table, the compiler cannot inline the call, and a missing field in the table is a null-pointer crash found on the device. Check every entry at init, or fill every entry in a <code>static const</code> table so the compiler checks the count.</div>
 
-  <h2>Critique: the Lab 4 HAL header</h2>
+  <h2>A critique of the Lab 4 HAL header</h2>
   <p>
-    Lab 4's <code>hal.h</code> is a good first HAL. It has one interface, two board files, and logical pin levels that hide wiring. Read it again with a reviewer's eye, and five weaknesses show up.
+    Lab 4's <code>hal.h</code> is a good first HAL, with one interface, two board files and logical pin levels that hide the wiring, but a reviewer's reading finds five weaknesses.
   </p>
   <ol class="steps">
-    <li><strong>The I2C result is a bare integer.</strong> <code>hal_i2c_write()</code> returns 0 or -1. A sensor that does not answer (a NACK, from the bus) and a bus that times out look the same to the caller, although the fix for each is different. The address is the plain 7-bit value, which the name <code>addr7</code> records. Lab 4's hint explains that ST's HAL takes the address shifted left by one, so the unit in the name is what stops a mix-up.</li>
+    <li><strong>The I2C result is a bare integer.</strong> <code>hal_i2c_write()</code> returns 0 or -1, so a sensor that does not answer (a NACK from the bus) and a bus that times out look the same to the caller, although each needs a different fix. The address is the plain 7-bit value, as the name <code>addr7</code> records, and since Lab 4's hint explains that ST's HAL takes the address shifted left by one, the unit in the name is what prevents a mix-up.</li>
     <li><strong><code>hal_init()</code> returns <code>void</code>.</strong> A failed clock or bus start is invisible to the caller, so the application starts anyway.</li>
-    <li><strong>Unknown pins fail silently.</strong> <code>hal_gpio_read()</code> returns 0 for a pin it does not know, and a typo in the pin enum gives the same answer as a released button.</li>
-    <li><strong>Output and input pins share one enum.</strong> <code>hal_gpio_write(HAL_PIN_BTN_A, 1)</code> compiles. Split the enum into output and input pins so the compiler rejects the call.</li>
-    <li><strong>The state is global.</strong> Every function uses one board, with no context. Two I2C buses, or a host test with a fake board next to the real one, cannot coexist.</li>
+    <li><strong>Unknown pins fail silently.</strong> <code>hal_gpio_read()</code> returns 0 for a pin it does not know, so a typo in the pin enum gives the same answer as a released button.</li>
+    <li><strong>Output and input pins share one enum.</strong> <code>hal_gpio_write(HAL_PIN_BTN_A, 1)</code> compiles, whereas split enums for output and input pins would make the compiler reject the call.</li>
+    <li><strong>The state is global.</strong> Every function uses one board without context, so two I2C buses, or a host test with a fake board beside the real one, cannot coexist.</li>
   </ol>
 
-  <h3>The improved header</h3>
+  <h2>An improved HAL header</h2>
   <p>
-    The fix for all five items is an opaque handle with a status enum. The board file defines <code>struct hal</code>, and the application never sees its fields. The header needs <code>stdint.h</code>, <code>stdbool.h</code> and <code>stddef.h</code>, and a <code>hal_pin_t</code> enum like Lab 4's, which the excerpt leaves out. Lab 4's files are not changed by this lesson.
+    The fix for all five items is an opaque handle with a status enum, the board file defining <code>struct hal</code> and the application never seeing its fields. The header needs <code>stdint.h</code>, <code>stdbool.h</code> and <code>stddef.h</code> and a <code>hal_pin_t</code> enum like Lab 4's, which the excerpt leaves out, and this lesson does not change Lab 4's files.
   </p>
   <pre><code class="language-c">typedef enum {
     HAL_OK = 0,
@@ -192,79 +186,94 @@ hal_status_t hal_init(hal_t **out, const hal_config_t *cfg);
 hal_status_t hal_gpio_read(hal_t *h, hal_pin_t pin, bool *pressed);
 hal_status_t hal_i2c_write(hal_t *h, uint8_t addr7, const uint8_t *data, size_t len);</code></pre>
   <p>
-    Three things changed. The handle is the first argument, which gives each board or test its own instance, and <code>hal_init()</code> hands the handle back. The status is returned, and the value goes out through a pointer, so the caller can check both. The config struct has named fields, with the units in the names, so a call site does not need a comment to be read. The board file can keep its handle in static storage, so nothing is allocated on the heap (lesson 78 covers why that matters).
+    Three things changed. The handle is the first argument, giving each board or test its own instance, with <code>hal_init()</code> handing it back, the status is returned while the value goes out through a pointer, so the caller can check both, and the config struct has named fields carrying their units, so a call site reads without a comment. The board file can keep its handle in static storage, so nothing is allocated on the heap, which lesson 78 explains the importance of.
     <span class="sidenote">Item 4 asks for two enums, one for output pins and one for input pins. The header above keeps one enum to stay short; splitting it is the exercise in the critique list.</span>
   </p>
 
-  <h2>A worked example with real numbers</h2>
+  <h2>Worked example: the cost of one ops-table call</h2>
   <p>
-    Take the ops-table version of the LED and count what one call costs on a Cortex-M0+, the core of the RP2040. A pointer on this core is 32 bits, which is 4 bytes. The table <code>led_ops_t</code> holds two function pointers, so it takes 8 bytes. The handle <code>led_t</code> holds one pointer to the table and one <code>void *</code> context pointer, so it takes another 8 bytes. A table filled with <code>static const</code> lives in flash, and the handle can sit in RAM.
+    We count what one call of the ops-table LED costs on a Cortex-M0+, the core of the RP2040. Before tracing it, predict how many memory loads happen before the backend's code runs.
   </p>
-  <p>
-    Now trace <code>led_set(&amp;led, true)</code> one step at a time. First, the caller loads <code>led-&gt;ops</code>, which is one memory read. Second, it loads the <code>set</code> pointer from the table, which is a second read. Third, it loads <code>led-&gt;ctx</code>, a third read, and passes it along with <code>true</code>. Fourth, it jumps through the pointer. Inside the backend, the function turns the context into a pin number and calls <code>gpio_put()</code>. In this count, one logical call costs three loads and one indirect jump before any hardware is touched.
-  </p>
-  <p>
-    Compare that with the link-time version. The caller jumps directly to <code>led_set</code>, which is the GPIO function, so there is one jump and no table read. The difference is a handful of cycles per call. For a blink that runs twice a second it is nothing. For a driver called in a sampling loop of thousands of calls per second, it is worth knowing. Both numbers are estimates from the instruction sequence, not measurements; the lesson's point is the count of memory reads and jumps, which you can check in the disassembly of your own build.
-  </p>
-
-  <h2>The code, line by line</h2>
-  <p>The ops-table version has four lines that carry the idea. Here is what each one does.</p>
   <ol class="steps">
-    <li><code>typedef struct { void (*init)(void *ctx); void (*set)(void *ctx, bool on); } led_ops_t;</code> declares a table of two function pointers. Each entry names a signature, not a function. Any backend whose functions match these two signatures can fill the table.</li>
-    <li><code>const led_ops_t *ops;</code> inside <code>led_t</code> stores a pointer to a table. The <code>const</code> means the driver may not write through it, so one table in flash can serve many LEDs.</li>
-    <li><code>void *ctx;</code> stores the backend's private data, such as a pin number boxed as a pointer. The caller never reads it. It is passed back to each function so that one backend can serve several instances.</li>
-    <li><code>l-&gt;ops-&gt;set(l-&gt;ctx, on);</code> is the call itself. It reads the table pointer, reads the <code>set</code> entry, and calls it with the context. If <code>set</code> is NULL, the jump goes to address zero, which is the first bug in the next section.</li>
+    <li><strong>Size the structures.</strong> A pointer on this core is 32 bits, 4 bytes, so the table <code>led_ops_t</code>, holding two function pointers, takes 8 bytes, and the handle <code>led_t</code>, holding a pointer to the table and a <code>void *</code> context, takes another 8, the <code>static const</code> table living in flash and the handle in RAM.</li>
+    <li><strong>Load the table pointer.</strong> <code>led_set(&amp;led, true)</code> first loads <code>led-&gt;ops</code>, one memory read.</li>
+    <li><strong>Load the function pointer.</strong> It then loads the <code>set</code> pointer from the table, a second read.</li>
+    <li><strong>Load the context.</strong> It loads <code>led-&gt;ctx</code>, a third read, and passes it along with <code>true</code>.</li>
+    <li><strong>Jump.</strong> It jumps through the pointer, and inside the backend the function turns the context into a pin number and calls <code>gpio_put()</code>, so one logical call costs three loads and one indirect jump before any hardware is touched.</li>
   </ol>
   <p>
-    The link-time version has no line that does this work. The build file picks <code>led_gpio.c</code> or <code>led_fake.c</code>, and the linker binds every call in <code>main.c</code> to that one file. That is why the choice costs nothing at run time, and why it cannot be changed without rebuilding.
+    The link-time version jumps directly to <code>led_set</code>, the GPIO function, with one jump and no table read, so the difference is a handful of cycles per call, nothing for a blink running twice a second but worth knowing for a driver called thousands of times a second in a sampling loop. Both numbers are estimates from the instruction sequence rather than measurements, the point being the count of memory reads and jumps, which can be checked in the disassembly of your own build.
+  </p>
+
+  <h2>The ops-table code line by line</h2>
+  <p>The ops-table version has four lines that carry the idea.</p>
+  <ol class="steps">
+    <li><code>typedef struct { void (*init)(void *ctx); void (*set)(void *ctx, bool on); } led_ops_t;</code> declares a table of two function pointers, each entry naming a signature rather than a function, so any backend whose functions match the two signatures can fill the table.</li>
+    <li><code>const led_ops_t *ops;</code> inside <code>led_t</code> stores a pointer to a table, the <code>const</code> forbidding the driver to write through it, so one table in flash can serve many LEDs.</li>
+    <li><code>void *ctx;</code> stores the backend's private data, such as a pin number boxed as a pointer, which the caller never reads and which is passed back to each function, so that one backend can serve several instances.</li>
+    <li><code>l-&gt;ops-&gt;set(l-&gt;ctx, on);</code> is the call itself, reading the table pointer and the <code>set</code> entry and calling it with the context, and if <code>set</code> is NULL, the jump goes to address zero, the last mistake listed below.</li>
+  </ol>
+  <p>
+    The link-time version has no line doing this work, because the build file picks <code>led_gpio.c</code> or <code>led_fake.c</code> and the linker binds every call in <code>main.c</code> to that one file, which is why the choice costs nothing at run time and cannot change without a rebuild.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project is <code>projects/0076-led-driver-interface</code>. The starter has the interface and <code>main.c</code>, which blinks the LED three times and reports <code>LED DRIVER OK</code> only if the driver reads back the level it was given. The two backends are empty, marked <code>TODO(learner)</code>.
+    The project is <code>projects/0076-led-driver-interface</code>, whose starter has the interface and a <code>main.c</code> that blinks the LED three times and reports <code>LED DRIVER OK</code> only if the driver reads back the level it was given, while the two backends are empty and marked <code>TODO(learner)</code>.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0076-led-driver-interface/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>LED DRIVER FAIL</code>, because both backends do nothing.</li>
-    <li>Your task, part 1: in <code>led_gpio.c</code>, fill in the three <code>TODO(learner)</code> functions with the GP25 pin. Initialise the pin as an output, drive it with <code>gpio_put()</code>, and read it back with <code>gpio_get_out_level()</code>. Build and run. The LED blinks and the monitor prints <code>LED DRIVER OK</code>.</li>
-    <li>Your task, part 2: in <code>led_fake.c</code>, keep the state in <code>s_on</code> and print <code>LED fake: on</code> or <code>LED fake: off</code> on each change. Then, in <code>CMakeLists.txt</code>, change the default <code>"gpio"</code> to <code>"fake"</code>, and run <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> with the <em>Clean build</em> task. The cache value is read only on a fresh configure, so the clean build is needed.</li>
-    <li>You will know it works when the monitor prints <code>LED fake: init</code>, then six <code>on</code> and <code>off</code> lines, then <code>LED DRIVER OK</code>. The LED does not blink in this mode, because the fake has no pin.</li>
-    <li>Optional: add <code>led_fake.c</code> to the sources while the GPIO backend is selected. Read the linker error. It names the function that is defined twice, which is the point of link-time choice.</li>
+    <li>Open <code>projects/0076-led-driver-interface/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>LED DRIVER FAIL</code>, because both backends do nothing.</li>
+    <li>In <code>led_gpio.c</code>, fill in the three <code>TODO(learner)</code> functions for pin GP25, initialising it as an output, driving it with <code>gpio_put()</code> and reading it back with <code>gpio_get_out_level()</code>, then build and run, and the LED blinks while the monitor prints <code>LED DRIVER OK</code>.</li>
+    <li>In <code>led_fake.c</code>, keep the state in <code>s_on</code> and print <code>LED fake: on</code> or <code>LED fake: off</code> on each change, then change the default <code>"gpio"</code> in <code>CMakeLists.txt</code> to <code>"fake"</code> and run <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> with the <em>Clean build</em> task, which is needed because the cache value is read only on a fresh configure.</li>
+    <li>The fake works when the monitor prints <code>LED fake: init</code>, then six <code>on</code> and <code>off</code> lines, then <code>LED DRIVER OK</code>, the LED not blinking in this mode because the fake has no pin.</li>
+    <li>Optionally, add <code>led_fake.c</code> to the sources while the GPIO backend is selected and read the linker error, which names the function defined twice, the point of link-time choice.</li>
   </ol>
   <details>
     <summary>Hint for the GPIO backend</summary>
-    <p>The three functions are <code>gpio_init()</code>, <code>gpio_set_dir()</code> with <code>GPIO_OUT</code>, and <code>gpio_put()</code>. <code>gpio_put()</code> takes 0 or 1, so write <code>on ? 1 : 0</code>. The starter's comments name each function.</p>
+    <p>The three functions are <code>gpio_init()</code>, <code>gpio_set_dir()</code> with <code>GPIO_OUT</code> and <code>gpio_put()</code>, which takes 0 or 1, so write <code>on ? 1 : 0</code>, and the starter's comments name each function.</p>
   </details>
   <details>
     <summary>Hint if the monitor still prints LED DRIVER FAIL</summary>
-    <p><code>led_get()</code> must report what <code>led_set()</code> applied. A stub that always returns <code>false</code> fails the check after the first <code>led_set(true)</code>. Read the output level, not a constant.</p>
+    <p><code>led_get()</code> must report what <code>led_set()</code> applied, so a stub that always returns <code>false</code> fails the check after the first <code>led_set(true)</code>, and the output level should be read rather than a constant returned.</p>
   </details>
-  <p>The reference solution is in <code>projects/0076-led-driver-interface/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0076-led-driver-interface/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You put the LED behind an interface, wrote two backends, and chose one of them at link time from the build file, without changing <code>main.c</code>.</div>
+  <div class="win">You put the LED behind an interface, wrote two backends and chose one of them at link time from the build file, without changing <code>main.c</code>.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <p>Four mistakes come up again and again in this lesson's code. Each has a symptom you can see, and a fix.</p>
-  <ol class="steps">
-    <li><strong>The interface header includes a chip header.</strong> A developer adds <code>#include "hardware/gpio.h"</code> to <code>led.h</code> so that a type is available. The symptom is that the PC test build fails with <em>No such file or directory</em> for <code>hardware/gpio.h</code>, because the PC has no Pico SDK. The fix is to move the include into the backend, and to pass only plain types through the interface.</li>
-    <li><strong>Both backends are added to the build.</strong> The symptom is a link error, <em>multiple definition of led_init</em>, which is the exercise in step 5 of the hands-on task. The fix is to add only the file that the cache variable selects, as the <code>if</code> block in <code>CMakeLists.txt</code> does. Do not list both files in <code>add_executable()</code>.</li>
-    <li><strong>The cache variable is edited but the build does not change.</strong> You change the default from <code>"gpio"</code> to <code>"fake"</code>, rebuild, and the monitor still prints nothing from the fake. The reason is that CMake keeps the cache value from the first configure in <code>build/CMakeCache.txt</code>, and a new default in the file does not overwrite it. The fix is the <em>Clean build</em> task, which deletes <code>build/</code> so CMake reads the file again.</li>
-    <li><strong>A table entry is missing.</strong> A test passes a table with <code>set</code> left out, and the call jumps to address zero. The symptom on the device is a fault, which the lesson on faults (lesson 39) describes, at the first LED call; on a board without a fault handler the program may simply stop or restart. The fix is to fill every entry with a designated initialiser (<code>.set = led_gpio_set</code>), so the name is visible in review, and to check each pointer for NULL in <code>init</code>. Enable <code>-Wmissing-field-initializers</code> (part of <code>-Wextra</code>) so the compiler warns about a field left out of a brace initialiser.</li>
-  </ol>
+  <p>Four mistakes come up again and again in this lesson's code, each with a visible symptom and a fix.</p>
+  <h3>A chip header in the interface header</h3>
+  <p>
+    The PC test build fails with <em>No such file or directory</em> for <code>hardware/gpio.h</code>, because a developer added <code>#include "hardware/gpio.h"</code> to <code>led.h</code> to get a type, and the PC has no Pico SDK. Move the include into the backend and pass only plain types through the interface.
+  </p>
+  <h3>Both backends added to the build</h3>
+  <p>
+    The link fails with <em>multiple definition of led_init</em>, the exercise of step 5 of the hands-on task, because both files were compiled. Add only the file the cache variable selects, as the <code>if</code> block in <code>CMakeLists.txt</code> does, and never list both in <code>add_executable()</code>.
+  </p>
+  <h3>A cache variable edited without effect</h3>
+  <p>
+    After the default changes from <code>"gpio"</code> to <code>"fake"</code> and a rebuild, the monitor still shows nothing from the fake, because CMake keeps the value from the first configure in <code>build/CMakeCache.txt</code> and a new default in the file does not overwrite it. Run the <em>Clean build</em> task, which deletes <code>build/</code> so that CMake reads the file again.
+  </p>
+  <h3>A missing ops-table entry</h3>
+  <p>
+    The device faults at the first LED call, as described in the lesson on faults (lesson 39), or on a board without a fault handler simply stops or restarts, because a test passed a table with <code>set</code> left out and the call jumped to address zero. Fill every entry with a designated initialiser (<code>.set = led_gpio_set</code>), so the name is visible in review, check each pointer for NULL in <code>init</code>, and enable <code>-Wmissing-field-initializers</code> (part of <code>-Wextra</code>) so that the compiler warns about a field left out of a brace initialiser.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Driver layering in vendor code and Zephyr</h2></summary>
   <p>
-    Vendor code uses this layering everywhere. The STM32 HAL that Lab 4 uses is one layer of it, and ST's low-layer drivers are a thinner one under it. Zephyr takes the ops-table idea further: each peripheral class has a driver API struct of function pointers, and the kernel looks up the struct for each device. The GPIO class is defined as <code>struct gpio_driver_api</code> in <code>include/zephyr/drivers/gpio.h</code> of the Zephyr tree, and each GPIO driver fills one in with <code>DEVICE_API</code>. A code review of a driver in a product team checks four things: that the header names no chip, that every failure has a status, that a fake exists for each interface, and that no call bypasses the handle. This seam is also how you test firmware on a PC.</p>
+    Vendor code uses this layering everywhere, the STM32 HAL of Lab 4 being one layer of it and ST's low-layer drivers a thinner one beneath. Zephyr takes the ops-table idea further, giving each peripheral class a driver API struct of function pointers that the kernel looks up for each device, the GPIO class being defined as <code>struct gpio_driver_api</code> in <code>include/zephyr/drivers/gpio.h</code> of the Zephyr tree, with each GPIO driver filling one in with <code>DEVICE_API</code>. A product team's review of a driver checks that the header names no chip, that every failure has a status, that a fake exists for each interface and that no call bypasses the handle, and this seam is also how firmware gets tested on a PC.
+  </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>Layers call downward only. The application never includes a chip header, and the HAL never includes the application.</li>
-    <li>A header is a promise checked against each source file. The linker binds each name to one definition.</li>
-    <li>Choose a backend at link time when the board is fixed. Choose it at run time with an ops table when one program drives several devices of one kind.</li>
+    <li>Layers call downward only, so the application never includes a chip header and the HAL never includes the application.</li>
+    <li>A header is a promise checked against each source file, and the linker binds each name to one definition.</li>
+    <li>A backend is chosen at link time when the board is fixed, and at run time with an ops table when one program drives several devices of one kind.</li>
     <li>An ops table costs one indirect jump and a few loads per call, and a missing entry jumps to a bad address.</li>
-    <li>An opaque handle hides the state and lets two instances coexist. A status return reports failure to the caller.</li>
-    <li>Lab 4's HAL is a good first draft. Its weaknesses are a bare int result, a void init, silent unknown pins, a shared pin enum and global state.</li>
+    <li>An opaque handle hides the state and lets two instances coexist, while a status return reports failure to the caller.</li>
+    <li>Lab 4's HAL is a good first draft whose weaknesses are a bare int result, a void init, silent unknown pins, a shared pin enum and global state.</li>
     <li>A fake behind the same interface lets the application be tested on a PC.</li>
   </ul>
 

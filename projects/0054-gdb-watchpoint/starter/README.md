@@ -6,12 +6,12 @@ Lesson: [GDB debugging](https://jouhis.github.io/embedded-course/lessons/0054-gd
 
 ## Try it in Wokwi
 
-The project is `projects/0054-gdb-watchpoint`. The starter prints a line every second, and the line says the sentinel is corrupted. Your job is to find the write that corrupts it, and fix that statement. The sentinel is a global, so it has a fixed address that GDB can watch.
+The project is `projects/0054-gdb-watchpoint`, whose starter prints a line every second reporting that the sentinel is corrupted. The task is to find the write that corrupts it and fix that statement, and because the sentinel is a global, it has a fixed address that GDB can watch.
 
-1. Open `projects/0054-gdb-watchpoint/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build, start the simulator, then press <kbd>F5</kbd>.
-2. Your task: set a watchpoint on `frame.sentinel`, with `watch frame.sentinel` in the debug console. Continue with `c` until GDB stops. Read the old and new values. Use `bt` to see the call, and `x/9xb &frame` to see the eight data bytes and the sentinel together. You should see the old value 0xa5 and a new value 0x18.
-3. The stop shows the line that wrote the byte. Fix that line so the loop does not write past `data[]`. Stop the debugger, rebuild, start the simulator again, and press <kbd>F5</kbd>.
-4. You will know it works when the serial monitor prints `GDB WATCH OK` every second, with the sentinel intact at `0xa5`.
+1. Open `projects/0054-gdb-watchpoint/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build, start the simulator and press <kbd>F5</kbd>.
+2. Set a watchpoint on `frame.sentinel` by typing `watch frame.sentinel` in the debug console and continue with `c` until GDB stops. Read the old and new values, which should be 0xa5 and 0x18, then use `bt` to see the call and `x/9xb &frame` to see the eight data bytes and the sentinel together.
+3. The stop shows the line that wrote the byte, so fix that line so that the loop no longer writes past `data[]`, then stop the debugger, rebuild, start the simulator again and press <kbd>F5</kbd>.
+4. The fix works when the serial monitor prints `GDB WATCH OK` every second, with the sentinel intact at `0xa5`.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `GDB WATCH OK`.
 <details>
 <summary>Fallback if the watchpoint never stops</summary>
 
-Use breakpoints, which the core has in hardware. Set `break build_frame`, continue, then use `next` through the loop and print `frame.sentinel` with `print/x frame.sentinel` on each pass. The first pass where the value changes is the one that writes past the array. This is slower than a watchpoint, but it finds the same line.
+Use breakpoints, which the core also has in hardware: set `break build_frame`, continue, then step through the loop with `next`, printing the sentinel with `print/x frame.sentinel` on each pass. The first pass on which the value changes is the one that writes past the array, which is slower to find than with a watchpoint but leads to the same line.
 
 </details>
 
 <details>
 <summary>Hint for the bound</summary>
 
-Count the elements. `data[]` has `FRAME_LEN` elements, indexed 0 to `FRAME_LEN − 1`. A loop that stops when `i` is *less than* `FRAME_LEN` never reaches the sentinel.
+Count the elements: `data[]` has `FRAME_LEN` elements, indexed 0 to `FRAME_LEN − 1`, so a loop that runs only while `i` is *less than* `FRAME_LEN` never reaches the sentinel.
 
 </details>
 

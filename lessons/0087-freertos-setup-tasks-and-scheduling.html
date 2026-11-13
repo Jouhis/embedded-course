@@ -11,39 +11,42 @@
 <body data-lesson="0087">
 <main>
   <p class="lesson-meta"></p>
-  <h1>FreeRTOS setup, tasks and scheduling</h1>
-  <p class="subtitle">A FreeRTOS program is a set of tasks, each with a priority, and a kernel that runs the most urgent ready task. On the Blue Pill that means one tick interrupt, one scheduler and a few lines of configuration.</p>
+  <h1>FreeRTOS setup, tasks, and scheduling</h1>
+  <p class="subtitle">Tasks, priorities and the kernel tick</p>
 
   <div class="goal">
     By the end of this lesson you can create two or more tasks with <code>xTaskCreate()</code>, choose their priorities, write a periodic task with <code>vTaskDelayUntil()</code>, and explain the difference from <code>vTaskDelay()</code>, the idle task and the tick.
   </div>
 
-  <h2>Where we are, and why it matters</h2>
+  <h2>Building the scheduler on the Blue Pill</h2>
   <p>
-    Lesson <a href="0086-why-use-an-rtos.html">86</a> showed the problem. A super-loop makes a due job wait for every blocking call ahead of it, and a scheduler fixes that by letting a more urgent job interrupt a less urgent one. This lesson builds that scheduler on the Blue Pill. It uses the SysTick interrupt from lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> as its heartbeat, and the NVIC priority rule from lesson <a href="0072-the-nvic.html">72</a>, with one important difference that the warnings below explain. Lab <a href="lab05-move-lab-4-onto-freertos.html">5</a> moves the Lab 4 monitor onto FreeRTOS, so every task you write here is a pattern you will reuse there.
+    Lesson <a href="0086-why-use-an-rtos.html">86</a> showed the problem, a super-loop making a due job wait for every blocking call ahead of it, and a scheduler fixing that by letting a more urgent job interrupt a less urgent one. This lesson builds that scheduler on the Blue Pill, using the SysTick interrupt of lesson <a href="0073-systick-and-a-millisecond-time.html">73</a> as its heartbeat and the NVIC priority rule of lesson <a href="0072-the-nvic.html">72</a>, with one important difference that the warnings below explain. Lab <a href="lab05-move-lab-4-onto-freertos.html">5</a> moves the Lab 4 monitor onto FreeRTOS, so every task written here is a pattern reused there.
   </p>
   <p>
-    The project is a small piece of the same design. A periodic blink task toggles the on-board LED every 500 ms, and a report task prints the kernel's tick count once a second over the serial line. A kernel that runs two such tasks correctly is the first step to a device that runs a sensor, a display and a log at the same time.
-  </p>
-
-  <h2>Concept 1: a task is a loop with a stack and a priority</h2>
-  <p>
-    A <a href="../reference/glossary.html#task">task</a> is a C function that never returns. It has its own stack, which is where its local variables and return addresses are kept (lesson 33), and it has a priority. The kernel keeps a control block for each task, called the TCB, which records the task's name, its priority, its stack pointer and where it sits in the kernel's lists. The task does not know it is being shared. It runs as if it owned the core, and the kernel saves and restores its registers when it stops or starts (lesson 88).
-  </p>
-  <p>
-    A task that does not loop forever must remove itself. The projects in lessons 90 and 91 call <code>vTaskDelete(NULL)</code> when a task has finished its work. A task that returns from its function by accident is a bug, and the kernel has no sensible place to send it.
+    The project is a small piece of that design, a periodic blink task toggling the on-board LED every 500 ms while a report task prints the kernel's tick count once a second over the serial line, and a kernel that runs two such tasks correctly is the first step to a device running a sensor, a display and a log at the same time.
   </p>
 
-  <h2>Concept 2: states, and the ready list</h2>
+  <h2>Tasks, stacks and task control blocks</h2>
   <p>
-    At any moment a task is in one of four states. It is <strong>Running</strong> when it has the core. It is <strong>Ready</strong> when it could run now and is waiting for the core. It is <strong>Blocked</strong> when it is waiting for a time, such as a delay, or for an event, such as a queue item or a semaphore. It is <strong>Suspended</strong> when another task has parked it until it is resumed. The figure below shows the moves between the states.
+    A <a href="../reference/glossary.html#task">task</a> is a C function that never returns, with its own stack holding its local variables and return addresses (lesson 33) and a priority. The kernel keeps a control block for each task, the TCB, recording the task's name, its priority, its stack pointer and its place in the kernel's lists, while the task itself does not know it is being shared, running as if it owned the core while the kernel saves and restores its registers whenever it stops or starts (lesson 88).
+  </p>
+  <p>
+    A task that does not loop forever must remove itself, as the projects of lessons 90 and 91 do by calling <code>vTaskDelete(NULL)</code> when a task has finished its work, whereas a task that returns from its function by accident is a bug, since the kernel has no sensible place to send it.
+  </p>
+
+  <h2>Task states and the ready lists</h2>
+  <p>
+    At any moment a task is in one of four states, <strong>Running</strong> when it has the core, <strong>Ready</strong> when it could run now and is waiting for the core, <strong>Blocked</strong> when it waits for a time, such as a delay, or an event, such as a queue item or a semaphore, and <strong>Suspended</strong> when another task has parked it until it is resumed. The figure below shows the moves between the states.
+  </p>
+  <p>
+    The kernel keeps one <strong>ready list</strong> per priority level, holding the Ready tasks of that priority, and at every decision point the scheduler finds the highest-priority list that is not empty and takes the next task from it. The kernel macro doing this is <code>taskSELECT_HIGHEST_PRIORITY_TASK()</code>, at <code>tasks.c</code> line 235 in the kernel version this course uses, V11.2.0 (the version string being in <code>include/task.h</code> line 56), and its loop body, in plain words, finds the highest priority with ready tasks and takes the owner of the next entry in that list, a quick search over a few lists rather than a sort.
   </p>
 
   <div class="analogy">
-    <p>Picture a taxi rank with one road out. The running task is the taxi on the road. Ready tasks wait in the rank, sorted by priority, and the best one leaves as soon as the road is free. Blocked tasks are taxis at the petrol station: they cannot leave until their time or their event comes, however high their priority. Suspended tasks are parked off duty until someone puts them back in the rank.</p>
+    <p>The states resemble a taxi rank with one road out, the running task being the taxi on the road and the ready tasks waiting in the rank sorted by priority, the best leaving as soon as the road is free, while blocked tasks are taxis at the petrol station that cannot leave until their time or event comes, however high their priority, and suspended tasks are parked off duty until someone returns them to the rank. The comparison breaks on preemption, though, because a taxi on the road finishes its trip, whereas a running task can be pulled off the road the moment a higher-priority task becomes ready.</p>
   </div>
   <p>
-    The kernel keeps one <strong>ready list</strong> for each priority level. Each list holds the Ready tasks of that priority. At every decision point the scheduler looks for the highest-priority list that is not empty, and takes the next task from it. The macro that does this in the kernel is <code>taskSELECT_HIGHEST_PRIORITY_TASK()</code>, at <code>tasks.c</code> line 235 in the kernel version this course uses, V11.2.0 (the version string is in <code>include/task.h</code> line 56). Its loop body, in plain words, is: find the highest priority that has ready tasks, then take the owner of the next entry in that list. The selection is a search over a few lists, not a sort, so it is quick.
+    The diagram traces the transitions between these states and the event that causes each.
   </p>
   <figure>
     <svg viewBox="0 0 560 290" role="img" aria-label="FreeRTOS task states: Running, Ready, Blocked and Suspended, with arrows for scheduling, preemption, delay expiry, blocking and resume." style="max-width:728px">
@@ -76,36 +79,40 @@
     <figcaption>Figure 1. A task is Running (on the CPU), Ready (waiting for the CPU), Blocked (waiting for a time or an event) or Suspended (parked until resumed). The scheduler moves a task between Ready and Running; a delay or a blocking call moves it to Blocked; the event or timeout moves it back to Ready.</figcaption>
   </figure>
 
-  <h2>Concept 3: priorities run upward in FreeRTOS</h2>
+  <h2>FreeRTOS task priorities</h2>
   <p>
-    A FreeRTOS priority is a number, and a <strong>larger</strong> number is more urgent. The highest usable priority is <code>configMAX_PRIORITIES − 1</code>. In this course's template, <code>configMAX_PRIORITIES</code> is 5, so the priorities run from 0 to 4. The idle task has priority 0, the lowest, so any task that is ready preempts it.
+    A FreeRTOS priority is a number in which a <strong>larger</strong> value is more urgent, the highest usable priority being <code>configMAX_PRIORITIES − 1</code>, so with <code>configMAX_PRIORITIES</code> set to 5 in this course's template the priorities run from 0 to 4. The idle task has priority 0, the lowest, so any ready task preempts it.
   </p>
   <p>
-    This is the opposite of the interrupt controller. In lesson 72 you learned that on the NVIC a <em>lower</em> number is more urgent. Both systems are correct within themselves, and the mismatch is a real trap. The priority you pass to <code>xTaskCreate()</code> is a task priority, and it follows the FreeRTOS rule. The priority you give an interrupt with <code>NVIC_SetPriority()</code> follows the Cortex-M rule. Lesson 90 shows where the two meet.
+    This is the opposite of the interrupt controller, on whose NVIC, as lesson 72 showed, a <em>lower</em> number is more urgent, and although both systems are consistent within themselves, the mismatch is a real trap. The priority passed to <code>xTaskCreate()</code> is a task priority following the FreeRTOS rule, while the priority given to an interrupt with <code>NVIC_SetPriority()</code> follows the Cortex-M rule, and lesson 90 shows where the two meet.
   </p>
   <div class="warning">Priority numbers grow upward: 0 is the lowest (the idle task), and <code>configMAX_PRIORITIES − 1</code> is the highest. Many bugs come from reading "priority 1" as the most urgent, which is the opposite of the NVIC rule in lesson 72, where a lower number is more urgent.</div>
 
-  <h2>Concept 4: the tick</h2>
+  <h2>The kernel tick</h2>
   <p>
-    The <a href="../reference/glossary.html#tick">tick</a> is the kernel's clock. It is a periodic interrupt, here driven by the Cortex-M SysTick timer (lesson 73), and it fires <code>configTICK_RATE_HZ</code> times per second. The template sets that to 1000, so the tick is 1 ms. The SysTick reload value is set in <code>port.c</code> line 759 as the SysTick clock divided by the tick rate, minus one, the same rule as lesson 73.
+    The <a href="../reference/glossary.html#tick">tick</a> is the kernel's clock, a periodic interrupt here driven by the Cortex-M SysTick timer (lesson 73) and firing <code>configTICK_RATE_HZ</code> times per second, which the template sets to 1000, so the tick is 1 ms. The SysTick reload value is set in <code>port.c</code> line 759 as the SysTick clock divided by the tick rate, minus one, the same rule as in lesson 73.
   </p>
   <p>
-    On every tick the port calls <code>xTaskIncrementTick()</code> (<code>tasks.c</code> line 4725). That function adds one to the kernel's tick count. If the count wraps to zero, it swaps the delayed lists. Then it checks whether any delayed task's time has come, and moves each such task back to its ready list. If one of the woken tasks has a higher priority than the running task, the function reports that a switch is needed. The SysTick handler in <code>port.c</code> at line 491 then asks for the switch by pending PendSV (line 507). PendSV is the exception that actually performs the switch, and lesson 89 walks through it.
+    On every tick the port calls <code>xTaskIncrementTick()</code> (<code>tasks.c</code> line 4725), which adds one to the kernel's tick count, swaps the delayed lists if the count wraps to zero and moves every delayed task whose time has come back to its ready list. If a woken task has a higher priority than the running one, the function reports that a switch is needed, and the SysTick handler in <code>port.c</code> at line 491 requests it by pending PendSV (line 507), the exception that actually performs the switch, which lesson 89 walks through.
   </p>
   <p>
-    Because the tick is the only thing that wakes a delayed task, the tick sets the resolution of every delay. A 1 ms tick cannot give a 0.5 ms delay. <code>pdMS_TO_TICKS(n)</code> converts milliseconds to ticks, and it is defined in <code>projdefs.h</code> line 42 as <code>n × configTICK_RATE_HZ ÷ 1000</code>, so at a 1 kHz tick it returns exactly <code>n</code>.
+    Because only the tick wakes a delayed task, it sets the resolution of every delay, so a 1 ms tick cannot give a 0.5 ms delay. <code>pdMS_TO_TICKS(n)</code> converts milliseconds to ticks, defined in <code>projdefs.h</code> line 42 as
+  </p>
+  <p class="eq"><span>ticks = n × configTICK_RATE_HZ ÷ 1000</span><span class="eq-n">(1)</span></p>
+  <p>
+    where n is the delay in milliseconds and <code>configTICK_RATE_HZ</code> the tick rate, so at a 1 kHz tick it returns exactly <code>n</code>.
   </p>
   <p>
-    A task that becomes ready from a call made by another task, rather than from the tick, can also request the switch. A queue or semaphore call that wakes a higher-priority task yields inside the call, so the switch happens before the call returns to the sender. Lesson 90 shows the interrupt version of the same rule.
+    A task made ready by a call from another task, rather than by the tick, can also request the switch, a queue or semaphore call that wakes a higher-priority task yielding inside the call, so the switch happens before the call returns to the sender, and lesson 90 shows the interrupt version of the same rule.
   </p>
   <div class="note">With <code>configUSE_TIME_SLICING</code> set to 1 (the default, <code>FreeRTOS.h</code> line 2750), tasks of <em>equal</em> priority take turns at each tick. Tasks of different priority never share the CPU this way: the higher one always wins.</div>
 
-  <h2>Concept 5: delays, relative and absolute</h2>
+  <h2>Relative and absolute delays</h2>
   <p>
-    <code>vTaskDelay(n)</code> blocks the calling task for <code>n</code> ticks, counted from the moment of the call (<code>tasks.c</code> line 2458). If the work before it takes time, the period grows by that time, and the task drifts. Take a task that does 30 ms of work and then calls <code>vTaskDelay(100)</code> each time, where each tick is 1 ms. It wakes at 100 ms after the first call's return, runs for 30 ms again, and sleeps 100 ms again. Its period is 130 ms. After ten cycles it is 1300 ms into a schedule meant to be 1000 ms long.
+    <code>vTaskDelay(n)</code> blocks the calling task for <code>n</code> ticks counted from the moment of the call (<code>tasks.c</code> line 2458), so if the work before it takes time, the period grows by that time and the task drifts. A task doing 30 ms of work and then calling <code>vTaskDelay(100)</code> each time, at 1 ms per tick, wakes 100 ms after the first call's return, runs 30 ms again and sleeps another 100 ms, a period of 130 ms that leaves it 1 300 ms into a schedule meant to be 1 000 ms long after ten cycles.
   </p>
   <p>
-    <code>vTaskDelayUntil(&amp;last, n)</code> keeps an absolute schedule instead. It sets the next wake-up time to <code>last + n</code>, and then it updates <code>last</code> to that time. The 30 ms of work is inside the 100 ms slot, so the wake-ups fall at 100, 200, 300 ms and so on, for as long as the work fits. The macro is defined in <code>task.h</code> at line 933. For a periodic job that must keep its rate, such as a sensor read every 200 ms, this is the call to use.
+    <code>vTaskDelayUntil(&amp;last, n)</code> instead keeps an absolute schedule, setting the next wake-up to <code>last + n</code> and updating <code>last</code> to that time, so the 30 ms of work lies inside the 100 ms slot and the wake-ups fall at 100, 200 and 300 ms for as long as the work fits. The macro is defined in <code>task.h</code> at line 933, and it is the call to use for a periodic job that must keep its rate, such as a sensor read every 200 ms.
   </p>
   <table>
     <thead>
@@ -117,51 +124,51 @@
     </tbody>
   </table>
 
-  <h2>Concept 6: the idle task</h2>
+  <h2>The idle task</h2>
   <p>
-    When no task is ready, the kernel must still have something to run. It has a task for that, the <a href="../reference/glossary.html#idle-task">idle task</a>, which runs at priority 0 (<code>tskIDLE_PRIORITY</code>, <code>task.h</code> line 199). The kernel creates it in <code>prvCreateIdleTasks()</code> (<code>tasks.c</code> line 3540), which <code>vTaskStartScheduler()</code> calls at line 3703. The <code>xTaskCreate()</code> call that makes it is at line 3654.
+    When no task is ready, the kernel must still run something, so it has the <a href="../reference/glossary.html#idle-task">idle task</a>, at priority 0 (<code>tskIDLE_PRIORITY</code>, <code>task.h</code> line 199), created in <code>prvCreateIdleTasks()</code> (<code>tasks.c</code> line 3540), which <code>vTaskStartScheduler()</code> calls at line 3703, the <code>xTaskCreate()</code> call that makes it being at line 3654.
   </p>
   <p>
-    The idle task's loop is <code>prvIdleTask()</code> (line 5801). Its main job here is to free the memory of tasks that were deleted, which it does in <code>prvCheckTasksWaitingTermination()</code> (line 5826). It is the place where a low-power <code>WFI</code> instruction could go, through the idle hook, but the template turns the idle hook off (<code>configUSE_IDLE_HOOK 0</code>). You never write the idle task yourself.
-  </p>
-
-  <h2>Concept 7: the kernel's memory</h2>
-  <p>
-    <code>xTaskCreate()</code> takes a function, a name, a stack depth, an argument, a priority and an optional handle. It allocates the stack and the TCB from the FreeRTOS heap, and makes the task ready (<code>tasks.c</code> line 1740). The stack depth is in words, not bytes. On the Cortex-M3 the port's <code>StackType_t</code> is a 32-bit word (<code>portmacro.h</code>), so a depth of 128 is 512 bytes.
-  </p>
-  <p>
-    The heap is a fixed block of RAM set by <code>configTOTAL_HEAP_SIZE</code>, which the template sets to 8 KiB. The build selects the allocator <code>heap_4.c</code>, from <code>templates/common/stm32f1.cmake</code>. If the heap is too small for the tasks, <code>xTaskCreate()</code> fails, and the template's malloc-failed hook loops forever. That is one way a project prints nothing.
+    The idle task's loop is <code>prvIdleTask()</code> (line 5801), whose main job here is freeing the memory of deleted tasks in <code>prvCheckTasksWaitingTermination()</code> (line 5826). It is also where a low-power <code>WFI</code> instruction could go through the idle hook, although the template turns the hook off (<code>configUSE_IDLE_HOOK 0</code>), and you never write the idle task yourself.
   </p>
 
-  <h2>Concept 8: the template's safety settings</h2>
+  <h2>Task stacks and the FreeRTOS heap</h2>
   <p>
-    The template's <code>FreeRTOSConfig.h</code> turns on checks that help you find mistakes. <code>configCHECK_FOR_STACK_OVERFLOW</code> is set to 2, which makes the kernel fill each stack with a pattern and check it on each switch. When it finds an overflow it calls <code>vApplicationStackOverflowHook()</code>, which the project defines and which loops forever, so you can attach a debugger and read the task name. <code>configASSERT</code> is defined to disable interrupts and loop forever, so a failed kernel check stops the device where it failed instead of corrupting memory. Both are for development. Lesson 92 shows how to size stacks so the hook never runs.
+    <code>xTaskCreate()</code> takes a function, a name, a stack depth, an argument, a priority and an optional handle, allocates the stack and the TCB from the FreeRTOS heap and makes the task ready (<code>tasks.c</code> line 1740). The stack depth is in words rather than bytes, the port's <code>StackType_t</code> being a 32-bit word on the Cortex-M3 (<code>portmacro.h</code>), so a depth of 128 is 512 bytes.
+  </p>
+  <p>
+    The heap is a fixed block of RAM set by <code>configTOTAL_HEAP_SIZE</code>, 8 KiB in the template, with the allocator <code>heap_4.c</code> selected by <code>templates/common/stm32f1.cmake</code>. If the heap is too small for the tasks, <code>xTaskCreate()</code> fails and the template's malloc-failed hook loops forever, which is one way a project ends up printing nothing.
   </p>
 
-  <h2>A worked example: the blink and report tasks</h2>
+  <h2>Stack overflow checks and configASSERT</h2>
   <p>
-    The project has two tasks. <code>blink_task</code> has priority 2 and toggles PC13 every 500 ms. <code>report_task</code> has priority 1 and prints a line once a second. Here is what happens at the start, and on each tick, with the numbers the code uses.
+    The template's <code>FreeRTOSConfig.h</code> turns on checks that help find mistakes. <code>configCHECK_FOR_STACK_OVERFLOW</code> is set to 2, so the kernel fills each stack with a pattern and checks it on each switch, calling on an overflow <code>vApplicationStackOverflowHook()</code>, which the project defines to loop forever so that a debugger can be attached and the task name read. <code>configASSERT</code> is defined to disable interrupts and loop forever, so a failed kernel check stops the device where it failed instead of corrupting memory, both being development aids, and lesson 92 shows how to size stacks so that the hook never runs.
   </p>
-  <ol>
-    <li>At time 0, <code>main()</code> creates both tasks and calls <code>vTaskStartScheduler()</code>. The scheduler picks the highest-priority ready task, which is <code>blink_task</code> at priority 2.</li>
-    <li>Blink toggles the LED once, then calls <code>vTaskDelayUntil()</code> with a period of 500 ticks. It blocks, so it leaves the ready list.</li>
-    <li>Report is now the highest-priority ready task. It prints its first line, showing the tick count 0 and the toggle count 1. It then calls <code>vTaskDelay(1000 ticks)</code> and blocks.</li>
-    <li>With both tasks blocked, the idle task runs. It does nothing useful except free memory from deleted tasks.</li>
-    <li>At tick 500, <code>xTaskIncrementTick()</code> finds that blink's delay has ended and moves it to the ready list. Blink's priority 2 is higher than the idle task's 0, so the port pends PendSV and blink runs.</li>
-    <li>Blink toggles the LED. Its next wake-up is 500 + 500 = 1000 ticks, which is the value <code>last_wake</code> now holds.</li>
-    <li>At tick 1000, both blink and report are due. Blink has priority 2 and report has priority 1, so blink runs first. Report then prints the line with tick 1000.</li>
+
+  <h2>Worked example: the blink and report tasks at start-up</h2>
+  <p>
+    The project has two tasks, <code>blink_task</code> at priority 2 toggling PC13 every 500 ms and <code>report_task</code> at priority 1 printing a line once a second, and we follow what happens at the start and on each tick with the numbers the code uses. Before reading on, predict which task runs first at tick 1000, when both are due.
+  </p>
+  <ol class="steps">
+    <li><strong>Start the scheduler.</strong> At time 0, <code>main()</code> creates both tasks and calls <code>vTaskStartScheduler()</code>, which picks the highest-priority ready task, <code>blink_task</code> at priority 2.</li>
+    <li><strong>Blink blocks.</strong> Blink toggles the LED once and calls <code>vTaskDelayUntil()</code> with a period of 500 ticks, blocking and leaving the ready list.</li>
+    <li><strong>Report runs.</strong> Report, now the highest-priority ready task, prints its first line with the tick count 0 and the toggle count 1, then calls <code>vTaskDelay(1000 ticks)</code> and blocks.</li>
+    <li><strong>Idle runs.</strong> With both tasks blocked, the idle task runs, doing nothing useful except freeing memory from deleted tasks.</li>
+    <li><strong>Tick 500.</strong> <code>xTaskIncrementTick()</code> finds that blink's delay has ended and moves it to the ready list, and since its priority 2 exceeds the idle task's 0, the port pends PendSV and blink runs.</li>
+    <li><strong>Blink reschedules.</strong> Blink toggles the LED, its next wake-up being 500 + 500 = 1000 ticks, the value <code>last_wake</code> now holds.</li>
+    <li><strong>Tick 1000.</strong> Both blink and report are due, and blink, at priority 2 against report's 1, runs first, after which report prints the line with tick 1000.</li>
   </ol>
 
   <p>
-    Watch a scheduler pick the highest-priority ready task. The three tasks below have longer work times than blink and report, so the bars are visible. Press ⏮ to go back to 0 ms, then step 10 ms at a time through the first 50 ms. Before each step, say which task runs. Then change a priority or a work time and look for a task that waits.
+    The widget below shows a scheduler picking the highest-priority ready task, its three tasks having longer work times than blink and report so that the bars are visible. Press ⏮ to return to 0 ms and step 10 ms at a time through the first 50 ms, saying before each step which task runs, then change a priority or a work time and look for a task that waits.
   </p>
   <div class="widget rtossim" data-preset="tasks" data-title="Who runs at each tick"></div>
 
-  <h2>Code, line by line</h2>
+  <h2>The task code line by line</h2>
   <p>
-    The solution in <code>projects/0087-freertos-tasks/solution/main.c</code> is the code the starter is built from. Read this block first.
+    The solution in <code>projects/0087-freertos-tasks/solution/main.c</code> is the code the starter is built from, and this block comes first.
   </p>
-<pre><code class="language-c">static void blink_task(void *arg) {
+  <pre><code class="language-c">static void blink_task(void *arg) {
     (void)arg;
     TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
@@ -171,21 +178,21 @@
     }
 }</code></pre>
   <p>
-    <code>static void blink_task(void *arg)</code> matches the function type FreeRTOS expects for a task, which takes one <code>void *</code> argument. The <code>static</code> keeps the function private to this file. <code>(void)arg;</code> tells the compiler that the argument is deliberately unused, so the warning is silenced without hiding a real problem.
+    <code>static void blink_task(void *arg)</code> matches the function type FreeRTOS expects for a task, one taking a single <code>void *</code> argument, with <code>static</code> keeping the function private to this file, and <code>(void)arg;</code> tells the compiler that the argument is deliberately unused, silencing the warning without hiding a real problem.
   </p>
   <p>
-    <code>TickType_t last_wake = xTaskGetTickCount();</code> reads the tick count at the start of the task and stores it. This is the starting point of the schedule. The variable lives on the task's own stack, so each task has its own copy.
+    <code>TickType_t last_wake = xTaskGetTickCount();</code> reads and stores the tick count at the start of the task, the starting point of the schedule, in a variable living on the task's own stack, so each task has its own copy.
   </p>
   <p>
-    <code>GPIOC-&gt;ODR ^= GPIO_ODR_ODR13;</code> toggles the output bit for PC13. The <code>^=</code> is a read-modify-write: the CPU reads the output data register, flips bit 13, and writes it back. That is safe here only because no other task writes PC13 at the same time. Lesson 91 covers what happens when two tasks share a register this way.
+    <code>GPIOC-&gt;ODR ^= GPIO_ODR_ODR13;</code> toggles the output bit for PC13 with a read-modify-write, the CPU reading the output data register, flipping bit 13 and writing it back, which is safe here only because no other task writes PC13 at the same time, the case that lesson 91 covers.
   </p>
   <p>
-    <code>toggles++;</code> counts the toggles in a global variable. The variable is declared <code>volatile</code>, so the compiler reads it from memory each time instead of keeping it in a register, which matters because the report task reads it too. There is one writer and one reader, and that is the only sharing in this project.
+    <code>toggles++;</code> counts the toggles in a global variable declared <code>volatile</code>, so the compiler reads it from memory each time instead of keeping it in a register, which matters because the report task reads it too, one writer and one reader being the only sharing in this project.
   </p>
   <p>
-    <code>vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS));</code> does three things. It computes the next wake-up as <code>last_wake + 500</code>, blocks the task until the tick count reaches that value, and writes the new wake-up time back into <code>last_wake</code>. The conversion <code>pdMS_TO_TICKS(500)</code> returns 500 at a 1 kHz tick.
+    <code>vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS));</code> computes the next wake-up as <code>last_wake + 500</code>, blocks the task until the tick count reaches that value and writes the new wake-up time back into <code>last_wake</code>, the conversion <code>pdMS_TO_TICKS(500)</code> returning 500 at a 1 kHz tick.
   </p>
-<pre><code class="language-c">static void report_task(void *arg) {
+  <pre><code class="language-c">static void report_task(void *arg) {
     (void)arg;
     for (;;) {
         uart_puts(toggles ? "TASKS OK " : "TASKS waiting ");
@@ -198,9 +205,9 @@
     }
 }</code></pre>
   <p>
-    <code>toggles ? "TASKS OK " : "TASKS waiting "</code> chooses the first word by testing the shared count. The report prints "TASKS OK" once blink has toggled the LED at least once, which is the check the Try-it steps ask you to add. <code>xTaskGetTickCount()</code> returns the tick count, which is milliseconds here because the tick is 1 kHz. <code>vTaskDelay()</code> is correct for the report, because a report that drifts by a millisecond does not matter.
+    <code>toggles ? "TASKS OK " : "TASKS waiting "</code> chooses the first word by testing the shared count, so the report prints "TASKS OK" once blink has toggled the LED at least once, the check the hands-on steps ask you to add. <code>xTaskGetTickCount()</code> returns the tick count, milliseconds here because the tick is 1 kHz, and <code>vTaskDelay()</code> suits the report, because a report drifting by a millisecond does not matter.
   </p>
-<pre><code class="language-c">int main(void) {
+  <pre><code class="language-c">int main(void) {
     SystemCoreClockUpdate();
     uart_init();
     xTaskCreate(blink_task, "blink", TASK_STACK_WORDS, NULL, BLINK_PRIORITY, NULL);
@@ -209,7 +216,7 @@
     for (;;) {}
 }</code></pre>
   <p>
-    The clock and the UART are set up before any task is created, so that the first task can print. <code>xTaskCreate()</code> is called with the function, a name of at most 12 characters (<code>configMAX_TASK_NAME_LEN</code>), a stack of <code>TASK_STACK_WORDS</code> words, no argument, the priority and no handle. <code>vTaskStartScheduler()</code> starts the tick and the first task. It does not return in normal operation, so the endless loop after it is only a guard for the case where the idle task could not be created.
+    The clock and the UART are set up before any task is created, so that the first task can print, and <code>xTaskCreate()</code> is called with the function, a name of at most 12 characters (<code>configMAX_TASK_NAME_LEN</code>), a stack of <code>TASK_STACK_WORDS</code> words, no argument, the priority and no handle. <code>vTaskStartScheduler()</code> starts the tick and the first task and does not return in normal operation, so the endless loop after it only guards the case where the idle task could not be created.
   </p>
 
   <h2>Try it: three tasks on the Blue Pill</h2>
@@ -217,54 +224,62 @@
     <strong>Known issue.</strong> The projects in this lesson build, but they cannot run in the Wokwi simulator. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (see <code>CHANGELOG.md</code>). In the simulator the output stops after the first task's first output, or prints nothing. The expected output below is what a real Blue Pill prints. Do the steps anyway, so that the code is ready.
   </p>
   <p>
-    Open the project in VS Code. The starter is <code>projects/0087-freertos-tasks/starter</code>, and the solution is in <code>projects/0087-freertos-tasks/solution</code>. Try the starter first.
+    The starter is <code>projects/0087-freertos-tasks/starter</code> and the solution <code>projects/0087-freertos-tasks/solution</code>, so open the starter in VS Code and try it first.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0087-freertos-tasks/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build should end with no errors. Then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>The starter's <code>blink_task</code> uses <code>vTaskDelay(pdMS_TO_TICKS(1U))</code>, which is the wrong period on purpose. The LED toggles far too fast. Replace that call with <code>vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS))</code>, and remove the placeholder. Rebuild. Expected: the LED changes state about every 500 ms, not every millisecond.</li>
-    <li>In <code>report_task</code>, print <code>TASKS OK</code> once the blink task has toggled the LED, using the same <code>uart_puts()</code> call as the <code>tick=</code> label. Expected: the first report line starts with <code>TASKS OK</code>.</li>
-    <li>Simulate. The simulator stops early, so use the expected line below as the check. On a real Blue Pill the serial monitor prints, once per second: a line such as <code>TASKS OK tick=1000 toggles=3</code>, because blink has toggled at ticks 0, 500 and 1000 by the time the report runs at 1000. The tick count rises by 1000 per second, because the tick is 1 kHz. Compare your output with <code>projects/0087-freertos-tasks/solution/main.c</code> after you finish.</li>
+    <li>Open <code>projects/0087-freertos-tasks/starter</code> in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, which should end without errors, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>The starter's <code>blink_task</code> uses <code>vTaskDelay(pdMS_TO_TICKS(1U))</code>, the wrong period on purpose, so the LED toggles far too fast. Replace that call with <code>vTaskDelayUntil(&amp;last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS))</code>, remove the placeholder and rebuild, after which the LED should change state about every 500 ms rather than every millisecond.</li>
+    <li>In <code>report_task</code>, print <code>TASKS OK</code> once the blink task has toggled the LED, using the same <code>uart_puts()</code> call as the <code>tick=</code> label, so that the first report line starts with <code>TASKS OK</code>.</li>
+    <li>Simulate, and since the simulator stops early, use the expected line as the check: on a real Blue Pill the serial monitor prints once per second a line such as <code>TASKS OK tick=1000 toggles=3</code>, because blink has toggled at ticks 0, 500 and 1000 by the time the report runs at 1000, and the tick count rises by 1000 per second, because the tick is 1 kHz. Compare your output with <code>projects/0087-freertos-tasks/solution/main.c</code> after you finish.</li>
   </ol>
-  <p class="sidenote">The solution prints <code>TASKS OK</code> on the first report, because blink has toggled the LED once by then. The file header of the solution carries <code>// EXPECT: TASKS OK</code>, which is the line the course's automatic check looks for.</p>
+  <p>
+    The solution prints <code>TASKS OK</code> on the first report, because blink has toggled the LED once by then.
+    <span class="sidenote">The file header of the solution carries <code>// EXPECT: TASKS OK</code>, which is the line the course's automatic check looks for.</span>
+  </p>
 
-  <div class="win">You created tasks at two priorities, wrote a periodic task with <code>vTaskDelayUntil()</code>, and can explain from the code why the serial output's tick count rises by 1000 per second.</div>
+  <div class="win">You created tasks at two priorities, wrote a periodic task with <code>vTaskDelayUntil()</code> and can explain from the code why the serial output's tick count rises by 1000 per second.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>Task priorities read the NVIC way</h3>
   <p>
-    <strong>Mistake 1: reading priorities the NVIC way.</strong> A developer gives the LED task priority 1 because "1 is more urgent", and gives the sensor task priority 3. The symptom is that the LED task keeps running while the sensor task waits, because the LED task is the higher priority. The fix is to remember that FreeRTOS priorities grow upward, and to write the intent into a named constant such as <code>BLINK_PRIORITY</code>, with a comment that says the higher number is more urgent.
+    The LED task, meant to be the most urgent, waits while the sensor task runs, because a developer gave the LED task priority 1, reading "1 is more urgent" in the NVIC way, and the sensor task priority 3, which in FreeRTOS makes the sensor task the higher priority. Remember that FreeRTOS priorities grow upward, and write the intent into a named constant such as <code>BLINK_PRIORITY</code> with a comment saying that the higher number is more urgent.
   </p>
+  <h3>A period built with vTaskDelay</h3>
   <p>
-    <strong>Mistake 2: a period built with <code>vTaskDelay()</code>.</strong> A periodic job is written as <code>vTaskDelay(pdMS_TO_TICKS(500))</code>, and the team later adds 30 ms of work to the loop. The symptom is a blink that is slower than 500 ms, which shows up only once the work is added. The fix is <code>vTaskDelayUntil()</code> with a stored wake-up time.
+    The blink becomes slower than 500 ms once the team adds 30 ms of work to the loop, because the periodic job was written as <code>vTaskDelay(pdMS_TO_TICKS(500))</code>, which counts from the call. Use <code>vTaskDelayUntil()</code> with a stored wake-up time.
   </p>
+  <h3>A delay shorter than a tick</h3>
   <p>
-    <strong>Mistake 3: a delay shorter than a tick.</strong> The starter file contains a placeholder, <code>vTaskDelay(pdMS_TO_TICKS(1U))</code>, which makes the blink period one tick. That is the wrong period on purpose, and it is the mistake this lesson asks you to find. The symptom on a real board's LED is a light that toggles far too fast to see. A delay of 0.5 ms cannot be written at all with a 1 ms tick: the best the kernel can do is one tick.
+    On a real board the LED toggles far too fast to see, because the starter's placeholder <code>vTaskDelay(pdMS_TO_TICKS(1U))</code> makes the blink period one tick, the wrong period on purpose and the mistake this lesson asks you to find. A delay of 0.5 ms cannot be written at all with a 1 ms tick, the best the kernel can do being one tick.
   </p>
+  <h3>A stack too small for the task</h3>
   <p>
-    <strong>Mistake 4: a stack too small for the task.</strong> A task is given a stack of 16 words to save memory, and it calls <code>printf</code> with a long format. The symptom is a stack overflow: the overflow hook runs and loops forever, and the serial monitor shows nothing after that point. The fix is to read the high-water mark (lesson 92) and enlarge the stack, not to make the hook quieter.
+    The serial monitor shows nothing after a certain point, because a task given a 16-word stack to save memory called <code>printf</code> with a long format, overflowed its stack and sent the overflow hook into its endless loop. Read the high-water mark (lesson 92) and enlarge the stack rather than quietening the hook.
   </p>
+  <h3>A heap too small for the tasks</h3>
   <p>
-    <strong>Mistake 5: a heap too small for the tasks.</strong> A project adds three tasks but leaves <code>configTOTAL_HEAP_SIZE</code> at its old value. The symptom is that the device stops before the report prints, and the malloc-failed hook is the one that loops. The fix is to raise the heap, and to check that <code>xTaskCreate()</code> returns <code>pdPASS</code> for each task during bring-up.
+    The device stops before the report prints, with the malloc-failed hook looping, because a project added three tasks but left <code>configTOTAL_HEAP_SIZE</code> at its old value. Raise the heap and check during bring-up that <code>xTaskCreate()</code> returns <code>pdPASS</code> for each task.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>FreeRTOS configuration and priority tables in production</h2></summary>
   <p>
-    Production firmware on a Cortex-M usually keeps the FreeRTOS configuration in one file, and reviews every change to it. Reviewers check the tick rate, the heap size, the stack overflow setting and the interrupt priority limit, because each one changes behaviour in every task. Priorities are written down in one table, with the reason for each level, so that a new feature can be placed without guessing.
+    Production firmware on a Cortex-M usually keeps the FreeRTOS configuration in one file and reviews every change to it, checking the tick rate, the heap size, the stack overflow setting and the interrupt priority limit, because each changes the behaviour of every task. Priorities are written down in one table with the reason for each level, so that a new feature can be placed without guessing.
   </p>
   <p>
-    Periodic tasks are almost always written with an absolute delay such as <code>vTaskDelayUntil()</code>, and a code reviewer will ask why a relative <code>vTaskDelay()</code> was chosen for any job that has a rate.
+    Periodic tasks are almost always written with an absolute delay such as <code>vTaskDelayUntil()</code>, and a reviewer will ask why a relative <code>vTaskDelay()</code> was chosen for any job that has a rate.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A task is a function that loops forever, with its own stack and a priority. FreeRTOS priorities grow upward: a larger number is more urgent.</li>
-    <li>The scheduler runs the highest-priority ready task. Equal-priority tasks take turns at each tick when time slicing is on.</li>
-    <li>The tick is the kernel's clock. At 1 kHz one tick is 1 ms, and every delay is a whole number of ticks.</li>
-    <li><code>vTaskDelay()</code> counts from the call and drifts; <code>vTaskDelayUntil()</code> keeps an absolute schedule for periodic work.</li>
-    <li>The idle task runs at priority 0 when nothing else is ready. You do not write it.</li>
-    <li>Task stacks are in words, a word is 4 bytes on the Cortex-M3, and all stacks and task control blocks come from the heap.</li>
-    <li>The template's stack overflow hook and <code>configASSERT</code> stop the device at the first mistake, which is what you want while you are learning.</li>
+    <li>A task is a function that loops forever with its own stack and a priority, and FreeRTOS priorities grow upward, a larger number being more urgent.</li>
+    <li>The scheduler runs the highest-priority ready task, and equal-priority tasks take turns at each tick when time slicing is on.</li>
+    <li>The tick is the kernel's clock, at 1 kHz one tick being 1 ms, and every delay is a whole number of ticks.</li>
+    <li><code>vTaskDelay()</code> counts from the call and drifts, whereas <code>vTaskDelayUntil()</code> keeps an absolute schedule for periodic work.</li>
+    <li>The idle task runs at priority 0 when nothing else is ready, and you do not write it.</li>
+    <li>Task stacks are sized in words of 4 bytes on the Cortex-M3, and all stacks and task control blocks come from the heap.</li>
+    <li>The template's stack overflow hook and <code>configASSERT</code> stop the device at the first mistake, which is what you want while learning.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

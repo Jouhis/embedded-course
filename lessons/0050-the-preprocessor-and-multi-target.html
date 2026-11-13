@@ -12,105 +12,97 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>The preprocessor and multi-target builds</h1>
-  <p class="subtitle">One code base can run on a Pico and on an STM32 if the build tells the code which board it is for.</p>
+  <p class="subtitle">Text substitution before compilation and board selection at build time</p>
 
   <div class="goal">
     By the end of this lesson you can write a board header with an include guard and <code>#if defined</code> selection, choose a board with <code>target_compile_definitions</code> in CMake, and replace a dangerous function-like macro with a <code>static inline</code> function.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>One code base for two boards</h2>
   <p>
-    The course so far has built on two boards. The early lessons, starting with <a href="0002-first-blink-in-wokwi.html">lesson 2</a>, blink the Pico's on-board LED, and the STM32 lessons, such as <a href="0042-startup-code-and-the-vector.html">lesson 42</a>, use the Blue Pill, whose LED is on PC13. <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45</a> showed how C evaluates arithmetic on the types you give it. This lesson is about the step before the compiler sees the code at all: the preprocessor, which edits the text of each file first.
+    The course so far has used two boards: the early lessons from <a href="0002-first-blink-in-wokwi.html">lesson 2</a> onward blink the Pico's on-board LED, and the STM32 lessons such as <a href="0042-startup-code-and-the-vector.html">lesson 42</a> use the Blue Pill, whose LED is on PC13. <a href="0045-stdint-types-integer-promotion-overflow.html">Lesson 45</a> showed how C evaluates arithmetic on the types it is given, and this lesson covers the step before the compiler sees the code at all, the preprocessor, which edits the text of each file first.
   </p>
   <p>
-    This comes up when a product has more than one board. A company may build a sensor on a Pico for the prototype, and on an STM32 for the production cost. Two code bases that differ in one pin number are a maintenance trap, because a fix made in one is forgotten in the other. The usual answer is one code base, with the board chosen at build time. The preprocessor makes that choice, and it can also make the code hard to read if it is used carelessly. This lesson covers both.
+    The need appears when a product has more than one board, for example a sensor built on a Pico for the prototype and on an STM32 for production cost. Two code bases differing in one pin number are a maintenance trap, because a fix made in one is forgotten in the other, so the usual answer is a single code base with the board chosen at build time. The preprocessor makes that choice, and used carelessly it can also make code hard to read, so this lesson covers both sides.
   </p>
 
-  <h2>Concepts, one at a time</h2>
-
-  <h3>The preprocessor edits text first</h3>
+  <h2>The preprocessing phase</h2>
   <p>
-    C compilation runs in phases. In the first phase the preprocessor reads each source file and performs the directives: <code>#include</code> pastes in another file, <code>#define</code> records a substitution, and the <code>#if</code> family keeps or removes blocks of text. The output of the preprocessor is ordinary C text, and that text is what the compiler reads. The compiler never sees the directives or the macro names, only their results.
-    <span class="sidenote">The preprocessor does not know about types, scopes or values. It works on tokens: identifiers, numbers, operators and punctuation. That is why it can paste text together, and why it cannot check an argument's type.</span>
+    C compilation runs in phases, and in the first the preprocessor reads each source file and carries out its directives: <code>#include</code> pastes in another file, <code>#define</code> records a substitution, and the <code>#if</code> family keeps or removes blocks of text. The output is ordinary C text, which is what the compiler reads, so the compiler never sees the directives or the macro names, only their results.
+    <span class="sidenote">The preprocessor knows nothing about types, scopes or values and works on tokens: identifiers, numbers, operators and punctuation. That is why it can paste text together and why it cannot check an argument's type.</span>
   </p>
   <p>
-    Because the compiler reports errors on the expanded text, a message can point to a line that looks correct. When a message does not make sense, run the preprocessor by itself with <code>-E</code>, and read what the compiler actually received.
+    Because the compiler reports errors on the expanded text, a message can point at a line that looks correct. When a message makes no sense, run the preprocessor alone with <code>-E</code> and read what the compiler actually received.
   </p>
 
   <div class="analogy">
-    <p>The preprocessor is find-and-replace in a text editor, run before the compiler sees the file. It does not know C: it swaps text for text. That is why <code>SQUARE(2 + 1)</code> becomes <code>2 + 1 * 2 + 1</code>, which is 5, not 9. The editor did exactly what it was told.</p>
+    <p>The preprocessor resembles find-and-replace in a text editor, run before the compiler sees the file: it does not understand C and swaps text for text, which is why <code>SQUARE(2 + 1)</code> becomes <code>2 + 1 * 2 + 1</code>, which is 5 rather than 9. Unlike an editor's replace, though, its result is never shown unless you ask for it with <code>-E</code>, so the change stays hidden.</p>
   </div>
 
-  <h3>Object-like and function-like macros</h3>
+  <h2>Object-like and function-like macros</h2>
   <p>
-    An <strong>object-like macro</strong> is a name with a replacement list, such as <code>#define LED_PIN 25u</code>. Each use of <code>LED_PIN</code> is replaced by the text <code>25u</code>. A <strong>function-like macro</strong> takes arguments. Each use is replaced by its replacement list, with the arguments substituted for the parameters, as text. The replacement is textual, so nothing is evaluated first. The argument <code>2 + 1</code> is pasted in as three tokens, and the operators inside the replacement decide how they group.
+    An <strong>object-like macro</strong> is a name with a replacement list, such as <code>#define LED_PIN 25u</code>, every use of <code>LED_PIN</code> being replaced by the text <code>25u</code>. A <strong>function-like macro</strong> takes arguments, and each use is replaced by its replacement list with the arguments substituted for the parameters as text. Since the replacement is textual, nothing is evaluated first, so the argument <code>2 + 1</code> is pasted in as three tokens, and the operators in the replacement decide how they group.
     <a href="https://en.cppreference.com/w/c/preprocessor/replace" target="_blank" rel="noopener">cppreference, replacement of macros</a>
   </p>
   <p>
-    The preprocessor offers two operators that work only inside macros. The <code>#</code> operator turns the argument into a string literal, so <code>#name</code> with <code>name</code> equal to <code>OK</code> becomes <code>"OK"</code>. The <code>##</code> operator joins two tokens into one, so <code>EV_##name</code> with <code>name</code> equal to <code>OK</code> becomes the single identifier <code>EV_OK</code>. Both are used in the X-macro pattern later in this lesson.
+    Two operators work only inside macros. The <code>#</code> operator turns an argument into a string literal, so <code>#name</code> with <code>name</code> equal to <code>OK</code> becomes <code>"OK"</code>, while <code>##</code> joins two tokens into one, so <code>EV_##name</code> becomes the single identifier <code>EV_OK</code>. Both appear in the X-macro pattern later in this lesson.
   </p>
 
-  <h3>Conditional compilation</h3>
+  <h2>Conditional compilation</h2>
   <p>
-    The <code>#if</code>, <code>#ifdef</code>, <code>#elif</code>, <code>#else</code> and <code>#endif</code> directives select which lines are compiled. The preprocessor evaluates each condition at build time, and a false branch is removed completely. A <code>defined(NAME)</code> test asks only whether the name has been defined, and it does not care about its value. The test <code>#if defined(BOARD_PICO)</code> is true for <code>-DBOARD_PICO</code>, and also for <code>-DBOARD_PICO=0</code>. That detail causes one of the mistakes below.
+    The <code>#if</code>, <code>#ifdef</code>, <code>#elif</code>, <code>#else</code> and <code>#endif</code> directives select which lines are compiled, the preprocessor evaluating each condition at build time and removing a false branch completely. A <code>defined(NAME)</code> test asks only whether the name has been defined, regardless of its value, so <code>#if defined(BOARD_PICO)</code> is true for <code>-DBOARD_PICO</code> and equally for <code>-DBOARD_PICO=0</code>, a detail behind one of the mistakes below.
   </p>
   <p>
-    The <code>#error</code> directive stops the build and prints its message. It is a deliberate check: if no board was chosen, the build fails with a clear message, rather than compiling a pin that does not exist on the hardware.
+    The <code>#error</code> directive stops the build and prints its message. It serves as a deliberate check, so that if no board was chosen the build fails with a clear message instead of compiling a pin that does not exist on the hardware.
   </p>
 
-  <h3>Include guards</h3>
+  <h2>Include guards</h2>
   <p>
-    A header can be included more than once in one translation unit, through different paths. Each <code>#include</code> pastes the whole header in again, so a second copy of a <code>typedef</code> or a <code>struct</code> definition is a compile error. An <strong>include guard</strong> is a pattern that prevents this. The header wraps its contents in <code>#ifndef NAME</code>, defines <code>NAME</code> at the top, and ends with <code>#endif</code>. The second inclusion finds the name already defined and skips the body.
+    A header can be included more than once in one translation unit through different paths, and since each <code>#include</code> pastes the whole header in again, a second copy of a <code>typedef</code> or <code>struct</code> definition is a compile error. An <strong>include guard</strong> prevents this by wrapping the header's contents in <code>#ifndef NAME</code>, defining <code>NAME</code> at the top and ending with <code>#endif</code>, so the second inclusion finds the name already defined and skips the body.
     <a href="../reference/glossary.html#include-guard">Glossary: Include guard</a>
   </p>
 
-  <h3>Choosing a value at build time</h3>
+  <h2>Build-time definitions in CMake</h2>
   <p>
-    The compiler's <code>-D</code> option defines a macro from the command line. In CMake the same thing is done with <code>target_compile_definitions</code>, which adds definitions to one target. The keyword <code>PRIVATE</code> applies the definitions to that target, and <code>NAME=VALUE</code> sets a value. The build, not the source file, decides which board the code is for.
+    The compiler's <code>-D</code> option defines a macro from the command line, and CMake does the same with <code>target_compile_definitions</code>, which adds definitions to one target, <code>PRIVATE</code> applying them to that target and <code>NAME=VALUE</code> setting a value. The build rather than the source file then decides which board the code is for.
     <a href="https://cmake.org/cmake/help/latest/command/target_compile_definitions.html" target="_blank" rel="noopener">CMake documentation, target_compile_definitions</a>
   </p>
 
   <div class="example">
-    <p>A product often comes in two models, such as a basic and a pro version of the same controller, with a different board in each. The team keeps one source tree and builds it twice with <code>-DBOARD_BASIC</code> and <code>-DBOARD_PRO</code>. The board header picks the pin numbers and the features for each, so a fix made once reaches both products.</p>
+    <p>A product often comes in two models, such as a basic and a pro version of the same controller, each with a different board. The team keeps one source tree and builds it twice, with <code>-DBOARD_BASIC</code> and <code>-DBOARD_PRO</code>, and the board header picks the pin numbers and features for each, so a fix made once reaches both products.</p>
   </div>
 
-  <h2>Worked example: SQUARE(2 + 1), step by step</h2>
+  <h2>Worked example: expanding SQUARE(2 + 1)</h2>
   <p>
-    A square is a common thing to write as a macro, and an easy one to get wrong. Here is the definition, with the lesson's test case:
+    A square is a common thing to write as a macro and an easy one to get wrong. The definition and the lesson's test case follow, and before reading the steps, predict the value stored in <code>a</code>.
   </p>
   <pre><code class="language-c">#define SQUARE(x) x * x
 
 int a = SQUARE(2 + 1);</code></pre>
+  <ol class="steps">
+    <li><strong>Collect the argument.</strong> The preprocessor finds <code>SQUARE(</code> and collects one argument, the tokens <code>2 + 1</code>, without evaluating them.</li>
+    <li><strong>Substitute the text.</strong> It replaces each <code>x</code> in the replacement list <code>x * x</code> with <code>2 + 1</code>, giving <code>2 + 1 * 2 + 1</code>, which is exactly the line <code>arm-none-eabi-gcc -E</code> prints for this definition.</li>
+    <li><strong>Parse the result.</strong> The compiler applies the usual precedence, multiplication binding tighter than addition, so <code>1 * 2</code> gives 2 first and the expression becomes <code>2 + 2 + 1</code>, which is 5, the value stored in <code>a</code> instead of 9.</li>
+  </ol>
   <p>
-    Step 1: the preprocessor finds <code>SQUARE(</code> and collects one argument, the tokens <code>2 + 1</code>. It does not evaluate them.
-  </p>
-  <p>
-    Step 2: it substitutes the argument for <code>x</code> in the replacement list <code>x * x</code>. Each <code>x</code> becomes <code>2 + 1</code>, so the text becomes <code>2 + 1 * 2 + 1</code>. You can check this with <code>arm-none-eabi-gcc -E</code>, which prints exactly this line for the definition above.
-  </p>
-  <p>
-    Step 3: the compiler parses that text with the usual precedence. Multiplication binds tighter than addition, so <code>1 * 2</code> is computed first and gives 2. The expression is then <code>2 + 2 + 1</code>, which is 5. The assignment stores 5 in <code>a</code>, not 9.
-  </p>
-  <p>
-    Now the function version, which the solution uses:
+    The solution uses a function instead.
   </p>
   <pre><code class="language-c">static inline int square(int x) {
     return x * x;
 }
 
 int b = square(2 + 1);</code></pre>
+  <ol class="steps">
+    <li><strong>Evaluate the argument.</strong> The compiler evaluates <code>2 + 1</code> first as a normal expression, so the argument is the value 3 rather than text.</li>
+    <li><strong>Run the body.</strong> The function receives 3 in its parameter <code>x</code>, and <code>x * x</code> is <code>3 * 3</code>, so <code>b</code> holds 9, the parameter having been substituted once, by value.</li>
+  </ol>
   <p>
-    Step 1: the compiler evaluates the argument <code>2 + 1</code> first, as a normal expression, and gets the value 3. The argument is a value, not text.
-  </p>
-  <p>
-    Step 2: the function receives 3 in its parameter <code>x</code>. Inside, <code>x * x</code> is <code>3 * 3</code>, which is 9. The result is 9 in <code>b</code>. The function body is an ordinary expression, so the parameter is substituted once, by value.
-  </p>
-  <p>
-    The two results differ only because the macro pastes text and the function passes a value. Both forms run the same arithmetic. The difference is where the grouping happens.
+    The two results differ only because the macro pastes text while the function passes a value: both forms run the same arithmetic, and only the place where the grouping happens differs.
   </p>
 
-  <h2>Worked example: one line that selects the pin</h2>
+  <h2>Worked example: selecting the LED pin</h2>
   <p>
-    The board header makes the same point for constants. With <code>BOARD_PICO</code> defined, the preprocessor keeps the Pico branch and removes the other one:
+    The board header makes the same point for constants. With <code>BOARD_PICO</code> defined, the preprocessor keeps the Pico branch and removes the other.
   </p>
   <pre><code class="language-c">#if defined(BOARD_PICO)
     #define LED_PIN  25u          /* kept: the Pico branch is compiled */
@@ -118,36 +110,36 @@ int b = square(2 + 1);</code></pre>
     #define LED_PIN  13u          /* removed: the preprocessor never sees it as code */
 #endif</code></pre>
   <p>
-    Every later use of <code>LED_PIN</code> becomes <code>25u</code>. The line <code>gpio_xor_mask(1u &lt;&lt; LED_PIN)</code> therefore becomes <code>gpio_xor_mask(1u &lt;&lt; 25u)</code>. The value is 1 shifted left 25 places, which is 33554432, a single bit in bit 25. A build with <code>BOARD_BLUEPILL</code> would produce <code>1u &lt;&lt; 13u</code>, which is 8192, a single bit in bit 13. The source line is the same in both builds, and only the text the compiler receives differs.
+    Every later use of <code>LED_PIN</code> becomes <code>25u</code>, so <code>gpio_xor_mask(1u &lt;&lt; LED_PIN)</code> becomes <code>gpio_xor_mask(1u &lt;&lt; 25u)</code>, 1 shifted left 25 places, which is 33 554 432, a single bit in bit 25. A build with <code>BOARD_BLUEPILL</code> would produce <code>1u &lt;&lt; 13u</code>, which is 8 192, a single bit in bit 13, so the source line is identical in both builds and only the text the compiler receives differs.
   </p>
 
-  <h2>Dangerous macros, and the static inline alternative</h2>
+  <h2>Macro side effects and static inline functions</h2>
   <p>
-    The <code>SQUARE</code> macro fails because it has no parentheses. Adding them helps with that case, but not with the others. Suppose the argument has side effects:
+    The <code>SQUARE</code> macro fails because it lacks parentheses, and adding them fixes that case but not the others, as an argument with side effects shows.
   </p>
   <pre><code class="language-c">int i = 2;
 int c = SQUARE(i++);     /* expands to i++ * i++ */</code></pre>
   <p>
-    The expansion is <code>i++ * i++</code>. Both operands change <code>i</code>, and the standard does not sequence them. The result is undefined behaviour: the compiler may produce any value, and it may increment <code>i</code> twice or not at all. A function call such as <code>square(i++)</code> evaluates <code>i++</code> once, before the call, and so has defined behaviour.
+    The expansion <code>i++ * i++</code> changes <code>i</code> in both operands, which the standard leaves unsequenced, so the behaviour is undefined: the compiler may produce any value and may increment <code>i</code> twice or not at all. A function call such as <code>square(i++)</code> evaluates <code>i++</code> once, before the call, and is therefore well defined.
     <a href="../reference/glossary.html#undefined-behaviour">Glossary: Undefined behaviour</a>
   </p>
-  <div class="warning">Do not use a macro to hide a computation with side effects. <code>SQUARE(i++)</code> has undefined behaviour in C, because the argument is used twice without a sequence point between. Write a <code>static inline</code> function instead.</div>
+  <div class="warning">Do not hide a computation with side effects in a macro. <code>SQUARE(i++)</code> has undefined behaviour in C, because the argument is used twice without a sequence point in between, so write a <code>static inline</code> function instead.</div>
   <p>
-    A <code>static inline</code> function fixes the problems at once. The argument is evaluated once, before the call. The parameter has a type, so the conversions follow the usual rules of C from lesson 45. The function has file-local linkage, so it does not clash with other files. And the compiler can still inline it, which removes the call overhead on the small functions where it matters.
+    A <code>static inline</code> function removes all these problems. Its argument is evaluated once before the call, its parameter has a type, so conversions follow the usual rules of lesson 45, its file-local linkage prevents clashes with other files, and the compiler can still inline it, removing the call overhead in the small functions where that matters.
     <a href="../reference/glossary.html#static-inline-function">Glossary: Static inline function</a>
   </p>
   <p>
-    Macros still have uses that a function cannot cover. A token-pasting list, a compile-time constant, or a stringized name must be a macro. Use them when the preprocessor's job is to write text, and use a function when the job is to compute a value.
+    Macros still have uses a function cannot cover, since a token-pasting list, a compile-time constant or a stringized name must be a macro. Use a macro when the preprocessor's job is to write text and a function when the job is to compute a value.
   </p>
 
   <p>
-    Try the SQUARE example with each definition. Predict the value before you read it, then use the macro inside 100 / SQUARE(…): the inner parentheses are not enough there. The last argument, i++, is the case no parentheses can fix.
+    The widget below runs the SQUARE example with each definition. Predict each value before reading it, then use the macro inside 100 / SQUARE(…), where the inner parentheses are not enough, and finish with the argument i++, the case that no parentheses can fix.
   </p>
   <div class="widget macroexp"></div>
 
-  <h2>X-macros: one list, many uses</h2>
+  <h2>X-macros for parallel lists</h2>
   <p>
-    An <strong>X-macro</strong> keeps one list of names in a macro. The list is written as a macro that takes another macro as its argument, and each use passes a different macro. Here is the pattern for event names:
+    An <strong>X-macro</strong> keeps one list of names in a macro that takes another macro as its argument, each use passing a different macro, as in this pattern for event names.
   </p>
   <pre><code class="language-c">#define EVENT_LIST(X)  X(OK)  X(TIMEOUT)  X(BAD_CRC)
 #define AS_ENUM(name)   EV_##name,          /* ## joins the prefix and the name */
@@ -156,15 +148,15 @@ int c = SQUARE(i++);     /* expands to i++ * i++ */</code></pre>
 typedef enum { EVENT_LIST(AS_ENUM) EV_COUNT } Event;
 static const char *const event_names[] = { EVENT_LIST(AS_STRING) };</code></pre>
   <p>
-    Trace the enum. <code>EVENT_LIST(AS_ENUM)</code> expands to <code>AS_ENUM(OK) AS_ENUM(TIMEOUT) AS_ENUM(BAD_CRC)</code>, and each of those becomes <code>EV_OK,</code>, <code>EV_TIMEOUT,</code> and <code>EV_BAD_CRC,</code>. The enum is therefore <code>EV_OK = 0, EV_TIMEOUT = 1, EV_BAD_CRC = 2, EV_COUNT = 3</code>. The number <code>EV_TIMEOUT</code> is 1 because it is the second entry.
+    We trace the enum first. <code>EVENT_LIST(AS_ENUM)</code> expands to <code>AS_ENUM(OK) AS_ENUM(TIMEOUT) AS_ENUM(BAD_CRC)</code>, each becoming <code>EV_OK,</code>, <code>EV_TIMEOUT,</code> and <code>EV_BAD_CRC,</code>, so the enum is <code>EV_OK = 0, EV_TIMEOUT = 1, EV_BAD_CRC = 2, EV_COUNT = 3</code>, with <code>EV_TIMEOUT</code> equal to 1 because it is the second entry.
   </p>
   <p>
-    Trace the string table. The same list with <code>AS_STRING</code> expands each name into a string literal, so the array is <code>{"OK", "TIMEOUT", "BAD_CRC"}</code>. The index of each string matches the enum value, because both come from the same list in the same order. Adding <code>X(RETRY)</code> to the list gives a new enum value and a new string in one edit. No two lists can drift apart.
+    The same list with <code>AS_STRING</code> expands each name into a string literal, so the array is <code>{"OK", "TIMEOUT", "BAD_CRC"}</code>, and each string's index matches the enum value because both come from the same list in the same order. Adding <code>X(RETRY)</code> to the list produces a new enum value and a new string in one edit, so the two lists cannot drift apart.
   </p>
 
-  <h2>The code, explained line by line</h2>
+  <h2>The board header and main file line by line</h2>
   <p>
-    The starter and the solution share the board header, which is the core of the lesson. The header is short, and every line has a purpose:
+    The starter and the solution share the board header, which is the core of the lesson, a short file in which every line has a purpose.
   </p>
   <pre><code class="language-c">#ifndef BOARD_H
 #define BOARD_H
@@ -181,23 +173,23 @@ static const char *const event_names[] = { EVENT_LIST(AS_STRING) };</code></pre>
 
 #endif /* BOARD_H */</code></pre>
   <p>
-    The first two lines are the include guard. The name <code>BOARD_H</code> is defined on the second line, so a second inclusion finds it and skips the body. The <code>#if defined</code> chain chooses one set of definitions. The <code>BOARD_NAME</code> string is for the serial monitor, and <code>LED_PIN</code> is the number the rest of the code uses. Because every board sets the same two names, <code>main.c</code> never needs to know which board it is.
+    The first two lines are the include guard, defining <code>BOARD_H</code> so that a second inclusion finds it and skips the body, and the <code>#if defined</code> chain chooses one set of definitions. <code>BOARD_NAME</code> is a string for the serial monitor and <code>LED_PIN</code> the number the rest of the code uses, and because every board sets the same two names, <code>main.c</code> never needs to know which board it runs on.
   </p>
   <p>
-    The <code>#else</code> branch is the safety net. It runs only when neither board was defined, and its <code>#error</code> stops the build. A build that forgets the board fails at once, instead of compiling a pin number that is wrong for the hardware.
+    The <code>#else</code> branch is the safety net, active only when neither board was defined, and its <code>#error</code> stops the build, so a build that forgets the board fails at once instead of compiling a pin number that is wrong for the hardware.
   </p>
   <p>
-    The CMake line selects the board for this build. It is written in <code>CMakeLists.txt</code>, not in the source:
+    The CMake line, written in <code>CMakeLists.txt</code> rather than the source, selects the board for this build.
   </p>
   <pre><code class="language-cmake">target_compile_definitions(blink PRIVATE BOARD_PICO=1)</code></pre>
   <p>
-    The line adds the definition <code>BOARD_PICO=1</code> to the target <code>blink</code>. The <code>PRIVATE</code> keyword applies it to this target's compilation. The value 1 is not used by the header, which tests only whether the name is defined, so the value is a convention that reads clearly in the build file.
+    It adds the definition <code>BOARD_PICO=1</code> to the target <code>blink</code>, <code>PRIVATE</code> applying it to this target's compilation. The header tests only whether the name is defined and ignores the value 1, which is a convention that reads clearly in the build file.
   </p>
   <p>
-    The STM32 template works the same way. The file <code>templates/common/stm32f1.cmake</code> calls <code>add_compile_definitions(STM32F103xB)</code>, which defines the device macro for every target in that project. The umbrella header <code>stm32f1xx.h</code> tests that macro with <code>#elif defined(STM32F103xB)</code> to pick the device header for the chip.
+    The STM32 template works the same way. The file <code>templates/common/stm32f1.cmake</code> calls <code>add_compile_definitions(STM32F103xB)</code>, which defines the device macro for every target in the project, and the umbrella header <code>stm32f1xx.h</code> tests that macro with <code>#elif defined(STM32F103xB)</code> to pick the device header for the chip.
   </p>
   <p>
-    The main file uses the X-macro, the function, and the board name:
+    The main file uses the X-macro, the function and the board name.
   </p>
   <pre><code class="language-c">static inline int square(int x) {
     return x * x;
@@ -217,57 +209,70 @@ int main(void) {
     }
 }</code></pre>
   <p>
-    The function <code>square</code> is the replacement for the macro, and it is called with <code>2 + 1</code>, so the result is 9. The <code>printf</code> prints the board name from the header, the square, and the name of one enum value with its number. The format string uses <code>%s</code> for strings and <code>%d</code> for integers, and the cast <code>(int)EV_TIMEOUT</code> matches the <code>%d</code> with an <code>int</code> argument.
+    The function <code>square</code> replaces the macro and is called with <code>2 + 1</code>, giving 9, and the <code>printf</code> prints the board name from the header, the square and the name of one enum value with its number. The format string uses <code>%s</code> for strings and <code>%d</code> for integers, and the cast <code>(int)EV_TIMEOUT</code> gives <code>%d</code> the <code>int</code> argument it expects.
   </p>
   <p>
-    The loop calls <code>gpio_xor_mask</code>, which the SDK documents as toggling every GPIO that appears in its mask. The mask <code>1u &lt;&lt; LED_PIN</code> is the single bit for the LED, so the LED toggles every 500 ms. The loop does not mention a board. The board is entirely in the header, which is the point of the design.
+    The loop calls <code>gpio_xor_mask</code>, which the SDK documents as toggling every GPIO in its mask, and since <code>1u &lt;&lt; LED_PIN</code> is the single bit for the LED, the LED toggles every 500 ms. The loop never mentions a board, which lives entirely in the header, and that separation is the point of the design.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0050-multi-target</code> is a Pico program with a board header, an X-macro list and a <code>SQUARE</code> macro that is wrong for its argument. The starter has the macro and prints the wrong value, and the solution replaces it.
+    The project <code>projects/0050-multi-target</code> is a Pico program with a board header, an X-macro list and a <code>SQUARE</code> macro that is wrong for its argument. The starter keeps the macro and prints the wrong value, and the solution replaces it.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0050-multi-target/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Read the printed value for <code>square(2+1)</code>. The starter prints <code>square(2+1)=5 expected 9</code>. The 5 is the macro's result from the worked example.</li>
-    <li>Your task: replace the <code>SQUARE</code> macro in <code>main.c</code> with the <code>static inline int square(int x)</code> function from this lesson. Then replace the three <code>printf</code> lines in <code>main</code> with the single <code>MULTI-TARGET OK</code> call from the solution, so the line is printed in one place.</li>
-    <li>Build again. You will know it works when the serial monitor prints <code>MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)</code>, and the on-board LED blinks every 500 ms.</li>
+    <li>Open <code>projects/0050-multi-target/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Read the printed value for <code>square(2+1)</code>. The starter prints <code>square(2+1)=5 expected 9</code>, the 5 being the macro's result from the worked example.</li>
+    <li>Replace the <code>SQUARE</code> macro in <code>main.c</code> with the <code>static inline int square(int x)</code> function from this lesson, then replace the three <code>printf</code> lines in <code>main</code> with the single <code>MULTI-TARGET OK</code> call from the solution, so that the line is printed in one place.</li>
+    <li>Build again. The fix works when the serial monitor prints <code>MULTI-TARGET OK board=pico square=9 event=TIMEOUT(1)</code> and the on-board LED blinks every 500 ms.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Look at what the macro expands to for the argument <code>2 + 1</code>: it becomes <code>2 + 1 * 2 + 1</code>. Then write a function that takes one <code>int</code> and returns its square. The call site stays almost the same, and the function receives 3.</p>
+    <p>For the argument <code>2 + 1</code> the macro expands to <code>2 + 1 * 2 + 1</code>, so write a function that takes one <code>int</code> and returns its square. The call site stays almost the same, and the function receives 3.</p>
   </details>
-  <p>The reference solution is in <code>projects/0050-multi-target/solution</code>. Try first, compare after. To see the selection work, change <code>BOARD_PICO=1</code> to <code>BOARD_BLUEPILL=1</code> in <code>CMakeLists.txt</code> and build. The header then picks <code>LED_PIN</code> 13 and the name <code>bluepill</code>. Be aware that this project is still a Pico SDK program, so the binary runs on the Pico and pin 13 there is a different pin. A real Blue Pill build needs the STM32 template, which is a separate project.</p>
+  <p>The reference solution is in <code>projects/0050-multi-target/solution</code>, so try first and compare afterwards. To see the selection work, change <code>BOARD_PICO=1</code> to <code>BOARD_BLUEPILL=1</code> in <code>CMakeLists.txt</code> and build, and the header picks <code>LED_PIN</code> 13 and the name <code>bluepill</code>. The project is still a Pico SDK program, however, so the binary runs on the Pico, where pin 13 is a different pin, and a real Blue Pill build needs the STM32 template in a separate project.</p>
 
-  <div class="win">You chose the board in the build, not in the source, and replaced a macro that mis-evaluated its argument with a function that does not. You also wrote an X-macro list that keeps the enum and the names in step.</div>
+  <div class="win">You chose the board in the build rather than the source, replaced a macro that mis-evaluated its argument with a function that does not, and wrote an X-macro list that keeps the enum and its names in step.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <ol>
-    <li><strong>A macro with side effects.</strong> A developer writes <code>SQUARE(i++)</code> or <code>MAX(a++, b)</code>, and the variable changes twice, or the result is unpredictable. The symptom is a number that looks wrong on the serial monitor, and changes with the optimisation level. The fix is a <code>static inline</code> function, which evaluates its argument once.</li>
-    <li><strong>A constant macro without parentheses.</strong> A developer defines <code>#define CLEAR_BIT 1 &lt;&lt; 13</code>, and then writes <code>gpio &amp;= ~CLEAR_BIT</code>. The expansion is <code>~1 &lt;&lt; 13</code>, which is <code>(~1) &lt;&lt; 13</code>, equal to <code>0xFFFFC000</code>. That value clears bits 0 to 13, not only bit 13. The symptom is that other pins go low when one pin is cleared. The fix is to wrap the constant: <code>#define CLEAR_BIT (1u &lt;&lt; 13)</code>, and to test the value with a print.</li>
-    <li><strong>Testing a board name with a value.</strong> A build passes <code>-DBOARD_PICO=0</code>, meaning "not a Pico", but <code>#if defined(BOARD_PICO)</code> is true because the name is defined. The symptom is the Pico pin selected on a board that is not a Pico, and the serial monitor shows the wrong board name. The fix is to define only the chosen board, or to write the test as <code>#if BOARD_PICO</code>, which uses the value.</li>
-    <li><strong>A header without an include guard.</strong> A file includes <code>board.h</code> directly and also through another header. The build fails with a redefinition error, pointing at a line that looks fine. The symptom is an error that appears only when a new include is added. The fix is the guard at the top and the matching <code>#endif</code> at the bottom.</li>
-    <li><strong>Forgetting the board definition.</strong> A new build target is added to CMake without <code>target_compile_definitions</code>. Without the header's <code>#error</code>, the build would compile with no <code>LED_PIN</code> and fail somewhere confusing. With the safety net, the message says what to define. The symptom is a clear build error, and the fix is to add the line to the target.</li>
-  </ol>
+  <h3>A macro with side effects</h3>
+  <p>
+    A number on the serial monitor looks wrong and changes with the optimisation level, because <code>SQUARE(i++)</code> or <code>MAX(a++, b)</code> changes the variable twice or unpredictably. Use a <code>static inline</code> function, which evaluates its argument once.
+  </p>
+  <h3>A constant macro without parentheses</h3>
+  <p>
+    Other pins go low when one pin is cleared, because with <code>#define CLEAR_BIT 1 &lt;&lt; 13</code> the line <code>gpio &amp;= ~CLEAR_BIT</code> expands to <code>~1 &lt;&lt; 13</code>, which is <code>(~1) &lt;&lt; 13</code>, or <code>0xFFFFC000</code>, a mask that clears bits 0 to 13 instead of bit 13 alone. Wrap the constant as <code>#define CLEAR_BIT (1u &lt;&lt; 13)</code> and check the value with a print.
+  </p>
+  <h3>A board name tested for its value</h3>
+  <p>
+    The serial monitor shows the wrong board name and the Pico pin is selected on another board, because the build passes <code>-DBOARD_PICO=0</code> to mean "not a Pico" while <code>#if defined(BOARD_PICO)</code> is true for any defined name. Define only the chosen board, or write the test as <code>#if BOARD_PICO</code>, which uses the value.
+  </p>
+  <h3>A header without an include guard</h3>
+  <p>
+    A redefinition error appears as soon as a new include is added, pointing at a line that looks fine, because a file includes <code>board.h</code> both directly and through another header. Add the guard at the top and the matching <code>#endif</code> at the bottom.
+  </p>
+  <h3>A target without a board definition</h3>
+  <p>
+    A newly added CMake target fails to build, because it lacks <code>target_compile_definitions</code>; without the header's <code>#error</code> it would compile with no <code>LED_PIN</code> and fail somewhere confusing, whereas the safety net turns this into a clear message saying what to define. Add the definition line to the target.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Preprocessor rules in professional code</h2></summary>
   <p>
-    Teams use the preprocessor for three jobs: include guards, board or device selection, and compile-time constants that must be known before the code is compiled. They avoid it for computation. The HAL and CMSIS headers follow this split, with macros for device selection and register names, and small inline functions for everything that does arithmetic.
+    Teams use the preprocessor for three jobs, include guards, board or device selection and constants that must be known before compilation, and avoid it for computation. The HAL and CMSIS headers follow the same split, with macros for device selection and register names and small inline functions for anything arithmetic.
   </p>
   <p>
-    Code review on macros is strict in many teams, and some companies follow MISRA C, a coding standard that restricts macro use. A reviewer asks three questions of each macro. Does it have a function-like form that would be safer? Are its arguments parenthesised, and are they evaluated once? And is the board or device selection done in the build system, so the source does not hard-code a choice? A macro that fails any of these gets a comment in review.
+    Many teams review macros strictly, and some follow MISRA C, a coding standard that restricts macro use. A reviewer asks of each macro whether a safer function form exists, whether its arguments are parenthesised and evaluated once, and whether board or device selection happens in the build system rather than as a hard-coded choice in the source, and a macro that fails any of these draws a review comment.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>The preprocessor edits text before the compiler runs. A macro is a text substitution, and an <code>#if</code> removes code before it is compiled.</li>
+    <li>The preprocessor edits text before the compiler runs, a macro being a text substitution and an <code>#if</code> removing code before it is compiled.</li>
     <li>A function-like macro does not evaluate its argument first, so <code>SQUARE(2 + 1)</code> expands to <code>2 + 1 * 2 + 1</code>, which is 5.</li>
-    <li>Use a <code>static inline</code> function for computation. Use a macro for token pasting, stringizing and compile-time constants.</li>
-    <li>Wrap every macro constant and every argument in parentheses, and never pass an expression with side effects to a macro.</li>
+    <li>A <code>static inline</code> function suits computation, while macros suit token pasting, stringizing and compile-time constants.</li>
+    <li>Every macro constant and argument belongs in parentheses, and an expression with side effects must never be passed to a macro.</li>
     <li>Include guards stop a header being read twice in one translation unit.</li>
-    <li>Choose the board in the build with <code>target_compile_definitions</code>, and add an <code>#error</code> for the case where no board is chosen.</li>
+    <li>The board is chosen in the build with <code>target_compile_definitions</code>, with an <code>#error</code> for the case where no board is chosen.</li>
     <li>An X-macro keeps an enum and its names in one list, so they cannot drift apart.</li>
   </ul>
 

@@ -6,17 +6,17 @@ Lesson: [Git workflow, code review and Doxygen](https://jouhis.github.io/embedde
 
 ## Try it in Git Bash
 
-The project is `projects/0079-git-workflow`. The starter is the blink project from lesson 2. You will copy it outside the course folder, make the copy a git repository, and practise the cycle of commit, branch and merge. The commands below were run in this order on a scratch copy during the course build. They give a clean `git status` after the build.
+The project is `projects/0079-git-workflow`, whose starter is the blink project from lesson 2, which you copy outside the course folder, turn into a git repository and use to practise the cycle of commit, branch and merge. The commands below were run in this order on a scratch copy during the course build and give a clean `git status` after the build.
 
-1. Copy the starter to a folder of your own, outside the course. In Git Bash: `cp -r /c/Users/juhos/embedded-course/projects/0079-git-workflow/starter ~/git-practice`, then `cd ~/git-practice`. Remove any `build/` folder that came with the copy, with `rm -rf build`: CMake stores the paths of the folder where it was configured, so a copied build cannot be reused.
-2. Create the repository and commit the project as it is: `git init -b main`, `git add -A`, `git commit -m "Add blink project"`. If git asks for your name or email, set them once with `git config --global user.name "Your Name"` and `git config --global user.email you@example.com`.
-3. Create a `.gitignore` file that contains one line, `build/`. Commit it: `git add .gitignore`, then `git commit -m "Ignore the CMake build folder"`.
-4. Make a feature branch and change the blink speed. Run `git switch -c feature/faster-blink`, then open `main.c` and change both `sleep_ms(500)` lines to `sleep_ms(250)`. Commit with `git commit -am "Blink twice as fast"`.
-5. Merge the branch back into `main` with a merge commit. Run `git switch main`, then `git merge --no-ff feature/faster-blink -m "Merge feature/faster-blink"`. The `--no-ff` flag keeps the branch visible in the history even though a fast-forward was possible.
-6. Look at the result: `git log --oneline --graph --decorate`. You should see four commits: the two setup commits, the feature commit and the merge commit. The feature branch joins main at the merge, and the graph shows the fork and the join.
-7. Check that the build folder is ignored. Build the copy with the course tool: `python -I /c/Users/juhos/embedded-course/tools/build.py ~/git-practice`. Then run `git status`. It should print nothing, because `build/` is ignored.
+1. Copy the starter to a folder of your own outside the course, in Git Bash with `cp -r /c/Users/juhos/embedded-course/projects/0079-git-workflow/starter ~/git-practice` and then `cd ~/git-practice`, and remove any `build/` folder that came with the copy with `rm -rf build`, since CMake stores the paths of the folder where it was configured, so a copied build cannot be reused.
+2. Create the repository and commit the project as it is with `git init -b main`, `git add -A` and `git commit -m "Add blink project"`, and if git asks for your name or email, set them once with `git config --global user.name "Your Name"` and `git config --global user.email you@example.com`.
+3. Create a `.gitignore` file containing the single line `build/` and commit it with `git add .gitignore` and then `git commit -m "Ignore the CMake build folder"`.
+4. Make a feature branch with `git switch -c feature/faster-blink`, change both `sleep_ms(500)` lines in `main.c` to `sleep_ms(250)` and commit with `git commit -am "Blink twice as fast"`.
+5. Merge the branch back into `main` with a merge commit by running `git switch main` and then `git merge --no-ff feature/faster-blink -m "Merge feature/faster-blink"`, the `--no-ff` flag keeping the branch visible in the history although a fast-forward was possible.
+6. Look at the result with `git log --oneline --graph --decorate`, which should show four commits, the two setup commits, the feature commit and the merge commit, with the graph showing the fork and the join where the feature branch meets main.
+7. Check that the build folder is ignored by building the copy with the course tool, `python -I /c/Users/juhos/embedded-course/tools/build.py ~/git-practice`, and running `git status`, which should print nothing, because `build/` is ignored.
 
-There is no solution commit for this lesson. The starter folder and the solution folder hold the same project, and the solution adds a `.gitignore` that you can compare with yours.
+There is no solution commit for this lesson, the starter and solution folders holding the same project, except that the solution adds a `.gitignore` to compare with yours.
 
 ## Files you work on
 
@@ -31,7 +31,7 @@ The serial monitor prints `LED on`.
 <details>
 <summary>Hint if git says "LF will be replaced by CRLF"</summary>
 
-On Windows, git may print a warning about line endings. It comes from the line-ending setting of your machine, and it does not change the content of the commit. You can ignore it for this lesson.
+On Windows git may warn about line endings, a message coming from your machine's line-ending setting that does not change the content of the commit, so it can be ignored for this lesson.
 
 </details>
 

@@ -6,12 +6,14 @@ Lesson: [Embedded Rust on the Pico](https://jouhis.github.io/embedded-course/les
 
 ## Try it in Wokwi
 
-The project `projects/0111-embedded-rust-on-the-pico` has the template blink on the onboard LED (GP25). It also has a second LED on GP15 through a 220 Ω resistor, and a pushbutton on GP14 that connects to ground. The button uses the RP2040's internal pull-up, so it needs no resistor.
+The project `projects/0111-embedded-rust-on-the-pico` has the template blink on the onboard LED (GP25), a second LED on GP15 through a 220 Ω resistor and a pushbutton on GP14 connecting to ground, which needs no resistor, because it uses the RP2040's internal pull-up.
 
-1. Open `projects/0111-embedded-rust-on-the-pico/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). The starter builds and blinks the onboard LED.
-2. Task (a): find the two `TODO(learner)` comments in `src/main.rs`. Add the GP15 LED as a push-pull output and toggle it every 250 ms, while the onboard LED toggles every 500 ms. Use a tick counter and `%`, as the solution does.
-3. Task (b): configure GP14 with `into_pull_up_input()`, enable a falling-edge interrupt, unmask `IO_IRQ_BANK0`, and write the handler that flips a shared flag. Keep the pin and the flag in `critical_section::Mutex`. Main pauses the blinking while the flag is false.
-4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator. You will know it works when pressing the button stops both LEDs, and pressing it again restarts them.
+1. Open `projects/0111-embedded-rust-on-the-pico/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), a starter that builds and blinks the onboard LED.
+2. For task (a), find the two `TODO(learner)` comments in `src/main.rs` and add the GP15 LED as a push-pull output toggling every 250 ms while the onboard LED toggles every 500 ms, using a tick counter and `%`, as the solution does.
+3. For task (b), configure GP14 with `into_pull_up_input()`, enable a falling-edge interrupt, unmask `IO_IRQ_BANK0` and write the handler that flips a shared flag, keeping the pin and the flag in `critical_section::Mutex`, so that main pauses the blinking while the flag is false.
+4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator, the changes having worked when pressing the button stops both LEDs and pressing it again restarts them.
+
+The reference solution, to compare with after trying first, is in `projects/0111-embedded-rust-on-the-pico/solution`, although it is not run in the simulator here, because that needs a Wokwi token, so lint it with `~/.wokwi/bin/wokwi-cli.exe lint` to check the diagram.
 
 ## Files you work on
 

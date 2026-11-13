@@ -12,84 +12,93 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Capstone 3: the NTC driver and unit tests</h1>
-  <p class="subtitle">A temperature sensor gives a voltage, and the voltage gives a number that must become a temperature the safety rules can trust. This lesson turns the ADC code of a thermistor into degrees Celsius, checks the conversion against known values on the PC, and shows how a fake replaces the ADC in the test.</p>
+  <p class="subtitle">Thermistor conversion tested on the host</p>
 
   <div class="goal">
     By the end of this lesson you can convert a 12-bit NTC reading to hundredths of a degree with the Beta equation, reject open and shorted sensor codes, and write a Unity host test that uses an FFF fake in place of the hardware read.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>A sensor reading the safety rules can trust</h2>
   <p>
-    <a href="0113-capstone-1-requirements-and-the.html">Capstone 1</a> wrote the requirements for the filament dryer. Requirement 2.2 says that an open or shorted temperature sensor must cut the heater and block a start, and that rule can only be met if the code can tell a broken sensor from a real temperature. Capstone 2 (lesson 114) fixed the layers and the pin map. This lesson builds the bottom layer that reads the sensor, and the first piece of pure logic above it. The hardware ideas come from earlier lessons: the voltage divider from <a href="0008-voltage-dividers.html">lesson 8</a>, the ADC from <a href="0058-adc.html">lesson 58</a>, and host unit tests from <a href="0080-unit-testing-on-the-host.html">lesson 80</a>. The fake that replaces the hardware uses the idea from <a href="0081-mocks-and-fakes.html">lesson 81</a>.
+    <a href="0113-capstone-1-requirements-and-the.html">Capstone 1</a> wrote the requirements for the filament dryer, requirement 2.2 saying that an open or shorted temperature sensor must cut the heater and block a start, a rule that can be met only if the code can tell a broken sensor from a real temperature, while capstone 2 (lesson 114) fixed the layers and the pin map. This lesson builds the bottom layer reading the sensor and the first piece of pure logic above it, using the voltage divider from <a href="0008-voltage-dividers.html">lesson 8</a>, the ADC from <a href="0058-adc.html">lesson 58</a> and host unit tests from <a href="0080-unit-testing-on-the-host.html">lesson 80</a>, with a fake replacing the hardware as in <a href="0081-mocks-and-fakes.html">lesson 81</a>.
   </p>
   <p>
-    Why does this matter in a real product? A chamber reading that is 30 degrees wrong is worse than no reading, because the heater controller and the safety rules both trust it. Most firmware bugs that reach customers do not crash. They print a plausible number that is wrong. Tests on the PC catch that kind of error before any board sees it.
-  </p>
-
-  <h2>The idea: a driver turns hardware into numbers</h2>
-  <p>
-    A <a href="../reference/glossary.html#driver">driver</a> is the code that talks to one piece of hardware. Its output should be a plain value with a known meaning, such as an ADC code, a duty cycle or a debounced button level. Everything after the driver works on those values and never on registers. The state machine and the safety checks in this dryer take a temperature in hundredths of a degree and a flag that says whether the sensor is good. They do not know that an ADC exists.
-  </p>
-  <p>
-    That split is what makes the logic testable. A test passes a number in and checks the number that comes out, on a PC, with no heater attached. The NTC conversion is the cleanest example in this dryer, because it is pure arithmetic: it has no register and no timing. The sensor service in <code>app/sensor.c</code> is the thin layer on top. It reads one ADC code through the hardware abstraction layer (HAL), and then calls the conversion. The HAL is the set of functions in <code>hal.h</code> that the board file implements on the Blue Pill.
+    A chamber reading 30 degrees wrong is worse than no reading, because the heater controller and the safety rules both trust it, and most firmware bugs that reach customers do not crash but print a plausible number that is wrong, an error that tests on the PC catch before any board sees it.
   </p>
 
-  <h2>The NTC: from an ADC code to degrees Celsius</h2>
+  <h2>Drivers that turn hardware into numbers</h2>
   <p>
-    The sensor is a negative-temperature-coefficient <a href="../reference/glossary.html#thermistor">thermistor</a>, called an NTC. Its resistance falls as it warms. The part used here is 10 kΩ at 25 °C, which is the usual reference point. The NTC is wired as a <a href="../reference/glossary.html#voltage-divider">voltage divider</a> with a fixed 10 kΩ series resistor. The series resistor sits between the 3.3 V supply and the output node, which the code calls OUT. The NTC sits between OUT and ground. The 12-bit <a href="../reference/glossary.html#adc-analogue-to-digital-converter">ADC</a> measures the voltage on OUT.
+    A <a href="../reference/glossary.html#driver">driver</a> is the code that talks to one piece of hardware, its output being a plain value with a known meaning, such as an ADC code, a duty cycle or a debounced button level, so that everything after the driver works on those values and never on registers. The state machine and the safety checks in this dryer take a temperature in hundredths of a degree and a flag saying whether the sensor is good, without knowing that an ADC exists.
+  </p>
+  <p>
+    That split is what makes the logic testable, a test passing a number in and checking the number that comes out on a PC with no heater attached, and the NTC conversion is the cleanest example in this dryer, because it is pure arithmetic with no register and no timing. The sensor service in <code>app/sensor.c</code> is the thin layer on top, reading one ADC code through the hardware abstraction layer (HAL), the set of functions in <code>hal.h</code> that the board file implements on the Blue Pill, and then calling the conversion.
   </p>
 
-  <h3>How the divider turns resistance into a code</h3>
+  <h2>The NTC and its divider</h2>
   <p>
-    A divider puts two resistors in series across a supply. The voltage at the junction is the supply times the lower resistor divided by the total, so a change in either resistor moves the junction voltage (lesson 8). Here the lower resistor is the NTC. When the chamber warms, the NTC resistance falls, the voltage on OUT falls, and the ADC code falls with it. A warm chamber gives a small code and a cold chamber gives a large one. That direction is the first thing to check when a reading looks wrong.
-  </p>
-  <p>
-    The ADC reports OUT as an integer from 0 to 4095. Code 0 means 0 V and code 4095 means full scale, which is the 3.3 V supply. The code is therefore the OUT voltage as a fraction of full scale, times 4095. Writing the divider in terms of the code gives the relationship the conversion needs. Let <code>full</code> be 4095 and <code>raw</code> be the code. The OUT voltage is 3.3 V times <code>raw</code> divided by <code>full</code>, and it is also 3.3 V times R<sub>ntc</sub> divided by (R<sub>series</sub> + R<sub>ntc</sub>). Cancelling the 3.3 V and rearranging gives full ÷ raw = 1 + R<sub>series</sub> ÷ R<sub>ntc</sub>. So R<sub>ntc</sub> ÷ R<sub>series</sub> = 1 ÷ (full ÷ raw − 1). The conversion needs only this ratio, which is why the supply voltage does not appear in the code. The ratio is the same at 3.0 V or 3.3 V, as long as the ADC reference matches the supply.
+    The sensor is a negative-temperature-coefficient <a href="../reference/glossary.html#thermistor">thermistor</a>, an NTC, whose resistance falls as it warms, the part used here being 10 kΩ at 25 °C, the usual reference point. It is wired as a <a href="../reference/glossary.html#voltage-divider">voltage divider</a> with a fixed 10 kΩ series resistor between the 3.3 V supply and the output node, which the code calls OUT, the NTC sitting between OUT and ground, and the 12-bit <a href="../reference/glossary.html#adc-analogue-to-digital-converter">ADC</a> measuring the voltage on OUT.
   </p>
 
-  <h3>Why a logarithm, and where the beta constant comes from</h3>
+  <h3>From resistance to an ADC code</h3>
   <p>
-    The third idea is the <a href="../reference/glossary.html#beta-equation">beta constant</a>, written B. It describes how steeply the NTC resistance changes with temperature. The usual model is R = R<sub>25</sub> × e<sup>B(1/T − 1/T<sub>25</sub>)</sup>, with T in kelvin. The resistance depends exponentially on the reciprocal of the temperature. Taking the natural logarithm of both sides turns the exponential into a straight line: ln(R ÷ R<sub>25</sub>) = B × (1/T − 1/T<sub>25</sub>). Solving for 1/T gives the Beta equation: 1/T = ln(R ÷ R<sub>25</sub>) ÷ B + 1/T<sub>25</sub>.
+    A divider puts two resistors in series across a supply, the junction voltage being the supply times the lower resistor divided by the total, so a change in either resistor moves the junction voltage (lesson 8), and here the lower resistor is the NTC, so when the chamber warms, the NTC resistance falls, the voltage on OUT falls and the ADC code with it. A warm chamber therefore gives a small code and a cold chamber a large one, the first thing to check when a reading looks wrong.
   </p>
   <p>
-    That is why the conversion has a logarithm. The divider gives the ratio R ÷ R<sub>25</sub>, the logarithm undoes the exponential, and the beta constant scales it. The reference temperature T<sub>25</sub> is 25 °C, which is 298.15 K, because kelvin is degrees Celsius plus 273.15. The equation is an approximation to the real curve, and its error grows as the temperature moves away from 25 °C. The beta value is printed in the thermistor's datasheet. The Wokwi part defaults to 3950.
+    The ADC reports OUT as an integer from 0 to 4095, code 0 meaning 0 V and code 4095 full scale, the 3.3 V supply, so the code is the OUT voltage as a fraction of full scale times 4095. The OUT voltage is both 3.3 V × raw ÷ full and 3.3 V × R<sub>ntc</sub> ÷ (R<sub>series</sub> + R<sub>ntc</sub>), and cancelling the 3.3 V and rearranging gives full ÷ raw = 1 + R<sub>series</sub> ÷ R<sub>ntc</sub>, so
   </p>
+  <p class="eq"><span>R<sub>ntc</sub> ÷ R<sub>series</sub> = 1 ÷ (full ÷ raw − 1)</span><span class="eq-n">(1)</span></p>
   <p>
-    The fourth idea is the failure modes. If the sensor is shorted, its resistance is near zero and OUT is pulled to ground, so the code is near zero. If it is open, its resistance is effectively infinite and OUT is pulled up to 3.3 V through the series resistor, so the code is near full scale. Neither value is a temperature. The logarithm of a zero or negative ratio is undefined, so the conversion must refuse those codes rather than return a number.
+    where full is 4095 and raw the ADC code. The conversion needs only this ratio, which is why the supply voltage does not appear in the code, the ratio being the same at 3.0 V or 3.3 V as long as the ADC reference matches the supply.
   </p>
 
-  <h3>The Wokwi formula, adapted to 12 bits</h3>
+  <h3>The Beta equation</h3>
   <p>
-    The Wokwi docs for the NTC part give the conversion as a short C snippet. It reads the ADC and then computes the temperature with the Beta equation, using a full-scale constant of 1023 and a beta of 3950 <a href="https://docs.wokwi.com/parts/wokwi-ntc-temperature-sensor" target="_blank" rel="noopener">Wokwi docs: NTC temperature sensor</a>. The 1023 is the full scale of a 10-bit ADC. The Blue Pill has a 12-bit ADC, so the constant becomes 4095. Nothing else in the formula changes:
+    The <a href="../reference/glossary.html#beta-equation">beta constant</a>, written B, describes how steeply the NTC resistance changes with temperature, the usual model being
+  </p>
+  <p class="eq"><span>R = R<sub>25</sub> × e<sup>B(1/T − 1/T<sub>25</sub>)</sup></span><span class="eq-n">(2)</span></p>
+  <p>
+    where R is the NTC resistance, R<sub>25</sub> its resistance at the reference temperature T<sub>25</sub> and T the temperature in kelvin, so the resistance depends exponentially on the reciprocal of the temperature. Taking the natural logarithm of both sides turns the exponential into a straight line, ln(R ÷ R<sub>25</sub>) = B × (1/T − 1/T<sub>25</sub>), and solving for 1/T gives the Beta equation
+  </p>
+  <p class="eq"><span>1/T = ln(R ÷ R<sub>25</sub>) ÷ B + 1/T<sub>25</sub></span><span class="eq-n">(3)</span></p>
+  <p>
+    where the divider gives the ratio R ÷ R<sub>25</sub>, the logarithm undoes the exponential and the beta constant scales it, which is why the conversion has a logarithm. The reference temperature T<sub>25</sub> is 25 °C, 298.15 K, because kelvin is degrees Celsius plus 273.15, and the equation approximates the real curve with an error that grows as the temperature moves away from 25 °C, the beta value being printed in the thermistor's datasheet and the Wokwi part defaulting to 3950.
+  </p>
+  <p>
+    The failure modes follow from the divider, a shorted sensor having a resistance near zero, so that OUT is pulled to ground and the code is near zero, while an open sensor has an effectively infinite resistance, so that OUT is pulled up to 3.3 V through the series resistor and the code is near full scale. Neither value is a temperature, and since the logarithm of a zero or negative ratio is undefined, the conversion must refuse those codes rather than return a number.
+  </p>
+
+  <h3>The Wokwi formula for a 12-bit ADC</h3>
+  <p>
+    The Wokwi docs for the NTC part give the conversion as a short C snippet that reads the ADC and computes the temperature with the Beta equation, using a full-scale constant of 1023 and a beta of 3950 <a href="https://docs.wokwi.com/parts/wokwi-ntc-temperature-sensor" target="_blank" rel="noopener">Wokwi docs: NTC temperature sensor</a>, 1023 being the full scale of a 10-bit ADC, so for the Blue Pill's 12-bit ADC the constant becomes 4095, with nothing else in the formula changing.
   </p>
   <pre><code class="language-c">// full = 4095 (12-bit), raw = the ADC code, B = beta (3950), 298.15 K = 25 C
 float inv_t = logf(1.0f / (full / (float)raw - 1.0f)) / 3950.0f + 1.0f / 298.15f;
 float celsius = 1.0f / inv_t - 273.15f;</code></pre>
   <p>
-    The first line is the divider in disguise. The expression full ÷ raw − 1 equals R<sub>series</sub> ÷ R<sub>ntc</sub>, so its reciprocal is the resistance ratio, and the logarithm of that ratio, divided by B, plus 1 ÷ 298.15, is 1 ÷ T in kelvin. The second line inverts that to kelvin and subtracts 273.15. The beta constant belongs to the thermistor, not to the code, so in a real design it comes from the datasheet of the part that is fitted.
+    The first line is the divider in disguise, the expression full ÷ raw − 1 equalling R<sub>series</sub> ÷ R<sub>ntc</sub>, so its reciprocal is the resistance ratio of equation (1), and the logarithm of that ratio divided by B plus 1 ÷ 298.15 is 1 ÷ T in kelvin, which the second line inverts and converts by subtracting 273.15. The beta constant belongs to the thermistor rather than the code, so in a real design it comes from the datasheet of the part that is fitted.
   </p>
   <div class="note">
     <strong>Check the constant.</strong> If the code uses 1023 with a 12-bit ADC, the result is wrong in two ways. Above code 1023 the ratio becomes negative, the logarithm is undefined, and the function returns <code>nan</code>, which is not a number. Below 1023 it returns a number that looks plausible and is wrong: a code of 1000 gives −41.08 °C with the 1023 constant, against 52.80 °C with 4095. Lesson 58 made the same mistake on purpose. Write the full-scale constant as a named value, and test a known reading.
   </div>
 
-  <h3>A worked example: code 2048</h3>
+  <h3>Worked example: code 2048</h3>
   <p>
-    Take code 2048, about half scale. Each step below can be checked on a calculator, and that habit is what catches a wrong constant.
+    Code 2048 is about half scale, and each step below can be checked on a calculator, a habit that catches a wrong constant. Before following the steps, predict roughly what temperature half scale gives with a 10 kΩ series resistor and a 10 kΩ NTC.
   </p>
   <ol class="steps">
-    <li>Divide the full scale by the code and subtract 1: 4095 ÷ 2048 − 1 = 1.99951 − 1 = 0.99951.</li>
-    <li>Take the reciprocal to get R<sub>ntc</sub> ÷ R<sub>series</sub>: 1 ÷ 0.99951 = 1.00049. The NTC is 1.00049 × 10 kΩ = 10.005 kΩ, very close to the 10 kΩ reference.</li>
-    <li>Take the natural logarithm: ln(1.00049) = 0.000488. Divide by the beta: 0.000488 ÷ 3950 = 1.24 × 10<sup>−7</sup>.</li>
-    <li>Add the reference term: 1 ÷ 298.15 = 0.00335402, so 1 ÷ T = 0.00335414 per kelvin.</li>
-    <li>Invert to kelvin: 1 ÷ 0.00335414 = 298.139 K. Subtract 273.15: 298.139 − 273.15 = 24.989 °C.</li>
+    <li><strong>The ratio.</strong> Divide the full scale by the code and subtract 1: 4095 ÷ 2048 − 1 = 1.99951 − 1 = 0.99951.</li>
+    <li><strong>The resistance.</strong> The reciprocal gives R<sub>ntc</sub> ÷ R<sub>series</sub> = 1 ÷ 0.99951 = 1.00049, so the NTC is 1.00049 × 10 kΩ = 10.005 kΩ, very close to the 10 kΩ reference.</li>
+    <li><strong>The logarithm.</strong> ln(1.00049) = 0.000488, which divided by the beta gives 0.000488 ÷ 3950 = 1.24 × 10<sup>−7</sup>.</li>
+    <li><strong>The reference term.</strong> Adding 1 ÷ 298.15 = 0.00335402 gives 1 ÷ T = 0.00335414 per kelvin.</li>
+    <li><strong>The temperature.</strong> Inverting gives 1 ÷ 0.00335414 = 298.139 K, and subtracting 273.15 gives 298.139 − 273.15 = 24.989 °C.</li>
   </ol>
   <p>
-    The result is 24.99 °C, which is what the conversion must return to the nearest hundredth. Step 2 shows something worth noticing: the NTC resistance is almost exactly the series resistance, so the temperature is almost exactly the reference temperature. A code near half scale is the easiest one to check by hand.
+    The result is 24.99 °C, which the conversion must return to the nearest hundredth, and step 2 shows why, since the NTC resistance is almost exactly the series resistance, so the temperature is almost exactly the reference temperature, which makes a code near half scale the easiest one to check by hand.
   </p>
 
-  <h3>The code, line by line</h3>
+  <h3>The conversion code</h3>
   <p>
-    Here is the conversion from the reference version of <code>app/ntc.c</code>. The constants are named in the file, and each line of the formula is one line of C.
+    The conversion from the reference version of <code>app/ntc.c</code> names its constants in the file, each line of the formula being one line of C.
   </p>
   <pre><code class="language-c">if (raw &lt; NTC_RAW_MIN || raw &gt; NTC_RAW_MAX) {
     return false;                          /* open or shorted sensor */
@@ -100,18 +109,18 @@ float celsius = 1.0f / inv_t - KELVIN_OFFSET;
 *centi_c = (int32_t)lroundf(celsius * 100.0f);
 return true;</code></pre>
   <p>
-    The <code>if</code> rejects the fault codes: 15 or less, or 4080 or more. The limits are named <code>NTC_RAW_MIN</code> and <code>NTC_RAW_MAX</code>, so the header documents them in one place. The function returns <code>false</code>, and the caller must check that return value before it uses the output. The line that stores <code>full</code> as a float makes the division below a float division. Without the cast, 4095 ÷ 2048 would be integer division and give 1, and the whole conversion would be wrong.
+    The <code>if</code> rejects the fault codes, 15 or less or 4080 or more, the limits being named <code>NTC_RAW_MIN</code> and <code>NTC_RAW_MAX</code>, so that the header documents them in one place, and the function returns <code>false</code>, a value the caller must check before using the output. Storing <code>full</code> as a float makes the division below a float division, because without the cast 4095 ÷ 2048 would be integer division giving 1, and the whole conversion would be wrong.
   </p>
   <p>
-    The line with <code>logf</code> computes full ÷ raw − 1, then takes the reciprocal, then the logarithm, then divides by the beta and adds 1 ÷ 298.15. The result is 1 ÷ T in kelvin. The next line inverts it and subtracts <code>KELVIN_OFFSET</code>, which is 273.15, to get degrees Celsius. The final line stores hundredths of a degree. The conversion returns <code>int32_t</code> hundredths, not a float, so the rest of the firmware compares integers. The rounding is done by <code>lroundf()</code>, which rounds to the nearest integer, so 24.989 °C becomes 2499.
+    The line with <code>logf</code> computes full ÷ raw − 1, takes the reciprocal and the logarithm, divides by the beta and adds 1 ÷ 298.15, giving 1 ÷ T in kelvin, which the next line inverts, subtracting <code>KELVIN_OFFSET</code>, 273.15, to get degrees Celsius, and the final line stores hundredths of a degree. The conversion returns <code>int32_t</code> hundredths rather than a float, so that the rest of the firmware compares integers, the rounding being done by <code>lroundf()</code>, which rounds to the nearest integer, so 24.989 °C becomes 2499.
   </p>
   <p>
-    The Blue Pill's Cortex-M3 has no floating-point unit, so <code>logf()</code> runs in software and is slow compared with integer code. That is acceptable here, because the sensor is read once every 100 ms.
+    The Blue Pill's Cortex-M3 has no floating-point unit, so <code>logf()</code> runs in software and is slow compared with integer code, which is acceptable here, because the sensor is read once every 100 ms.
   </p>
 
-  <h2>The fault range and the known values for the tests</h2>
+  <h2>The fault range and the known test values</h2>
   <p>
-    A test needs an answer that does not come from the code under test. The values below come from an independent calculation of the same equation in double precision. They are the numbers the host test checks.
+    A test needs an answer that does not come from the code under test, so the values below come from an independent calculation of the same equation in double precision, and they are the numbers the host test checks.
   </p>
   <table>
     <thead><tr><th>ADC code (12-bit)</th><th>Meaning</th><th>Temperature</th></tr></thead>
@@ -125,10 +134,10 @@ return true;</code></pre>
     </tbody>
   </table>
   <p>
-    The fault range matters as much as the conversion. A code near 0 means OUT is pulled to ground, which is a shorted NTC or a wire to GND. A code near 4095 means OUT is pulled up to 3.3 V through the series resistor, which is an open NTC. The logarithm is undefined at both ends, so the conversion must refuse those codes.
+    The fault range matters as much as the conversion, a code near 0 meaning that OUT is pulled to ground by a shorted NTC or a wire to GND, and a code near 4095 that OUT is pulled up to 3.3 V through the series resistor by an open NTC, the logarithm being undefined at both ends, so the conversion must refuse those codes.
   </p>
   <p>
-    The table also shows what the fault limits do not do. The valid codes from 16 to 4079 convert to temperatures from 239.35 °C down to −62.92 °C. The fault limits exist so that the logarithm never fails, and they say nothing about whether a temperature is plausible for a dryer. The 239 °C end is caught by the over-temperature cutoff in lesson 116. The −62.92 °C end is not caught by any rule in the dryer's safety checks, and lesson 116 returns to that gap.
+    The table also shows what the fault limits do not do, the valid codes from 16 to 4079 converting to temperatures from 239.35 °C down to −62.92 °C, because the limits exist so that the logarithm never fails and say nothing about whether a temperature is plausible for a dryer. The 239 °C end is caught by the over-temperature cutoff in lesson 116, whereas the −62.92 °C end is caught by no rule in the dryer's safety checks, a gap lesson 116 returns to.
   </p>
   <div class="warning">
     A pull-up or pull-down that the code does not know about changes which end is the NTC. The conversion above assumes the NTC is the lower resistor, as in the Wokwi part and in lesson 58. If you wire the NTC on top, the same code reads the wrong temperature, and it does so without any error. Check the schematic, not only the code.
@@ -136,12 +145,12 @@ return true;</code></pre>
 
   <h2>Testing with Unity and FFF</h2>
   <p>
-    The host test project compiles the same <code>app/*.c</code> files as the firmware. That is the rule from lesson 80: the test runs the real code, not a copy. <a href="../reference/glossary.html#unit-test">Unity</a> provides the assertions and the test runner, and <a href="../reference/glossary.html#fff-fake-function-framework">FFF</a> provides the fakes (lesson 81). Both are plain C and compile with the PC's MinGW gcc. CMock needs Ruby, which this workspace does not install, so the course uses FFF for the hands-on work.
+    The host test project compiles the same <code>app/*.c</code> files as the firmware, following the rule from lesson 80 that the test runs the real code rather than a copy, <a href="../reference/glossary.html#unit-test">Unity</a> providing the assertions and the test runner and <a href="../reference/glossary.html#fff-fake-function-framework">FFF</a> the fakes (lesson 81). Both are plain C and compile with the PC's MinGW gcc, whereas CMock needs Ruby, which this workspace does not install, so the course uses FFF for the hands-on work.
   </p>
 
-  <h3>How the test project is built</h3>
+  <h3>The test project's CMake build</h3>
   <p>
-    The project's <code>CMakeLists.txt</code> does three jobs. It builds the application code as a library, it builds one test program for each test file, and it registers each program with CTest, the test runner that comes with CMake. Here is the part that builds the library:
+    The project's <code>CMakeLists.txt</code> builds the application code as a library, builds one test program for each test file and registers each program with CTest, the test runner that comes with CMake, the part building the library looking like this.
   </p>
   <pre><code class="language-cmake">set(APP ${CMAKE_CURRENT_LIST_DIR}/../../0116-dryer-drivers/starter/app)
 add_library(dryer_app STATIC
@@ -150,15 +159,15 @@ add_library(dryer_app STATIC
 target_include_directories(dryer_app PUBLIC ${APP})
 target_link_libraries(dryer_app PUBLIC m)            # logf and lroundf (the Beta equation)</code></pre>
   <p>
-    The first line points at the application folder of the dryer's drivers project, which is where the firmware's own sources live. The <code>add_library</code> line lists the source files that every test links against, so <code>ntc.c</code> is compiled exactly as the firmware compiles it. The <code>target_include_directories</code> line makes <code>ntc.h</code> visible to the tests. The last line links the math library <code>m</code>, which provides <code>logf()</code> and <code>lroundf()</code>. Those two functions are the reason the conversion needs a link step beyond the application's own sources.
+    The first line points at the application folder of the dryer's drivers project, where the firmware's own sources live, and the <code>add_library</code> line lists the source files every test links against, so <code>ntc.c</code> is compiled exactly as the firmware compiles it, while the <code>target_include_directories</code> line makes <code>ntc.h</code> visible to the tests. The last line links the math library <code>m</code>, which provides <code>logf()</code> and <code>lroundf()</code>, the two functions that make the conversion need a link step beyond the application's own sources.
   </p>
   <p>
-    The test programs then link against <code>dryer_app</code> and <code>unity</code>, and <code>add_test</code> registers each one. Running <code>python -I tools/build.py &lt;project&gt; --test</code> builds everything and runs CTest, which prints one line per test and a summary. The summary of a passing run reads <code>100% tests passed out of 8</code>.
+    The test programs then link against <code>dryer_app</code> and <code>unity</code>, <code>add_test</code> registering each one, and running <code>python -I tools/build.py &lt;project&gt; --test</code> builds everything and runs CTest, which prints one line per test and a summary reading <code>100% tests passed out of 8</code> for a passing run.
   </p>
 
-  <h3>A Unity test, line by line</h3>
+  <h3>The NTC test file</h3>
   <p>
-    The NTC test file in <code>test/test_ntc.c</code> is short enough to read in full. Its first part sets up the helper and one test:
+    The NTC test file in <code>test/test_ntc.c</code> is short enough to read in full, its first part setting up the helper and one test.
   </p>
   <pre><code class="language-c">static int32_t centi_of(uint16_t raw) {
     int32_t c = -99999;
@@ -171,15 +180,15 @@ static void test_half_scale_is_about_25_degrees(void) {
     TEST_ASSERT_INT32_WITHIN(5, 2499, centi_of(2048));
 }</code></pre>
   <p>
-    <code>centi_of()</code> calls the conversion and insists that it succeeded. The starting value of <code>-99999</code> is a sentinel: if the conversion failed to write the output, the test would see an obviously wrong number rather than a stale zero. <code>TEST_ASSERT_TRUE</code> records a failure and stops the test if the call returned <code>false</code>. The test itself asserts <code>TEST_ASSERT_INT32_WITHIN(5, 2499, centi_of(2048))</code>. Unity's order is delta, expected, actual, so the test passes when the actual value is within 5 hundredths of 2499. The tolerance covers float rounding and the step of the ADC, and it is small enough that a wrong constant of 1023 would fail by tens of degrees.
+    <code>centi_of()</code> calls the conversion and insists that it succeeded, the starting value of <code>-99999</code> being a sentinel, so that a conversion failing to write the output shows an obviously wrong number rather than a stale zero, while <code>TEST_ASSERT_TRUE</code> records a failure and stops the test if the call returned <code>false</code>. The test itself asserts <code>TEST_ASSERT_INT32_WITHIN(5, 2499, centi_of(2048))</code>, Unity's order being delta, expected, actual, so the test passes when the actual value is within 5 hundredths of 2499, a tolerance covering float rounding and the step of the ADC yet small enough that a wrong constant of 1023 fails by tens of degrees.
   </p>
   <p>
-    The file also tests the faults. <code>test_shorted_sensor_is_a_fault</code> asserts that codes 0 and 15 return <code>false</code>, and <code>test_limits_are_valid_readings</code> asserts that codes 16 and 4079 return <code>true</code>. Testing both sides of each limit catches an off-by-one error, which is the most common error at a range boundary.
+    The file also tests the faults, <code>test_shorted_sensor_is_a_fault</code> asserting that codes 0 and 15 return <code>false</code> and <code>test_limits_are_valid_readings</code> that codes 16 and 4079 return <code>true</code>, testing both sides of each limit catching an off-by-one error, the most common error at a range boundary.
   </p>
 
-  <h2>How a fake replaces the hardware</h2>
+  <h2>A fake in place of the ADC read</h2>
   <p>
-    The conversion itself needs no fake. The sensor service does need one, because <code>sensor_read()</code> calls <code>hal_adc_read_ntc()</code>, and that function reads a register. The register exists only on the Blue Pill, so the PC build cannot link against the board file. The driver test in <code>test/test_drivers.c</code> solves that with an FFF fake. These are the lines that matter:
+    The conversion itself needs no fake, whereas the sensor service does, because <code>sensor_read()</code> calls <code>hal_adc_read_ntc()</code>, which reads a register that exists only on the Blue Pill, so the PC build cannot link against the board file, a problem the driver test in <code>test/test_drivers.c</code> solves with an FFF fake, of which these are the lines that matter.
   </p>
   <pre><code class="language-c">DEFINE_FFF_GLOBALS;
 FAKE_VALUE_FUNC(uint16_t, hal_adc_read_ntc);   /* a stand-in with this signature */
@@ -192,22 +201,22 @@ hal_adc_read_ntc_fake.return_val = 2048u;       /* the next call returns this co
 ...
 TEST_ASSERT_EQUAL_INT(1, hal_adc_read_ntc_fake.call_count);   /* exactly one conversion */</code></pre>
   <p>
-    <code>DEFINE_FFF_GLOBALS</code> creates the bookkeeping that FFF needs, once per test program. <code>FAKE_VALUE_FUNC</code> is an FFF macro. It creates a function with the same name and return type as <code>hal_adc_read_ntc()</code>, which the linker uses in place of the board file's version. It also creates a struct named <code>hal_adc_read_ntc_fake</code> that records what happened. <code>RESET_FAKE</code> clears that record in <code>setUp()</code>, which Unity calls before every test, so one test cannot leave a call count behind for the next. Lesson 81 introduced the same pattern with a different function.
+    <code>DEFINE_FFF_GLOBALS</code> creates the bookkeeping FFF needs, once per test program, and <code>FAKE_VALUE_FUNC</code> is an FFF macro creating a function with the same name and return type as <code>hal_adc_read_ntc()</code>, which the linker uses in place of the board file's version, together with a struct named <code>hal_adc_read_ntc_fake</code> recording what happened. <code>RESET_FAKE</code> clears that record in <code>setUp()</code>, which Unity calls before every test, so that one test cannot leave a call count behind for the next, the same pattern lesson 81 introduced with a different function.
   </p>
   <p>
-    Setting <code>return_val</code> scripts the answer to the next call. That is how the test chooses the ADC code, and it is the only way the test can reach the 15-or-less and 4080-or-more branches on a PC, because no real sensor is attached. The last line checks <code>call_count</code>, the number of times the code under test called the fake. A driver that converted twice would still produce the right temperature and pass a value check, but it would fail this one. That is why the record is worth keeping. The test calls the real <code>sensor_read()</code> in <code>app/sensor.c</code>, so the path under test is the firmware's own.
+    Setting <code>return_val</code> scripts the answer to the next call, which is how the test chooses the ADC code and the only way it can reach the 15-or-less and 4080-or-more branches on a PC, since no real sensor is attached, and the last line checks <code>call_count</code>, the number of times the code under test called the fake. A driver converting twice would still produce the right temperature and pass a value check but fail this one, which is why the record is worth keeping, and since the test calls the real <code>sensor_read()</code> in <code>app/sensor.c</code>, the path under test is the firmware's own.
   </p>
 
   <h2>Try it: make the NTC conversion pass the host tests</h2>
   <p>
-    The host tests for this lesson live in <code>projects/0115-dryer-host-tests</code>. They compile the application code from <code>projects/0116-dryer-drivers</code>, so the conversion you write is the file the firmware uses. The starter has one stub to fill in: <code>ntc_centi_from_raw()</code> returns <code>false</code> for every code. Your task is to implement it so that the NTC tests pass.
+    The host tests for this lesson live in <code>projects/0115-dryer-host-tests</code> and compile the application code from <code>projects/0116-dryer-drivers</code>, so the conversion you write is the file the firmware uses, the starter having one stub to fill in, <code>ntc_centi_from_raw()</code>, which returns <code>false</code> for every code, and your task being to implement it so that the NTC tests pass.
   </p>
   <ol class="steps">
-    <li>Open the workspace in VS Code. Run <code>python -I tools/build.py projects/0115-dryer-host-tests/starter --test</code> from the workspace root. Expect the summary <code>63% tests passed, 3 tests failed out of 8</code>. The failing programs are <code>ntc</code>, <code>safety</code> and <code>drivers</code>. If CMake reports that a CMakeCache.txt was created for a different folder, add <code>--clean</code> to the command. The copied starter folder carries a stale build directory, and <code>--clean</code> deletes it first.</li>
-    <li>Open <code>projects/0116-dryer-drivers/starter/app/ntc.c</code>. Read the TODO(learner) comment at the top. It gives the three formula lines and says which codes to reject.</li>
-    <li>Replace the stub body. Reject codes below <code>NTC_RAW_MIN</code> and above <code>NTC_RAW_MAX</code>, then compute the three formula steps in floats, multiply by 100, round with <code>lroundf()</code>, store the result in <code>*centi_c</code>, and return <code>true</code>.</li>
-    <li>Rerun the host-test command. Expect <code>88% tests passed, 1 tests failed out of 8</code>. The <code>ntc</code> and <code>drivers</code> programs now pass. The one failure left is <code>safety</code>, which you fix in lesson 116.</li>
-    <li>Find the two lines in <code>test/test_drivers.c</code> that replace the ADC with a fake, and check which value the fake returns. Then open <code>projects/0116-dryer-drivers/solution/app/ntc.c</code> and compare it with your version.</li>
+    <li>Open the workspace in VS Code and run <code>python -I tools/build.py projects/0115-dryer-host-tests/starter --test</code> from the workspace root, expecting the summary <code>63% tests passed, 3 tests failed out of 8</code>, with <code>ntc</code>, <code>safety</code> and <code>drivers</code> as the failing programs. If CMake reports that a CMakeCache.txt was created for a different folder, add <code>--clean</code> to the command, because the copied starter folder carries a stale build directory, which <code>--clean</code> deletes first.</li>
+    <li>Open <code>projects/0116-dryer-drivers/starter/app/ntc.c</code> and read the TODO(learner) comment at the top, which gives the three formula lines and says which codes to reject.</li>
+    <li>Replace the stub body, rejecting codes below <code>NTC_RAW_MIN</code> and above <code>NTC_RAW_MAX</code>, then computing the three formula steps in floats, multiplying by 100, rounding with <code>lroundf()</code>, storing the result in <code>*centi_c</code> and returning <code>true</code>.</li>
+    <li>Rerun the host-test command, expecting <code>88% tests passed, 1 tests failed out of 8</code>, the <code>ntc</code> and <code>drivers</code> programs now passing and the one remaining failure being <code>safety</code>, which you fix in lesson 116.</li>
+    <li>Find the two lines in <code>test/test_drivers.c</code> that replace the ADC with a fake and check which value the fake returns, then open <code>projects/0116-dryer-drivers/solution/app/ntc.c</code> and compare it with your version.</li>
   </ol>
   <details>
     <summary>Hint for the conversion</summary>
@@ -218,32 +227,37 @@ TEST_ASSERT_EQUAL_INT(1, hal_adc_read_ntc_fake.call_count);   /* exactly one con
     <p>Print the value your function returns for code 2048 with a temporary <code>printf</code> in a copy of the test, not in the project. Compare it with 2499. If you get 24 or 0, the function is not multiplying by 100. If you get a huge number, check that the float cast is on <code>full</code>.</p>
   </details>
 
-  <div class="win">You turned a thermistor code into a temperature in hundredths of a degree, rejected the sensor faults at both ends, and checked the result against known values on the PC with an FFF fake standing in for the ADC. The next lesson adds the heater PWM, the buttons, the display and the safety checks.</div>
+  <div class="win">You turned a thermistor code into a temperature in hundredths of a degree, rejected the sensor faults at both ends and checked the result against known values on the PC with an FFF fake standing in for the ADC, while the next lesson adds the heater PWM, the buttons, the display and the safety checks.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>The 10-bit constant</h3>
   <p>
-    <strong>1. The 10-bit constant.</strong> Symptom: the serial log prints <code>nan</code> for some codes, or a temperature that is wrong by tens of degrees. For example, code 1000 gives −41.08 °C instead of 52.80 °C. Fix: name the full-scale constant 4095, and check that code 2048 gives 24.99 °C.
+    The serial log prints <code>nan</code> for some codes, or a temperature wrong by tens of degrees, code 1000 for example giving −41.08 °C instead of 52.80 °C, because the code uses the 10-bit full scale of 1023. Name the full-scale constant 4095, and check that code 2048 gives 24.99 °C.
   </p>
+  <h3>The divider wired the other way</h3>
   <p>
-    <strong>2. The divider wired the other way.</strong> Symptom: the temperature falls as the chamber warms. The formula assumes the NTC is the lower resistor. Fix: check the schematic first. If the NTC is on top, the formula must change, and a test with a known warm code shows the error at once.
+    The temperature falls as the chamber warms, because the NTC is on top of the divider while the formula assumes it is the lower resistor. Check the schematic first, and if the NTC is on top, change the formula, a test with a known warm code showing the error at once.
   </p>
+  <h3>An ignored return value</h3>
   <p>
-    <strong>3. Ignoring the return value.</strong> Symptom: the log shows 0.00 °C during a sensor fault, and the heater acts on it. The fault path of <code>sensor_read()</code> sets the output to zero before it calls the conversion, and the conversion leaves the output alone when it returns <code>false</code>. A caller that ignores the boolean gets 0.00 °C and no warning. Fix: test the return value before using the temperature, as the test's <code>TEST_ASSERT_FALSE</code> lines do.
+    The log shows 0.00 °C during a sensor fault and the heater acts on it, because the fault path of <code>sensor_read()</code> sets the output to zero before calling the conversion, which leaves the output alone when it returns <code>false</code>, so a caller ignoring the boolean gets 0.00 °C without any warning. Test the return value before using the temperature, as the test's <code>TEST_ASSERT_FALSE</code> lines do.
   </p>
+  <h3>Degrees instead of hundredths</h3>
   <p>
-    <strong>4. Degrees instead of hundredths.</strong> Symptom: the host test fails by about 2475, because the function returned 24 for a reading of 24.99 °C. If the logging code divides the stored value by 100 to print it, the log shows 0.24 °C. Fix: keep the conversion in hundredths, multiply by 100 and round with <code>lroundf()</code> before the cast, and keep the unit in the variable name.
+    The host test fails by about 2475, because the function returned 24 for a reading of 24.99 °C, and if the logging code divides the stored value by 100 to print it, the log shows 0.24 °C. Keep the conversion in hundredths, multiplying by 100 and rounding with <code>lroundf()</code> before the cast, and keep the unit in the variable name.
   </p>
+  <h3>A test of a copy of the code</h3>
   <p>
-    <strong>5. Testing a copy of the code.</strong> Symptom: all the tests pass, but the firmware prints the wrong temperature. Cause: the test pasted its own copy of the formula, so it tested the copy. Fix: compile the same <code>app/</code> files in both builds, as this project does, and never write the formula into a test. A test should check a number that came from somewhere else, such as the independent table above.
+    All the tests pass but the firmware prints the wrong temperature, because the test pasted its own copy of the formula and so tested the copy. Compile the same <code>app/</code> files in both builds, as this project does, and never write the formula into a test, which should check a number that came from somewhere else, such as the independent table above.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Lookup tables, Steinhart-Hart and board tests</h2></summary>
   <p>
-    Production firmware usually reads thermistors in one of two ways. Some use a lookup table of ADC codes against temperature, filled from the manufacturer's table and interpolated between the entries. Others use the Steinhart-Hart equation, a fit with three coefficients, because a single beta value is an approximation whose error grows away from the reference temperature. A reviewer will ask which of these you used, over what temperature range it is valid, and where the coefficients came from.
+    Production firmware usually reads thermistors in one of two ways, some using a lookup table of ADC codes against temperature, filled from the manufacturer's table and interpolated between the entries, and others the Steinhart-Hart equation, a fit with three coefficients, because a single beta value is an approximation whose error grows away from the reference temperature. A reviewer will ask which of these you used, over what temperature range it is valid and where the coefficients came from.
   </p>
   <p>
-    Teams that test firmware keep the conversion and the safety rules as pure functions, so that known values can be checked on a PC in milliseconds, as this lesson does. The tests are a first gate. A board test, with a real thermistor in a heated block, is still needed to find wiring and calibration errors that no PC test can see.
+    Teams that test firmware keep the conversion and the safety rules as pure functions, so that known values can be checked on a PC in milliseconds, as this lesson does, the tests being a first gate, whereas a board test with a real thermistor in a heated block is still needed to find wiring and calibration errors that no PC test can see.
   </p>
   </details>
 
@@ -251,11 +265,11 @@ TEST_ASSERT_EQUAL_INT(1, hal_adc_read_ntc_fake.call_count);   /* exactly one con
   <ul>
     <li>A thermistor and a fixed resistor form a voltage divider, and the ADC code is the OUT voltage as a fraction of full scale.</li>
     <li>The divider gives the ratio R<sub>ntc</sub> ÷ R<sub>series</sub> = 1 ÷ (full ÷ raw − 1), which the Beta equation turns into a temperature.</li>
-    <li>The full-scale constant must match the ADC: 4095 for 12 bits, not 1023. Test a known code to catch a wrong constant.</li>
+    <li>The full-scale constant must match the ADC, 4095 for 12 bits rather than 1023, and a test of a known code catches a wrong constant.</li>
     <li>The conversion refuses fault codes, because the logarithm of a zero or negative ratio has no meaning, and the caller must check the return value.</li>
     <li>The conversion returns hundredths of a degree as an integer, rounded with <code>lroundf()</code>.</li>
-    <li>Fault limits protect the logarithm. They do not check that a temperature is plausible.</li>
-    <li>A host test compiles the real <code>app/</code> files, checks independent known values, and uses an FFF fake for the ADC read.</li>
+    <li>Fault limits protect the logarithm without checking that a temperature is plausible.</li>
+    <li>A host test compiles the real <code>app/</code> files, checks independent known values and uses an FFF fake for the ADC read.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

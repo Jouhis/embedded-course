@@ -6,13 +6,13 @@ Lesson: [PIO and DMA](https://jouhis.github.io/embedded-course/lessons/0065-pio-
 
 ## Try it in Wokwi
 
-Wokwi's Pico model can run PIO, and it simulates DMA only when the DMA feeds PIO, which is exactly how this project uses it. The four LEDs on GP10 to GP13 show the pattern, each through a 330 Ω resistor. Your task is to write the DMA part, which the starter leaves as a comment.
+Wokwi's Pico model can run PIO and simulates DMA only when the DMA feeds PIO, which is exactly how this project uses it, with four LEDs on GP10 to GP13, each behind a 330 Ω resistor, showing the pattern. The task is to write the DMA part, which the starter leaves as a comment.
 
 1. Open `projects/0065-pio-and-dma/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor first prints `PIO WORDS MATCH`, then one line that says the DMA is still to be set up. The LEDs stay off, because the state machine is not yet enabled.
-4. Your task: replace the `TODO(learner)` comment with the DMA setup. Claim a channel with `dma_claim_unused_channel(true)`, configure it to move 32-bit words from `steps[]` to the PIO TX FIFO, set the DREQ, enable the state machine, start the DMA, and restart it in a loop when it finishes.
-5. You will know it works when the serial monitor prints `PIO DMA OK steps=6` and the four LEDs step through the pattern. Each step lasts about 15.8 ms.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor first prints `PIO WORDS MATCH` and then a line saying that the DMA is still to be set up, while the LEDs stay off because the state machine is not yet enabled.
+4. Replace the `TODO(learner)` comment with the DMA setup: claim a channel with `dma_claim_unused_channel(true)`, configure it to move 32-bit words from `steps[]` to the PIO TX FIFO, set the DREQ, enable the state machine, start the DMA and restart it in a loop when it finishes.
+5. The program works when the serial monitor prints `PIO DMA OK steps=6` and the four LEDs step through the pattern, each step lasting about 15.8 ms.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `PIO DMA OK`.
 <details>
 <summary>Hint for the DREQ</summary>
 
-Use `pio_get_dreq(PATTERN_PIO, PATTERN_SM, true)`. The last argument is `true` because the DMA writes to the TX FIFO. The state machine must be enabled before the first word matters.
+Use `pio_get_dreq(PATTERN_PIO, PATTERN_SM, true)`, the last argument being `true` because the DMA writes to the TX FIFO, and enable the state machine before the first word matters.
 
 </details>
 
 <details>
 <summary>Hint for the restart</summary>
 
-The SDK has `dma_channel_wait_for_finish_blocking()` and `dma_channel_transfer_from_buffer_now()`. Call the first, then the second, inside the while loop.
+The SDK provides `dma_channel_wait_for_finish_blocking()` and `dma_channel_transfer_from_buffer_now()`, so call the first and then the second inside the while loop.
 
 </details>
 

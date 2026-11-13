@@ -6,13 +6,13 @@ Lesson: [Continuous integration](https://jouhis.github.io/embedded-course/lesson
 
 ## Try it on your machine
 
-1. In a terminal at the workspace root, run `python -I tools/verify_projects.py 0082`. It builds the sample, lints its diagram, and checks the `wokwi.toml` paths. You should see a line starting *ok* with the project path, and then *1/1 projects ok*.
-2. Run the host tests: `python -I tools/build.py projects/0082-continuous-integration/host-tests --test`. The last summary line in a real run is *100% tests passed out of 1*, followed by a line with the total test time.
-3. Open `projects/0082-continuous-integration/.github/workflows/ci.yml`. Find the job that runs `cppcheck`, and say which of its options turns a finding into a failed job. The answer is `--error-exitcode=1`. Then say what the job would do if you removed that option.
-4. Your task: find where the sample's `main.c` tells the simulation what text to expect. Then explain why the line must use two slashes and the word `EXPECT:` in that exact form, using the regular expression in `tools/verify_projects.py`. Change the line to a block comment, run the verify command again, and say what changes in the output. The default run does not simulate, so nothing changes on screen, which is exactly why this mistake is hard to see.
-5. Optional, needs a token: create a token at [wokwi.com/dashboard/ci](https://wokwi.com/dashboard/ci), then in PowerShell run `setx WOKWI_CLI_TOKEN "your-token"`. `setx` does not change the shell you are in, so open a new terminal. Then run `python -I tools/verify_projects.py 0082 --sim`. This machine has no token set, so this step has not been run for this lesson.
+1. In a terminal at the workspace root, run `python -I tools/verify_projects.py 0082`, which builds the sample, lints its diagram and checks the `wokwi.toml` paths, printing a line starting *ok* with the project path and then *1/1 projects ok*.
+2. Run the host tests with `python -I tools/build.py projects/0082-continuous-integration/host-tests --test`, whose last summary line in a real run is *100% tests passed out of 1*, followed by a line with the total test time.
+3. Open `projects/0082-continuous-integration/.github/workflows/ci.yml`, find the job that runs `cppcheck` and say which of its options turns a finding into a failed job, the answer being `--error-exitcode=1`, and then what the job would do without that option.
+4. Find where the sample's `main.c` tells the simulation what text to expect, and explain from the regular expression in `tools/verify_projects.py` why the line must use two slashes and the word `EXPECT:` in that exact form. Then change the line to a block comment, run the verify command again and say what changes in the output, the answer being nothing on screen, because the default run does not simulate, which is exactly why this mistake is hard to see.
+5. Optionally, with a token, create one at [wokwi.com/dashboard/ci](https://wokwi.com/dashboard/ci) and run `setx WOKWI_CLI_TOKEN "your-token"` in PowerShell, then open a new terminal, since `setx` does not change the current shell, and run `python -I tools/verify_projects.py 0082 --sim`. This machine has no token set, so this step has not been run for this lesson.
 
-The reference is in `projects/0082-continuous-integration`. The firmware sources are in `src/led_pattern.c`, and the host tests are in `host-tests/`. They are plain C, so you can read them in one minute.
+The reference is in `projects/0082-continuous-integration`, with the firmware sources in `src/led_pattern.c` and the host tests in `host-tests/`, plain C that can be read in a minute.
 
 ## Done when
 
@@ -23,6 +23,6 @@ The serial monitor prints `LED on`.
 <details>
 <summary>Hint</summary>
 
-The expect line is read by a regular expression, not by the C compiler. Look at `tools/verify_projects.py`, the lines that read `EXPECT`. The pattern looks for two slashes, optional spaces, the word EXPECT and a colon. It does not require the line to start at column 1.
+The expect line is read by a regular expression rather than the C compiler, in the lines of `tools/verify_projects.py` that read `EXPECT`, the pattern looking for two slashes, optional spaces, the word EXPECT and a colon without requiring the line to start at column 1.
 
 </details>

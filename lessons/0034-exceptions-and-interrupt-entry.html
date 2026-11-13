@@ -12,58 +12,60 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Exceptions and interrupt entry</h1>
-  <p class="subtitle">An interrupt does not wait for the program to allow it. The core saves eight registers on the stack by itself, and the handler runs before the next line of your main loop. Watching this happen makes the sequence concrete.</p>
+  <p class="subtitle">How the core stops a program, saves its state and runs a handler</p>
 
   <div class="goal">
     By the end of this lesson you can list the eight words the core stacks on interrupt entry, trigger an interrupt in the simulator, and read the saved frame and the restored registers after the return.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Events that interrupt the program order</h2>
   <p>
-    Until now every program in this course has run in one order. <code>main</code> calls a function, the function returns, and the next line runs. Lesson 33 showed how a caller and a callee agree on arguments, on which registers must survive a call, and on the stack. This lesson adds the one thing that breaks that order: an event that stops the program at any instruction and runs a different function first. Lesson 31 introduced the registers the core uses, and this lesson depends on them. An interrupt changes PC and LR on your behalf, and it writes to the stack.
+    Until now every program in this course has run in one order: <code>main</code> calls a function, the function returns and the next line runs. Lesson 33 showed how a caller and a callee agree on arguments, on the registers that must survive a call and on the stack, and lesson 31 introduced the registers themselves. This lesson adds the one thing that breaks that order, an event that stops the program at any instruction and runs a different function first, changing PC and LR on the program's behalf and writing to the stack.
   </p>
   <p>
-    Here is the problem in a real product. A 3D printer has an endstop switch on each axis. The switch closes when the carriage reaches the end of its travel, and the firmware must stop the motor at that moment. The firmware is also busy planning the next move in its main loop. If the main loop checks the switch only between moves, the carriage can travel past the switch before anyone looks. An interrupt solves this. The hardware calls a short function the moment the pin changes, and the main loop never has to ask.
+    A 3D printer shows the problem clearly. Each axis has an endstop switch that closes when the carriage reaches the end of its travel, and the firmware must stop the motor at that moment while its main loop is busy planning the next move. If the main loop checks the switch only between moves, the carriage can travel past it before anyone looks. An interrupt solves this, because the hardware calls a short function the moment the pin changes and the main loop never has to ask.
   </p>
 
-  <h2>The concepts, one at a time</h2>
-
-  <h3>Exceptions and interrupts</h3>
+  <h2>Exceptions, interrupts and the vector table</h2>
   <p>
-    An <a href="../reference/glossary.html#exception">exception</a> is an event that makes the core stop what it is doing and run a function called a handler. Reset is an exception, and so are the faults and the system timer. An <a href="../reference/glossary.html#interrupt">interrupt</a> is an exception raised by a peripheral or by a pin. The endstop switch raises an interrupt when its pin changes state. A handler for an interrupt is called an <a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a>. In this course the words handler and ISR mean the same thing when the exception is an interrupt.
+    An <a href="../reference/glossary.html#exception">exception</a> is an event that makes the core stop what it is doing and run a function called a handler. Reset is an exception, and so are the faults and the system timer. An <a href="../reference/glossary.html#interrupt">interrupt</a> is an exception raised by a peripheral or a pin, as when the endstop pin changes state, and its handler is called an <a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a>. In this course handler and ISR mean the same thing when the exception is an interrupt.
   </p>
   <p>
-    The core cannot know which handler to run unless the program tells it. Every exception has a number. Exception 11 is SVCall, which lesson 35 uses (DDI0337G, Table 5-1). The first external interrupt, IRQ0, is exception 16 (the TRM's exception table lists it), so the STM32F1's <code>EXTI0_IRQn</code>, which the header sets to 6, is exception 22. The <a href="../reference/glossary.html#vector-table">vector table</a> is an array in memory that lists the address of each handler, indexed by its exception number. On entry the core reads the table entry for the exception. Arm's TRM gives the address as the table base plus four times the exception number (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf" target="_blank" rel="noopener">Arm Cortex-M3 TRM DDI0337G, §5.5, Table 5-4</a>).
+    The core can run the right handler only if the program tells it which one, so every exception has a number. Exception 11 is SVCall, which lesson 35 uses (DDI0337G, Table 5-1), and the first external interrupt, IRQ0, is exception 16 according to the TRM's exception table, so the STM32F1's <code>EXTI0_IRQn</code>, which the header sets to 6, is exception 22. The <a href="../reference/glossary.html#vector-table">vector table</a> is an array in memory listing the address of each handler, indexed by exception number, and on entry the core reads the entry for the exception at
+  </p>
+  <p class="eq"><span>vector address = table base + 4 × exception number</span><span class="eq-n">(1)</span></p>
+  <p>
+    where each entry is one 4-byte word, as Arm's TRM states (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf" target="_blank" rel="noopener">Arm Cortex-M3 TRM DDI0337G, §5.5, Table 5-4</a>).
   </p>
   <p>
-    On the STM32F103 the table is written in the startup file. The file lists handler names in order, so the position of a name is its exception number. <code>.word SVC_Handler</code> is on line 142 of <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code>, and <code>.word EXTI0_IRQHandler</code> is on line 153. Lesson 42 covers the startup file in full. For now, note that the handler's name in your C code must match the name in that list.
+    On the STM32F103 the table is written in the startup file, which lists handler names in order so that each name's position is its exception number. <code>.word SVC_Handler</code> is on line 142 of <code>third_party/cmsis-device-f1/Source/Templates/gcc/startup_stm32f103xb.s</code> and <code>.word EXTI0_IRQHandler</code> on line 153. Lesson 42 covers the startup file in full, and for now the point is that the handler's name in the C code must match the name in that list.
   </p>
 
   <div class="example">
-    <p>A UART at 115200 baud receives a byte about every 87 µs (10 bits per byte ÷ 115200 bits per second). Its receive register holds only a byte or a few, so the firmware must collect each one before the next arrives. Polling in the main loop would have to check more than 11,000 times a second. With the receive interrupt, the core runs a short handler only when a byte is there, and spends the rest of its time on real work.</p>
+    <p>A UART at 115 200 baud receives a byte about every 87 µs, since a byte takes 10 bits and 10 ÷ 115 200 bit/s ≈ 87 µs. Its receive register holds only one byte or a few, so the firmware must collect each byte before the next arrives, and polling from the main loop would mean checking more than 11 000 times a second. With the receive interrupt, the core runs a short handler only when a byte is waiting and spends the rest of its time on real work.</p>
   </div>
 
-  <h3>Why the core saves registers for you</h3>
+  <h2>The stacked frame</h2>
   <p>
-    A handler can run at any instruction of the main program. The main program may be halfway through a calculation with values in R0 to R3. The handler is an ordinary C function, and it will use those registers for its own work. If nothing put the values back, the main program would resume with the handler's numbers in its registers. So the core does the saving itself, before the handler's first instruction runs.
+    A handler can run at any instruction of the main program, which may be halfway through a calculation with values in R0 to R3. The handler is an ordinary C function and will use those registers for its own work, so if nothing restored them, the main program would resume with the handler's numbers in its registers. The core therefore saves them itself, before the handler's first instruction runs.
   </p>
   <p>
-    The core saves a fixed set of eight words, called the <a href="../reference/glossary.html#stacked-frame">stacked frame</a>. The TRM lists them in this order: the program counter (PC), the status register (xPSR), R0, R1, R2, R3, R12 and the link register (LR). That is the order the TRM names them in, not their order in memory: from the lowest address up, the frame holds R0, R1, R2, R3, R12, LR, PC and xPSR (Figure 1). The TRM says that "the SP is decremented by eight words by the completion of the stack push" (DDI0337G §5.5.1). Each word is four bytes, so the frame takes 32 bytes.
+    It saves a fixed set of eight words, the <a href="../reference/glossary.html#stacked-frame">stacked frame</a>. The TRM names them as the program counter (PC), the status register (xPSR), R0, R1, R2, R3, R12 and the link register (LR), but that is the order of naming rather than of memory: from the lowest address up, the frame holds R0, R1, R2, R3, R12, LR, PC and xPSR (Figure 1). The TRM states that "the SP is decremented by eight words by the completion of the stack push" (DDI0337G §5.5.1), and with four bytes per word the frame takes 32 bytes.
   </p>
   <p>
-    Each word in the frame has a reason to be there. PC is the address of the instruction the main program was about to run, so the core can resume there. xPSR holds the condition flags, the exception number that is active and the Thumb bit. R0 to R3 and R12 are the registers that an AAPCS callee is allowed to change (lesson 33), so the hardware saves them for the handler. LR is saved because the core is about to overwrite it. The registers R4 to R11 are not in the frame. A handler that uses one of them must save it. The TRM makes the same point when it describes the kernel: it "only requires to save the eight registers not pushed by hardware, r4-r11" (§5.4). This is why the C compiler saves R4 to R11 in a handler that uses them.
+    Each word has a reason to be there. PC is the address of the instruction the main program was about to run, so the core can resume there, and xPSR holds the condition flags, the active exception number and the Thumb bit. R0 to R3 and R12 are the registers an AAPCS callee may change (lesson 33), so the hardware saves them on the handler's behalf, and LR is saved because the core is about to overwrite it. R4 to R11 are not in the frame, so a handler that uses one must save it itself, a point the TRM also makes about the kernel, which "only requires to save the eight registers not pushed by hardware, r4-r11" (§5.4). This is why the C compiler saves R4 to R11 in any handler that uses them.
   </p>
   <p>
-    The <a href="../reference/glossary.html#program-status-register-xpsr">xPSR</a> is one register made of three parts, and the part that matters here is the Interrupt Program Status Register (IPSR). The TRM says that the IPSR "contains the Interrupt Service Routine (ISR) number of the current exception activation" (§2.3.2). It is the bits [8:0] of xPSR. While a handler runs, IPSR holds that handler's exception number, and when the handler returns, the core reads the number back from the stacked xPSR. The T bit is bit 24. The TRM says that executing an instruction while the T bit is clear causes an INVSTATE exception (§2.3.2), so a return that restores a cleared T bit would fault.
+    The <a href="../reference/glossary.html#program-status-register-xpsr">xPSR</a> is one register made of three parts, and the part that matters here is the Interrupt Program Status Register (IPSR), which according to the TRM "contains the Interrupt Service Routine (ISR) number of the current exception activation" (§2.3.2) in bits [8:0]. While a handler runs, IPSR holds its exception number, and on return the core reads the number back from the stacked xPSR. The T bit is bit 24, and since executing an instruction while it is clear causes an INVSTATE exception (§2.3.2), a return that restored a cleared T bit would fault.
   </p>
 
   <div class="analogy">
-    <p>You are reading a book and the phone rings. You put a bookmark in, answer, and come back to the exact line. Exception entry is the bookmark: the core pushes the registers the interrupted code may be using, and the return address, before the handler runs. On a Cortex-M the hardware places that bookmark itself, so a handler can be a plain C function.</p>
+    <p>When the phone rings while you are reading, you put a bookmark in, answer, and come back to the exact line. Exception entry is that bookmark: the core pushes the return address and the registers the interrupted code may be using before the handler runs, and on a Cortex-M the hardware places the bookmark itself, so a handler can be a plain C function. Unlike a bookmark, though, the frame saves only part of the state, and R4 to R11 are left for the handler to protect.</p>
   </div>
 
-  <h3>The return value in LR</h3>
+  <h2>EXC_RETURN in the link register</h2>
   <p>
-    On entry the core also loads LR with a special value called <a href="../reference/glossary.html#exc-return">EXC_RETURN</a>. It is not an address. The low four bits say where to return and which stack to use. The TRM's Table 5-6 lists the values that matter here.
+    On entry the core also loads LR with a special value called <a href="../reference/glossary.html#exc-return">EXC_RETURN</a>, which is not an address: its low four bits say where to return and which stack to use. The TRM's Table 5-6 lists the values that matter here.
   </p>
   <table>
     <thead><tr><th>EXC_RETURN</th><th>Bits [3:0]</th><th>Returns to</th><th>Stack after return</th></tr></thead>
@@ -74,22 +76,22 @@
     </tbody>
   </table>
   <p>
-    A handler ends by loading a value of the form <code>0xFFFFFFFX</code> into PC. The TRM lists three ways to do it: <code>POP</code> or <code>LDM</code> with PC in the list, <code>LDR</code> with PC as the destination, and <code>BX</code> with any register (§5.8.2). The most common one in a C project is the compiler's own return sequence, and in hand-written assembly it is <code>BX LR</code>. When the processor sees the value, it does not branch. It treats the value as the signal to unstack the frame.
+    A handler ends by loading a value of the form <code>0xFFFFFFFX</code> into PC, which the TRM allows in three ways: <code>POP</code> or <code>LDM</code> with PC in the list, <code>LDR</code> with PC as the destination, and <code>BX</code> with any register (§5.8.2). In a C project the compiler's own return sequence does this, and in hand-written assembly it is usually <code>BX LR</code>. When the processor sees such a value, it does not branch but treats it as the signal to unstack the frame.
   </p>
 
-  <h3>What the core does, in order</h3>
+  <h2>The entry sequence step by step</h2>
   <p>
-    The TRM's Table 5-4 lists the steps the processor takes before it enters an ISR. Read them in order to follow the hardware sequence.
+    The TRM's Table 5-4 lists the steps the processor takes before entering an ISR, and reading them in order shows the hardware sequence.
   </p>
-  <ol>
-    <li><strong>Push the frame.</strong> The core pushes the eight words onto the stack that the interrupted code was using. This is the first step the TRM lists, and it is the one that cannot be restarted.</li>
-    <li><strong>Read the vector.</strong> The core reads the handler address from the vector table. The TRM says this read can be restarted if a higher-priority exception arrives. The read uses the instruction bus while the frame is written on the data bus, so the two can overlap.</li>
-    <li><strong>Set PC and load the pipeline.</strong> PC takes the handler address, and the pipeline reloads from there. Instructions that were fetched from the interrupted address are discarded, as in a <a href="../reference/glossary.html#pipeline-flush">pipeline flush</a>.</li>
-    <li><strong>Set LR.</strong> LR takes the EXC_RETURN value, so the handler's last instruction can return.</li>
+  <ol class="steps">
+    <li><strong>Push the frame.</strong> The core pushes the eight words onto the stack the interrupted code was using. This is the first step the TRM lists, and the one that cannot be restarted.</li>
+    <li><strong>Read the vector.</strong> The core reads the handler address from the vector table, a read the TRM says can be restarted if a higher-priority exception arrives. It uses the instruction bus while the frame goes out on the data bus, so the two can overlap.</li>
+    <li><strong>Set PC and load the pipeline.</strong> PC takes the handler address and the pipeline reloads from there, discarding instructions fetched from the interrupted address, as in a <a href="../reference/glossary.html#pipeline-flush">pipeline flush</a>.</li>
+    <li><strong>Set LR.</strong> LR takes the EXC_RETURN value, so that the handler's last instruction can return.</li>
     <li><strong>Start the handler.</strong> IPSR now holds the exception number, and the handler's first instruction enters the execute stage.</li>
   </ol>
   <p>
-    Figure 5-2 in the TRM shows the timing of this sequence on a Cortex-M3. It shows a <strong>twelve-cycle</strong> latency from the moment the interrupt is asserted to the moment the first ISR instruction executes (DDI0337G §5.5, Figure 5-2). Twelve cycles is the standard case, with no other exception in the way. The number is a figure from the TRM, not a promise for every chip. The STM32F103 uses the same core, but the bus timing around it can differ, so check the timing in your own chip's documentation before you rely on the exact count.
+    Figure 5-2 in the TRM shows the timing of this sequence on a Cortex-M3, with a <strong>twelve-cycle</strong> latency from the assertion of the interrupt to the execution of the first ISR instruction (DDI0337G §5.5, Figure 5-2). Twelve cycles is the standard case with no other exception in the way, and it is a TRM figure rather than a promise for every chip. The STM32F103 uses the same core, but the bus timing around it can differ, so check your own chip's documentation before relying on the exact count.
   </p>
 
   <div class="widget anim" data-title="Interrupt entry and return, as the core does it" data-ms="2600">
@@ -135,20 +137,18 @@
     </ol>
   </div>
 
-<h3>Three cases that change the sequence</h3>
+  <h2>Tail-chaining, late arrival and exit</h2>
   <p>
-    Interrupts often arrive together, and the TRM describes two shortcuts for that case, plus the return path.
+    Interrupts often arrive together, and the TRM describes two shortcuts for that case in addition to the normal return path.
   </p>
   <ul>
-    <li><strong><a href="../reference/glossary.html#tail-chaining">Tail-chaining</a> (§5.6):</strong> when a handler returns and a pending interrupt has higher priority than all stacked exceptions, the core skips the unstacking and the stacking. It starts the next handler directly. The TRM's Figure 5-3 shows six cycles from the end of one ISR to the start of the next, compared with twelve for a fresh entry.</li>
-    <li><strong><a href="../reference/glossary.html#late-arrival">Late arrival</a> (§5.7):</strong> a higher-priority interrupt can take over from one that is still being entered, as long as the first instruction of the earlier handler has not yet reached the execute stage. The state is saved once, for the first interrupt. The TRM says that a late-arriving exception is not processed until the first instruction of the handler starts to execute (Table 5-4). After that point, the new interrupt is a normal pre-emption.</li>
-    <li><strong>Exit (§5.8):</strong> when the handler returns through EXC_RETURN, the core unstacks the frame. If the stacked IPSR bits [8:0] are zero, the core returns to thread mode. Otherwise it returns to the interrupt that was pre-empted.</li>
+    <li><strong><a href="../reference/glossary.html#tail-chaining">Tail-chaining</a> (§5.6):</strong> when a handler returns while a pending interrupt has higher priority than all stacked exceptions, the core skips the unstacking and restacking and starts the next handler directly. The TRM's Figure 5-3 shows six cycles from the end of one ISR to the start of the next, against twelve for a fresh entry.</li>
+    <li><strong><a href="../reference/glossary.html#late-arrival">Late arrival</a> (§5.7):</strong> a higher-priority interrupt can take over from one still being entered, provided the earlier handler's first instruction has not yet reached the execute stage, and the state is saved only once, for the first interrupt. The TRM states that a late-arriving exception is not processed until the first instruction of the handler starts to execute (Table 5-4), and after that point the new interrupt is an ordinary pre-emption.</li>
+    <li><strong>Exit (§5.8):</strong> when the handler returns through EXC_RETURN, the core unstacks the frame. If the stacked IPSR bits [8:0] are zero, it returns to thread mode, and otherwise to the interrupt that was pre-empted.</li>
   </ul>
   <p>
-    The frame is written to the stack the interrupted code was using, which is the main stack for a plain program. Lesson 35 shows what that means for an RTOS task. Because the frame lives in memory, anything the handler does to R0 to R3 is undone on return. You will check this in the simulator below.
+    The frame is written to the stack the interrupted code was using, the main stack for a plain program, and lesson 35 shows what that means for an RTOS task. Because the frame lives in memory, anything the handler does to R0 to R3 is undone on return, which you will check in the simulator below.
   </p>
-
-  <div class="warning">Handler changes to R0 to R3 are undone on return, because the frame restores them. A handler that wants to pass information back must write to memory, such as a variable, a buffer or a peripheral register. Writing to R0 in the handler is lost.</div>
 
   <figure>
     <svg viewBox="0 0 560 340" role="img" aria-label="The eight-word stack frame after entry, drawn with the lowest address at the bottom. From the bottom: R0 at SP plus 0, R1 at plus 4, R2 at plus 8, R3 at plus 12, R12 at plus 16, LR at plus 20, PC at plus 24, and xPSR at plus 28. The previous stack is above the frame." style="max-width:728px">
@@ -189,13 +189,13 @@
     <figcaption>Figure 1. The eight-word frame after entry, with the lowest address at the bottom. SP points at R0, and the saved PC is the seventh word, at SP plus 0x18. The offsets follow the TRM's Figure 5-1 layout, with R0 at the lowest address and xPSR at the highest. The addresses are relative to SP, so they hold for any stack location.</figcaption>
   </figure>
 
-  <h2>A worked example with real numbers</h2>
+  <h2>Worked example: a frame at 0x20000100</h2>
   <p>
-    Take a program in thread mode with SP at <code>0x20000100</code>. It is in a loop, and an interrupt arrives. Assume these values at the moment of the interrupt. These are example values, chosen for the arithmetic, not readings from a board: R0 is 3, R1 is 4, R2 is 0, R3 is 9, R12 is 0, LR holds a return address of <code>0x08000199</code>, PC holds the next instruction, <code>0x08000244</code>, and xPSR is <code>0x01000000</code>, which has only the T bit set.
+    A program in thread mode is running a loop with SP at <code>0x20000100</code> when an interrupt arrives. The register values below are chosen for the arithmetic rather than read from a board: R0 is 3, R1 is 4, R2 is 0, R3 is 9, R12 is 0, LR holds a return address of <code>0x08000199</code>, PC holds the next instruction, <code>0x08000244</code>, and xPSR is <code>0x01000000</code>, with only the T bit set. Before working through it, predict the value of R0 after the handler returns.
   </p>
-  <ol>
-    <li><strong>Work out the new SP.</strong> The frame is eight words of four bytes each, which is 32 bytes, or <code>0x20</code>. The new SP is <code>0x20000100 − 0x20 = 0x200000E0</code>. The frame occupies addresses <code>0x200000E0</code> to <code>0x200000FF</code>.</li>
-    <li><strong>Write the frame.</strong> Using the offsets from Figure 1, the words sit at these addresses:</li>
+  <ol class="steps">
+    <li><strong>Work out the new SP.</strong> The frame is eight words of four bytes, 32 bytes or <code>0x20</code>, so the new SP is <code>0x20000100 − 0x20 = 0x200000E0</code>, and the frame occupies <code>0x200000E0</code> to <code>0x200000FF</code>.</li>
+    <li><strong>Write the frame.</strong> With the offsets of Figure 1, the words sit at the addresses in the table below.</li>
   </ol>
   <table>
     <thead><tr><th>Address</th><th>Offset from SP</th><th>Word saved</th><th>Value</th></tr></thead>
@@ -210,23 +210,25 @@
       <tr><td><code>0x200000FC</code></td><td>+0x1C</td><td>xPSR</td><td><code>0x01000000</code></td></tr>
     </tbody>
   </table>
-  <ol start="3">
-    <li><strong>Load the new state.</strong> PC becomes the handler address, LR becomes EXC_RETURN, and the handler runs on the same stack at SP <code>0x200000E0</code>. Suppose the handler sets R0 to 99 and writes 1 to a counter in RAM. R0 now holds 99.</li>
-    <li><strong>Return.</strong> The handler's last instruction is <code>BX LR</code>, and LR is <code>0xFFFFFFF9</code>, which is thread mode on the main stack. The core unstacks the eight words. R0 becomes 3 again, because the frame held 3. PC becomes <code>0x08000244</code>, and the loop resumes at the instruction it was about to run. SP returns to <code>0x20000100</code>.</li>
+  <ol class="steps" start="3">
+    <li><strong>Load the new state.</strong> PC becomes the handler address, LR becomes EXC_RETURN, and the handler runs on the same stack at SP <code>0x200000E0</code>. Suppose it sets R0 to 99 and writes 1 to a counter in RAM, so that R0 now holds 99.</li>
+    <li><strong>Return.</strong> The handler ends with <code>BX LR</code>, and LR is <code>0xFFFFFFF9</code>, meaning thread mode on the main stack. The core unstacks the eight words, so R0 becomes 3 again because the frame held 3, PC becomes <code>0x08000244</code> so that the loop resumes at the instruction it was about to run, and SP returns to <code>0x20000100</code>.</li>
   </ol>
   <p>
-    R0 is back to 3, which is the value the main program had, and the counter in RAM is 1, because a write to memory is not part of the frame. The program's state is correct, and the handler's one useful result is in memory where the main loop can read it.
+    R0 is back at the main program's value of 3, while the counter in RAM is 1, because a write to memory is not part of the frame. The program's state is intact, and the handler's one useful result sits in memory where the main loop can read it.
   </p>
+
+  <div class="warning">Handler changes to R0 to R3 are undone on return, because the frame restores them. A handler that needs to pass information back must write to memory, such as a variable, a buffer or a peripheral register, since a value left in R0 is lost.</div>
 
   <h2>Try it in the CPU simulator</h2>
   <p>
-    The program loops, adding 1 to R1. Its interrupt handler adds 1 to a counter in RAM at <code>0x20000000</code>. Press <em>IRQ ⚡</em> while the loop runs. The button only appears because the program defines a label called <code>IRQ_Handler</code>.
+    The program loops adding 1 to R1, and its interrupt handler adds 1 to a counter in RAM at <code>0x20000000</code>. Press <em>IRQ ⚡</em> while the loop runs; the button appears only because the program defines a label called <code>IRQ_Handler</code>.
   </p>
   <ol class="steps">
-    <li>Press <em>Run</em>, then <em>Pause</em> after a moment. Note the stack pointer and R1. Predict the SP value after the interrupt is taken. With the starting SP at <code>0x20000100</code>, the answer is <code>0x200000E0</code>.</li>
-    <li>Press <em>IRQ ⚡</em>, then <em>Step</em> until the message says the interrupt was taken. Check the stack view: eight words are now on the stack and SP reads <code>0x200000E0</code>. The word at the lowest address is R0. The saved PC, the seventh word at +0x18, is the address of the loop instruction that was about to run.</li>
-    <li>Press <em>Instruction</em> until the handler returns to the loop. Check that the counter at <code>0x20000000</code> is now 1, while R2 and R3 are back to 0 and the SP is back at <code>0x20000100</code>.</li>
-    <li>Press <em>IRQ ⚡</em> a second time and let the handler return. The counter should read 2. The memory write survives each return, while the registers it used are restored every time.</li>
+    <li>Press <em>Run</em>, then <em>Pause</em> after a moment, and note the stack pointer and R1. Predict the SP value after the interrupt is taken; from a starting SP of <code>0x20000100</code> the answer is <code>0x200000E0</code>.</li>
+    <li>Press <em>IRQ ⚡</em>, then <em>Step</em> until the message says the interrupt was taken. The stack view now shows eight words with SP at <code>0x200000E0</code>, R0 at the lowest address and, as the seventh word at +0x18, the saved PC, the address of the loop instruction that was about to run.</li>
+    <li>Press <em>Instruction</em> until the handler returns to the loop, and check that the counter at <code>0x20000000</code> is now 1 while R2 and R3 are back at 0 and SP at <code>0x20000100</code>.</li>
+    <li>Press <em>IRQ ⚡</em> a second time and let the handler return, after which the counter should read 2. The memory write survives each return, while the registers the handler used are restored every time.</li>
   </ol>
   <div class="widget cpusim" data-title="A counter driven by an interrupt" data-show="regs,stack,mem,phases">
     <script type="text/plain">
@@ -245,18 +247,18 @@
   </div>
   <details>
     <summary>Hint</summary>
-    <p>The starting SP is 0x20000100, and an eight-word frame is 32 bytes, so the SP after entry is 0x200000E0. The counter lives in memory, which is why it survives the return even though R2 and R3 do not.</p>
+    <p>The starting SP is 0x20000100 and an eight-word frame is 32 bytes, so the SP after entry is 0x200000E0. The counter lives in memory, which is why it survives the return while R2 and R3 do not.</p>
   </details>
 
-  <h3>Line by line</h3>
+  <h2>The program and its C equivalent</h2>
   <p>
-    The main program has three lines that do work. <code>MOV R0, #0</code> sets R0 to zero. The program never reads it again, and it is there to show that an interrupt will restore R0 even though the main program does not use it. <code>MOV R1, #0</code> sets the counter that the loop increments. <code>ADD R1, R1, #1</code> adds one to R1, and <code>B loop</code> branches back to the add, which runs forever. The branch is a plain jump, not a call, so the loop never touches LR.
+    The main program has three working lines. <code>MOV R0, #0</code> sets R0 to zero, a value the program never reads again, included to show that an interrupt restores R0 even when the main program does not use it. <code>MOV R1, #0</code> sets the counter that the loop increments, <code>ADD R1, R1, #1</code> adds one to it, and <code>B loop</code> branches back to the add forever; since the branch is a plain jump rather than a call, the loop never touches LR.
   </p>
   <p>
-    The handler has five instructions. <code>MOV R2, #0x20000000</code> loads the address of the counter into R2. In a real program this address would come from a variable, but the simulator has no variables, so the address is written out. <code>LDR R3, [R2]</code> reads the word at that address into R3. <code>ADD R3, R3, #1</code> adds one, and <code>STR R3, [R2]</code> writes the result back to the same address. The memory write is the only part of the handler that changes the program's future, because it is the only part the frame does not undo. <code>BX LR</code> returns through EXC_RETURN, which is what triggers the unstacking.
+    The handler has five instructions. <code>MOV R2, #0x20000000</code> loads the counter's address into R2, written out because the simulator has no variables, whereas a real program would take it from a variable. <code>LDR R3, [R2]</code> reads the word at that address into R3, <code>ADD R3, R3, #1</code> adds one, and <code>STR R3, [R2]</code> writes the result back. That memory write is the only part of the handler that affects the program's future, because it is the only part the frame does not undo, and <code>BX LR</code> returns through EXC_RETURN, which triggers the unstacking.
   </p>
   <p>
-    A C version of the same handler would look like this. The compiler is free to use R0 to R3 for the work, because the frame restores them, and it will save R4 to R11 only if the body needs them.
+    A C version of the same handler looks like this. The compiler may use R0 to R3 freely for the work, because the frame restores them, and saves R4 to R11 only if the body needs them.
   </p>
   <pre><code class="language-c">volatile uint32_t counter = 0;    /* in SRAM: the value survives the return */
 
@@ -264,64 +266,58 @@ void IRQ_Handler(void) {
     counter = counter + 1;           /* a load, an add and a store, as above */
 }</code></pre>
   <p>
-    The <code>volatile</code> keyword tells the compiler that the variable can change outside the code it sees, and that every access must really happen (glossary: <a href="../reference/glossary.html#volatile">volatile</a>). Lesson 46 covers it in full. For this lesson, note that a variable shared between the main loop and a handler should always be declared that way.
+    The <code>volatile</code> keyword tells the compiler that the variable can change outside the code it sees, so every access must really take place (glossary: <a href="../reference/glossary.html#volatile">volatile</a>). Lesson 46 covers it in full, and for now the rule is that any variable shared between the main loop and a handler is declared that way.
   </p>
-
   <p>
-    The simulator is a teaching model of interrupt entry, and it differs from a real Cortex-M in the following ways. It has one interrupt, no priorities and no NVIC. It has no vector table, so the handler address is simply a label. It does not model tail-chaining or late arrival, and it does not model the twelve-cycle latency. The stacked frame and the return are the parts that match the real core.
+    The simulator is a teaching model of interrupt entry and differs from a real Cortex-M in several ways. It has one interrupt, no priorities and no NVIC, and no vector table, so the handler address is simply a label, and it models neither tail-chaining, late arrival nor the twelve-cycle latency. The stacked frame and the return are the parts that match the real core.
   </p>
 
-  <div class="win">You triggered an interrupt, read the eight-word frame on the stack, and showed that a handler's register changes are undone while its memory writes are kept.</div>
+  <div class="win">You triggered an interrupt, read the eight-word frame on the stack and showed that a handler's register changes are undone while its memory writes are kept.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
   <p>
-    Each of these mistakes has a symptom you can see, either in the simulator or in a debugger on the board.
+    Each of these mistakes has a symptom visible either in the simulator or in a debugger on the board.
   </p>
-
-  <h3>1. The handler has the wrong name</h3>
+  <h3>A handler with the wrong name</h3>
   <p>
-    The vector table holds names, and the linker connects each name to the function with that name. If your function is called <code>EXTI0_Handler</code> instead of <code>EXTI0_IRQHandler</code>, nothing in the table points to it. The startup file gives every handler a weak alias to <code>Default_Handler</code>, and that function is <code>Infinite_Loop: b Infinite_Loop</code> (lines 112 to 116). The symptom is that the program stops working the moment the interrupt fires. In a debugger the program counter sits inside <code>Infinite_Loop</code>. The fix is to copy the name from the startup file exactly, and to define the handler in C, which does not mangle names.
+    The program stops working the moment the interrupt fires, and a debugger shows the program counter inside <code>Infinite_Loop</code>. The vector table holds names that the linker connects to functions, so a function called <code>EXTI0_Handler</code> instead of <code>EXTI0_IRQHandler</code> is never referenced, and the startup file's weak alias sends the interrupt to <code>Default_Handler</code>, which is <code>Infinite_Loop: b Infinite_Loop</code> (lines 112 to 116). Copy the name exactly from the startup file and define the handler in C, which does not mangle names.
   </p>
-
-  <h3>2. The handler returns with a plain branch</h3>
+  <h3>A handler that returns with a plain branch</h3>
   <p>
-    A handler that finishes with <code>B main_loop</code> looks like it works, because the main loop runs again. The TRM says the ISR is complete only when the last instruction loads an EXC_RETURN value into PC (§5.8). With a plain branch, the frame is never popped. SP falls by 32 bytes each time the interrupt fires, and the main loop resumes with the handler's registers. The symptom in the simulator is the stack view: SP drops by 0x20 on each interrupt and never comes back. On a real board the stack eventually runs into the variables below it. The fix is to end the handler with <code>BX LR</code> in assembly, or to write it as a C function and let the compiler return.
+    The stack view shows SP dropping by 0x20 on every interrupt and never recovering, and on a real board the stack eventually runs into the variables below it. A handler ending in <code>B main_loop</code> seems to work because the main loop runs again, but the TRM states that an ISR completes only when its last instruction loads an EXC_RETURN value into PC (§5.8), so the frame is never popped and the main loop resumes with the handler's registers. End the handler with <code>BX LR</code> in assembly, or write it as a C function and let the compiler return.
   </p>
-
-  <h3>3. The handler expects a return value in R0</h3>
+  <h3>A result expected in R0</h3>
   <p>
-    The warning above describes this one. A handler that writes a result to R0 has its change undone, so the caller sees the old value. The symptom is a main loop that never sees the new reading, even though the handler ran. The fix is to write to a <code>volatile</code> variable or a buffer that the main loop reads.
+    The main loop never sees a new reading although the handler ran, because the handler wrote its result to R0 and the return undid it, as the warning above describes. Write the result to a <code>volatile</code> variable or a buffer that the main loop reads.
   </p>
-
-  <h3>4. A hand-written handler uses R4 without saving it</h3>
+  <h3>R4 used without being saved</h3>
   <p>
-    The hardware does not save R4 to R11. A handler that uses R4 without pushing it changes the main program's R4. The bug shows up later, in the main code, and only after an interrupt has fired, which makes it hard to trace. The symptom is a variable in the main loop that changes at random. The fix is to push every register the handler uses, and to pop it before the return. In C the compiler does this for you.
+    A variable in the main loop changes at random, but only after an interrupt has fired, which makes the bug hard to trace. The hardware does not save R4 to R11, so a hand-written handler that uses R4 without pushing it changes the main program's R4. Push every register the handler uses and pop it before returning, which a C compiler does automatically.
   </p>
-
-  <h3>5. The handler does not clear the peripheral's flag</h3>
+  <h3>A peripheral flag left set</h3>
   <p>
-    A peripheral keeps its request asserted until the handler clears the flag that caused it. If the flag stays set, the core takes the same interrupt again as soon as the handler returns. The main loop barely runs, and the handler appears to run all the time. The header names the flags. For example, <code>EXTI_PR_PR0</code> is the pending bit for line 0, defined in <code>stm32f103xb.h</code>. The fix is to read the peripheral manual, find the clearing action for that flag, and do it at the start or end of the handler. Check the peripheral manual before you rely on the clearing method, because some flags clear by writing a 1 and others clear in a different way.
+    The main loop barely runs and the handler seems to run all the time. A peripheral keeps its request asserted until the handler clears the flag that caused it, so a flag left set makes the core take the same interrupt again as soon as the handler returns. The header names the flags, for example <code>EXTI_PR_PR0</code>, the pending bit for line 0 in <code>stm32f103xb.h</code>. Find the clearing action for that flag in the peripheral manual and perform it in the handler, checking the method first, because some flags clear by writing a 1 and others in a different way.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Interrupt handlers in production firmware</h2></summary>
   <p>
-    Professional firmware keeps ISRs short. A typical handler reads the data from the peripheral, stores it in a buffer, sets a flag, and returns. The main loop or a task does the slow work, such as parsing a message or updating a display. A code reviewer looks for four things: that the handler name matches the vector table, that any variable shared with the main code is <code>volatile</code>, that the handler clears the flag that raised it, and that the handler never waits. A call to a delay or to a function that waits on a peripheral inside an ISR is an error, because the main program cannot run again until the handler ends.
+    Professional firmware keeps ISRs short. A typical handler reads the data from the peripheral, stores it in a buffer, sets a flag and returns, leaving slow work such as parsing a message or updating a display to the main loop or a task. A code reviewer checks that the handler name matches the vector table, that every variable shared with the main code is <code>volatile</code>, that the handler clears the flag that raised it, and that it never waits, since a delay or a call that waits on a peripheral inside an ISR stops the main program until the handler ends.
   </p>
   <p>
-    The same entry sequence supports an RTOS. When the kernel switches tasks, it uses an exception to do the work at a known point. Lesson 35 covers the privilege and stack rules that make this safe, and lesson 88 builds a context switch on the same mechanism. The TRM's table of exception types lists PendSV as a "software pend request", which is the usual way a kernel asks for a switch (DDI0337G, the exception type table).
+    The same entry sequence supports an RTOS, whose kernel switches tasks through an exception so that the work happens at a known point. Lesson 35 covers the privilege and stack rules that make this safe, and lesson 88 builds a context switch on the same mechanism. The TRM's table of exception types lists PendSV as a "software pend request", the usual way for a kernel to request a switch (DDI0337G, the exception type table).
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>An exception stops the program and runs a handler. An interrupt is an exception raised by a peripheral or a pin.</li>
-    <li>The vector table maps each exception number to a handler address. On the STM32F1 the names are in the startup file.</li>
-    <li>On entry the core pushes eight words onto the stack. From the lowest address up, they are R0, R1, R2, R3, R12, LR, PC and xPSR. Registers R4 to R11 are not pushed.</li>
-    <li>LR is loaded with EXC_RETURN. A handler returns by loading that value into PC, which triggers the unstacking. A plain branch does not return.</li>
-    <li>The TRM shows twelve cycles from the interrupt to the first ISR instruction, and six cycles for a tail-chained handler.</li>
-    <li>Changes to R0 to R3 are undone on return, so a handler passes results through memory.</li>
-    <li>A handler must have the right name, clear the flag that raised it, and save any register it uses beyond the frame.</li>
+    <li>An exception stops the program and runs a handler, and an interrupt is an exception raised by a peripheral or a pin.</li>
+    <li>The vector table maps each exception number to a handler address, and on the STM32F1 the handler names are in the startup file.</li>
+    <li>On entry the core pushes eight words, from the lowest address R0, R1, R2, R3, R12, LR, PC and xPSR, and leaves R4 to R11 unsaved.</li>
+    <li>LR is loaded with EXC_RETURN, and a handler returns by loading that value into PC, which triggers the unstacking; a plain branch does not return.</li>
+    <li>The TRM shows twelve cycles from the interrupt to the first ISR instruction, and six for a tail-chained handler.</li>
+    <li>Changes to R0 to R3 are undone on return, so a handler passes its results through memory.</li>
+    <li>A handler must have the right name, clear the flag that raised it and save any register it uses beyond the frame.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

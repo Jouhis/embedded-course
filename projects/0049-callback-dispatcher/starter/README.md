@@ -6,13 +6,13 @@ Lesson: [Function pointers and callbacks](https://jouhis.github.io/embedded-cour
 
 ## Try it in Wokwi
 
-The project `projects/0049-callback-dispatcher` runs a two-event dispatcher on a Pico. Only the tick event is registered, and the program then dispatches an event for the button, which has no handler.
+The project `projects/0049-callback-dispatcher` runs a two-event dispatcher on a Pico in which only the tick event is registered, after which the program dispatches a button event that has no handler.
 
-1. Open `projects/0049-callback-dispatcher/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Watch the serial monitor. You should see one `tick` line, and then no more output. The second dispatch calls the NULL slot for the button, so the program never reaches `done`.
-3. Your task: make `dispatch` check the slot before calling it. Count the events that have no handler in `ignored_count`, and count the handled ones in `handled_count`. The comment marked `TODO(learner)` in `dispatch` explains the problem.
-4. Replace the final `done` line in `main` with the summary line, `DISPATCH OK handled=%u ignored=%u`, printed from the two counters.
-5. You will know it works when the serial monitor prints `tick`, then `tick` again, then `DISPATCH OK handled=2 ignored=1`.
+1. Open `projects/0049-callback-dispatcher/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Watch the serial monitor, which shows one `tick` line and then nothing more, because the second dispatch calls the button's NULL slot and the program never reaches `done`.
+3. Make `dispatch` check the slot before calling it, counting events without a handler in `ignored_count` and handled ones in `handled_count`; the comment marked `TODO(learner)` in `dispatch` explains the problem.
+4. Replace the final `done` line in `main` with the summary line `DISPATCH OK handled=%u ignored=%u`, printed from the two counters.
+5. The fix works when the serial monitor prints `tick`, then `tick` again, then `DISPATCH OK handled=2 ignored=1`.
 
 ## Files you work on
 
@@ -27,7 +27,7 @@ The serial monitor prints `DISPATCH OK handled=2 ignored=1`.
 <details>
 <summary>Hint</summary>
 
-Before the call in `dispatch`, compare the slot with NULL. If it is NULL, increment the ignored count and return early. Increment the handled count after the call. The register function also has a range check you can add, but the crash comes from the NULL slot.
+Before the call in `dispatch`, compare the slot with NULL, and if it is NULL, increment the ignored count and return early, incrementing the handled count after the call. The register function can take a range check too, but the crash comes from the NULL slot.
 
 </details>
 

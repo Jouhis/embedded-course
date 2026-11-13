@@ -7,9 +7,9 @@ Lesson: [Lab 3: Environment monitor](https://jouhis.github.io/embedded-course/le
 ## Try it in Wokwi
 
 1. Open `projects/lab03-environment-monitor/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles, and it prints a note that the subsystems are not initialised while the TODO(learner) comments remain.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. Work through the milestones, rebuilding after each one.
-4. The diagram has the sensor and the OLED on I2C0, two pull-up resistors, and two pushbuttons. Click the buttons in the simulator, or use the keys <kbd>A</kbd> and <kbd>B</kbd> set in the diagram.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The starter compiles and prints a note that the subsystems are not initialised while the TODO(learner) comments remain.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, and work through the milestones, rebuilding after each one.
+4. The diagram has the sensor and the OLED on I2C0, two pull-up resistors and two pushbuttons. Click the buttons in the simulator, or use the keys <kbd>A</kbd> and <kbd>B</kbd> set in the diagram.
 
 If the screen stays blank, check the wiring and the address first: the OLED must answer at 0x3C on GP4 and GP5. The lesson 61 driver does not report a missing acknowledge, so a blank screen with no log line is the usual symptom.
 

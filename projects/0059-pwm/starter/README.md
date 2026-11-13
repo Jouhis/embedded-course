@@ -6,11 +6,11 @@ Lesson: [PWM: dimming, servos, tones](https://jouhis.github.io/embedded-course/l
 
 ## Try it in Wokwi
 
-The project `projects/0059-pwm` has a potentiometer on GP26, an LED on GP18 (slice 1, A), a servo on GP16 (slice 0, A) and a buzzer on GP22 (slice 3, A). The three outputs use three slices, because each slice has only one period. The solution sets the LED to 1 kHz, the servo to 50 Hz and the buzzer to 440 Hz.
+The project `projects/0059-pwm` has a potentiometer on GP26, an LED on GP18 (slice 1, A), a servo on GP16 (slice 0, A) and a buzzer on GP22 (slice 3, A), the three outputs using three slices because each slice has only one period. The solution runs the LED at 1 kHz, the servo at 50 Hz and the buzzer at 440 Hz.
 
 1. Open `projects/0059-pwm/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-3. Your task: check the LED's TOP and explain it in a comment. Fix the servo's TOP (the starter has a planted 2 ms period, which gives 500 Hz). Compute the buzzer's TOP from `sys_hz` and set its level to half of TOP + 1. Set the LED and servo levels from the potentiometer reading. You will know it works when the servo arm moves with the pot, the LED dims, and the serial monitor prints `PWM OK`.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+3. Check the LED's TOP and explain it in a comment, fix the servo's TOP, where the starter has a planted 2 ms period giving 500 Hz, compute the buzzer's TOP from `sys_hz` with its level at half of TOP + 1, and set the LED and servo levels from the potentiometer reading. The program works when the servo arm follows the pot, the LED dims and the serial monitor prints `PWM OK`.
 
 ## Files you work on
 
@@ -25,14 +25,14 @@ The serial monitor prints `PWM OK`.
 <details>
 <summary>Hint for the servo</summary>
 
-The servo wants 20,000 ticks per frame at 1 µs each. Count the ticks in one frame, and the TOP is that count minus one.
+The servo needs 20 000 ticks per frame at 1 µs each, so count the ticks in one frame and subtract one for TOP.
 
 </details>
 
 <details>
 <summary>Hint for the levels</summary>
 
-The level is a count of ticks, not a percentage. For the servo that is microseconds, from 1000 to 2000. For the LED it is a fraction of TOP + 1.
+The level is a count of ticks, not a percentage, which for the servo means microseconds from 1 000 to 2 000 and for the LED a fraction of TOP + 1.
 
 </details>
 

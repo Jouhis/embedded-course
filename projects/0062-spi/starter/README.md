@@ -6,13 +6,13 @@ Lesson: [SPI: displays and shift registers](https://jouhis.github.io/embedded-co
 
 ## Try it in Wokwi
 
-The project `projects/0062-spi` uses the lesson 25 74HC595 with the SPI0 pins. SCK is GP18, MOSI is GP19, and GP17 is the latch, driven by hand as chip select. A logic analyzer records the three lines on D0 (SCK), D1 (MOSI) and D2 (latch). The solution first runs the chase with bit-bang, then with hardware SPI at 1 MHz, and prints both times.
+The project `projects/0062-spi` uses the 74HC595 of lesson 25 on the SPI0 pins, SCK on GP18, MOSI on GP19 and the latch on GP17, driven by hand as chip select, while a logic analyser records the three lines on D0 (SCK), D1 (MOSI) and D2 (latch). The solution runs the chase first with bit-bang and then with hardware SPI at 1 MHz, and prints both times.
 
 1. Open `projects/0062-spi/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The bit-bang phase runs first, so the LEDs chase once before the hardware phase starts.
-3. Your task: write `hw_byte()`. Pull the latch low, send one byte with `spi_write_blocking()`, wait with `spi_is_busy()`, then raise the latch. Mirror `bitbang_byte()`. Then fix the mode: the starter sets CPHA 1, which is wrong for the 74HC595. Change it to CPHA 0, and write a comment that names the edge the 595 samples on.
-4. Expected result: the serial monitor prints `SPI OK`, and a line such as `8 bytes: bit-bang ... us, hardware SPI ... us at 992063 Hz`. The LEDs chase on the hardware path. The bit-bang time is at least 16 µs, and the hardware time is about 8 µs.
-5. Stop the simulator and open the capture file `wokwi.vcd` in PulseView. Use the SPI decoder with SCK on D0, MOSI on D1 and CS on D2. The MOSI bytes should read 0x01, 0x02, 0x04 and so on, MSB first. If the decoder's mode does not match the capture, the bytes come out wrong, which is the same mismatch problem from Concept 2.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The bit-bang phase runs first, so the LEDs chase once before the hardware phase starts.
+3. Write `hw_byte()` to mirror `bitbang_byte()`, pulling the latch low, sending one byte with `spi_write_blocking()`, waiting with `spi_is_busy()` and raising the latch. Then fix the mode, changing the starter's CPHA 1, which is wrong for the 74HC595, to CPHA 0, with a comment naming the edge on which the 595 samples.
+4. The serial monitor should print `SPI OK` and a line such as `8 bytes: bit-bang ... us, hardware SPI ... us at 992063 Hz`, with the LEDs chasing on the hardware path, a bit-bang time of at least 16 µs and a hardware time of about 8 µs.
+5. Stop the simulator, open the capture file `wokwi.vcd` in PulseView and use the SPI decoder with SCK on D0, MOSI on D1 and CS on D2. The MOSI bytes should read 0x01, 0x02, 0x04 and so on, MSB first, and if the decoder's mode does not match the capture, the bytes come out wrong, the same mismatch as between master and device.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `SPI OK`.
 <details>
 <summary>Hint for the mode</summary>
 
-The 74HC595 samples its data on the rising edge of SHCP, which is SCK here. Work out which mode samples on the first, rising edge with the clock idle low. The table in Concept 2 gives it.
+The 74HC595 samples its data on the rising edge of SHCP, which is SCK here, so find the mode in the table that samples on the first, rising edge with the clock idle low.
 
 </details>
 
 <details>
 <summary>Hint for the timing</summary>
 
-Compare the two numbers the solution prints. Bit-bang has two 1 µs delays per bit, so a byte takes at least 16 µs. Hardware SPI at 992,063 Hz takes about 8 µs per byte. Both numbers come from `time_us_32()`, so they include the overhead of the code around each byte.
+Compare the two numbers the solution prints: bit-bang has two 1 µs delays per bit, so a byte takes at least 16 µs, while hardware SPI at 992 063 Hz takes about 8 µs per byte. Both come from `time_us_32()`, so they include the overhead of the code around each byte.
 
 </details>
 

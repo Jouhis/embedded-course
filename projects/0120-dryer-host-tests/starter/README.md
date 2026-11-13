@@ -6,10 +6,10 @@ Lesson: [Capstone 8: CI and the finished capstone](https://jouhis.github.io/embe
 
 ## Try it: run the checks the way CI does
 
-1. From the workspace root, run the host tests on the solution: `python -I tools/build.py projects/0120-dryer-host-tests/solution --clean --test`. Expected: `100% tests passed out of 10`.
-2. Run the same command on the starter folder. Expected: `90% tests passed, 1 tests failed out of 10`, with `10 - regmap (Failed)`. If you finished the Try it in lesson 118, expect `100% tests passed out of 10` instead.
-3. Run the CI static-analysis command from the section above on the firmware sources. Expected: no output. Then read the exit code. In Git Bash, `echo $?` on the next line prints it. In PowerShell, `$LASTEXITCODE` does. Expected: 0.
-4. Make a probe file in a temporary folder outside the projects. Give it this content:
+1. From the workspace root, run the host tests on the solution with `python -I tools/build.py projects/0120-dryer-host-tests/solution --clean --test`, expecting `100% tests passed out of 10`.
+2. Run the same command on the starter folder, expecting `90% tests passed, 1 tests failed out of 10` with `10 - regmap (Failed)`, or `100% tests passed out of 10` if you finished the hands-on task in lesson 118.
+3. Run the CI static-analysis command from the section above on the firmware sources, expecting no output, and then read the exit code, which `echo $?` on the next line prints in Git Bash and `$LASTEXITCODE` in PowerShell, expecting 0.
+4. Make a probe file in a temporary folder outside the projects with this content:
 
    ```c
    int main(void) {
@@ -18,7 +18,7 @@ Lesson: [Capstone 8: CI and the finished capstone](https://jouhis.github.io/embe
    }
    ```
 
-   Run cppcheck on it with the flags from the CI step, and print the exit code. Then run it again without `--error-exitcode=1`. Expected: one style message that names `unused`, exit code 1 with the flag and exit code 0 without it. Delete the probe file when you are done.
+   Run cppcheck on it with the flags from the CI step and print the exit code, then run it again without `--error-exitcode=1`, expecting one style message naming `unused`, exit code 1 with the flag and exit code 0 without it, and delete the probe file when you are done.
 
 ## Files you work on
 

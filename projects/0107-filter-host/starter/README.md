@@ -6,11 +6,11 @@ Lesson: [Digital filtering: moving average and IIR](https://jouhis.github.io/emb
 
 ## Try it: the host tests
 
-The project `projects/0107-filter-host` holds the filters in plain C and tests their step responses with Unity. Each expected number was computed by running the same equation, not by hand. Build and run it from the workspace root.
+The project `projects/0107-filter-host` holds the filters in plain C and tests their step responses with Unity, each expected number having been computed by running the same equation rather than by hand, and you build and run it from the workspace root.
 
-1. Open `projects/0107-filter-host/starter` in VS Code, or run `python -I tools/build.py projects/0107-filter-host/starter --test` from the workspace root. Expected output: the build runs, and ctest reports `The following tests FAILED`. The placeholders return the input unchanged, so the step-response tests fail. That is correct at this point.
-2. Your task: write `ma_update`, `ema_update` and `median3_update` in `src/filters.c`. Read the test names first; each one is a behaviour. Write the moving average first, because its tests are the simplest. Then the EMA, then the median.
-3. Run the tests again with the same command. You will know it works when the Unity summary at the end of the output reads `11 Tests 0 Failures 0 Ignored`. The reference solution is in `projects/0107-filter-host/solution` and prints exactly that line.
+1. Open `projects/0107-filter-host/starter` in VS Code, or run `python -I tools/build.py projects/0107-filter-host/starter --test` from the workspace root, after which the build runs and ctest reports `The following tests FAILED`, correctly at this point, because the placeholders return the input unchanged, so the step-response tests fail.
+2. Write `ma_update`, `ema_update` and `median3_update` in `src/filters.c`, reading the test names first, since each one is a behaviour, and writing the moving average first, because its tests are the simplest, then the EMA and then the median.
+3. Run the tests again with the same command, the changes having worked when the Unity summary at the end of the output reads `11 Tests 0 Failures 0 Ignored`, exactly the line printed by the reference solution in `projects/0107-filter-host/solution`.
 
 ## Files you work on
 

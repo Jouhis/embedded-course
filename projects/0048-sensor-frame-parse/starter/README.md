@@ -6,12 +6,12 @@ Lesson: [Bit fields, unions, packing, and endianness](https://jouhis.github.io/e
 
 ## Try it in Wokwi
 
-The project `projects/0048-sensor-frame-parse` runs on a Pico. It parses the 4-byte frame from the worked example and prints the result on the serial monitor. The starter is wrong in exactly the way this lesson describes.
+The project `projects/0048-sensor-frame-parse` runs on a Pico, parsing the 4-byte frame from the worked example and printing the result on the serial monitor, and its starter is wrong in exactly the way this lesson describes.
 
-1. Open `projects/0048-sensor-frame-parse/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Read the first printed line. The starter prints `temp=13330 mode=1 valid=1`. The mode and valid values are right, but 13330 is the byte-swapped value from step 4 of the worked example. The correct temperature for this frame is 4660.
-3. Your task: replace the `memcpy` line in `parse_frame` with the shift expression from this lesson. Leave the header check and the mask lines as they are. The header check must still reject a bad frame.
-4. You will know it works when the serial monitor prints `FRAME PARSE OK temp=4660 mode=1 valid=1`, followed by `bad header rejected`.
+1. Open `projects/0048-sensor-frame-parse/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Read the first printed line, `temp=13330 mode=1 valid=1`, in which the mode and valid values are right but 13330 is the byte-swapped value from step 4 of the worked example, the correct temperature for this frame being 4660.
+3. Replace the `memcpy` line in `parse_frame` with the shift expression from this lesson, leaving the header check and the mask lines unchanged, since the header check must still reject a bad frame.
+4. The fix works when the serial monitor prints `FRAME PARSE OK temp=4660 mode=1 valid=1` followed by `bad header rejected`.
 
 ## Files you work on
 
@@ -26,7 +26,7 @@ The serial monitor prints `FRAME PARSE OK temp=4660 mode=1 valid=1`.
 <details>
 <summary>Hint</summary>
 
-Work out what the two bytes 0x12 and 0x34 become when copied into a `uint16_t` on a little-endian CPU. If the number you printed is 13330, that is 0x3412, the bytes swapped. The fix is to combine the bytes as values: put the high byte in bits 15 to 8 with a shift, then OR in the low byte.
+Work out what the bytes 0x12 and 0x34 become when copied into a `uint16_t` on a little-endian CPU: a printed 13330 is 0x3412, the bytes swapped. The fix combines the bytes as values, shifting the high byte into bits 15 to 8 and ORing in the low byte.
 
 </details>
 

@@ -6,14 +6,14 @@ Lesson: [Registers, counters, shift registers](https://jouhis.github.io/embedded
 
 ## Try it in Wokwi
 
-The project in `projects/0025-shift-register-595` wires DS to GP2, SHCP to GP3 and STCP to GP4. MR is tied to 3.3 V and OE to GND, so the register runs and its outputs are on. The 74HC595 outputs drive eight LEDs through 220 Ω resistors. The C code is written in two layers: `shift_out_msb_first()` sends eight bits, most significant bit first, and `latch_outputs()` copies them to the LEDs. The program then runs a chase, from Q0 to Q7, a fixed pattern and an all-off step.
+The project in `projects/0025-shift-register-595` wires DS to GP2, SHCP to GP3 and STCP to GP4, with MR tied to 3.3 V and OE to GND so that the register runs and its outputs are on. The 74HC595 outputs drive eight LEDs through 220 Ω resistors. The C code has two layers, `shift_out_msb_first()` to send eight bits most significant bit first and `latch_outputs()` to copy them to the LEDs, and the program runs a chase from Q0 to Q7, then a fixed pattern and an all-off step.
 
-1. Open the `starter` folder, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `LEDS=0x01`, `LEDS=0x02` and so on, but the LEDs stay dark. The code asks for the patterns and never makes the latch edge.
-2. In `shift_out_msb_first()`, loop from bit 7 down to bit 0. For each bit, put it on DS, then make a rising edge on SHCP: high, a short delay, low, a short delay. After the loop the register holds the byte, but the outputs have not changed yet.
+1. Open the `starter` folder, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `LEDS=0x01`, `LEDS=0x02` and so on, but the LEDs stay dark, because the code asks for the patterns without ever making the latch edge.
+2. In `shift_out_msb_first()`, loop from bit 7 down to bit 0. For each bit, put it on DS and then make a rising edge on SHCP: high, a short delay, low, a short delay. After the loop the register holds the byte, although the outputs have not yet changed.
 3. In `latch_outputs()`, make one rising edge on STCP: high, a short delay, low, a short delay.
-4. Rebuild and restart the simulator. You will know it works when the LEDs chase from Q0 to Q7, then show 0xA5 (alternate LEDs on), then go all off. Only then replace the last `TODO(learner)` comment in `main()` with `printf("SHIFT OK\n");`, and rebuild. The serial monitor prints `LEDS=0x01` through `LEDS=0x80`, then `LEDS=0xA5`, `LEDS=0x00` and `SHIFT OK`.
+4. Rebuild and restart the simulator. It works when the LEDs chase from Q0 to Q7, then show 0xA5 with alternate LEDs on, then go all off. Only then replace the last `TODO(learner)` comment in `main()` with `printf("SHIFT OK\n");` and rebuild, after which the serial monitor prints `LEDS=0x01` through `LEDS=0x80`, then `LEDS=0xA5`, `LEDS=0x00` and `SHIFT OK`.
 
-Shifting out a byte on two GPIOs and a latch is the same idea as SPI, with the clock and the data each on one pin. Lesson 62 uses the Pico's SPI peripheral to do this in hardware, so the CPU does not toggle each pin by hand.
+Shifting a byte out on two GPIOs plus a latch is the same idea as SPI, with the clock and the data each on one pin. Lesson 62 uses the Pico's SPI peripheral to do this in hardware, so that the CPU does not toggle each pin by hand.
 
 ## Files you work on
 
@@ -28,14 +28,14 @@ The serial monitor prints `SHIFT OK`.
 <details>
 <summary>Hint for the bit order</summary>
 
-The first bit shifted in is pushed to Q7 by the later shifts. Sending bit 7 first therefore lights Q7 for a 1 in bit 7. Sending bit 0 first would put it in the wrong LED, which is the classic bug in shift-out code.
+The first bit shifted in is pushed up to Q7 by the later shifts, so sending bit 7 first lights Q7 for a 1 in bit 7. Sending bit 0 first would put it in the wrong LED, the classic bug in shift-out code.
 
 </details>
 
 <details>
 <summary>Hint for the edge</summary>
 
-A shift happens on the rising edge of SHCP, and so does a latch on STCP. A pulse that stays high does not count. Set the line low again before the next edge, as the comments say.
+A shift happens on the rising edge of SHCP, and a latch on the rising edge of STCP. A pulse that stays high does not count, so set the line low again before the next edge, as the comments say.
 
 </details>
 

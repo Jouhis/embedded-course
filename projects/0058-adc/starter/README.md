@@ -6,11 +6,11 @@ Lesson: [ADC: thermistors and oversampling](https://jouhis.github.io/embedded-co
 
 ## Try it in Wokwi
 
-The project `projects/0058-adc` wires an NTC thermistor to GP26 and a potentiometer to GP27. It reads both channels every half second, averages 16 conversions each, and prints the temperature and the pot voltage.
+The project `projects/0058-adc` wires an NTC thermistor to GP26 and a potentiometer to GP27, reads both channels every half second with 16 averaged conversions each, and prints the temperature and the pot voltage.
 
 1. Open `projects/0058-adc/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-3. Your task: make `read_averaged()` average `OVERSAMPLE` conversions, set `OVERSAMPLE` to 16, and change `ADC_FULL_SCALE` from 1023 to 4095. The starter uses the 10-bit value, so its temperature is wrong. Then print `ADC OK` once, after a valid reading.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+3. Make `read_averaged()` average `OVERSAMPLE` conversions, set `OVERSAMPLE` to 16 and change `ADC_FULL_SCALE` from 1023 to 4095, since the starter's 10-bit value makes its temperature wrong, and then print `ADC OK` once after a valid reading.
 
 ## Files you work on
 
@@ -25,14 +25,14 @@ The serial monitor prints `ADC OK`.
 <details>
 <summary>Hint for the wrong temperature</summary>
 
-In the starter, the temperature prints as `nan`, not as a number far from 24 °C. The starter's `ntc_celsius()` returns NaN for any raw reading at or above 1023, and a reading near 2093 is above that. At 24 °C the raw value should be near 2093 on the 12-bit scale. Once `ADC_FULL_SCALE` is 4095, the reading is accepted and the temperature is about 24 °C.
+In the starter the temperature prints as `nan` rather than a number far from 24 °C, because the starter's `ntc_celsius()` returns NaN for any raw reading at or above 1023 and a reading near 2093 is above that. On the 12-bit scale the raw value at 24 °C should be near 2093, and once `ADC_FULL_SCALE` is 4095, the reading is accepted and the temperature is about 24 °C.
 
 </details>
 
 <details>
 <summary>Hint for the average</summary>
 
-Add up the conversions in a `uint32_t` and divide once at the end. Divide each reading first and the rounding error adds up.
+Add up the conversions in a `uint32_t` and divide once at the end, because dividing each reading first lets the rounding error add up.
 
 </details>
 

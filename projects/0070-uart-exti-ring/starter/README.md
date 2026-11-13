@@ -6,11 +6,11 @@ Lesson: [USART and EXTI interrupts with a ring buffer](https://jouhis.github.io/
 
 ## Try it in Wokwi
 
-The starter prints `RING FAIL` and stops, because the ring is not written yet. Its job is to make that line print `RING OK`. Then it accepts commands: `toggle` flips the PC13 LED, and `st` prints the button count. The Wokwi serial monitor sends what you type to USART1 RX on A10, and the button is on A0.
+The starter prints `RING FAIL` and stops, because the ring is not yet written, and the job is to make that line print `RING OK`, after which the program accepts commands, `toggle` flipping the PC13 LED and `st` printing the button count. The Wokwi serial monitor sends what you type to USART1 RX on A10, and the button is on A0.
 
-1. Open `projects/0070-uart-exti-ring/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `RING FAIL`.
-2. Your task, marked `TODO(learner)`. Step 1: write `ring_put` and `ring_get` as in the code above. Step 2: add `USART_CR1_RXNEIE` to `CR1`, and enable `USART1_IRQn` in the NVIC. Step 3: set up EXTI line 0 in `button_init`: enable AFIO, route PA0, set the falling edge, clear and unmask the line, and enable `EXTI0_IRQn`.
-3. You will know it works when the monitor prints `RING OK` first. Type `toggle` and press Enter: the LED flips, and the monitor says so. Click the button in the diagram, then type `st`, and the count goes up by one per click.
+1. Open `projects/0070-uart-exti-ring/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `RING FAIL`.
+2. At the `TODO(learner)` markers, step 1 writes `ring_put` and `ring_get` as in the code above, step 2 adds `USART_CR1_RXNEIE` to `CR1` and enables `USART1_IRQn` in the NVIC, and step 3 sets up EXTI line 0 in `button_init`, enabling AFIO, routing PA0, setting the falling edge, clearing and unmasking the line and enabling `EXTI0_IRQn`.
+3. The program works when the monitor prints `RING OK` first, typing `toggle` and pressing Enter flips the LED with a message from the monitor, and clicking the button in the diagram followed by `st` shows the count rising by one per click.
 
 ## Files you work on
 
@@ -25,21 +25,21 @@ The serial monitor prints `RING OK`.
 <details>
 <summary>Hint for the ring</summary>
 
-Each function is three or four lines. The size is 16, so the index mask is 15. Use `uint16_t` casts on the arithmetic, so the difference wraps the same way the counters do.
+Each function is three or four lines, the size of 16 giving an index mask of 15, and `uint16_t` casts on the arithmetic make the difference wrap the same way the counters do.
 
 </details>
 
 <details>
 <summary>Hint for the interrupt enable</summary>
 
-Without RXNEIE, the peripheral never raises RXNE as an interrupt, and the ring stays empty. Without `NVIC_EnableIRQ(USART1_IRQn)`, the request is pending and nothing runs.
+Without RXNEIE the peripheral never raises RXNE as an interrupt and the ring stays empty, and without `NVIC_EnableIRQ(USART1_IRQn)` the request stays pending and nothing runs.
 
 </details>
 
 <details>
 <summary>Hint for EXTI</summary>
 
-PA0 goes to line 0 with the port code 0, which means all zero bits in `EXTICR[0]`. The falling trigger is `FTSR`, and the unmask is `IMR`. Enable the AFIO clock first (RM0008 Rev 21, section 10.2.5, note 1), or the EXTICR write does nothing.
+PA0 goes to line 0 with port code 0, all zero bits in `EXTICR[0]`, the falling trigger is `FTSR` and the unmask `IMR`, and the AFIO clock must be enabled first (RM0008 Rev 21, section 10.2.5, note 1), or the EXTICR write does nothing.
 
 </details>
 

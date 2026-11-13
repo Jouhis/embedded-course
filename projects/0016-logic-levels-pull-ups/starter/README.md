@@ -6,14 +6,14 @@ Lesson: [Logic levels, pull-ups, open-drain, level shifting](https://jouhis.gith
 
 ## Try it in Wokwi
 
-The project wires a pushbutton between GP14 and ground, so a released button should read 1 with the pull-up on, and a pressed button should read 0. The starter prints the pin's value. Your job is to add the pull-up, and then a second phase with the pulls disabled, so you can compare them on the serial monitor. The starter is a complete program that builds and runs, but the two places marked `TODO(learner)` are not yet done.
+The project wires a pushbutton between GP14 and ground, so with the pull-up on, a released button should read 1 and a pressed one 0. The starter prints the pin's value, and your job is to add the pull-up and then a second phase with the pulls disabled, so that you can compare the two on the serial monitor. The starter is a complete program that builds and runs, but the two places marked `TODO(learner)` are still to be done.
 
 1. Open the `starter` folder in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), then open `projects/0016-logic-levels-pull-ups/starter`.
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build ends with no errors.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. Before you change anything, the serial monitor shows one line every 250 ms, in the form `GP14 = 1` or `GP14 = 0`, with no pull set in the code.
-4. Your task: replace the two `TODO(learner)` comments with code. Before the loop, call `gpio_pull_up(BUTTON_PIN)`. In the loop, switch every 5 seconds between the pull-up and `gpio_disable_pulls(BUTTON_PIN)`, and print which phase is active. You will know it works when the serial output shows `[pull-up]` lines reading 1 when the button is released, and 0 when you click it.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build ends with no errors.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Before you change anything, the serial monitor shows one line every 250 ms, in the form `GP14 = 1` or `GP14 = 0`, with no pull set in the code.
+4. Replace the two `TODO(learner)` comments with code. Before the loop, call `gpio_pull_up(BUTTON_PIN)`. In the loop, switch every 5 seconds between the pull-up and `gpio_disable_pulls(BUTTON_PIN)`, and print which phase is active. It works when the serial output shows `[pull-up]` lines reading 1 with the button released and 0 when you click it.
 
-The simulator's model of a floating pin may not match a real board. In the `[no pulls]` phase, use the datasheet reasoning for what a real pin does, and treat the simulator value as a demonstration only.
+The simulator's model of a floating pin may not match a real board. In the `[no pulls]` phase, rely on the datasheet reasoning for what a real pin does and treat the simulator's value as a demonstration only.
 
 ## Files you work on
 
@@ -28,7 +28,7 @@ The serial monitor prints `[pull-up]   GP14 = 1`.
 <details>
 <summary>Hint for the phases</summary>
 
-Keep a counter of the readings and a `bool` that says which phase you are in. When the counter reaches 20, flip the bool, call the matching pull function, and reset the counter. At 250 ms per reading, 20 readings take 5 seconds. Do not put `sleep_ms` inside the phase logic, because the loop already sleeps once per reading.
+Keep a counter of the readings and a `bool` that records the current phase. When the counter reaches 20, flip the bool, call the matching pull function and reset the counter; at 250 ms per reading, 20 readings take 5 seconds. Do not put `sleep_ms` inside the phase logic, because the loop already sleeps once per reading.
 
 </details>
 

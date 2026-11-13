@@ -11,31 +11,31 @@
 <body data-lesson="0072">
 <main>
   <p class="lesson-meta"></p>
-  <h1>The NVIC: priorities, preemption, latency</h1>
-  <p class="subtitle">When two interrupts fire at once, the NVIC decides which one runs first and whether a running handler can be interrupted. Get the priority grouping wrong and your timing bugs will only show up under load.</p>
+  <h1>The NVIC</h1>
+  <p class="subtitle">Interrupt priorities, preemption and latency</p>
 
   <div class="goal">
     By the end of this lesson you can set the priority grouping and the priority of two interrupt sources with CMSIS, say which one preempts which, and explain the 12-cycle entry cost and tail-chaining, using the Arm and ST sources.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Two interrupts at the same moment</h2>
   <p>
-    Lesson 70 made the USART and an external-interrupt pin raise interrupts, and it used a ring buffer so that the main loop could read the events later. Lesson 57 explained what an interrupt is and why a handler must be short, and lesson 34 explained what the core does on entry: it pushes a frame of registers onto the stack and fetches the handler's address from the vector table. This lesson is about the decision the interrupt controller makes before that entry starts.
+    Lesson 70 made the USART and an external-interrupt pin raise interrupts, with a ring buffer letting the main loop read the events later, lesson 57 explained what an interrupt is and why a handler must be short, and lesson 34 described what the core does on entry, pushing a frame of registers onto the stack and fetching the handler's address from the vector table. This lesson concerns the decision the interrupt controller makes before that entry starts, when two interrupts fire at once and one must run first.
   </p>
   <p>
-    Every product with more than one interrupt source runs into this problem. A motor controller must read its encoder within a few microseconds, but it also logs data over the UART, and a long logging handler must not make the encoder late. A brake monitor must respond before a slower housekeeping timer. If the priorities are wrong, a bug appears only when two events happen close together, and it does not show up in a short test. That is why this lesson covers the rules as well as the register writes.
+    Every product with more than one interrupt source meets the problem. A motor controller must read its encoder within a few microseconds while also logging data over the UART, so a long logging handler must not make the encoder late, and a brake monitor must respond before a slower housekeeping timer. With the priorities wrong, a bug appears only when two events happen close together and never in a short test, which is why this lesson covers the rules as well as the register writes.
   </p>
 
-  <h2>Concept 1: the NVIC keeps one priority per source</h2>
+  <h2>One priority per interrupt source</h2>
   <p>
-    The <a href="../reference/glossary.html#nvic-nested-vectored-interrupt-controller">NVIC (Nested Vectored Interrupt Controller)</a> is the block inside the Cortex-M core that enables interrupt sources, gives each one a priority, and selects the one to run. Each interrupt source has an enable bit, and a priority register. When a source is pending and enabled, the NVIC compares its priority with the priority of the handler that is running, if there is one. If the new one is more urgent, the core takes it.
+    The <a href="../reference/glossary.html#nvic-nested-vectored-interrupt-controller">NVIC (Nested Vectored Interrupt Controller)</a> is the block inside the Cortex-M core that enables interrupt sources, gives each a priority and selects the one to run. Each source has an enable bit and a priority register, and when a source is pending and enabled, the NVIC compares its priority with that of any running handler, the core taking the new one if it is more urgent.
   </p>
   <p>
-    The priority register is 8 bits wide for each source, but the STM32F1 does not implement all 8 bits. The device header records this as <code>__NVIC_PRIO_BITS 4U</code>, so only the top four bits are used, and the priority is a value from 0 to 15 (<code>stm32f103xb.h</code>). PM0056 Rev 7 section 4.3.7 (Table 42) says the same: the processor implements only bits 7 to 4 of each priority field. The Arm TRM says the same thing in a general way: if four bits of priority are implemented, the top four bits of the register set the priority, and the lower four bits are always zero. It gives that example in section 5.3.2.
+    The priority register is 8 bits wide per source, but the STM32F1 implements only some of them, the device header recording <code>__NVIC_PRIO_BITS 4U</code>, so only the top four bits are used and the priority runs from 0 to 15 (<code>stm32f103xb.h</code>). PM0056 Rev 7 section 4.3.7 (Table 42) agrees that the processor implements only bits 7 to 4 of each priority field, and the Arm TRM puts the same rule generally in section 5.3.2, where, with four bits implemented, the top four bits set the priority and the lower four always read zero.
     <span class="sidenote">A priority number is not a count of anything. Priority 2 is not "twice as urgent" as priority 4. It only says which one wins when both are pending, and whether one can interrupt the other.</span>
   </p>
   <p>
-    On the Cortex-M3 a <strong>lower number is a higher priority</strong> (PM0056 Rev 7, section 2.3.5). Priority 0 is the most urgent configurable interrupt, and priority 15 is the least urgent on this device. This is the opposite of what many people expect, and it is the first thing to check when a priority looks backwards. The reset value of every priority is 0 (PM0056 Rev 7, section 4.3.7), which is the most urgent level. A source that you never configure is therefore the most urgent one in the system, not the least, and this is a common trap.
+    On the Cortex-M3 a <strong>lower number is a higher priority</strong> (PM0056 Rev 7, section 2.3.5), so priority 0 is the most urgent configurable level and 15 the least urgent on this device, the opposite of what many people expect and the first thing to check when a priority looks backwards. Every priority resets to 0 (PM0056 Rev 7, section 4.3.7), the most urgent level, so a source that is never configured becomes the most urgent in the system rather than the least, a common trap.
   </p>
   <figure>
     <svg viewBox="0 0 560 165" role="img" aria-label="An 8-bit priority field with the top four bits, preempt and sub-priority, shown for two groupings" style="max-width:728px">
@@ -65,15 +65,15 @@
     <figcaption>Figure 1. The priority register has 8 bits, but the device implements only the top 4. The grouping (AIRCR PRIGROUP) splits those 4 bits into preemption and sub-priority.</figcaption>
   </figure>
 
-  <h2>Concept 2: grouping splits the bits into two jobs</h2>
+  <h2>Priority grouping into preemption and sub-priority</h2>
   <p>
-    The four implemented bits do two jobs, and the <a href="../reference/glossary.html#nvic-priority-grouping">priority grouping</a> decides how many bits do each. The grouping is set by the <code>PRIGROUP</code> field of the <code>AIRCR</code> register, which is the Application Interrupt and Reset Control Register. In the CMSIS header, <code>PRIGROUP</code> is bits 10 to 8 of that register (<code>SCB_AIRCR_PRIGROUP_Pos</code> is 8, and its mask is 7). PM0056 Rev 7, section 4.4.5, gives the same bit positions. The Arm TRM's Table 5-3 gives the split for each value.
+    The four implemented bits do two jobs, and the <a href="../reference/glossary.html#nvic-priority-grouping">priority grouping</a> decides how many bits serve each. The grouping is set by the <code>PRIGROUP</code> field of <code>AIRCR</code>, the Application Interrupt and Reset Control Register, which the CMSIS header places at bits 10 to 8 (<code>SCB_AIRCR_PRIGROUP_Pos</code> is 8 and its mask 7), in agreement with PM0056 Rev 7, section 4.4.5, while the Arm TRM's Table 5-3 gives the split for each value.
   </p>
   <p>
-    The first job is <a href="../reference/glossary.html#preemption">preemption</a>. The preemption bits decide whether a newly pending interrupt can interrupt a handler that is already running. The second job is the <a href="../reference/glossary.html#sub-priority">sub-priority</a>. The sub-priority bits only decide which of two pending interrupts runs first when they have the same preemption value and neither is running. A sub-priority can never interrupt a running handler.
+    The first job is <a href="../reference/glossary.html#preemption">preemption</a>, the preemption bits deciding whether a newly pending interrupt can interrupt a handler already running. The second is the <a href="../reference/glossary.html#sub-priority">sub-priority</a>, whose bits only decide which of two pending interrupts runs first when they share a preemption value and neither is running, so a sub-priority can never interrupt a running handler.
   </p>
   <p>
-    For grouping 3 (<code>PRIGROUP = 011</code>), the TRM table gives a general 8-bit example of 16 preemption levels and 16 sub-priority levels. On the STM32F103, which implements only four bits, grouping 3 gives 16 preemption levels and no sub-priority, because all four bits go to preemption (PM0056 Rev 7, section 4.4.5, Table 45). The CMSIS helper <code>NVIC_EncodePriority()</code> computes the same split from the grouping, and it puts the preemption value in the top bits. The STM32F1 HAL also uses this grouping: <code>HAL_Init()</code> calls the group-4 setting, which is the value 3 in the HAL's <code>NVIC_PRIORITYGROUP_4</code> macro (<code>stm32f1xx_hal_cortex.h</code>, and <code>stm32f1xx_hal.c</code>). So a HAL program starts with grouping 3, and this lesson uses the same grouping on purpose.
+    For grouping 3 (<code>PRIGROUP = 011</code>) the TRM table gives a general 8-bit example with 16 preemption levels and 16 sub-priority levels, while on the STM32F103, with only four bits, grouping 3 gives 16 preemption levels and no sub-priority, all four bits going to preemption (PM0056 Rev 7, section 4.4.5, Table 45). The CMSIS helper <code>NVIC_EncodePriority()</code> computes the same split from the grouping, placing the preemption value in the top bits, and the STM32F1 HAL uses the same grouping, <code>HAL_Init()</code> calling the group-4 setting, which is the value 3 in the HAL's <code>NVIC_PRIORITYGROUP_4</code> macro (<code>stm32f1xx_hal_cortex.h</code> and <code>stm32f1xx_hal.c</code>), so a HAL program starts with grouping 3 and this lesson deliberately uses it too.
   </p>
   <pre><code class="language-c">/* Grouping 3 on this device: 4 preemption bits, 0 sub-priority bits. */
 NVIC_SetPriorityGrouping(3);
@@ -82,134 +82,140 @@ NVIC_SetPriority(EXTI0_IRQn, NVIC_EncodePriority(3, 2, 0));  /* lower: can be pr
 NVIC_EnableIRQ(TIM2_IRQn);
 NVIC_EnableIRQ(EXTI0_IRQn);</code></pre>
   <p>
-    The first line sets the grouping, which applies to every source. The next two lines set each source's priority, and the helper's arguments are the grouping, the preemption value and the sub-priority value. TIM2 gets preemption value 0 and EXTI0 gets 2. Both sub-priorities are 0, because there are none to set. The last two lines enable the sources, after the priorities are set, so no interrupt can fire at the reset priority of 0.
+    The first line sets the grouping, which applies to every source, and the next two set each source's priority, the helper's arguments being the grouping, the preemption value and the sub-priority, so TIM2 gets preemption value 0 and EXTI0 gets 2, both with sub-priority 0 because there are none to set. The last two lines enable the sources only after the priorities are set, so that no interrupt can fire at the reset priority of 0.
   </p>
   <div class="warning">The reset value of every priority is 0, which is the highest. If you enable two sources and forget to set their priorities, both run at the top level and neither can preempt the other. Set the grouping and the priorities before you enable the sources, as the solution does.</div>
   <p>
-    The order also matters for the grouping itself. The stored bits in each priority register do not change when you change <code>PRIGROUP</code>, but their meaning does. If you set the priorities under grouping 4 and then switch to grouping 3, the same stored values now have a different preemption split. Set the grouping once, first, and keep it fixed.
+    The order also matters for the grouping itself, because the stored bits of each priority register stay the same when <code>PRIGROUP</code> changes while their meaning does not: priorities set under grouping 4 and then read under grouping 3 have a different preemption split. The grouping is therefore set once, first, and kept fixed.
   </p>
 
-  <h2>Concept 3: when one interrupt may interrupt another</h2>
+  <h2>The preemption rule</h2>
   <p>
-    The TRM states the rule directly in section 5.5: an interrupt can preempt another interrupt in progress only if its preemption priority is higher than that of the interrupt in progress. "Higher" here means a lower number. Equal values do not preempt each other, even if one has been running for a long time, so the running handler always finishes first (PM0056 Rev 7, section 2.3.6).
+    The TRM states the rule directly in section 5.5: an interrupt can preempt another in progress only if its preemption priority is higher than that of the one in progress, higher meaning a lower number. Equal values never preempt each other, however long one has been running, so the running handler always finishes first (PM0056 Rev 7, section 2.3.6).
   </p>
 
   <div class="analogy">
-    <p>The NVIC works like triage in an emergency department. A more urgent patient, a higher preempt priority, interrupts the doctor at once. A patient with the same urgency waits until the current one is finished, however long that takes. The subpriority only decides who is called first from the waiting room; it never interrupts anyone.</p>
+    <p>The NVIC works like triage in an emergency department: a more urgent patient, a higher preemption priority, interrupts the doctor at once, while a patient of equal urgency waits until the current one is finished, however long that takes, and the sub-priority only decides who is called first from the waiting room without ever interrupting anyone. Real triage can reassess a waiting patient whose condition worsens, though, whereas an interrupt's priority stays fixed unless the code changes it.</p>
   </div>
   <p>
-    When two interrupts are pending and neither is running, the one with the higher priority starts first. If their preemption values are equal, the sub-priority decides. If that is equal too, the TRM's section 5.3.2 says the lower exception number wins, and PM0056 Rev 7, section 2.3.6, says the lowest IRQ number is processed first. With grouping 3 there are no sub-priority bits, so two pending interrupts at the same priority run in that fixed hardware order, with the lower interrupt number first.
+    When two interrupts are pending and neither is running, the one with the higher priority starts first, the sub-priority deciding between equal preemption values, and if that is equal too, the TRM's section 5.3.2 lets the lower exception number win, PM0056 Rev 7, section 2.3.6, likewise processing the lowest IRQ number first. Grouping 3 leaves no sub-priority bits, so two pending interrupts at the same priority run in that fixed hardware order, the lower interrupt number first.
   </p>
   <p>
-    Nesting is therefore a chain. A handler can be interrupted by a more urgent source, which can itself be interrupted by a still more urgent one, and each handler resumes when the one above it returns. The number of nested handlers is limited by the number of distinct priority levels, which is 16 on this device.
+    Nesting therefore forms a chain, a handler being interruptible by a more urgent source, which a still more urgent one can interrupt in turn, each handler resuming when the one above it returns, and the depth of nesting is limited by the number of distinct priority levels, 16 on this device.
   </p>
 
-  <h2>Concept 4: the cost of entering a handler</h2>
+  <h2>Interrupt entry latency, tail-chaining and late arrival</h2>
   <p>
-    Latency is the time from the moment an interrupt request is raised to the moment the first instruction of its handler runs. It is a number you can measure, and a deadline is usually written as a bound on it. On the Cortex-M3 the entry sequence takes 12 cycles in the usual case. The TRM gives this in section 5.5 and Figure 5-2: the core pushes the eight-word frame (lesson 34), fetches the vector, and starts the handler, and the TRM counts 12 cycles from the request to the first handler instruction in the execute stage.
-    <a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf" target="_blank" rel="noopener">Arm Cortex-M3 TRM DDI0337G, section 5.5 and Figure 5-2</a>
+    Latency is the time from the moment an interrupt request is raised to the first instruction of its handler, a measurable number in which deadlines are usually written. On the Cortex-M3 the entry sequence usually takes 12 cycles, as the TRM gives in section 5.5 and Figure 5-2, during which the core pushes the eight-word frame (lesson 34), fetches the vector and starts the handler, the TRM counting from the request to the first handler instruction in the execute stage
+    (<a href="https://www.keil.com/dd/docs/datashts/arm/cortex_m3/r2p0/ddi0337g_cortex_m3_r2p0_trm.pdf" target="_blank" rel="noopener">Arm Cortex-M3 TRM DDI0337G, section 5.5 and Figure 5-2</a>). The entry time is
+  </p>
+  <p class="eq"><span>t<sub>entry</sub> = N<sub>cycles</sub> ÷ f<sub>core</sub></span><span class="eq-n">(1)</span></p>
+  <p>
+    where N<sub>cycles</sub> is 12 and f<sub>core</sub> the core clock, so at 8 MHz the entry lasts 12 ÷ 8 000 000 s = 1.5 µs, the time between the button press and the handler's first instruction when nothing else is running, small but added to every interrupt the system takes.
   </p>
   <p>
-    At 8 MHz, a 12-cycle entry is 12 ÷ 8 000 000 seconds, which is 1.5 µs. That is the time between the button press and the handler's first instruction, if nothing else is running. It is small, but it adds to every interrupt the system takes.
+    Two cases change the cost. The first is <a href="../reference/glossary.html#tail-chaining">tail-chaining</a>: when a handler finishes while another interrupt is already pending with a higher priority than every stacked frame, the core does not pop the frame and push it again, the TRM's section 5.6 stating that it skips the pop and the push of eight registers each, so the new handler starts six cycles after the previous one exits (Figure 5-3), which makes back-to-back interrupts cheap.
   </p>
   <p>
-    Two cases change the cost. The first is <strong>tail-chaining</strong>. When one handler finishes and another interrupt is already pending with a higher priority than every stacked frame, the core does not pop the frame and push it again. The TRM, section 5.6, says it skips the pop of eight registers and the push of eight registers, and the new handler starts six cycles after the previous one exits (Figure 5-3). Tail-chaining is a saving, and it is the reason back-to-back interrupts are cheap. The glossary calls it <a href="../reference/glossary.html#tail-chaining">tail-chaining</a>.
+    The second is <a href="../reference/glossary.html#late-arrival">late arrival</a>, in which a higher-priority interrupt arrives while the core is still stacking for a lower-priority one, and the TRM's section 5.7 states that the stacking is not repeated, the new, more urgent interrupt taking over without waiting for the first handler to start, which shortens the worst case as well.
+    <span class="sidenote">The entry latency does not include the time spent waiting for a handler at the same or a higher priority, yet that waiting is what usually decides a deadline. A short handler blocked by a long one at a higher priority misses its deadline, however fast its own code is.</span>
   </p>
-  <p>
-    The second case is <a href="../reference/glossary.html#late-arrival">late arrival</a>. A higher-priority interrupt can arrive while the core is still stacking for a lower-priority one, and the TRM's section 5.7 says the stacking is not repeated. The new, more urgent interrupt takes over, and it does not wait for the first handler to start. Late arrival is also a saving, and it shortens the worst case.
-  </p>
-  <span class="sidenote">Latency excludes the time the CPU spends inside a handler at the same or a higher priority, and that is the number that matters for a deadline. A short handler that is blocked by a long handler at a higher priority misses its deadline, however fast its own code is.</span>
 
-  <h2>Concept 5: what delays an urgent handler</h2>
+  <h2>What delays an urgent handler</h2>
   <p>
-    A higher-priority interrupt does not have to wait for a lower-priority handler to reach a convenient point. With preemption enabled, a more urgent request interrupts the running handler at the next instruction boundary, and the TRM's section 5.5 rule applies at once. So a long handler at priority 2 does not delay a handler at priority 0, as long as the core is not inside a region where interrupts are masked.
+    A higher-priority interrupt need not wait for a lower-priority handler to reach a convenient point, because with preemption a more urgent request interrupts the running handler at the next instruction boundary, as the TRM's section 5.5 rule says. A long handler at priority 2 therefore does not delay a handler at priority 0, as long as the core is not inside a region where interrupts are masked.
   </p>
   <p>
-    The things that do delay an urgent handler are three. The first is a region where interrupts are disabled, such as the PRIMASK bit set by <code>__disable_irq()</code>, which is the tool of a critical section (lesson 57). While it is set, no interrupt with a configurable priority can start (PM0056 Rev 7, section 2.1.3), so a long critical section adds to the latency of every source. The second is a handler at the same or a higher priority, which is already running and cannot be preempted. The third is the entry cost itself, 12 cycles, plus any tail-chain or late-arrival delay.
+    Three things do delay an urgent handler. The first is a region with interrupts disabled, such as the PRIMASK bit set by <code>__disable_irq()</code> for a critical section (lesson 57), during which no interrupt with a configurable priority can start (PM0056 Rev 7, section 2.1.3), so a long critical section adds to the latency of every source. The second is a running handler at the same or a higher priority, which cannot be preempted, and the third is the entry cost itself, 12 cycles, plus any tail-chain or late-arrival delay.
   </p>
   <p>
-    This is why the solution in this lesson is written with its own short disabled window. The log update in <code>log_event()</code> disables interrupts for a few instructions, because two handlers at different priorities share the log index. The window is short, and that is the trade-off: a little latency for correct shared data.
+    For this reason the solution keeps its own disabled window short. The log update in <code>log_event()</code> disables interrupts for a few instructions, because two handlers at different priorities share the log index, accepting a little latency in exchange for correct shared data.
   </p>
 
   <h2>Worked example: a button, a slow handler and a timer</h2>
   <p>
-    The solution has three events in play: a button press that raises EXTI0 at priority 2, a timer that raises TIM2 at priority 0 every 10 ms, and a 30 ms busy-wait inside the EXTI0 handler. Walk through one press, with real numbers.
+    The solution has three events in play, a button press raising EXTI0 at priority 2, a timer raising TIM2 at priority 0 every 10 ms and a 30 ms busy-wait inside the EXTI0 handler, and we walk through one press with real numbers. Before reading the steps, predict how many TIM2 lines appear between <code>EXTI0 enter</code> and <code>EXTI0 exit</code>.
   </p>
-  <ol>
-    <li>At time 0 the button goes low, and the EXTI0 request is pending. Nothing else is running, so the core enters the EXTI0 handler after the 12-cycle entry, which is 1.5 µs at 8 MHz.</li>
-    <li>The handler logs <code>EXTI0 enter</code>, sets <code>g_exti_active</code>, and busy-waits for 30 000 µs of the 1 µs stopwatch on TIM3.</li>
-    <li>Within the next 10 ms the TIM2 update fires. TIM2 has priority 0 and EXTI0 has priority 2, so 0 is lower than 2 and TIM2 preempts. The core stacks a new frame, which is the full entry sequence, and runs the TIM2 handler.</li>
-    <li>The TIM2 handler sees <code>g_exti_active = 1</code>, so it logs <code>TIM2 nested in EXTI0</code>, and it returns. The core pops the frame and EXTI0 resumes its busy-wait.</li>
-    <li>The timer fires every 10 ms, so it preempts again during the rest of the 30 ms wait. The log then shows two or three nested entries, and finally <code>EXTI0 exit</code>.</li>
+  <ol class="steps">
+    <li><strong>Enter EXTI0.</strong> At time 0 the button goes low and the EXTI0 request becomes pending, and with nothing else running the core enters the EXTI0 handler after the 12-cycle entry, 1.5 µs at 8 MHz.</li>
+    <li><strong>Start the slow work.</strong> The handler logs <code>EXTI0 enter</code>, sets <code>g_exti_active</code> and busy-waits for 30 000 µs of the 1 µs stopwatch on TIM3.</li>
+    <li><strong>Preempt.</strong> Within the next 10 ms the TIM2 update fires, and since TIM2's priority 0 is lower than EXTI0's 2, TIM2 preempts, the core stacking a new frame in a full entry sequence and running the TIM2 handler.</li>
+    <li><strong>Return.</strong> The TIM2 handler sees <code>g_exti_active = 1</code>, logs <code>TIM2 nested in EXTI0</code> and returns, after which the core pops the frame and EXTI0 resumes its busy-wait.</li>
+    <li><strong>Repeat.</strong> The timer fires every 10 ms, so it preempts again during the rest of the 30 ms wait, and the log shows two or three nested entries before <code>EXTI0 exit</code>.</li>
   </ol>
   <p>
-    Count the sources of time. The first 1.5 µs is the entry. The busy-wait is 30 ms. Each nested TIM2 costs its own entry of 1.5 µs, plus its short body, plus the exit. The solution is designed so that the timer's latency is the entry cost, and not the 30 ms. If you change the priorities so that TIM2 has the same priority as EXTI0, the nested lines disappear, and the timer waits for the full 30 ms. That is the observation this lesson asks you to make.
+    Counting the sources of time, the first 1.5 µs is the entry, the busy-wait 30 ms, and each nested TIM2 costs its own 1.5 µs entry, its short body and its exit, so the timer's latency is the entry cost rather than the 30 ms. Giving TIM2 the same priority as EXTI0 makes the nested lines disappear and the timer wait for the full 30 ms, the observation this lesson asks you to make.
   </p>
 
   <p>
-    Run the worked example on the timeline. TIM2 preempts the slow EXTI0 handler with only the entry cost. Then give both the same priority, try a grouping where only the sub-priority differs, and add a critical section in main(). Watch the latency, and the requests that are lost because the NVIC keeps only one pending bit per source.
+    The timeline below runs the worked example, TIM2 preempting the slow EXTI0 handler with only the entry cost. Then give both the same priority, try a grouping in which only the sub-priority differs and add a critical section in main(), watching the latency and the requests lost because the NVIC keeps only one pending bit per source.
   </p>
   <div class="widget irqtimeline"></div>
 
-  <h2>Nested interrupts in this course</h2>
+  <h2>Interrupt nesting in the simulators</h2>
   <p>
-    The course's own teaching CPU (<code>assets/cpusim.js</code>) does not model nesting, and its notes say so. The Wokwi simulator is a different program, and this course has not checked its nesting behaviour in a lesson, so the demo below prints what the hardware should do and says so in its expected output. If a test fails in the simulator, check the real board first.
+    The course's own teaching CPU (<code>assets/cpusim.js</code>) does not model nesting, as its notes say, and the Wokwi simulator is a different program whose nesting behaviour no lesson has yet checked, so the demo below prints what the hardware should do and states it in its expected output. If a test fails in the simulator, check the real board first.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The button on PB0 raises EXTI0. PB0 is routed to EXTI line 0 through the AFIO external-interrupt register (<code>AFIO-&gt;EXTICR[0]</code>, which the solution sets to the PB value, <code>AFIO_EXTICR1_EXTI0_PB</code>). The pin itself is on the default mapping in the <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf" target="_blank" rel="noopener">STM32F103x8/xB datasheet, "Pinouts and pin description" table</a>. The EXTI0 handler is slow: it busy-waits for about 30 ms, at priority 2. A timer on TIM2 raises an update interrupt every 10 ms, at priority 0. The log records every event with a sequence number, so the order is visible on the serial monitor.
+    The button on PB0 raises EXTI0, PB0 being routed to EXTI line 0 through the AFIO external-interrupt register (<code>AFIO-&gt;EXTICR[0]</code>, which the solution sets to the PB value, <code>AFIO_EXTICR1_EXTI0_PB</code>), with the pin on the default mapping of the <a href="https://www.st.com/resource/en/datasheet/stm32f103c8.pdf" target="_blank" rel="noopener">STM32F103x8/xB datasheet, "Pinouts and pin description" table</a>. The EXTI0 handler is slow, busy-waiting for about 30 ms at priority 2, while a timer on TIM2 raises an update interrupt every 10 ms at priority 0, and the log records every event with a sequence number, so the order shows on the serial monitor.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0072-the-nvic/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Your task: in <code>nvic_start()</code>, set the grouping to 3, set TIM2 to priority 0 and EXTI0 to priority 2, using <code>NVIC_EncodePriority</code>. Then press the button.</li>
-    <li>You will know it works when the serial monitor shows <code>TIM2 nested in EXTI0</code> between the <code>EXTI0 enter</code> and <code>EXTI0 exit</code> lines. Before you fix the priorities, the starter shows only <code>TIM2 tick</code> lines after the EXTI0 exit.</li>
+    <li>Open <code>projects/0072-the-nvic/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>In <code>nvic_start()</code>, set the grouping to 3 and give TIM2 priority 0 and EXTI0 priority 2 with <code>NVIC_EncodePriority</code>, then press the button.</li>
+    <li>The program works when the serial monitor shows <code>TIM2 nested in EXTI0</code> between the <code>EXTI0 enter</code> and <code>EXTI0 exit</code> lines, whereas before the fix the starter shows only <code>TIM2 tick</code> lines after the EXTI0 exit.</li>
   </ol>
   <div class="note">Look at the order in <code>tim2_tick_start()</code>: the update interrupt (<code>DIER.UIE</code>) is enabled only after the <code>EGR</code> write and the flag clear. The <code>UG</code> write sets the update flag, so with the interrupt already on it would raise a tick that never happened. In Wokwi it is worse: an interrupt raised by a store returns to that store and runs it again, so the program would hang before its first line. Also, Wokwi reads both priorities back as 0 in the startup line, even though the nesting shows they are set.</div>
   <details>
     <summary>Hint</summary>
-    <p>Call <code>NVIC_SetPriorityGrouping(3)</code> first. Then pass the grouping to <code>NVIC_EncodePriority(3, preempt, 0)</code>. A lower preempt value wins.</p>
+    <p>Call <code>NVIC_SetPriorityGrouping(3)</code> first, then pass the grouping to <code>NVIC_EncodePriority(3, preempt, 0)</code>, remembering that the lower preemption value wins.</p>
   </details>
-  <p>The reference solution is in <code>projects/0072-the-nvic/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0072-the-nvic/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You set a grouping and two priorities, and you can say which interrupt is allowed to preempt the other and why, using the device's implemented priority bits.</div>
+  <div class="win">You set a grouping and two priorities, and you can say which interrupt may preempt the other and why, from the device's implemented priority bits.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>Priorities left at the reset value</h3>
   <p>
-    The first mistake is leaving the priorities at their reset value of 0. Both sources then run at the top level, and neither can preempt the other. The symptom in the log is that every <code>TIM2 tick</code> line comes after <code>EXTI0 exit</code>, because TIM2 waits for the handler to finish. The fix is to set the grouping and both priorities before you enable the sources, as the solution does in <code>nvic_start()</code>.
+    Every <code>TIM2 tick</code> line comes after <code>EXTI0 exit</code>, because TIM2 waits for the handler to finish, both sources running at the reset value of 0, the top level, so neither can preempt the other. Set the grouping and both priorities before enabling the sources, as the solution does in <code>nvic_start()</code>.
   </p>
+  <h3>The priority numbers reversed</h3>
   <p>
-    The second mistake is reversing the number. A student who expects a higher number to be more urgent gives TIM2 priority 2 and EXTI0 priority 0. The log looks like the first case: <code>TIM2 tick</code> lines come after <code>EXTI0 exit</code>, with no nesting. The startup line gives it away, because it prints <code>TIM2 prio=2 EXTI0 prio=0</code>, which is the reverse of the intent. The fix is to remember that a lower number is more urgent, and to check it with the TRM's statement in section 5.5.
+    The log looks like the previous case, with <code>TIM2 tick</code> lines after <code>EXTI0 exit</code> and no nesting, but the startup line gives it away by printing <code>TIM2 prio=2 EXTI0 prio=0</code>, the reverse of the intent, because the author expected a higher number to be more urgent. Remember that a lower number is more urgent, and check it against the TRM's statement in section 5.5.
   </p>
+  <h3>The grouping changed after the priorities</h3>
   <p>
-    The third mistake is changing the grouping after the priorities are set. The priority bits in each register are unchanged, but the split between preemption and sub-priority changes. The symptom is a pair of sources whose order flips, with no change in their numbers. The fix is to call <code>NVIC_SetPriorityGrouping()</code> once, before any priority is set, and never again.
+    A pair of sources swaps order with no change to their numbers, because the priority bits in each register stay the same while the split between preemption and sub-priority changes. Call <code>NVIC_SetPriorityGrouping()</code> once, before any priority is set, and never again.
   </p>
+  <h3>Shared data without a critical section</h3>
   <p>
-    The fourth mistake is sharing data between handlers at different priorities without a critical section. The log index in the solution is written by both handlers, and a nested handler can interrupt the first while it updates the index. The symptom is a log entry that is missing, duplicated or out of order, and it appears only when the nesting happens, which is rare. The fix is the short PRIMASK window in <code>log_event()</code>, as the solution uses, and it is covered in lesson 57.
+    A log entry is occasionally missing, duplicated or out of order, only when nesting happens, which is rare, because both handlers write the log index and a nested handler can interrupt the first in the middle of its update. Use the short PRIMASK window in <code>log_event()</code>, as the solution does and lesson 57 explains.
   </p>
+  <h3>A long handler at an urgent source's priority</h3>
   <p>
-    The fifth mistake is a long handler at the same priority as an urgent one. Two sources at priority 0 cannot preempt each other, so an urgent source can wait for the whole of a long handler. The symptom is a deadline that is missed by roughly the length of the long handler. The fix is to give the urgent source a higher priority, or to move the long work out of the handler into the main loop, as lesson 70 did with its ring buffer.
+    A deadline is missed by roughly the length of a long handler, because two sources at priority 0 cannot preempt each other, so the urgent source waits for the whole long handler. Give the urgent source a higher priority, or move the long work out of the handler into the main loop, as lesson 70 did with its ring buffer.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Priority tables and latency budgets in products</h2></summary>
   <p>
-    In production firmware the priority table is written down before the code, in a header or a design document. Each source has a name, a preemption priority and a reason, so a reviewer can check that the most time-critical source is the most urgent. Teams often use a small number of levels, for example one for the motor control, one for the communication and one for the background work, and they leave gaps so that a new source can be inserted later. They also keep their handlers short, so that the latency stays inside the budget.
+    In production firmware the priority table is written down before the code, in a header or a design document, each source having a name, a preemption priority and a reason, so that a reviewer can check that the most time-critical source is the most urgent. Teams often use a few levels, for example one for motor control, one for communication and one for background work, leaving gaps so that a new source can be inserted later, and they keep their handlers short so that the latency stays inside the budget.
   </p>
   <p>
-    A senior engineer reviewing interrupt code checks four things. The grouping is set once, before any priority. Every enabled source has a priority that was set on purpose, not the reset value. The shared data is protected by a documented critical section, and its window is short. The latency is measured on the real board, with a timestamp at the entry and the exit of the handler, because a number in a table is not a measurement. A 30 ms handler can make a 100 Hz timer miss its deadline, and the cause is usually priority rather than speed.
+    A senior engineer reviewing interrupt code checks that the grouping is set once before any priority, that every enabled source has a deliberately chosen priority rather than the reset value, that shared data is protected by a documented critical section with a short window, and that the latency has been measured on the real board with timestamps at the entry and exit of the handler, because a number in a table is not a measurement. A 30 ms handler can make a 100 Hz timer miss its deadline, and the cause is usually priority rather than speed.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>The NVIC gives each interrupt source an enable bit and a priority. The STM32F1 implements 4 priority bits, so priorities run from 0 to 15.</li>
-    <li>A lower number is more urgent. The reset value 0 is the most urgent, so an unconfigured source is a trap.</li>
-    <li><code>PRIGROUP</code> in <code>AIRCR</code> splits the bits into preemption and sub-priority. With grouping 3 on this device all four bits are preemption bits.</li>
-    <li>A handler is preempted only by a pending interrupt with a strictly lower preemption value. Equal values never preempt each other.</li>
-    <li>Entry takes 12 cycles (1.5 µs at 8 MHz). Tail-chaining starts the next handler after 6 cycles, and late arrival lets a more urgent request take over during stacking.</li>
-    <li>What delays an urgent handler is masked interrupts (PRIMASK) and handlers at the same or a higher priority, not a lower-priority handler that is running.</li>
-    <li>Set the grouping once, set every priority, and only then enable the sources.</li>
+    <li>The NVIC gives each interrupt source an enable bit and a priority, and the STM32F1 implements 4 priority bits, so priorities run from 0 to 15.</li>
+    <li>A lower number is more urgent, and the reset value 0 is the most urgent, which makes an unconfigured source a trap.</li>
+    <li><code>PRIGROUP</code> in <code>AIRCR</code> splits the bits into preemption and sub-priority, and with grouping 3 on this device all four are preemption bits.</li>
+    <li>A handler is preempted only by a pending interrupt with a strictly lower preemption value, so equal values never preempt each other.</li>
+    <li>Entry takes 12 cycles, 1.5 µs at 8 MHz, tail-chaining starts the next handler after 6 cycles, and late arrival lets a more urgent request take over during stacking.</li>
+    <li>An urgent handler is delayed by masked interrupts (PRIMASK) and by handlers at the same or a higher priority, not by a running lower-priority handler.</li>
+    <li>The grouping is set once, every priority is set, and only then are the sources enabled.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

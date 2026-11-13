@@ -12,7 +12,7 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>PIO and DMA</h1>
-  <p class="subtitle">Some timing is too tight for the CPU, even at 125 MHz. The RP2040 has programmable I/O state machines that run a few instructions per bit, and a DMA engine that keeps them fed. Together they move data without the core in the loop.</p>
+  <p class="subtitle">Programmable I/O state machines fed by DMA</p>
 
   <div class="note"><strong>Optional.</strong> You do not need this lesson for Lab 3 or the capstone. Read it when you meet a protocol with exact timing, such as an LED strip, a custom serial format or a fast parallel bus.</div>
 
@@ -20,40 +20,40 @@
     By the end of this lesson you can <strong>name the nine PIO instructions, decode a 16-bit PIO instruction, and explain how a DMA channel is paced by a PIO data request (DREQ)</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Timing too tight for the CPU</h2>
   <p>
-    Lesson <a href="0064-multicore-on-the-rp2040.html">64</a> put a second core on the chip and showed how the two cores share data safely. Before that, lesson <a href="0055-timing-and-non-blocking-super.html">55</a> showed that a super-loop must never wait, and lesson <a href="0057-interrupts-in-practice.html">57</a> showed that an interrupt arrives when it likes, so the CPU's timing has a little jitter. For most work, a little jitter does not matter. For some protocols it does. Many LED strips, for example, read each bit from the length of one pulse, so a pulse that is too long is read as a different bit.
+    Lesson <a href="0064-multicore-on-the-rp2040.html">64</a> put a second core to work and showed how the two cores share data safely, while earlier, lesson <a href="0055-timing-and-non-blocking-super.html">55</a> showed that a super-loop must never wait and lesson <a href="0057-interrupts-in-practice.html">57</a> that an interrupt arrives when it likes, giving the CPU's timing a little jitter. For most work that jitter does not matter, but for some protocols it does, many LED strips reading each bit from the length of one pulse, so that a pulse that runs too long is read as a different bit.
   </p>
   <p>
-    The usual answers are to bit-bang the pin in a tight loop with interrupts off, or to use a peripheral. Bit-banging ties up the CPU for the whole transfer, and the code must stay in step with the clock. A peripheral such as a UART or SPI block is fixed in its function, so it cannot do a protocol it was not built for. The RP2040's PIO is the middle path: a small programmable engine that does exactly one job per instruction, with no interrupts to be late, and a DMA channel that moves the data while the CPU does other work.
-  </p>
-
-  <h2>The clock and the cycle</h2>
-  <p>
-    A <strong>clock cycle</strong> is one tick of the chip's clock. The Pico SDK runs the system clock at 125 MHz by default, which is the value of <code>SYS_CLK_HZ</code> in the SDK's RP2040 platform definitions <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.15, Clocks)</a>. One cycle is therefore 1 ÷ 125,000,000 seconds, which is 8 ns. A CPU instruction takes one or more cycles, so the CPU can change a pin only at discrete times, and any interrupt that arrives between two of its instructions moves the next change later.
-  </p>
-  <p>
-    A PIO state machine works on the same clock, but its instructions are simple and its program is fixed. The datasheet says that every PIO instruction executes in one clock cycle <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.4.1)</a>. So the time between two pin changes is the sum of the cycles in the program between them, and nothing else can add to it. That determinism is the reason PIO exists.
+    The usual answers are to bit-bang the pin in a tight loop with interrupts off or to use a peripheral. Bit-banging ties up the CPU for the whole transfer and keeps the code in step with the clock, while a peripheral such as a UART or SPI block has a fixed function and cannot run a protocol it was not built for. The RP2040's PIO is the middle path, a small programmable engine that does exactly one job per instruction with no interrupts to make it late, together with a DMA channel that moves the data while the CPU does other work.
   </p>
 
-  <h2>The idea: what a state machine is</h2>
+  <h2>Clock cycles and deterministic timing</h2>
   <p>
-    The RP2040 has two PIO blocks, and each has four state machines. Every state machine is a very small processor. It has a program counter, two 32-bit shift registers, two 32-bit scratch registers, FIFOs that connect it to the CPU and the DMA, and a clock divider. It runs a short program from an instruction memory that the four state machines of one block share. It shifts data in and out of GPIO pins. It does not take interrupts, but it can set IRQ flags that the CPU can see <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.1)</a>.
+    A <strong>clock cycle</strong> is one tick of the chip's clock, and the Pico SDK runs the system clock at 125 MHz by default, the value of <code>SYS_CLK_HZ</code> in the SDK's RP2040 platform definitions <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.15, Clocks)</a>, so one cycle lasts 1 ÷ 125 000 000 s, or 8 ns. A CPU instruction takes one or more cycles, so the CPU can change a pin only at discrete times, and any interrupt arriving between two of its instructions delays the next change.
+  </p>
+  <p>
+    A PIO state machine runs on the same clock, but its instructions are simple and its program is fixed, the datasheet stating that every PIO instruction executes in one clock cycle <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.4.1)</a>. The time between two pin changes is therefore the sum of the cycles in the program between them and nothing else can add to it, and that determinism is the reason PIO exists.
+  </p>
+
+  <h2>The PIO state machine</h2>
+  <p>
+    The RP2040 has two PIO blocks with four state machines each, every state machine being a very small processor with a program counter, two 32-bit shift registers, two 32-bit scratch registers, FIFOs connecting it to the CPU and the DMA, and a clock divider. It runs a short program from an instruction memory shared by the four state machines of its block and shifts data in and out of GPIO pins, and although it takes no interrupts, it can set IRQ flags that the CPU sees <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.1)</a>.
   </p>
 
   <div class="analogy">
-    <p>A PIO state machine is a tiny assistant with a short to-do list taped to the wall, at most 32 lines. It does nothing but work through that list, one line per clock cycle, wiggling and reading pins at exactly the moments the list says. The CPU hands it data and walks away; the timing no longer depends on what the CPU is doing.</p>
+    <p>A PIO state machine resembles a tiny assistant with a to-do list of at most 32 lines taped to the wall, who does nothing but work through it one line per clock cycle, changing and reading pins at exactly the moments the list says. The CPU hands it data and walks away, so the timing no longer depends on what the CPU is doing. An assistant could improvise when something unexpected happened, however, whereas the state machine can only follow its list, so every case it must handle has to be written into the program.</p>
   </div>
   <p>
-    It has no data memory of its own. The two scratch registers are its only general storage, and the shift registers hold the bits in transit. A PIO state machine is therefore closer to a sequencer than to a CPU: it is built to move bits between a FIFO and a pin, on a clock you choose, and to wait at the right moments. The instruction memory holds 32 instructions per block, and each instruction is 16 bits wide <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 3.1 and 3.4.1)</a>.
+    It has no data memory of its own, the two scratch registers being its only general storage and the shift registers holding the bits in transit, so a PIO state machine is closer to a sequencer than to a CPU, built to move bits between a FIFO and a pin on a chosen clock and to wait at the right moments. The instruction memory holds 32 instructions per block, each 16 bits wide <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 3.1 and 3.4.1)</a>.
   </p>
   <p>
-    The <strong>FIFO</strong> is a first-in, first-out buffer. Each state machine has four 32-bit words of buffer in each direction, the TX FIFO for data going out from the CPU or DMA and the RX FIFO for data coming in. The TX FIFO is the one this lesson uses.
+    The <strong>FIFO</strong> is a first-in, first-out buffer, each state machine having four 32-bit words of it in each direction, the TX FIFO for data going out from the CPU or DMA and the RX FIFO for data coming in, and this lesson uses the TX FIFO.
   </p>
 
-  <h2>The nine instructions</h2>
+  <h2>The nine PIO instructions</h2>
   <p>
-    The instruction set has nine instructions, and each one is 16 bits. The top three bits select the instruction. The remaining bits hold the operands: the destination, the bit count, the condition and so on. The table is the datasheet's encoding table, Table 366 in section 3.4.1.
+    The instruction set has nine instructions of 16 bits each, the top three bits selecting the instruction and the remaining bits holding the operands, such as the destination, the bit count and the condition. The table follows the datasheet's encoding table, Table 366 in section 3.4.1.
   </p>
   <table>
     <thead><tr><th>Bits 15:13</th><th>Instruction</th><th>What it does</th></tr></thead>
@@ -69,45 +69,49 @@
     </tbody>
   </table>
   <p>
-    Every instruction also has a 5-bit delay field, at bits 12 to 8 in this layout. The field counts idle cycles that the state machine spends after the instruction before it moves on. With the maximum value of 31, one instruction holds its pins for 32 cycles in total: one cycle for the instruction and 31 idle cycles. This is how a fast clock makes a slow pattern. The datasheet calls this the delay, and says that the field can also hold side-set bits when the program asks for them, which this lesson does not use <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.4.1)</a>.
+    Every instruction also has a 5-bit delay field, at bits 12 to 8 in this layout, counting the idle cycles the state machine spends after the instruction before moving on, so with the maximum value of 31 one instruction holds its pins for 32 cycles in total, one for the instruction and 31 idle. This is how a fast clock makes a slow pattern, and the datasheet adds that the field can also hold side-set bits when a program asks for them, which this lesson does not use <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.4.1)</a>.
   </p>
 
-  <h2>Decode one instruction, bit by bit</h2>
+  <h2>Decoding a PIO instruction bit by bit</h2>
   <p>
-    Here is the program in this lesson's project. It has two instructions, and you can decode both with only the table above:
+    The project's program has two instructions, both of which can be decoded with the table above alone. Before reading the decode, find the top three bits of each word and name the instruction they select.
   </p>
   <pre><code class="language-plaintext">0x80A0   1000 0000 1010 0000   PULL, no delay, block until the TX FIFO has a word
 0x7F04   0111 1111 0000 0100   OUT PINS, 4 [31]: shift 4 bits to the pins, then wait 31 cycles</code></pre>
   <p>
-    Start with <code>0x80A0</code>. Write it in binary, four bits per hex digit: <code>1000 0000 1010 0000</code>. The top three bits, <code>100</code>, select PULL. Bit 7 is fixed at 1 for PULL, which is how the decoder tells PULL from PUSH. Bit 6 is the IfEmpty flag, which is 0 here, so the pull happens whether or not the output shift register is empty. Bit 5 is the Block flag, which is 1 here. Blocking means the state machine stalls until the FIFO has a word. The delay field, bits 12 to 8, is <code>00000</code>, so the PULL has no delay. The remaining bits are zero.
+    <code>0x80A0</code> in binary, four bits per hex digit, is <code>1000 0000 1010 0000</code>, whose top three bits, <code>100</code>, select PULL. Bit 7 is fixed at 1 for PULL, which is how the decoder tells PULL from PUSH, bit 6 is the IfEmpty flag, 0 here, so the pull happens whether or not the output shift register is empty, and bit 5 is the Block flag, 1 here, so the state machine stalls until the FIFO has a word. The delay field, bits 12 to 8, is <code>00000</code>, so the PULL has no delay, and the remaining bits are zero.
   </p>
   <p>
-    Now <code>0x7F04</code>, which is <code>0111 1111 0000 0100</code>. The top bits, <code>011</code>, select OUT. The delay field, bits 12 to 8, is <code>11111</code>, which is 31. Bits 7 to 5 are the destination: <code>000</code> means PINS. Bits 4 to 0 are the bit count, <code>00100</code>, which is 4. So this instruction shifts 4 bits out of the output shift register onto the pins, then idles for 31 cycles.
+    <code>0x7F04</code> is <code>0111 1111 0000 0100</code>, whose top bits, <code>011</code>, select OUT, with the delay field at bits 12 to 8 reading <code>11111</code>, or 31, the destination at bits 7 to 5 reading <code>000</code>, which means PINS, and the bit count at bits 4 to 0 reading <code>00100</code>, or 4. The instruction therefore shifts 4 bits from the output shift register onto the pins and then idles for 31 cycles.
     <span class="sidenote">A bit count of 1 to 31 is written as is, and a count of 32 is written as 00000. The destination codes are in section 3.4.5 of the datasheet.</span>
   </p>
   <p>
-    The bit count and the shift direction decide which four bits go out. The project configures the shift to the right, so OUT takes the least significant bits of the 32-bit word first, and pin GP10 gets bit 0. Take the value 4, which is <code>0100</code> in the low four bits. Bit 2 is the only one set, so OUT drives GP12 high and the other three pins low. That is the third LED in the pattern.
+    The bit count and the shift direction decide which four bits go out. The project shifts to the right, so OUT takes the least significant bits of the 32-bit word first and pin GP10 receives bit 0, and for the value 4, <code>0100</code> in the low four bits, only bit 2 is set, so OUT drives GP12 high and the other three pins low, lighting the third LED of the pattern.
   </p>
 
-  <h2>Worked example: how long is one step?</h2>
+  <h2>Worked example: the length of one step</h2>
   <p>
-    The project's program has two instructions in a loop. The <code>.wrap_target</code> and <code>.wrap</code> directives mark the start and end of the loop. The last instruction jumps back to the first, and the datasheet says that this wrap is a free, zero-cycle jump, where a plain JMP would cost one cycle <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.5.2)</a>. So a step is the cycles of the two instructions and nothing more.
+    The project's two instructions run in a loop whose start and end the <code>.wrap_target</code> and <code>.wrap</code> directives mark, the last instruction jumping back to the first through a wrap, which the datasheet describes as a free, zero-cycle jump, whereas a plain JMP would cost one cycle <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.5.2)</a>. A step thus consists of the cycles of the two instructions and nothing more, so before working through it, predict how many cycles one pass takes.
   </p>
-  <ol>
-    <li>The PULL takes 1 cycle when the FIFO has a word. Its delay is 0.</li>
-    <li>The OUT takes 1 cycle, plus its delay of 31 idle cycles, so 32 cycles in total.</li>
-    <li>One pass through the loop is therefore 1 + 32 = <strong>33 cycles</strong>. The pins hold the pattern for those 33 cycles, from one OUT to the next.</li>
-    <li>The PIO clock is the system clock divided by the clock divider. The divider is 60000 with no fraction: 125,000,000 ÷ 60000 ≈ 2083 Hz. One PIO cycle is therefore 1 ÷ 2083 ≈ 0.48 ms.</li>
-    <li>One step is 33 × 0.48 ms = <strong>15.84 ms</strong>. Six steps take about 95 ms.</li>
+  <ol class="steps">
+    <li><strong>Count the PULL.</strong> It takes 1 cycle when the FIFO has a word, with a delay of 0.</li>
+    <li><strong>Count the OUT.</strong> It takes 1 cycle plus its delay of 31 idle cycles, 32 cycles in total.</li>
+    <li><strong>Add the loop.</strong> One pass is 1 + 32 = 33 cycles, the pins holding the pattern for those 33 cycles from one OUT to the next.</li>
+    <li><strong>Find the PIO clock.</strong> With a divider of 60 000 and no fraction, the PIO runs at 125 000 000 ÷ 60 000 ≈ 2 083 Hz, so one PIO cycle lasts 1 ÷ 2 083 ≈ 0.48 ms.</li>
+    <li><strong>Find the step.</strong> One step lasts 33 × 0.48 ms = 15.84 ms, and six steps take about 95 ms.</li>
   </ol>
   <p>
-    The divider formula is in the register description: the frequency is the clock divided by (CLKDIV_INT + CLKDIV_FRAC ÷ 256), and the divisor can be from 1 to 65536 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.5.5 and the SM0_CLKDIV register)</a>. The fraction exists so that a PIO program can match a rate that is not a whole number of cycles. This project does not need it.
+    The divider formula is in the register description, the PIO clock being
+  </p>
+  <p class="eq"><span>f<sub>PIO</sub> = f<sub>sys</sub> ÷ (CLKDIV_INT + CLKDIV_FRAC ÷ 256)</span><span class="eq-n">(1)</span></p>
+  <p>
+    where f<sub>sys</sub> is the system clock and the divisor can range from 1 to 65 536 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.5.5 and the SM0_CLKDIV register)</a>. The fraction lets a PIO program match a rate that is not a whole number of cycles, which this project does not need.
   </p>
   <div class="note">The comment in the solution's <code>main.c</code> says one step is 32 PIO cycles, about 15 ms. It counts the OUT but forgets the PULL. The arithmetic above gives 33 cycles, 15.84 ms. The lesson uses the arithmetic, and the difference is the cycle that you would miss if you timed the pattern by eye.</div>
 
-  <h2>How pioasm fits in</h2>
+  <h2>The pioasm assembler in the build</h2>
   <p>
-    In a normal Pico SDK project you do not type the words by hand. You write a <code>.pio</code> file with labels, like this, and the build runs <code>pioasm</code>, the PIO assembler. It produces a header with a <code>pio_program_t</code> that your C code links to:
+    In a normal Pico SDK project the words are not typed by hand. A <code>.pio</code> file with labels, like the one below, is assembled during the build by <code>pioasm</code>, the PIO assembler, which produces a header holding a <code>pio_program_t</code> that the C code links to.
   </p>
   <pre><code class="language-armasm">.program pattern
 .wrap_target
@@ -115,29 +119,29 @@
     out pins, 4 [31]    ; show its low four bits for 32 cycles
 .wrap</code></pre>
   <p>
-    The <code>.program</code> directive starts a program and names it. <code>.wrap_target</code> and <code>.wrap</code> are essentially labels: they mark the first and last instructions of the loop, and pioasm exports them as constants that the SDK uses to set the hardware wrap. The square brackets, as in <code>[31]</code>, give the delay. Each line after the semicolon is a comment for the reader <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.3.1)</a>.
+    The <code>.program</code> directive starts and names a program, while <code>.wrap_target</code> and <code>.wrap</code> are essentially labels marking the first and last instructions of the loop, which pioasm exports as constants that the SDK uses to set the hardware wrap. Square brackets, as in <code>[31]</code>, give the delay, and the text after each semicolon is a comment for the reader <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.3.1)</a>.
   </p>
   <p>
-    The project does exactly that: <code>pattern.pio</code> sits next to <code>main.c</code>, and one line in <code>CMakeLists.txt</code>, <code>pico_generate_pio_header(blink ${CMAKE_CURRENT_LIST_DIR}/pattern.pio)</code>, makes the build run pioasm and write <code>build/pattern.pio.h</code>. The first build of a PIO project takes longer, because the SDK compiles pioasm itself with the host compiler. That is MinGW gcc, the host compiler that lesson <a href="0001-set-up-your-environment.html">1</a> introduced.
+    The project does exactly that, <code>pattern.pio</code> sitting next to <code>main.c</code> and one line in <code>CMakeLists.txt</code>, <code>pico_generate_pio_header(blink ${CMAKE_CURRENT_LIST_DIR}/pattern.pio)</code>, making the build run pioasm and write <code>build/pattern.pio.h</code>. The first build of a PIO project takes longer, because the SDK compiles pioasm itself with the host compiler, the MinGW gcc that lesson <a href="0001-set-up-your-environment.html">1</a> introduced.
   </p>
   <p>
-    <code>main.c</code> still holds the two words decoded by hand from the datasheet, in <code>hand_decoded_words</code>. At startup the program compares them with pioasm's output and prints <code>PIO WORDS MATCH</code>. Open <code>build/pattern.pio.h</code> after a build and check the words yourself: pioasm writes <code>0x80a0</code> and <code>0x7f04</code>, with the disassembly as comments.
+    <code>main.c</code> still holds the two words decoded by hand from the datasheet in <code>hand_decoded_words</code>, and at startup the program compares them with pioasm's output and prints <code>PIO WORDS MATCH</code>. After a build, open <code>build/pattern.pio.h</code> and check the words yourself, pioasm writing <code>0x80a0</code> and <code>0x7f04</code> with the disassembly as comments.
   </p>
   <div class="note">Decoding a few words by hand, once, is how you learn to read the encoding table. In real work you always let pioasm do it, and read its header when you need to check.</div>
 
-  <h2>DMA: a channel that paces itself</h2>
+  <h2>DMA channels paced by a data request</h2>
   <p>
-    A <strong>DMA</strong> (direct memory access) channel copies data from one address to another without the CPU. The CPU sets up the source, the destination, the number of transfers and the size of each transfer, and then starts the channel. The channel does the copying, one transfer at a time, while the CPU runs other code. Each transfer is one read and one write on the bus.
+    A <strong>DMA</strong> (direct memory access) channel copies data from one address to another without the CPU, which sets up the source, the destination, the number of transfers and the size of each and then starts the channel. The channel does the copying one transfer at a time, each transfer being one read and one write on the bus, while the CPU runs other code.
   </p>
 
   <div class="analogy">
-    <p>A DMA channel is a courier. You tell it where to pick up, where to deliver, how many parcels, and whom to wait for between parcels (the DREQ signal). Then it works alone while the CPU does something else, and it rings the bell, an interrupt, when the last parcel is delivered.</p>
+    <p>A DMA channel acts as a courier, told where to pick up, where to deliver, how many parcels to carry and whom to wait for between parcels, the DREQ signal, after which it works alone while the CPU does something else and rings the bell, an interrupt, when the last parcel is delivered. A courier can decide that a parcel looks damaged, though, whereas the channel copies whatever bits it finds without checking them.</p>
   </div>
   <p>
-    The question is when to copy. If the DMA copied as fast as the bus allowed, it would overrun a peripheral that is slower than the bus. So a peripheral that can use DMA raises a <strong><a href="../reference/glossary.html#dreq-data-request">data request</a></strong> (DREQ) when it can accept or supply one word. The DMA channel waits for that request, so the peripheral sets the pace. The DREQ for PIO0 state machine 0's TX FIFO is <code>DREQ_PIO0_TX0</code>, which is number 0 in the global DREQ table <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.5.3.1, Table 119)</a>.
+    The question is when to copy, because a DMA copying as fast as the bus allowed would overrun a peripheral slower than the bus. A peripheral that can use DMA therefore raises a <strong><a href="../reference/glossary.html#dreq-data-request">data request</a></strong> (DREQ) when it can accept or supply one word, and the DMA channel waits for that request, so the peripheral sets the pace. The DREQ for the TX FIFO of PIO0 state machine 0 is <code>DREQ_PIO0_TX0</code>, number 0 in the global DREQ table <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.5.3.1, Table 119)</a>.
   </p>
   <p>
-    The RP2040's DMA uses a credit scheme. Each DREQ pulse adds one credit to the channel, and the DMA issues a transfer when it has a credit. The datasheet says this keeps as many transfers in flight as the peripheral has room for, so an 8-deep FIFO can take one word per clock without overflow or underflow <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.5.3.2)</a>. In practice the TX FIFO of this state machine has four words of room, and the DMA fills it, then waits until the PIO pulls a word out.
+    The RP2040's DMA uses a credit scheme in which each DREQ pulse adds one credit to the channel and the DMA issues a transfer whenever it holds a credit. According to the datasheet, this keeps as many transfers in flight as the peripheral has room for, so an 8-deep FIFO can take one word per clock without overflow or underflow <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.5.3.2)</a>. In practice the TX FIFO of this state machine has four words of room, which the DMA fills before waiting until the PIO pulls a word out.
   </p>
   <pre><code class="language-c">/* DMA: write one word to the PIO TX FIFO each time the FIFO asks for one */
 channel_config_set_transfer_data_size(&amp;dc, DMA_SIZE_32);
@@ -145,67 +149,77 @@ channel_config_set_read_increment(&amp;dc, true);     /* walk through steps[] */
 channel_config_set_write_increment(&amp;dc, false);   /* always the same FIFO register */
 channel_config_set_dreq(&amp;dc, pio_get_dreq(PIO0, 0, true));</code></pre>
   <p>
-    Line by line. <code>channel_config_set_transfer_data_size(&amp;dc, DMA_SIZE_32)</code> makes each transfer 32 bits wide, which matches the width of the FIFO word. <code>channel_config_set_read_increment(&amp;dc, true)</code> moves the source address forward by one word after each transfer, so the DMA walks through the <code>steps[]</code> array. <code>channel_config_set_write_increment(&amp;dc, false)</code> keeps the destination fixed at the same FIFO register, so every word goes to the same place. <code>channel_config_set_dreq(&amp;dc, pio_get_dreq(PIO0, 0, true))</code> is the pacing. <code>pio_get_dreq(pio, sm, is_tx)</code> returns the DREQ number for a state machine's FIFO. The last argument is <code>true</code> for the TX FIFO, which the DMA writes. The SDK's <code>dma_channel_configure</code> then applies the whole configuration to the channel, and the DMA waits on the DREQ for each word.
+    <code>channel_config_set_transfer_data_size(&amp;dc, DMA_SIZE_32)</code> makes each transfer 32 bits wide, matching the FIFO word, and <code>channel_config_set_read_increment(&amp;dc, true)</code> advances the source address by one word after each transfer, so the DMA walks through the <code>steps[]</code> array, while <code>channel_config_set_write_increment(&amp;dc, false)</code> keeps the destination fixed at the FIFO register, so every word goes to the same place. <code>channel_config_set_dreq(&amp;dc, pio_get_dreq(PIO0, 0, true))</code> sets the pacing, <code>pio_get_dreq(pio, sm, is_tx)</code> returning the DREQ number for a state machine's FIFO, with the last argument <code>true</code> for the TX FIFO that the DMA writes. The SDK's <code>dma_channel_configure</code> then applies the whole configuration, and the DMA waits on the DREQ for each word.
   </p>
   <p>
-    The project's <code>steps[]</code> array holds six patterns: 1, 2, 4, 8, 4, 2. Each is a 32-bit word whose low four bits are the LED pattern. The pattern runs back and forth across four LEDs on GP10 to GP13.
+    The project's <code>steps[]</code> array holds six patterns, 1, 2, 4, 8, 4 and 2, each a 32-bit word whose low four bits form the LED pattern, which runs back and forth across four LEDs on GP10 to GP13.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    Wokwi's Pico model can run PIO, and it simulates DMA only when the DMA feeds PIO, which is exactly how this project uses it. The four LEDs on GP10 to GP13 show the pattern, each through a 330 Ω resistor. Your task is to write the DMA part, which the starter leaves as a comment.
+    Wokwi's Pico model can run PIO and simulates DMA only when the DMA feeds PIO, which is exactly how this project uses it, with four LEDs on GP10 to GP13, each behind a 330 Ω resistor, showing the pattern. The task is to write the DMA part, which the starter leaves as a comment.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0065-pio-and-dma/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
-    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor first prints <code>PIO WORDS MATCH</code>, then one line that says the DMA is still to be set up. The LEDs stay off, because the state machine is not yet enabled.</li>
-    <li>Your task: replace the <code>TODO(learner)</code> comment with the DMA setup. Claim a channel with <code>dma_claim_unused_channel(true)</code>, configure it to move 32-bit words from <code>steps[]</code> to the PIO TX FIFO, set the DREQ, enable the state machine, start the DMA, and restart it in a loop when it finishes.</li>
-    <li>You will know it works when the serial monitor prints <code>PIO DMA OK steps=6</code> and the four LEDs step through the pattern. Each step lasts about 15.8 ms.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor first prints <code>PIO WORDS MATCH</code> and then a line saying that the DMA is still to be set up, while the LEDs stay off because the state machine is not yet enabled.</li>
+    <li>Replace the <code>TODO(learner)</code> comment with the DMA setup: claim a channel with <code>dma_claim_unused_channel(true)</code>, configure it to move 32-bit words from <code>steps[]</code> to the PIO TX FIFO, set the DREQ, enable the state machine, start the DMA and restart it in a loop when it finishes.</li>
+    <li>The program works when the serial monitor prints <code>PIO DMA OK steps=6</code> and the four LEDs step through the pattern, each step lasting about 15.8 ms.</li>
   </ol>
   <details>
     <summary>Hint for the DREQ</summary>
-    <p>Use <code>pio_get_dreq(PATTERN_PIO, PATTERN_SM, true)</code>. The last argument is <code>true</code> because the DMA writes to the TX FIFO. The state machine must be enabled before the first word matters.</p>
+    <p>Use <code>pio_get_dreq(PATTERN_PIO, PATTERN_SM, true)</code>, the last argument being <code>true</code> because the DMA writes to the TX FIFO, and enable the state machine before the first word matters.</p>
   </details>
   <details>
     <summary>Hint for the restart</summary>
-    <p>The SDK has <code>dma_channel_wait_for_finish_blocking()</code> and <code>dma_channel_transfer_from_buffer_now()</code>. Call the first, then the second, inside the while loop.</p>
+    <p>The SDK provides <code>dma_channel_wait_for_finish_blocking()</code> and <code>dma_channel_transfer_from_buffer_now()</code>, so call the first and then the second inside the while loop.</p>
   </details>
   <p>
-    The reference solution is in <code>projects/0065-pio-and-dma/solution</code>. Try first, compare after. This project was not run in the simulator as part of this revision, so if the LEDs do not step, check the serial output first, then the wiring in <code>diagram.json</code>, and then the state machine's enable line.
+    The reference solution is in <code>projects/0065-pio-and-dma/solution</code>, so try first and compare afterwards. This project was not run in the simulator as part of this revision, so if the LEDs do not step, check the serial output first, then the wiring in <code>diagram.json</code> and then the state machine's enable line.
   </p>
 
-  <div class="win">You can decode a PIO instruction from its bits, explain what the DREQ does, and connect a DMA channel to a PIO FIFO so that the state machine sets the pace.</div>
+  <div class="win">You can decode a PIO instruction from its bits, explain what the DREQ does and connect a DMA channel to a PIO FIFO so that the state machine sets the pace.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
   <p>
-    Each mistake below has a symptom you can see on the serial monitor or on the LEDs, and a fix.
+    Each mistake below has a symptom visible on the serial monitor or the LEDs, and a fix.
   </p>
-  <ol>
-    <li><strong>Asking for the RX DREQ on a transmit FIFO.</strong> Writing <code>pio_get_dreq(PIO0, 0, false)</code> makes the DMA wait for a word in the RX FIFO. This program never pushes one, so the request never arrives. Symptom: the serial monitor prints <code>PIO DMA OK</code>, but the LEDs never move and the restart loop never runs. Fix: pass <code>true</code>, because the DMA writes to the TX FIFO.</li>
-    <li><strong>Enabling the state machine after the DMA has run.</strong> The DMA fills the four TX FIFO words and then stops, waiting for the state machine to pull. With the state machine disabled, nothing is pulled. Symptom: the LEDs stay off, and the DMA appears stuck after the first few words. Fix: call <code>pio_sm_set_enabled(PATTERN_PIO, PATTERN_SM, true)</code> before the DMA starts, as the solution does.</li>
-    <li><strong>Setting the clock divider for a faster state machine.</strong> A divider of 1 runs the PIO at the full 125 MHz. One step then takes 33 cycles of 8 ns, which is about 0.26 µs. Symptom: the four LEDs look dim and steady rather than stepping. Fix: keep the divider that gives the rate you need, and check the arithmetic in the worked example before you change it.</li>
-    <li><strong>Mixing up the bit order.</strong> If the shift is set to the left, OUT takes the most significant bits of the word first. Your <code>steps[]</code> values then show the wrong LEDs. Symptom: the pattern steps in the right order, but the wrong LED lights, or two LEDs light together. Fix: check <code>sm_config_set_out_shift(&amp;c, true, false, 32)</code>. The first argument, <code>true</code>, selects right shift, which is what the solution uses.</li>
-  </ol>
+  <h3>The RX DREQ requested for a transmit FIFO</h3>
+  <p>
+    The serial monitor prints <code>PIO DMA OK</code>, but the LEDs never move and the restart loop never runs, because <code>pio_get_dreq(PIO0, 0, false)</code> makes the DMA wait for a word in the RX FIFO, which this program never pushes, so the request never arrives. Pass <code>true</code>, because the DMA writes to the TX FIFO.
+  </p>
+  <h3>The state machine enabled after the DMA has run</h3>
+  <p>
+    The LEDs stay off and the DMA appears stuck after the first few words, because it fills the four TX FIFO words and then waits for the state machine to pull, which a disabled state machine never does. Call <code>pio_sm_set_enabled(PATTERN_PIO, PATTERN_SM, true)</code> before the DMA starts, as the solution does.
+  </p>
+  <h3>A clock divider set for a faster state machine</h3>
+  <p>
+    The four LEDs look dim and steady instead of stepping, because a divider of 1 runs the PIO at the full 125 MHz, so a step of 33 cycles of 8 ns lasts about 0.26 µs. Keep the divider that gives the required rate, and check the arithmetic of the worked example before changing it.
+  </p>
+  <h3>The bit order reversed</h3>
+  <p>
+    The pattern steps in the right order but the wrong LED lights, or two light together, because with the shift set to the left OUT takes the most significant bits of the word first, so the <code>steps[]</code> values reach the wrong pins. Check <code>sm_config_set_out_shift(&amp;c, true, false, 32)</code>, whose first argument, <code>true</code>, selects the right shift the solution uses.
+  </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>PIO applications and review practice</h2></summary>
   <p>
-    The datasheet lists what PIO is used for: parallel buses such as the 8080 and 6800 families, I2C, I2S, SDIO, SPI and QSPI, UART, and DPI or VGA video output through a resistor network <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.1)</a>. Real products use it for custom interfaces that no fixed peripheral covers, and for a second UART or SPI when the main ones are busy. A typical design gives a PIO program a clear job, feeds it from DMA, and keeps the CPU free for the rest of the firmware.
+    The datasheet lists the uses of PIO, among them parallel buses such as the 8080 and 6800 families, I2C, I2S, SDIO, SPI and QSPI, UART, and DPI or VGA video output through a resistor network <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 3.1)</a>. Real products use it for custom interfaces that no fixed peripheral covers and for an extra UART or SPI when the main ones are busy, a typical design giving a PIO program one clear job, feeding it from DMA and leaving the CPU free for the rest of the firmware.
   </p>
   <p>
-    A senior engineer expects three things from a PIO change. The first is a comment on every instruction in the <code>.pio</code> file that says what it does and how many cycles it takes, because the timing lives in those comments. The second is a check of the generated header against a hand decode, as this project does, so a later edit cannot silently change the words. The third is a measurement on real hardware with a logic analyzer, since the cycle count is only a model until a probe confirms it. The glossary's <a href="../reference/glossary.html#logic-analyzer">logic analyzer</a> entry explains what to look for.
+    A senior engineer expects three things from a PIO change: a comment on every instruction in the <code>.pio</code> file stating what it does and how many cycles it takes, since the timing lives in those comments, a check of the generated header against a hand decode, as this project makes, so that a later edit cannot silently change the words, and a measurement on real hardware with a logic analyser, because the cycle count is only a model until a probe confirms it. The glossary entry on the <a href="../reference/glossary.html#logic-analyzer">logic analyzer</a> explains what to look for.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A PIO state machine is a small sequencer with two shift registers, two scratch registers, FIFOs and a clock divider. Each instruction takes one PIO cycle, plus its delay.</li>
-    <li>Each PIO instruction is 16 bits. The top three bits select the instruction, and the table in section 3.4.1 gives the rest.</li>
-    <li>PULL moves a word from the TX FIFO to the output shift register. OUT shifts bits from there to a destination such as the pins.</li>
-    <li>The clock divider sets the PIO clock: the system clock divided by the integer and fractional divisor.</li>
-    <li>A step's length is the sum of the cycles in the loop, and a wrap costs no cycle. In this project, 33 cycles, about 15.84 ms.</li>
-    <li>A DMA channel copies words into the TX FIFO, and waits for the DREQ that the PIO raises when the FIFO has room.</li>
-    <li>Common mistakes: the wrong DREQ direction, an unenabled state machine, a wrong clock divider and a reversed shift direction.</li>
+    <li>A PIO state machine is a small sequencer with two shift registers, two scratch registers, FIFOs and a clock divider, each instruction taking one PIO cycle plus its delay.</li>
+    <li>Each PIO instruction has 16 bits, the top three selecting the instruction and the table in section 3.4.1 giving the rest.</li>
+    <li>PULL moves a word from the TX FIFO to the output shift register, and OUT shifts bits from there to a destination such as the pins.</li>
+    <li>The clock divider sets the PIO clock as the system clock divided by the integer and fractional divisor.</li>
+    <li>A step lasts the sum of the cycles in the loop, a wrap costing no cycle, which in this project gives 33 cycles, about 15.84 ms.</li>
+    <li>A DMA channel copies words into the TX FIFO, waiting for the DREQ that the PIO raises whenever the FIFO has room.</li>
+    <li>The common mistakes are the wrong DREQ direction, a state machine left disabled, a wrong clock divider and a reversed shift direction.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

@@ -6,36 +6,16 @@ Lesson: [Logic gates and Boolean algebra](https://jouhis.github.io/embedded-cour
 
 ## Try it in Wokwi
 
-Wokwi is a digital simulator, so it is the right tool here: every signal is a 0 or a 1, and the gates are ideal. The starter circuit in `projects/0022-logic-gates/starter` has two inputs driven by the Pico (GP2 for A, GP3 for B), an output read on GP10, and four gates. The Pico drives every combination of A and B, and prints each result. It compares the result with exclusive OR, and prints `TRUTH TABLE OK` only if all four rows match.
-
-Reading the test bench
-
-The test bench is the program that checks the circuit. Its job is the same as a truth table, but it runs the circuit instead of computing it on paper. The part of `main.c` that drives one row is short.
-
-```c
-static bool check_row(bool a, bool b) {
-    gpio_put(PIN_A, a);              // drive input A of the circuit (GP2)
-    gpio_put(PIN_B, b);              // drive input B of the circuit (GP3)
-    sleep_us(SETTLE_US);             // wait until the gates have settled
-    bool out = gpio_get(PIN_OUT); // read the circuit's output (GP10)
-    bool ok = (out == expected_out(a, b));
-    printf("A=%d B=%d -> OUT=%d %s\n", a, b, out, ok ? "ok" : "WRONG");
-    return ok;
-}
-```
-
-`gpio_put` is the Pico SDK call that sets an output pin high or low. Its second argument is a `bool`, so passing `a` sends 1 for true and 0 for false. The SDK header declares it as `static inline void gpio_put(uint gpio, bool value)`. The next line does the same for B. The call `sleep_us(SETTLE_US)` is the wait. A real gate takes nanoseconds to settle, and the code must give the circuit time to finish before it reads. The constant is 100 µs, far longer than any gate needs, so the wait is generous, and the comment in the project says so.
-
-`gpio_get` returns the level of a pin as a `bool`, which is the level the circuit drives onto GP10. The next line compares it with `expected_out(a, b)`, the function the circuit must implement. The comparison of two `bool` values with `==` is true only when they agree. The `printf` prints the row, and the conditional operator chooses `ok` or `WRONG` for the last field.
+Wokwi is a digital simulator, which makes it the right tool here, since every signal is a 0 or a 1 and the gates are ideal. The starter circuit in `projects/0022-logic-gates/starter` has two inputs driven by the Pico, GP2 for A and GP3 for B, an output read on GP10, and four gates. The Pico drives every combination of A and B, prints each result, compares it with exclusive OR, and prints `TRUTH TABLE OK` only if all four rows match.
 
 1. Open the `starter` folder in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-3. Read the serial monitor. Some rows print `WRONG`, and the table fails. Look at the gates: one input of the second AND gate is not connected, so its output is unreliable.
-4. Find the missing wire. The output of the NOT gate should feed input `B` of the second AND gate. In `diagram.json`, add this line to the `connections` list, then save: `["not1:OUT", "and2:B", "orange", []]`
-5. Still in the `starter` folder, open `main.c`. Find the `TODO(learner)` in `expected_out()`, and write the exclusive-OR of `a` and `b`.
-6. Rebuild, restart the simulator, and watch the table. You will know it works when the serial monitor shows `TRUTH TABLE OK`. Expect four lines that each end in `ok`, then the summary line.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+3. Read the serial monitor. Some rows print `WRONG` and the table fails. Looking at the gates, one input of the second AND gate is not connected, so its output is unreliable.
+4. Add the missing wire. The output of the NOT gate should feed input `B` of the second AND gate, so add this line to the `connections` list in `diagram.json` and save: `["not1:OUT", "and2:B", "orange", []]`
+5. Still in the `starter` folder, open `main.c`, find the `TODO(learner)` in `expected_out()`, and write the exclusive OR of `a` and `b`.
+6. Rebuild, restart the simulator and watch the table. It works when the serial monitor shows `TRUTH TABLE OK`, after four lines that each end in `ok`.
 
-The Wokwi gate parts take their pin names from the part's own page. The inputs are `A` and `B`, and the output is `OUT`. The NOT gate uses `IN` and `OUT`. If a wire is rejected, check the pin name in the part's documentation. The lint command `wokwi-cli lint` checks these names without a token.
+The Wokwi gate parts take their pin names from each part's own page. The inputs are `A` and `B` and the output is `OUT`, while the NOT gate uses `IN` and `OUT`. If a wire is rejected, check the pin name in the part's documentation; the lint command `wokwi-cli lint` checks these names without a token.
 
 ## Files you work on
 
@@ -53,14 +33,14 @@ The serial monitor prints `TRUTH TABLE OK`.
 <details>
 <summary>Hint for the wiring</summary>
 
-Each gate has inputs and an output. In this circuit, the NOT gate's input is the first AND gate's output, and the NOT gate's output must go to the second AND gate. A floating input reads as an unknown level, so the row is wrong even though the logic is right.
+Each gate has inputs and an output. In this circuit the NOT gate's input is the first AND gate's output, and the NOT gate's output must go to the second AND gate. A floating input reads as an unknown level, so a row can be wrong even though the logic is right.
 
 </details>
 
 <details>
 <summary>Hint for the expression</summary>
 
-Exclusive OR is 1 when the inputs differ. In C, the `!=` operator on two `bool` values does exactly that.
+Exclusive OR is 1 when the inputs differ, and in C the `!=` operator on two `bool` values does exactly that.
 
 </details>
 

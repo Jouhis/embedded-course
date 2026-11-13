@@ -11,30 +11,30 @@
 <body data-lesson="0083">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Static analysis: warnings, cppcheck and MISRA C</h1>
-  <p class="subtitle">Tests only find the bugs you thought to test. A compiler and a static checker read every line, and they report the bugs that a test run never reaches.</p>
+  <h1>Static analysis</h1>
+  <p class="subtitle">Checking code without running it</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>run GCC's warning flags and cppcheck on a C file, read each finding, and fix five planted defects</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Bugs on paths that no test reaches</h2>
   <p>
-    The earlier lessons gave you two ways to find bugs. <a href="0080-unit-testing-on-the-host.html">Lesson 80</a> ran tests that you wrote, and <a href="0081-mocks-and-fakes.html">lesson 81</a> made the tests reach a driver without a sensor. Both answer the question "does this code do what I tested?" Neither answers "what did I not test?" The integer rules in <a href="0045-stdint-types-integer-promotion-overflow.html">lesson 45</a> show why that question matters: a sum that wraps, a comparison between a signed and an unsigned value, or a read of a variable that was never set can all compile and run without any visible symptom.
+    The earlier lessons gave two ways to find bugs, <a href="0080-unit-testing-on-the-host.html">lesson 80</a> running tests that you wrote and <a href="0081-mocks-and-fakes.html">lesson 81</a> letting those tests reach a driver without a sensor, both answering whether the code does what was tested but neither revealing what was not tested. The integer rules of <a href="0045-stdint-types-integer-promotion-overflow.html">lesson 45</a> show why that gap matters, since a sum that wraps, a comparison between a signed and an unsigned value or a read of a variable never set can all compile and run without any visible symptom.
   </p>
   <p>
-    A common case is a code review. A colleague sends a driver with a loop, a switch and a checksum, and the tests pass. A senior engineer reads the code and asks whether the build uses warnings, and what cppcheck says. The answer is expected to be specific. This lesson teaches the tools that give those answers, and how to read their output. The continuous integration pipeline in <a href="0082-continuous-integration.html">lesson 82</a> runs the same checks on every push.
+    A typical case is a code review in which a colleague sends a driver with a loop, a switch and a checksum whose tests pass, and a senior engineer asks whether the build uses warnings and what cppcheck says, expecting specific answers. This lesson teaches the tools that give those answers and how to read their output, the continuous integration pipeline of <a href="0082-continuous-integration.html">lesson 82</a> running the same checks on every push.
   </p>
   <p>
-    <strong>Static analysis</strong> means checking code without running it (glossary: <a href="../reference/glossary.html#static-analysis">static analysis</a>). The compiler's warnings are the first and cheapest kind. They come from the same pass that generates code, so they cost nothing extra. A dedicated analyser such as cppcheck does more work. It builds its own model of the code and reports things the compiler does not look for, such as an array index that is out of range on one path. The two tools answer different questions, and the sample in this lesson has cases where each one finds something the other misses.
+    <strong>Static analysis</strong> means checking code without running it (glossary: <a href="../reference/glossary.html#static-analysis">static analysis</a>), the compiler's warnings being the first and cheapest kind, since they come from the same pass that generates code and cost nothing extra. A dedicated analyser such as cppcheck does more work, building its own model of the code and reporting things the compiler does not look for, such as an array index out of range on one path, so the two tools answer different questions, and the sample in this lesson has cases where each finds something the other misses.
   </p>
 
-  <h2>The compiler reads the code too: warnings</h2>
+  <h2>GCC warning flags</h2>
   <p>
-    A <strong>warning</strong> is the compiler's message that the code compiles but looks wrong. It is not an error: the build still produces a file. Warnings are controlled by flags, and GCC groups many of them. <code>-Wall</code> and <code>-Wextra</code> are the two broad groups. Each flag enables one or a few checks, and some flags are in neither group. A firmware team usually chooses flags on purpose and writes the choice in the build file, so that every developer and the pipeline get the same result.
+    A <strong>warning</strong> is the compiler's message that the code compiles but looks wrong, unlike an error leaving the build to produce its file. Warnings are controlled by flags, GCC grouping many of them into the two broad groups <code>-Wall</code> and <code>-Wextra</code>, each flag enabling one or a few checks and some flags belonging to neither group, so a firmware team usually chooses its flags on purpose and writes the choice into the build file, giving every developer and the pipeline the same result.
   </p>
   <p>
-    The table lists the flags this lesson uses, with the group that enables each one. I checked the groups by running GCC 16.2 with and without <code>-Wall</code> and <code>-Wextra</code>, and by compiling small test files. The GCC manual's <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" rel="noopener">Warning Options page</a> is the reference.
+    The table lists the flags this lesson uses with the group that enables each, the groups having been checked by running GCC 16.2 with and without <code>-Wall</code> and <code>-Wextra</code> on small test files, while the GCC manual's <a href="https://gcc.gnu.org/onlinedocs/gcc/Warning-Options.html" target="_blank" rel="noopener">Warning Options page</a> is the reference.
   </p>
   <table>
     <thead><tr><th>Flag</th><th>Catches</th><th>In -Wall or -Wextra?</th></tr></thead>
@@ -51,31 +51,31 @@
     </tbody>
   </table>
   <p>
-    A few of these deserve a sentence each. <code>-Wshadow</code> is the flag for the bug where an inner declaration hides an outer variable, so the loop updates a copy and the outer variable never changes. <code>-Wconversion</code> reports a value that loses bits when it is stored in a smaller type, such as an <code>int</code> stored in a <code>uint8_t</code>. It is strict, and many teams add it to new modules first. <code>-Wformat=2</code> warns when a printf format string is a variable, because text from outside can contain a format directive the code never meant to expand. <code>-Wcast-align</code> warns when a cast makes a pointer more strictly aligned than the data it points to. On a Cortex-M that can mean a fault on an unaligned access, which lesson 84 returns to.
+    A few of these deserve a sentence each. <code>-Wshadow</code> catches an inner declaration hiding an outer variable, so that a loop updates a copy while the outer variable never changes, and <code>-Wconversion</code> reports a value losing bits when stored in a smaller type, such as an <code>int</code> stored in a <code>uint8_t</code>, a strict check that many teams add to new modules first. <code>-Wformat=2</code> warns when a printf format string is a variable, because text from outside can contain a format directive the code never meant to expand, and <code>-Wcast-align</code> warns when a cast makes a pointer more strictly aligned than its data, which on a Cortex-M can mean a fault on an unaligned access, a case lesson 84 returns to.
   </p>
   <div class="warning">
     Turning on <code>-Wconversion</code> adds noise on real code. Many teams use it on new modules and fix the rest over time. Add the flags one at a time, so that you can tell which one produced a warning.
   </div>
 
-  <h2>cppcheck: a second reader with its own parser</h2>
+  <h2>The cppcheck analyser and its finding categories</h2>
   <p>
-    cppcheck is an open-source static analyser for C and C++ (<a href="https://github.com/danmar/cppcheck" target="_blank" rel="noopener">source and documentation</a>). It reads the code with its own parser and builds its own view of each function, so it finds different problems from the compiler. Its findings come in categories, and the category tells you how strong the claim is. <strong>error</strong> findings are defects on a path the analyser can see, such as an array index that is out of range. <strong>warning</strong> findings are likely defects. <strong>style</strong> findings are about how the code is written, such as a variable that is assigned and then never read.
+    cppcheck is an open-source static analyser for C and C++ (<a href="https://github.com/danmar/cppcheck" target="_blank" rel="noopener">source and documentation</a>) that reads the code with its own parser and builds its own view of each function, so it finds different problems from the compiler. Its findings come in categories indicating how strong each claim is, <strong>error</strong> findings being defects on a path the analyser can see, such as an out-of-range array index, <strong>warning</strong> findings likely defects, and <strong>style</strong> findings concerning how the code is written, such as a variable assigned and then never read.
   </p>
   <p>
-    The course's installed version is 2.22.0. Run it with <code>--enable=warning,style</code>, which switches on the warnings and the style checks. Without that option, cppcheck reports only errors, so a shadowed variable would pass silently. Be careful with the exit code, too: by default cppcheck returns 0 even when it reports findings. The pipeline needs <code>--error-exitcode=1</code> to fail a job, as lesson 82 explains.
-  </p>
-
-  <h2>MISRA C: what it is, and what this machine can do</h2>
-  <p>
-    MISRA C is a coding standard for safety-related C, published by MISRA. Its rules are grouped into three categories. In paraphrase: <strong>mandatory</strong> rules must always be followed, with no deviation allowed; <strong>required</strong> rules must be followed unless a deviation is formally recorded with a justification; <strong>advisory</strong> rules are good practice that the team may choose to skip. The rule texts are licensed, so this course does not reproduce them. Read them through your company's copy or the MISRA website. The course's short list is the <a href="../reference/misra.html">MISRA C quick list</a>.
-  </p>
-  <p>
-    cppcheck can check many MISRA C:2012 rules through its addon <code>misra.py</code>, run as <code>--addon=misra</code>. <strong>On this machine the addon is not installed:</strong> running <code>cppcheck --addon=misra</code> reports "Did not find addon misra.py". Getting the addon from cppcheck's source tree is the next step, and it has not been run for this lesson. In a real project, a deviation is an entry in a record that names the rule, the reason, and the person who approved it, so that a reviewer can check it later.
+    The course's installed version is 2.22.0, run with <code>--enable=warning,style</code> to switch on the warnings and style checks, since without that option cppcheck reports only errors and a shadowed variable would pass silently. The exit code also needs care, because by default cppcheck returns 0 even when it reports findings, so a pipeline needs <code>--error-exitcode=1</code> to fail a job, as lesson 82 explains.
   </p>
 
-  <h2>A worked example: the switch without a break</h2>
+  <h2>MISRA C and its rule categories</h2>
   <p>
-    Start with a defect that the starter's tests do catch, so you can see the mechanism. Here is <code>status_name</code> from the starter, with the bug marked:
+    MISRA C is a coding standard for safety-related C, published by MISRA, whose rules fall into three categories, which in paraphrase are <strong>mandatory</strong> rules, always followed with no deviation allowed, <strong>required</strong> rules, followed unless a deviation is formally recorded with a justification, and <strong>advisory</strong> rules, good practice that the team may choose to skip. The rule texts are licensed, so this course does not reproduce them, and they are read through a company copy or the MISRA website, while the course's short list is the <a href="../reference/misra.html">MISRA C quick list</a>.
+  </p>
+  <p>
+    cppcheck can check many MISRA C:2012 rules through its addon <code>misra.py</code>, run as <code>--addon=misra</code>, but <strong>on this machine the addon is not installed</strong>, <code>cppcheck --addon=misra</code> reporting "Did not find addon misra.py", and fetching the addon from cppcheck's source tree, the next step, has not been done for this lesson. In a real project a deviation is an entry in a record naming the rule, the reason and the person who approved it, so that a reviewer can check it later.
+  </p>
+
+  <h2>Worked example: a switch case without a break</h2>
+  <p>
+    We start with a defect the starter's tests do catch, to see the mechanism, in <code>status_name</code> from the starter with the bug marked. Before tracing it, predict what <code>status_name(0)</code> returns.
   </p>
   <pre><code class="language-c">const char *status_name(uint8_t code) {
     const char *name = "unknown";
@@ -89,17 +89,20 @@
     }
     return name;
 }</code></pre>
-  <p>
-    Trace the call <code>status_name(0)</code> step by step. The code is 0, so the switch jumps to the label <code>case 0u</code>. Before that point, <code>name</code> holds the pointer to "unknown". The statement <code>name = "idle"</code> runs, so <code>name</code> now points to "idle". There is no <code>break</code>, so execution does not leave the switch. It continues into the code under <code>case 1u</code>, which sets <code>name</code> to "running" and then breaks. The function returns "running". The test expects "idle", and the run prints this line:
-  </p>
+  <ol class="steps">
+    <li><strong>Jump to the case.</strong> The code is 0, so the switch jumps to the label <code>case 0u</code>, while <code>name</code> still points to "unknown".</li>
+    <li><strong>Assign the name.</strong> The statement <code>name = "idle"</code> runs, so <code>name</code> now points to "idle".</li>
+    <li><strong>Fall through.</strong> Without a <code>break</code>, execution does not leave the switch but continues into the code under <code>case 1u</code>, which sets <code>name</code> to "running" and then breaks.</li>
+    <li><strong>Return.</strong> The function returns "running" where the test expects "idle", and the run prints the line below.</li>
+  </ol>
   <pre><code class="language-plaintext">test_analysis.c:25:test_status_idle:FAIL: Expected 'idle' Was 'running'</code></pre>
   <p>
-    The message is the symptom, and the cause is one line earlier than the failure. The fall-through is a feature of C switch statements, and sometimes it is intended. In this case the comment says it is not. The fix is a <code>break</code>, or, as in the solution, a <code>return</code> in each case, so that no case can run into the next. The compiler saw the same thing: the GCC 14.2 run in the next section warns on that line.
+    The message is the symptom, the cause lying one line before the failure. Fall-through is a feature of C switch statements and sometimes intended, but here the comment says it is not, so the fix is a <code>break</code>, or, as in the solution, a <code>return</code> in each case, so that no case can run into the next. The compiler saw the same thing, the GCC 14.2 run in a later section warning on that line.
   </p>
 
-  <h2>A worked example: a shadowed total</h2>
+  <h2>Worked example: a shadowed total</h2>
   <p>
-    The next defect is quieter. The starter's <code>sum_samples</code> declares a total before the loop, and then declares another total inside the loop:
+    The next defect is quieter, the starter's <code>sum_samples</code> declaring a total before the loop and then another inside it. Predict what the function returns for the samples {1, 2, 3} before reading the trace.
   </p>
   <pre><code class="language-c">int32_t sum_samples(const int16_t *s, size_t n) {
     int32_t total = 0;                  /* the outer total */
@@ -110,41 +113,41 @@
     return total;
 }</code></pre>
   <p>
-    Trace <code>sum_samples</code> with the samples {1, 2, 3}. The outer <code>total</code> is set to 0. On the first pass, the loop body creates an inner <code>total</code>, sets it to 0, and adds 1, so the inner variable holds 1. The inner variable ends when the loop body ends. The second and third passes do the same, and the outer total is still 0. The function returns 0, and the test expects 6. The printed failure is exact:
+    The outer <code>total</code> is set to 0, and on the first pass the loop body creates an inner <code>total</code>, sets it to 0 and adds 1, so the inner variable holds 1 until it ends with the loop body. The second and third passes do the same, leaving the outer total at 0, so the function returns 0 where the test expects 6, and the printed failure says exactly that.
   </p>
   <pre><code class="language-plaintext">test_analysis.c:11:test_sum_of_three_samples:FAIL: Expected 6 Was 0</code></pre>
   <p>
-    This is the bug that <code>-Wshadow</code> names. The warning points at line 9, the inner declaration, and the note points back to the outer one. The shadowing is easy to miss in review, because each line looks correct on its own. The fix is to delete the inner declaration, so that the loop updates the one total.
+    This is the bug that <code>-Wshadow</code> names, its warning pointing at line 9, the inner declaration, with a note pointing back to the outer one. Shadowing is easy to miss in review, because each line looks correct on its own, and the fix deletes the inner declaration, so that the loop updates the single total.
   </p>
 
-  <h2>The defects the tests do not catch</h2>
+  <h2>Defects outside the reach of the tests</h2>
   <p>
-    The other three defects are the ones the starter's tests do not reach. The starter has six tests, and none calls <code>checksum</code> or <code>frame_build</code>. A green test run tells you nothing about those two functions. Static analysis is the only check that reads them.
+    The other three defects lie where the starter's tests do not reach, since none of its six tests calls <code>checksum</code> or <code>frame_build</code>, so a green test run says nothing about those two functions and static analysis is the only check that reads them.
+  </p>
+  <p>
+    <code>checksum</code> starts with <code>uint8_t sum;</code> and no value, so its first use of <code>sum</code> reads whatever bytes the stack held before the function ran, which may happen to be zero on the test machine and something else on the board. This uninitialised read is undefined behaviour (lesson 45), reported by GCC 14.2 with <code>-O2</code> as <code>'sum' may be used uninitialized</code> and by GCC 16.2 with <code>-fanalyzer</code> as a value used at two lines, and neither tool is wrong, because a read before a write is a real defect in any run where the stack holds something else.
+  </p>
+  <p>
+    <code>frame_build</code> declares <code>uint8_t frame[3];</code>, holding indices 0 to 2, and then writes <code>frame[3]</code> when the marker is set, one byte past the end of the array, undefined behaviour that may overwrite a neighbouring stack variable. The write sits inside an <code>if</code>, so only one path reaches it, and cppcheck follows that path and reports an error, whereas GCC does not with the flags used here.
+  </p>
+  <p>
+    The last defect is the sign comparison in <code>find_first_negative</code>, whose loop index is an <code>int</code> while the length is a <code>size_t</code>, which is unsigned, so C converts the signed value to unsigned before comparing (the usual arithmetic conversions of lesson 45) and a negative index would compare as a huge number. In this loop the index never goes negative, so the bug does not change the answer, but the warning is still right to report it.
   </p>
 
   <div class="analogy">
-    <p>Tests are a test drive: they show the car works on the roads you drove. Static analysis is the inspector who reads the whole drawing, including the roads nobody drove, such as an error path or a <code>default:</code> that never runs in a test. Each finds faults the other misses, so teams use both.</p>
+    <p>Tests resemble a test drive, showing that the car works on the roads that were driven, whereas static analysis resembles an inspector reading the whole drawing, including the roads nobody drove, such as an error path or a <code>default:</code> that never runs in a test, so each finds faults the other misses and teams use both. The comparison breaks because an inspector judges the drawing against physics, while an analyser judges code only against the patterns it knows, so a defect outside those patterns passes the inspection unnoticed.</p>
   </div>
-  <p>
-    <code>checksum</code> starts with <code>uint8_t sum;</code> and no value. The first use of <code>sum</code> reads whatever bytes the stack held before the function ran. On the test machine that value may happen to be zero, and on the board it is something else. This is an uninitialised read, and it is undefined behaviour (lesson 45). Here is what each tool says about it. GCC 14.2 with <code>-O2</code> reports <code>'sum' may be used uninitialized</code>, and GCC 16.2 with <code>-fanalyzer</code> reports that the value is used at two lines. Neither tool is wrong, because a read before a write is a real defect in any run where the stack holds something else.
-  </p>
-  <p>
-    <code>frame_build</code> declares <code>uint8_t frame[3];</code>, which holds indices 0 to 2, and then writes <code>frame[3]</code> when the marker is set. That write is one byte past the end of the array. It is undefined behaviour, and it may overwrite a neighbouring variable on the stack. The write is inside an <code>if</code>, so only one path reaches it. cppcheck follows that path and reports it as an error. GCC does not, with the flags used here.
-  </p>
-  <p>
-    The last defect is the sign comparison in <code>find_first_negative</code>. The loop index is an <code>int</code> and the length is a <code>size_t</code>, which is unsigned. C converts the signed value to unsigned before the comparison (the usual arithmetic conversions from lesson 45), so a negative index would compare as a huge number. In this loop the index never goes negative, so the bug does not change the answer, but the warning is still right to report it.
-  </p>
 
-  <h2>The static checkers, run on the starter</h2>
+  <h2>Tool output on the starter file</h2>
   <p>
-    The next output is the real result of running the tools on <code>projects/0083-static-analysis/starter/src/analysis.c</code>. The GCC 14.2 Arm compiler with the flags from the Try-it section prints these four warnings. The lines are shown as the compiler printed them, without the source-line snippets:
+    The output below is the real result of running the tools on <code>projects/0083-static-analysis/starter/src/analysis.c</code>, the GCC 14.2 Arm compiler with the flags from the hands-on section printing these four warnings, shown as the compiler printed them without the source-line snippets.
   </p>
   <pre><code class="language-plaintext">src/analysis.c:9:17: warning: declaration of 'total' shadows a previous local [-Wshadow]
 src/analysis.c:16:23: warning: comparison of integer expressions of different signedness: 'int' and 'size_t' {aka 'unsigned int'} [-Wsign-compare]
 src/analysis.c:28:14: warning: this statement may fall through [-Wimplicit-fallthrough=]
 src/analysis.c:44:13: warning: 'sum' may be used uninitialized [-Wmaybe-uninitialized]</code></pre>
   <p>
-    The same file, run through cppcheck 2.22.0 with <code>--enable=warning,style</code> and <code>--quiet</code>, printed these lines. The snippets are removed here, and the column numbers are the ones cppcheck gave:
+    The same file run through cppcheck 2.22.0 with <code>--enable=warning,style</code> and <code>--quiet</code> printed the following lines, with the snippets removed and the column numbers as cppcheck gave them.
   </p>
   <pre><code class="language-plaintext">src\analysis.c:59:14: error: Array 'frame[3]' accessed at index 3, which is out of bounds. [arrayIndexOutOfBounds]
 src\analysis.c:60:23: error: Array 'frame[3]' accessed at index 3, which is out of bounds. [arrayIndexOutOfBounds]
@@ -154,67 +157,72 @@ src\analysis.c:44:15: warning: Uninitialized variable: sum [uninitvar]
 src\analysis.c:9:23: style: Variable 'total' is assigned a value that is never used. [unreadVariable]
 src\analysis.c:10:15: style: Variable 'total' is assigned a value that is never used. [unreadVariable]</code></pre>
   <p>
-    Read the two lists side by side. Notice what each tool did not report. cppcheck did not report the sign comparison, and neither GCC run reported the out-of-bounds write on <code>frame[3]</code>, which cppcheck did. Neither tool flagged <code>sum = sum + data[i]</code> as a narrowing conversion, because the GCC runs stay quiet on that line with <code>-Wconversion</code>. The solution casts it anyway, so the intent is explicit. Several findings describe the same defect in different words, which is normal. Fixing the defect makes the duplicates go away together. The GCC 16.2 run with <code>-fanalyzer</code> adds two path-based lines about the uninitialised <code>sum</code>, at lines 44 and 46.
+    Side by side, the two lists show what each tool did not report: cppcheck missed the sign comparison, and neither GCC run reported the out-of-bounds write on <code>frame[3]</code>, which cppcheck did. Neither tool flagged <code>sum = sum + data[i]</code> as a narrowing conversion, the GCC runs staying quiet on that line even with <code>-Wconversion</code>, though the solution casts it anyway to make the intent explicit. Several findings describe the same defect in different words, which is normal, since fixing the defect removes the duplicates together, and the GCC 16.2 run with <code>-fanalyzer</code> adds two path-based lines about the uninitialised <code>sum</code>, at lines 44 and 46.
   </p>
   <p>
-    The solution, with the same flags, prints no GCC warnings and no cppcheck findings. On the host, its test binary prints <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>. The three tests that the solution adds check the checksum, the marker byte and the <code>unknown</code> status. Those are the paths that the starter's tests never reached.
+    The solution prints no GCC warnings and no cppcheck findings with the same flags, and on the host its test binary prints <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>, the three added tests checking the checksum, the marker byte and the <code>unknown</code> status, the paths the starter's tests never reached.
   </p>
 
   <h2>Try it on the starter</h2>
   <ol class="steps">
-    <li>Open <code>projects/0083-static-analysis/starter</code> in VS Code. Read <code>src/analysis.c</code> once, without fixing anything. The file has five planted defects, marked with comments.</li>
-    <li>In Git Bash, run the GCC flags on the file. This uses the Arm compiler from the lesson 1 setup, with the same flags as the host:<br>
+    <li>Open <code>projects/0083-static-analysis/starter</code> in VS Code and read <code>src/analysis.c</code> once without fixing anything, the file holding five planted defects marked with comments.</li>
+    <li>In Git Bash, run the GCC flags on the file with the Arm compiler from the lesson 1 setup and the same flags as the host:<br>
       <code>cd projects/0083-static-analysis/starter</code><br>
       <code>"/c/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/14.2 rel1/bin/arm-none-eabi-gcc.exe" -std=c11 -O2 -mcpu=cortex-m3 -mthumb -Wall -Wextra -Wshadow -Wconversion -Wdouble-promotion -Wformat=2 -Wcast-align -Wimplicit-fallthrough -c src/analysis.c -o /dev/null</code><br>
-      You should see four warning lines, the same ones printed above. The command ends without an error, because warnings do not stop the compile.
+      and you should see the four warning lines printed above, the command ending without an error, because warnings do not stop the compile.
     </li>
-    <li>Run cppcheck: <code>"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet src/analysis.c</code>. You should see seven lines, three of them marked <em>error</em> or <em>warning</em> and the rest <em>style</em>. The exit code is 0 even though the findings are there, so read the output rather than the exit code.</li>
-    <li>Your task: fix each defect so the tests pass. Start with the warnings, then the cppcheck findings. Use the solution as a check only after you have tried. Then run <code>python -I tools/build.py projects/0083-static-analysis/starter --test</code>. Before your fixes the summary reads <em>6 Tests 2 Failures 0 Ignored</em>. You will know you are done when it reads <em>6 Tests 0 Failures 0 Ignored</em>, and the GCC command prints no warnings.</li>
-    <li>When the starter is clean, run the same cppcheck command again. It should print nothing. Then say which of the five defects the tests alone would have missed, and why.</li>
+    <li>Run cppcheck with <code>"/c/Program Files/Cppcheck/cppcheck.exe" --enable=warning,style --quiet src/analysis.c</code>, which should print seven lines, three marked <em>error</em> or <em>warning</em> and the rest <em>style</em>, with an exit code of 0 despite the findings, so read the output rather than the exit code.</li>
+    <li>Fix each defect so that the tests pass, starting with the warnings and then the cppcheck findings, consulting the solution only after trying, and run <code>python -I tools/build.py projects/0083-static-analysis/starter --test</code>. Before your fixes the summary reads <em>6 Tests 2 Failures 0 Ignored</em>, and you are done when it reads <em>6 Tests 0 Failures 0 Ignored</em> and the GCC command prints no warnings.</li>
+    <li>With the starter clean, run the same cppcheck command again, which should print nothing, and say which of the five defects the tests alone would have missed, and why.</li>
   </ol>
   <details>
     <summary>Hint</summary>
-    <p>Each defect is a single line, or two lines in the case of the fall-through. The fallthrough needs a <code>break</code> or a <code>return</code> in the case. The uninitialised variable needs a value before the first use. The buffer defect is an array with three elements that is written at index 3, so declare it with four, and make sure the output loop copies all four bytes. The shadowed total needs the inner declaration removed.</p>
+    <p>Each defect is a single line, or two lines for the fall-through, which needs a <code>break</code> or a <code>return</code> in the case. The uninitialised variable needs a value before its first use, the buffer defect is a three-element array written at index 3, so declare it with four and make sure the output loop copies all four bytes, and the shadowed total needs its inner declaration removed.</p>
   </details>
   <p>
-    The reference solution is in <code>projects/0083-static-analysis/solution</code>. It has nine tests, not six, because it adds the three tests the starter lacks. Its tests pass, and it prints <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>. Try first, compare after.
+    The reference solution in <code>projects/0083-static-analysis/solution</code> has nine tests rather than six, adding the three the starter lacks, and its tests pass with <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>, so try first and compare afterwards.
   </p>
 
-  <div class="win">You ran two different analysers on one file, read their findings, and fixed five defects, including two that the starter's tests did not catch. That habit is what reviewers look for, and the five review checks that go with it are in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>.</div>
+  <div class="win">You ran two different analysers on one file, read their findings and fixed five defects, including two that the starter's tests did not catch, the habit reviewers look for, with the five review checks that go with it in <a href="0079-git-workflow-code-review-doxygen.html">lesson 79</a>.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>Trusting a clean compile</h3>
   <p>
-    <strong>Mistake 1: trusting a clean compile.</strong> The build log has no warnings, and the team concludes the code is clean. In this file, the compiler is silent about the out-of-bounds write, and cppcheck reports it as an error. The symptom is a silent build with an error line in the static-analysis job. The fix is to run both tools, because each reads the code differently.
+    The build log is silent while the static-analysis job shows an error line, because the team concluded from a warning-free compile that the code was clean, although in this file the compiler says nothing about the out-of-bounds write that cppcheck reports as an error. Run both tools, because each reads the code differently.
   </p>
+  <h3>cppcheck run without style checks</h3>
   <p>
-    <strong>Mistake 2: running cppcheck without style.</strong> The developer runs <code>cppcheck --enable=warning</code>, or runs it with no option. The shadowed variable and the unread assignment are reported in the <em>style</em> category, so they never appear. The symptom is a clean report on a file that has a known defect. The fix is <code>--enable=warning,style</code>, which the course uses everywhere.
+    The report is clean on a file with a known defect, because the developer ran <code>cppcheck --enable=warning</code>, or no option at all, and the shadowed variable and the unread assignment belong to the <em>style</em> category, so they never appear. Use <code>--enable=warning,style</code>, as the course does everywhere.
   </p>
+  <h3>Warnings silenced instead of fixed</h3>
   <p>
-    <strong>Mistake 3: fixing every warning by hiding it.</strong> A developer adds a cast to quiet <code>-Wconversion</code>, or a <code>(void)</code> to quiet an unused variable, without asking what the value should be. The symptom is a clean build and a wrong answer. The fix is to read the warning, work out the intended value, and then write the code that produces it. The cast in the solution is the right kind of change, because the intent is stated in the code.
+    The build is clean but the answer is wrong, because a developer added a cast to quiet <code>-Wconversion</code>, or a <code>(void)</code> to quiet an unused variable, without asking what the value should be. Read the warning, work out the intended value and write the code that produces it, the cast in the solution being the right kind of change because it states the intent in the code.
   </p>
+  <h3>Tests assumed to cover the warnings</h3>
   <p>
-    <strong>Mistake 4: assuming the tests cover what the warnings report.</strong> The starter's test run shows <em>6 Tests 2 Failures</em>, and a developer fixes the two failing tests and stops. The checksum and the marker byte still have no tests, so the uninitialised read and the out-of-bounds write survive. The symptom is a green test run and a warning that never went away. The fix is to treat the static findings as a list of cases that need a test.
+    The test run is green while a warning never goes away, because a developer saw <em>6 Tests 2 Failures</em>, fixed the two failing tests and stopped, leaving the checksum and the marker byte untested, so the uninitialised read and the out-of-bounds write survive. Treat the static findings as a list of cases that need a test.
   </p>
+  <h3>Every flag turned on at once</h3>
   <p>
-    <strong>Mistake 5: turning on every flag at once.</strong> A developer adds <code>-Wconversion</code> and a dozen other flags to an existing project, and the build prints hundreds of lines. The team learns to ignore the output, and the important warning is lost. The symptom is a log that nobody reads. The fix is to add flags one at a time, fix or record each group, and then make the next flag part of the build.
+    The build log is one that nobody reads, because a developer added <code>-Wconversion</code> and a dozen other flags to an existing project, the build printed hundreds of lines and the team learned to ignore them, losing the important warning. Add flags one at a time, fixing or recording each group before making the next flag part of the build.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Warning policy and analysis in firmware teams</h2></summary>
   <p>
-    In a firmware team, the compiler flags are part of the build configuration, and a change to them is a code change. Reviewers look for the flags first, because a missing <code>-Wshadow</code> or <code>-Wimplicit-fallthrough</code> is an easy gap to close. Static analysis runs in the pipeline (lesson 82), and the team decides which findings block a merge. Safety-related teams add MISRA C rules, and they record each deviation with a reason. A required rule with no deviation record is a review finding in its own right.
+    In a firmware team the compiler flags belong to the build configuration, so a change to them is a code change, and reviewers look at the flags first, because a missing <code>-Wshadow</code> or <code>-Wimplicit-fallthrough</code> is an easy gap to close. Static analysis runs in the pipeline (lesson 82), the team deciding which findings block a merge, and safety-related teams add MISRA C rules, recording each deviation with a reason, so that a required rule without a deviation record is a review finding in its own right.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A warning is the compiler's message about code that compiles but looks wrong. Flags control the warnings, and the groups <code>-Wall</code> and <code>-Wextra</code> do not include everything.</li>
-    <li>cppcheck has its own parser and reports errors, warnings and style findings. Use <code>--enable=warning,style</code>, and <code>--error-exitcode=1</code> in a pipeline.</li>
-    <li>A switch case without <code>break</code> falls into the next case. The symptom is a test that expects one string and gets another.</li>
-    <li>A variable declared again in an inner scope hides the outer one, so an update can go to a copy. <code>-Wshadow</code> finds it.</li>
-    <li>An uninitialised local and an array write past its end are undefined behaviour. Compilers and analysers catch some paths, and no tool catches every path.</li>
-    <li>A green test run only covers the paths the tests reach. Static analysis reads every line, so use both.</li>
-    <li>Add warning flags one at a time, and record every deviation from MISRA C with a reason.</li>
+    <li>A warning is the compiler's message about code that compiles but looks wrong, controlled by flags, and the groups <code>-Wall</code> and <code>-Wextra</code> do not include everything.</li>
+    <li>cppcheck has its own parser and reports errors, warnings and style findings, run with <code>--enable=warning,style</code> and, in a pipeline, <code>--error-exitcode=1</code>.</li>
+    <li>A switch case without <code>break</code> falls into the next case, the symptom being a test that expects one string and gets another.</li>
+    <li>A variable declared again in an inner scope hides the outer one, so an update can go to a copy, which <code>-Wshadow</code> finds.</li>
+    <li>An uninitialised local and an array write past its end are undefined behaviour that compilers and analysers catch on some paths, though no tool catches every path.</li>
+    <li>A green test run covers only the paths the tests reach, while static analysis reads every line, so both are needed.</li>
+    <li>Warning flags are added one at a time, and every deviation from MISRA C is recorded with a reason.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

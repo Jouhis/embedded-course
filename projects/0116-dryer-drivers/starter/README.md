@@ -6,14 +6,14 @@ Lesson: [Capstone 4: heater PWM, buttons, display, and safety checks](https://jo
 
 ## Try it: write the safety checks
 
-The starter in `projects/0116-dryer-drivers/starter` is the whole dryer, and it has one stub left: `safety_check()` returns `FAULT_NONE` for every input. The PWM, the buttons and the display are already written, and the safety tests in `projects/0115-dryer-host-tests` check your version. Your task is to make all eight host test programs pass and the firmware build.
+The starter in `projects/0116-dryer-drivers/starter` is the whole dryer with one stub left, `safety_check()`, which returns `FAULT_NONE` for every input, the PWM, the buttons and the display being already written and the safety tests in `projects/0115-dryer-host-tests` checking your version, and your task is to make all eight host test programs pass and the firmware build.
 
-1. Open `projects/0116-dryer-drivers/starter/app/safety.c`. Read the TODO(learner) comment. It lists the four checks in order: sensor, over-temperature, stale sample, and runaway.
-2. Implement the first three checks as plain comparisons. Use `SAFETY_CUTOFF_CENTI` with `>=` for the cutoff, and `SAFETY_STALE_MS` with `>` for the stale rule.
-3. Implement the runaway check as the comment describes. Call `runaway_reset()` whenever the rule does not apply, open the window on the first applicable sample, and restart it after a 2 °C rise. Return `FAULT_RUNAWAY` when 60 s pass without a rise.
-4. Run the host tests from the workspace root: `python -I tools/build.py projects/0115-dryer-host-tests/starter --test`. Expect `100% tests passed out of 8`. If CMake reports a CMakeCache.txt from a different folder, add `--clean`. The copied folders carry stale build directories, and `--clean` deletes them first.
-5. Build the firmware: `python -I tools/build.py projects/0116-dryer-drivers/starter --clean`. The build should finish with no errors. Open `hw/hal_bluepill.c` and find the PWM register lines from this lesson. Compare them with the solution in `projects/0116-dryer-drivers/solution`.
-6. Optional: open `test/test_safety.c` and read `test_no_runaway_near_the_setpoint`. Explain in one sentence why the check must be off near the setpoint, and then compare your answer with the table above.
+1. Open `projects/0116-dryer-drivers/starter/app/safety.c` and read the TODO(learner) comment, which lists the four checks in order, sensor, over-temperature, stale sample and runaway.
+2. Implement the first three checks as plain comparisons, using `SAFETY_CUTOFF_CENTI` with `>=` for the cutoff and `SAFETY_STALE_MS` with `>` for the stale rule.
+3. Implement the runaway check as the comment describes, calling `runaway_reset()` whenever the rule does not apply, opening the window on the first applicable sample, restarting it after a 2 °C rise and returning `FAULT_RUNAWAY` when 60 s pass without a rise.
+4. Run the host tests from the workspace root with `python -I tools/build.py projects/0115-dryer-host-tests/starter --test`, expecting `100% tests passed out of 8`, and if CMake reports a CMakeCache.txt from a different folder, add `--clean`, because the copied folders carry stale build directories, which `--clean` deletes first.
+5. Build the firmware with `python -I tools/build.py projects/0116-dryer-drivers/starter --clean`, which should finish with no errors, then open `hw/hal_bluepill.c`, find the PWM register lines from this lesson and compare them with the solution in `projects/0116-dryer-drivers/solution`.
+6. Optionally, open `test/test_safety.c`, read `test_no_runaway_near_the_setpoint`, explain in one sentence why the check must be off near the setpoint and compare your answer with the table above.
 
 ## Files you work on
 

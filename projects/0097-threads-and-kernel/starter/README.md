@@ -6,16 +6,16 @@ Lesson: [Threads and kernel services](https://jouhis.github.io/embedded-course/l
 
 ## Try it in Wokwi
 
-The starter has the three threads, the queue, the mutex and the work handler wired up. Five places are marked TODO(learner), and each one is a single call.
+The starter has the three threads, the queue, the mutex and the work handler wired up, with five places marked TODO(learner), each a single call.
 
-1. Open `projects/0097-threads-and-kernel/starter` in VS Code, and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to check that it builds.
-2. In `tick_expired`, submit `report_work` to the system workqueue with `k_work_submit()`. The semaphore give is already there.
+1. Open `projects/0097-threads-and-kernel/starter` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to check that it builds.
+2. In `tick_expired`, submit `report_work` to the system workqueue with `k_work_submit()`, the semaphore give being already there.
 3. In `button_thread`, put the event on `button_q` with `k_msgq_put()` and `K_NO_WAIT`.
-4. In `ui_thread`, take one event with `k_msgq_get(…, K_FOREVER)`, add one to `total_presses` under `stats_lock`, then print the press. Remove the placeholder `k_msleep`.
-5. In `report_handler`, copy `total_presses` under the mutex and print it. In `main()`, start the timer with `k_timer_start` for one second, then one second again, and then print `THREADS OK` once with `printk`.
-6. Build again, start the simulator, and press the button (the <kbd>b</kbd> key in the diagram). You'll know it works when "press 1 at …" appears on each press, the LED toggles once a second, and "total presses" appears every second.
+4. In `ui_thread`, take one event with `k_msgq_get(…, K_FOREVER)`, add one to `total_presses` under `stats_lock`, print the press and remove the placeholder `k_msleep`.
+5. In `report_handler`, copy `total_presses` under the mutex and print it, and in `main()` start the timer with `k_timer_start` for one second, then one second again, and print `THREADS OK` once with `printk`.
+6. Build again, start the simulator and press the button (the <kbd>b</kbd> key in the diagram), the changes having worked when "press 1 at …" appears on each press, the LED toggles once a second and "total presses" appears every second.
 
-The starter uses a button, not the LED, for the events. The LED still blinks once a second, from the semaphore. We could not run this in the simulator here (no token), so the build and the diagram lint are verified and the behaviour is the one you will check.
+The reference solution, which prints `THREADS OK` once at start, is in `projects/0097-threads-and-kernel/solution`, to be compared after you have tried. The project uses a button rather than the LED for the events, while the LED still blinks once a second from the semaphore, and since we could not run it in the simulator here without a token, the build and the diagram lint are verified and the behaviour is the one you will check.
 
 ## Files you work on
 

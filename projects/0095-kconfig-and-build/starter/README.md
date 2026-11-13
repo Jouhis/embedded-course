@@ -6,15 +6,15 @@ Lesson: [Kconfig and the build system](https://jouhis.github.io/embedded-course/
 
 ## Try it in Wokwi
 
-The starter has logging off, with a `TODO(learner)` note at the end of `prj.conf`. You turn it on, add two log lines, and then check the generated file.
+The starter has logging off, with a `TODO(learner)` note at the end of `prj.conf`, and you turn it on, add two log lines and then check the generated file.
 
 1. Open `projects/0095-kconfig-and-build/starter` in VS Code.
-2. In `prj.conf`, add the three lines from the TODO(learner) note: `CONFIG_LOG=y`, `CONFIG_LOG_DEFAULT_LEVEL=3` and `CONFIG_LOG_MODE_IMMEDIATE=y`.
-3. In `src/main.c`, replace the first TODO(learner) with a `LOG_INF` line that says "KCONFIG OK, blinking every 500 ms", and the second with a `LOG_DBG` line that prints the LED level after the toggle, using `gpio_pin_get_dt()`.
-4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. Then open `build/zephyr/.config` and search for `CONFIG_LOG=`. You will know it works when that line reads `CONFIG_LOG=y`, and when the build output contains no Kconfig warning.
-5. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor should show a line containing `KCONFIG OK`, with a timestamp and an information tag.
+2. In `prj.conf`, add the three lines from the TODO(learner) note, `CONFIG_LOG=y`, `CONFIG_LOG_DEFAULT_LEVEL=3` and `CONFIG_LOG_MODE_IMMEDIATE=y`.
+3. In `src/main.c`, replace the first TODO(learner) with a `LOG_INF` line saying "KCONFIG OK, blinking every 500 ms" and the second with a `LOG_DBG` line that prints the LED level after the toggle, using `gpio_pin_get_dt()`.
+4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, open `build/zephyr/.config` and search for `CONFIG_LOG=`, the change having worked when that line reads `CONFIG_LOG=y` and the build output contains no Kconfig warning.
+5. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, and the serial monitor should show a line containing `KCONFIG OK` with a timestamp and an information tag.
 
-Next, the menus. `west build -t menuconfig` opens the terminal version, and `west build -t guiconfig` opens a window. Both targets are defined in `cmake/modules/kconfig.cmake`, and the GUI needs Python's tkinter. We did not run either interactively, because they wait for a person. Use them to browse the tree and to see which symbols are hidden. Changes you make there are written to `.config`, so they are a valid way to try a value before you write it into `prj.conf`.
+The menus come next, `west build -t menuconfig` opening the terminal version and `west build -t guiconfig` a window, both targets being defined in `cmake/modules/kconfig.cmake`, the GUI needing Python's tkinter. We did not run either interactively, because they wait for a person, but they serve to browse the tree and see which symbols are hidden, and since changes made there are written to `.config`, they are a valid way to try a value before writing it into `prj.conf`. The reference solution is in `projects/0095-kconfig-and-build/solution`, to be compared after you have tried.
 
 ## Files you work on
 

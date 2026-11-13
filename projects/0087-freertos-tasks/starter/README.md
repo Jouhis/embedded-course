@@ -8,18 +8,18 @@ Lessons: [FreeRTOS setup, tasks and scheduling](https://jouhis.github.io/embedde
 
 **Known issue.** The projects in this lesson build, but they cannot run in the Wokwi simulator. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (see `CHANGELOG.md`). In the simulator the output stops after the first task's first output, or prints nothing. The expected output below is what a real Blue Pill prints. Do the steps anyway, so that the code is ready.
 
-Open the project in VS Code. The starter is `projects/0087-freertos-tasks/starter`, and the solution is in `projects/0087-freertos-tasks/solution`. Try the starter first.
+The starter is `projects/0087-freertos-tasks/starter` and the solution `projects/0087-freertos-tasks/solution`, so open the starter in VS Code and try it first.
 
-1. Open `projects/0087-freertos-tasks/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build should end with no errors. Then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. The starter's `blink_task` uses `vTaskDelay(pdMS_TO_TICKS(1U))`, which is the wrong period on purpose. The LED toggles far too fast. Replace that call with `vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS))`, and remove the placeholder. Rebuild. Expected: the LED changes state about every 500 ms, not every millisecond.
-3. In `report_task`, print `TASKS OK` once the blink task has toggled the LED, using the same `uart_puts()` call as the `tick=` label. Expected: the first report line starts with `TASKS OK`.
-4. Simulate. The simulator stops early, so use the expected line below as the check. On a real Blue Pill the serial monitor prints, once per second: a line such as `TASKS OK tick=1000 toggles=3`, because blink has toggled at ticks 0, 500 and 1000 by the time the report runs at 1000. The tick count rises by 1000 per second, because the tick is 1 kHz. Compare your output with `projects/0087-freertos-tasks/solution/main.c` after you finish.
+1. Open `projects/0087-freertos-tasks/starter` in VS Code and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, which should end without errors, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. The starter's `blink_task` uses `vTaskDelay(pdMS_TO_TICKS(1U))`, the wrong period on purpose, so the LED toggles far too fast. Replace that call with `vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(BLINK_PERIOD_MS))`, remove the placeholder and rebuild, after which the LED should change state about every 500 ms rather than every millisecond.
+3. In `report_task`, print `TASKS OK` once the blink task has toggled the LED, using the same `uart_puts()` call as the `tick=` label, so that the first report line starts with `TASKS OK`.
+4. Simulate, and since the simulator stops early, use the expected line as the check: on a real Blue Pill the serial monitor prints once per second a line such as `TASKS OK tick=1000 toggles=3`, because blink has toggled at ticks 0, 500 and 1000 by the time the report runs at 1000, and the tick count rises by 1000 per second, because the tick is 1 kHz. Compare your output with `projects/0087-freertos-tasks/solution/main.c` after you finish.
 
-The solution prints `TASKS OK` on the first report, because blink has toggled the LED once by then. The file header of the solution carries `// EXPECT: TASKS OK`, which is the line the course's automatic check looks for.
+The solution prints `TASKS OK` on the first report, because blink has toggled the LED once by then. (The file header of the solution carries `// EXPECT: TASKS OK`, which is the line the course's automatic check looks for.)
 
 ## Lesson 89: Try it in the FreeRTOS project
 
-This exercise reads the real port in the project from lesson 87. It needs no change to the code and does not need the simulator. It checks the names and lines that this lesson uses.
+This exercise reads the real port in the project from lesson 87, needing no change to the code and no simulator, and checks the names and lines this lesson uses.
 
 The FreeRTOS projects in this course build, but they cannot run in the Wokwi simulator. Checked on 2026-11-01 with Wokwi CLI 0.29.1, its STM32 model differs from a real Cortex-M3 in these ways:
 
@@ -31,13 +31,13 @@ The FreeRTOS projects in this course build, but they cannot run in the Wokwi sim
 
 The same code runs on a real Blue Pill.
 
-1. Open `projects/0087-freertos-tasks/solution` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build it. The build should end with no errors.
-2. Open `FreeRTOSConfig.h` in that folder and find line 36. It defines `xPortPendSVHandler` as another name. Write down that name. It is the name the vector table uses for the PendSV handler.
-3. Open `third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c` and find `xPortPendSVHandler` at line 455. Find the two loads of the next task's stack top after the `bl vTaskSwitchContext` call. Say which lines they are on.
-4. Find where the PendSV priority is set. In `xPortStartScheduler`, line 390 ORs `portNVIC_PENDSV_PRI` into `portNVIC_SHPR3_REG`. Follow `portNVIC_PENDSV_PRI` to line 56, which shifts `portMIN_INTERRUPT_PRIORITY` into bits 23 to 16. What value does PendSV get?
-5. Open `FreeRTOSConfig.h` and find `configKERNEL_INTERRUPT_PRIORITY` at line 29. It is set to `(15 << 4)`. Search `port.c` for that name. Does this port use it to set the PendSV priority?
+1. Open `projects/0087-freertos-tasks/solution` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build it, which should end without errors.
+2. Open `FreeRTOSConfig.h` in that folder and find line 36, which defines `xPortPendSVHandler` as another name, and write down that name, the one the vector table uses for the PendSV handler.
+3. Open `third_party/FreeRTOS-Kernel/portable/GCC/ARM_CM3/port.c`, find `xPortPendSVHandler` at line 455 and the two loads of the next task's stack top after the `bl vTaskSwitchContext` call, and say which lines they are on.
+4. Find where the PendSV priority is set, line 390 of `xPortStartScheduler` ORing `portNVIC_PENDSV_PRI` into `portNVIC_SHPR3_REG`, and follow `portNVIC_PENDSV_PRI` to line 56, which shifts `portMIN_INTERRUPT_PRIORITY` into bits 23 to 16, to find the value PendSV gets.
+5. Open `FreeRTOSConfig.h`, find `configKERNEL_INTERRUPT_PRIORITY` at line 29, set to `(15 << 4)`, and search `port.c` for that name to decide whether this port uses it to set the PendSV priority.
 
-The expected answers are `PendSV_Handler` for step 2, lines 478 and 479 for step 3, and 255 (0xFF) for step 4. For step 5, the port does not read `configKERNEL_INTERRUPT_PRIORITY`: the name does not appear in `port.c`. The project's value, `(15 << 4)`, which is 240, has no effect on PendSV in this port. The kernel's `History.txt` marks that setting obsolete for ARMv7-M ports. PendSV always gets the lowest level, which on a chip with 4 priority bits is level 15 (lesson 72). If your answers differ, check which file you have open.
+The expected answers are `PendSV_Handler` for step 2, lines 478 and 479 for step 3 and 255 (0xFF) for step 4, while for step 5 the port does not read `configKERNEL_INTERRUPT_PRIORITY` at all, the name not appearing in `port.c`, so the project's value, `(15 << 4)`, which is 240, has no effect on PendSV in this port, the kernel's `History.txt` marking that setting obsolete for ARMv7-M ports. PendSV always gets the lowest level, which on a chip with 4 priority bits is level 15 (lesson 72), and answers that differ suggest checking which file is open.
 
 ## Files you work on
 

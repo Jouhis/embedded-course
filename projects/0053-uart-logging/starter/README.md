@@ -6,13 +6,13 @@ Lesson: [UART logging](https://jouhis.github.io/embedded-course/lessons/0053-uar
 
 ## Try it in Wokwi
 
-The project is `projects/0053-uart-logging`. Its diagram wires GP0 and GP1 to the serial monitor, which is the UART the SDK's stdio uses at 115200 baud.
+The project is `projects/0053-uart-logging`, whose diagram wires GP0 and GP1 to the serial monitor, the UART that the SDK's stdio uses at 115 200 baud.
 
 1. Open `projects/0053-uart-logging/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor shows `UART log starter`, and then nothing useful: the `LOG` macro does nothing yet, and the divisor is not printed.
-3. Your task, in two places marked `TODO(learner)`. First, write the `LOG` macro so it prints the level tag and the message when the level passes the filter. Use the macro above as your model. Second, compute `ibrd` and `fbrd` with the integer formula above and print them.
-4. Build and start the simulator again. You will know it works when the serial monitor prints `UART LOG OK` at startup, then a line with `IBRD 67, FBRD 52`, then an `[I] tick` line every second. The `[W]` line appears every fifth tick, and no `[D]` lines appear at the `INFO` level.
-5. Change `LOG_LEVEL` to `LOG_LEVEL_DEBUG`, rebuild, and start the simulator again. The `[D]` lines now appear, including the hardware cross-check. Change it back before you finish.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor shows `UART log starter` and then nothing useful, because the `LOG` macro does nothing yet and the divisor is not printed.
+3. Complete the two places marked `TODO(learner)`: first write the `LOG` macro so that it prints the level tag and message when the level passes the filter, modelled on the macro above, and then compute `ibrd` and `fbrd` with the integer formula above and print them.
+4. Build and start the simulator again. The program works when the serial monitor prints `UART LOG OK` at startup, then a line with `IBRD 67, FBRD 52` and then an `[I] tick` line every second, with a `[W]` line every fifth tick and no `[D]` lines at the `INFO` level.
+5. Change `LOG_LEVEL` to `LOG_LEVEL_DEBUG`, rebuild and start the simulator again, and the `[D]` lines now appear, including the hardware cross-check. Change the level back before finishing.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `UART LOG OK`.
 <details>
 <summary>Hint for the macro</summary>
 
-The starter already provides `log_tag()`, which turns a level into a letter. The macro needs two `printf` calls for the message and one for the newline. Use `__VA_ARGS__` for the message. Look at the solution's macro if you want to compare.
+The starter already provides `log_tag()`, which turns a level into a letter, so the macro needs two `printf` calls for the message and one for the newline, with `__VA_ARGS__` for the message. Compare with the solution's macro if you wish.
 
 </details>
 
 <details>
 <summary>Hint for the divisor</summary>
 
-With `clk_hz` at 125 000 000 and `baud` at 115 200, `4 * clk_hz` fits in 32 bits. Add `baud / 2` before dividing, so the division rounds to nearest. Then split the result into `/ 64` and `% 64`.
+With `clk_hz` at 125 000 000 and `baud` at 115 200, `4 * clk_hz` fits in 32 bits. Add `baud / 2` before dividing so that the division rounds to nearest, then split the result with `/ 64` and `% 64`.
 
 </details>
 

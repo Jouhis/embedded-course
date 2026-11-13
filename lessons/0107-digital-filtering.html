@@ -11,54 +11,50 @@
 <body data-lesson="0107">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Digital filtering: moving average and IIR</h1>
-  <p class="subtitle">A potentiometer or thermistor reading jitters from sample to sample. Two short C functions smooth it, and one of them needs no loop at all. Knowing their step response tells you how much lag you are buying.</p>
+  <h1>Digital filtering</h1>
+  <p class="subtitle">Moving averages, IIR smoothing and median filters</p>
 
   <div class="goal">
     By the end of this lesson you can implement a moving average with a running sum and a first-order IIR (exponential moving average) in integer C, predict the step response of each from its equation, and say what a median filter removes that the others cannot.
   </div>
 
-  <h2>Where we are, and why filtering matters</h2>
+  <h2>Noisy sensor readings and the control loop</h2>
   <p>
-    Lesson <a href="0058-adc.html">58</a> showed how the ADC turns a voltage into an integer code. Lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> showed how to hold fractions in integers, and lesson <a href="0080-unit-testing-on-the-host.html">80</a> showed how to test C on the PC before it runs on the Pico. This lesson uses all three. It also builds on lesson <a href="0008-voltage-dividers.html">8</a>, because a thermistor is read through a voltage divider.
+    Lesson <a href="0058-adc.html">58</a> showed how the ADC turns a voltage into an integer code, lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> how to hold fractions in integers and lesson <a href="0080-unit-testing-on-the-host.html">80</a> how to test C on the PC before it runs on the Pico, and this lesson uses all three, as well as lesson <a href="0008-voltage-dividers.html">8</a>, because a thermistor is read through a voltage divider.
   </p>
   <p>
-    The problem is noise. A dryer's thermistor, read through a divider, gives a code that jitters by a few counts from one sample to the next, even when the air temperature is steady. If the heater controller of lesson <a href="0108-pid-control.html">108</a> uses that jitter directly, it reacts to electrical hash rather than to the real temperature, and the heater switches on and off for no reason. A filter is a short program that turns the noisy stream into a smoother one before the control code sees it.
+    The problem is noise, a dryer's thermistor read through a divider giving a code that jitters by a few counts from one sample to the next even when the air temperature is steady, so if the heater controller of lesson <a href="0108-pid-control.html">108</a> uses that jitter directly, it reacts to electrical hash rather than the real temperature and switches the heater on and off for no reason. A filter is a short program that turns the noisy stream into a smoother one before the control code sees it.
   </p>
   <p>
-    Real printer firmware does the same job. The Klipper configuration reference documents a <code>smooth_time</code> option in its heater sections, which averages temperature measurements over a time window to reduce the impact of measurement noise, and a <code>pid_deriv_time</code> option that does the same for the PID derivative term (<a href="https://www.klipper3d.org/Config_Reference.html" target="_blank" rel="noopener">Klipper Config Reference</a>). The option names are the ones a Klipper user meets; the lesson's filters are the same idea in a few lines of C.
+    Real printer firmware does the same job, the Klipper configuration reference documenting a <code>smooth_time</code> option in its heater sections, which averages temperature measurements over a time window to reduce the impact of measurement noise, and a <code>pid_deriv_time</code> option that does the same for the PID derivative term (<a href="https://www.klipper3d.org/Config_Reference.html" target="_blank" rel="noopener">Klipper Config Reference</a>). The option names are the ones a Klipper user meets, and the lesson's filters are the same idea in a few lines of C.
   </p>
 
-  <h2>Concept 1: samples, sample rate and aliasing</h2>
+  <h2>Samples, sample rate and aliasing</h2>
   <p>
-    The ADC gives you a number each time you ask for one. The number of samples per second is the <a href="../reference/glossary.html#sample-rate">sample rate</a>. A filter sees only those samples. It never sees the analogue signal between them, and that has two consequences that every filter inherits.
+    The ADC gives a number each time one is asked for, the number of samples per second being the <a href="../reference/glossary.html#sample-rate">sample rate</a>, and a filter sees only those samples, never the analogue signal between them, which has two consequences every filter inherits.
   </p>
   <p>
-    The first consequence is the limit on what you can measure. A signal must change more slowly than half the sample rate, and that half is the <a href="../reference/glossary.html#nyquist-frequency">Nyquist frequency</a>. The second consequence is <a href="../reference/glossary.html#aliasing">aliasing</a>. A signal above the Nyquist frequency does not vanish when sampled. It folds down and appears as a slower signal that was never there. A 90 Hz hum sampled at 100 samples per second shows up as a 10 Hz wobble, because 100 − 90 = 10, and no filter can tell that wobble from a real 10 Hz change.
+    The first is a limit on what can be measured, a signal having to change more slowly than half the sample rate, the <a href="../reference/glossary.html#nyquist-frequency">Nyquist frequency</a>, and the second is <a href="../reference/glossary.html#aliasing">aliasing</a>, in which a signal above the Nyquist frequency does not vanish when sampled but folds down and appears as a slower signal that was never there. A 90 Hz hum sampled at 100 samples per second thus shows up as a 10 Hz wobble, because 100 − 90 = 10, and no filter can tell that wobble from a real 10 Hz change.
     <span class="sidenote">Aliasing happens during sampling, before any filter runs. A digital filter cannot remove an alias afterwards. Sample fast enough, or filter the analogue signal first with an RC low-pass filter (lesson 13).</span>
   </p>
   <p>
-    So a filter is for the noise that is inside the band you care about: jitter, spikes and hum that is slow compared with the sample rate. It cannot repair a signal that was undersampled.
+    A filter is therefore for the noise inside the band you care about, jitter, spikes and hum that is slow compared with the sample rate, and it cannot repair a signal that was undersampled.
   </p>
 
-  <h2>Concept 2: FIR and IIR filters</h2>
+  <h2>FIR and IIR filters</h2>
   <p>
-    A digital filter computes each output from past inputs, and sometimes from past outputs too. Its <em>impulse response</em> is the output you get when the input is a single sample of 1 followed by zeros. That response tells you how long an input keeps influencing the output, and it is how you compare filters.
+    A digital filter computes each output from past inputs, and sometimes from past outputs too, its <em>impulse response</em> being the output for an input of a single sample of 1 followed by zeros, which shows how long an input keeps influencing the output and so serves to compare filters.
   </p>
   <p>
-    There are two families. A <a href="../reference/glossary.html#fir-filter-finite-impulse-response">FIR filter (finite impulse response)</a> computes its output only from a finite window of past inputs. Once an input has left the window, it has no effect at all. A <a href="../reference/glossary.html#iir-filter-infinite-impulse-response">IIR filter (infinite impulse response)</a> feeds its own previous output back in. An input's influence decays over time but never reaches exactly zero, so the memory has no end. The moving average is the FIR case. The exponential moving average is the simplest IIR case.
-  </p>
-
-  <h2>Moving average: a running sum, with a ring buffer</h2>
-  <p>
-    A <a href="../reference/glossary.html#moving-average">moving average</a> of N samples is the mean of the last N inputs. The naive code adds up the N values on every sample, so its work grows with N. The running-sum version keeps the total from the last update, and changes it by two numbers: it adds the newest sample and subtracts the one that just left the window.
+    There are two families, a <a href="../reference/glossary.html#fir-filter-finite-impulse-response">FIR filter (finite impulse response)</a> computing its output only from a finite window of past inputs, so that an input leaving the window has no effect at all, and an <a href="../reference/glossary.html#iir-filter-infinite-impulse-response">IIR filter (infinite impulse response)</a> feeding its own previous output back in, so that an input's influence decays over time without ever reaching exactly zero and the memory has no end. The moving average is the FIR case and the exponential moving average the simplest IIR case.
   </p>
 
-  <div class="analogy">
-    <p>A moving average is the weather report's "average of the last seven days". One odd day barely moves it, which is the smoothing. But when the weather really turns, the average takes days to follow, which is the lag. A longer window gives more smoothing and more lag; there is no setting that gives one without the other.</p>
-  </div>
+  <h2>The moving average with a running sum</h2>
   <p>
-    To know which sample is leaving, the filter stores the last N inputs in a <a href="../reference/glossary.html#ring-buffer">ring buffer</a>. A ring buffer is an array with a write index that wraps back to zero at the end, so the slot the index points at always holds the oldest sample. Each update then costs the same whatever N is. Computer scientists write that cost as O(1), which means constant time, and it is the reason the running sum is worth the extra state.
+    A <a href="../reference/glossary.html#moving-average">moving average</a> of N samples is the mean of the last N inputs, whose naive code adds up the N values on every sample, so its work grows with N, whereas the running-sum version keeps the total from the last update and changes it by two numbers, adding the newest sample and subtracting the one that just left the window.
+  </p>
+  <p>
+    To know which sample is leaving, the filter stores the last N inputs in a <a href="../reference/glossary.html#ring-buffer">ring buffer</a>, an array with a write index that wraps back to zero at the end, so that the slot the index points at always holds the oldest sample, and each update then costs the same whatever N is. Computer scientists write that cost as O(1), meaning constant time, which is why the running sum is worth the extra state.
   </p>
   <pre><code class="language-c">int32_t ma_update(moving_avg_t *m, int32_t x) {
     m-&gt;sum += x - m-&gt;buf[m-&gt;idx];          /* add the new sample, remove the oldest */
@@ -67,12 +63,16 @@
     return m-&gt;sum / (int32_t)m-&gt;window;      /* the mean of the window */
 }</code></pre>
   <p>
-    Read the code line by line. Line 1 reads <code>buf[idx]</code>, which is the oldest sample, and adds the new value and subtracts that old one in one statement. The order inside the statement is safe, but the order of the next two lines is not: line 2 overwrites the slot, so it must come after line 1 (the first common mistake below shows what goes wrong). Line 3 stores the newest sample in the slot the oldest one just vacated. Line 4 moves the index on, and the <code>%</code> wraps it from N − 1 back to 0. The cast keeps the index in the one byte the struct declares. Line 5 divides the sum by the window size. C integer division truncates toward zero, which is fine for ADC counts because they are never negative.
+    Line 1 reads <code>buf[idx]</code>, the oldest sample, adding the new value and subtracting that old one in one statement, an order that is safe within the statement, whereas the order of the next two lines is not, because line 2 overwrites the slot and must therefore come after line 1 (the first common mistake below shows what goes wrong). Line 3 stores the newest sample in the slot the oldest one just vacated, line 4 moves the index on, the <code>%</code> wrapping it from N − 1 back to 0 and the cast keeping it in the one byte the struct declares, and line 5 divides the sum by the window size, C integer division truncating toward zero, which is fine for ADC counts, because they are never negative.
   </p>
 
-  <h3>Worked example: a step through a window of four</h3>
+  <div class="analogy">
+    <p>A moving average resembles the weather report's average of the last seven days, which one odd day barely moves, the smoothing, but which takes days to follow when the weather really turns, the lag, so a longer window gives more smoothing and more lag, and no setting gives one without the other. The comparison breaks at the window's edge, though, because a weather average is usually recomputed once a day, whereas the filter drops its oldest sample exactly when it adds a new one, so its output changes on every single sample.</p>
+  </div>
+
+  <h2>Worked example: a step through a window of four</h2>
   <p>
-    Start with a window of N = 4, with every slot at zero, and feed in a step: the input jumps from 0 to 1000 and stays there. The table follows the sum and the output sample by sample. The number removed is the value the slot held before it was overwritten.
+    A window of N = 4 with every slot at zero receives a step, the input jumping from 0 to 1000 and staying there, and the table follows the sum and the output sample by sample, the number removed being the value the slot held before it was overwritten. Before reading the table, predict the output at samples 1 to 5.
   </p>
   <table>
     <thead><tr><th>Sample</th><th>Input x</th><th>Removed (oldest)</th><th>Sum after update</th><th>Output sum ÷ 4</th></tr></thead>
@@ -85,19 +85,23 @@
     </tbody>
   </table>
   <p>
-    The output rises in four equal quarters and then holds. At sample 5 the first 1000 is removed and a new 1000 is added, so the sum does not change. The filter is exact, so the output lands on 250, 500, 750 and 1000 with no rounding. The lag of a moving average is about (N − 1) ÷ 2 samples. For N = 4 that is 1.5 samples: the output's centre of mass trails the input by that much. The falling step behaves the same way in reverse, with 750, 500, 250 and 0 as the four inputs of zero leave the window.
+    The output rises in four equal quarters and then holds, because at sample 5 the first 1000 is removed and a new 1000 added, so the sum does not change, and since the filter is exact, the output lands on 250, 500, 750 and 1000 without rounding. The lag of a moving average is about
+  </p>
+  <p class="eq"><span>lag = (N − 1) ÷ 2</span><span class="eq-n">(1)</span></p>
+  <p>
+    where N is the window length and the lag is in samples, so for N = 4 the output's centre of mass trails the input by 1.5 samples. The falling step behaves the same way in reverse, with 750, 500, 250 and 0 as the four inputs of zero leave the window.
   </p>
 
-  <h2>IIR: the exponential moving average</h2>
+  <h2>The exponential moving average</h2>
   <p>
-    The first-order IIR filter, usually called the <a href="../reference/glossary.html#exponential-moving-average">exponential moving average (EMA)</a>, feeds its own output back. Its equation is one line:
+    The first-order IIR filter, usually called the <a href="../reference/glossary.html#exponential-moving-average">exponential moving average (EMA)</a>, feeds its own output back, its equation being one line,
   </p>
-  <p style="text-align:center"><i>y</i> += (<i>x</i> − <i>y</i>) × α</p>
+  <p class="eq"><span><i>y</i> += (<i>x</i> − <i>y</i>) × α</span><span class="eq-n">(2)</span></p>
   <p>
-    Here <i>x</i> is the new input, <i>y</i> is the stored output (the filter's state), and α, the smoothing factor, is a number between 0 and 1. Each new output moves a fraction α of the way from the old output towards the input. A small α smooths heavily and reacts slowly. A large α follows the input closely and passes more noise. When α is a power of one half, α = 1 ÷ 2<sup><i>k</i></sup>, the multiply becomes a shift: <code>y += (x - y) &gt;&gt; k</code>.
+    where <i>x</i> is the new input, <i>y</i> the stored output (the filter's state) and α, the smoothing factor, a number between 0 and 1, so that each new output moves a fraction α of the way from the old output towards the input. A small α smooths heavily and reacts slowly, while a large α follows the input closely and passes more noise, and when α is a power of one half, α = 1 ÷ 2<sup><i>k</i></sup>, the multiply becomes a shift, <code>y += (x - y) &gt;&gt; k</code>.
   </p>
   <p>
-    Take k = 3, so α = 1/8. After one sample, the output has moved 1/8 of the way. After <i>n</i> samples of a step from 0 to 1000, the output is 1000 × (1 − (7/8)<sup><i>n</i></sup>), because the gap to the input shrinks by 7/8 each time. The table gives the values, rounded to whole codes.
+    With k = 3, α = 1/8, so after one sample the output has moved 1/8 of the way, and after <i>n</i> samples of a step from 0 to 1000 the output is 1000 × (1 − (7/8)<sup><i>n</i></sup>), because the gap to the input shrinks by 7/8 each time, as the table shows with values rounded to whole codes.
   </p>
   <table>
     <thead><tr><th>Sample n</th><th>(7/8)<sup>n</sup></th><th>Output 1000 × (1 − (7/8)<sup>n</sup>)</th></tr></thead>
@@ -113,11 +117,15 @@
     </tbody>
   </table>
   <p>
-    The response never reaches 1000 in a finite time. The <a href="../reference/glossary.html#time-constant">time constant</a> τ is the number of samples the output takes to cover 63 % of the step: τ = −1 ÷ ln(1 − α). For α = 1/8 that is 7.49 samples. The rule of thumb "about 2<sup><i>k</i></sup> samples", here 8, is close but not exact. The same numbers give a cutoff frequency, the frequency where the filter starts to attenuate, of about −f<sub>s</sub> ln(1 − α) ÷ 2π. At a sample rate of 100 Hz that is 2.1 Hz.
+    The response never reaches 1000 in a finite time, so its speed is measured by the <a href="../reference/glossary.html#time-constant">time constant</a>, the number of samples the output takes to cover 63 % of the step,
   </p>
-  <div class="note">
-    Figure 1 plots the two step responses on the same axes. The moving average reaches the input after four samples, and the EMA is still climbing after eight. Each one trades lag for smoothing in a different way, and the plot shows the trade directly.
-  </div>
+  <p class="eq"><span>τ = −1 ÷ ln(1 − α)</span><span class="eq-n">(3)</span></p>
+  <p>
+    where α is the smoothing factor and τ is in samples, so for α = 1/8 it is 7.49 samples, close to but not exactly the rule of thumb of about 2<sup><i>k</i></sup>, here 8. The same numbers give a cutoff frequency, the frequency at which the filter starts to attenuate, of about −f<sub>s</sub> ln(1 − α) ÷ 2π, where f<sub>s</sub> is the sample rate, so at 100 Hz it is 2.1 Hz.
+  </p>
+  <p>
+    Figure 1 plots the two step responses on the same axes, the moving average reaching the input after four samples while the EMA is still climbing after eight, each trading lag for smoothing in a different way, as the plot shows directly.
+  </p>
   <figure>
     <svg viewBox="0 0 600 330" role="img" aria-label="Step response of a 4-sample moving average and an EMA with alpha 1/8. The input steps from 0 to 1000 at sample 1. The moving average reaches 1000 at sample 4, rising in quarters. The EMA rises 125, 234, 330 and so on, reaching 656 at sample 8." style="max-width:640px">
       <g fill="none" stroke="currentColor" stroke-width="1.2">
@@ -161,21 +169,21 @@
     <figcaption>Figure 1. Step response of the two filters to an input that jumps from 0 to 1000 at sample 1. The moving average (solid) is exact and finished at sample 4; the EMA (dashed) is an exponential that is still rising at sample 8.</figcaption>
   </figure>
   <p>
-    The shift is worth using here. The Cortex-M0+ core has no divide instruction, so a <code>/</code> in C becomes a call to a helper routine. The RP2040 adds an integer divider in its SIO block, and the Pico SDK maps the compiler's divide helper onto it (<a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/pico_divider/divider_hardware.S" target="_blank" rel="noopener">Pico SDK 2.3.1, pico_divider/divider_hardware.S</a>). Lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> explains that divider. Even so, a shift is the cheapest way to divide by a power of two, and a filter that runs every sample on a small core should use it.
+    The shift is worth using here, because the Cortex-M0+ core has no divide instruction, so a <code>/</code> in C becomes a call to a helper routine, although the RP2040 adds an integer divider in its SIO block, onto which the Pico SDK maps the compiler's divide helper (<a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/pico_divider/divider_hardware.S" target="_blank" rel="noopener">Pico SDK 2.3.1, pico_divider/divider_hardware.S</a>), a divider lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> explains. Even so, a shift is the cheapest way to divide by a power of two, and a filter running every sample on a small core should use it.
   </p>
 
   <h2>Fixed point and the dead band</h2>
   <p>
-    The Cortex-M0+ has no floating-point unit (lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> compares the Arm cores), so a float EMA runs in software and costs many cycles per sample. Integer arithmetic is the normal choice. The integer EMA has one serious problem, though. Take <code>y += (x - y) &gt;&gt; 3</code> with y = 0 and a steady input of 5. The difference is 5, and 5 ÷ 8 truncates to 0, so y never moves. The filter stalls at zero, five codes short of its input, and it stays there forever. The range of inputs that the update rounds to zero is a <a href="../reference/glossary.html#dead-band-filter">dead band</a>.
+    The Cortex-M0+ has no floating-point unit (lesson <a href="0021-fixed-point-vs-floating-point.html">21</a> compares the Arm cores), so a float EMA runs in software at many cycles per sample, which makes integer arithmetic the normal choice, although the integer EMA has one serious problem. With <code>y += (x - y) &gt;&gt; 3</code>, y = 0 and a steady input of 5, the difference is 5, and 5 ÷ 8 truncates to 0, so y never moves and the filter stalls at zero, five codes short of its input, forever, the range of inputs that the update rounds to zero being a <a href="../reference/glossary.html#dead-band-filter">dead band</a>.
   </p>
   <p>
-    The fix is to keep the state with extra fraction bits. The state holds y × 256, which is the same idea as the <a href="../reference/glossary.html#q-format">Q format</a> of lesson 21, with eight fraction bits. A step of one unit in the state is then 1/256 of an output code, so the update can move the state even when the input is only a few codes away. The output is the state shifted back down by 8 bits, and that shift needs rounding. Adding 128 before the shift, which is half of 256, rounds to the nearest code.
+    The fix is to keep the state with extra fraction bits, the state holding y × 256, the <a href="../reference/glossary.html#q-format">Q format</a> of lesson 21 with eight fraction bits, so that a step of one unit in the state is 1/256 of an output code and the update can move the state even when the input is only a few codes away. The output is the state shifted back down by 8 bits, a shift that needs rounding, which adding 128, half of 256, before the shift provides, rounding to the nearest code.
   </p>
   <p>
-    Rounding matters for a steady input. The update stops moving once the gap 1280 − state is smaller than 8, so the state settles between 1273 and 1280. Truncation reads 4 for any state from 1273 to 1279, so a steady 5 would show as 4. Rounding reads 5 for the same states, which is what the host test <code>test_ema_converges_to_a_small_steady_input</code> checks.
+    Rounding matters for a steady input, because the update stops moving once the gap 1280 − state is smaller than 8, so the state settles between 1273 and 1280, and truncation reads 4 for any state from 1273 to 1279, showing a steady 5 as 4, whereas rounding reads 5 for the same states, which the host test <code>test_ema_converges_to_a_small_steady_input</code> checks.
   </p>
   <p>
-    Here is the fixed-point EMA with numbers. Prime the state at 0, as the host test does, and feed a steady input of 5. The target is 5 × 256 = 1280. The first update adds (1280 − 0) ÷ 8 = 160 to the state, and the output is (160 + 128) ÷ 256 = 1 after rounding. The second update adds (1280 − 160) ÷ 8 = 140, so the state is 300 and the output is still 1. The state keeps climbing, and the output first reaches 5 at sample 18, when the state passes 1152, which is 4.5 codes. The integer version, from the same start, never moves at all.
+    The fixed-point EMA can be followed with numbers, priming the state at 0, as the host test does, and feeding a steady input of 5, whose target is 5 × 256 = 1280. The first update adds (1280 − 0) ÷ 8 = 160 to the state, giving an output of (160 + 128) ÷ 256 = 1 after rounding, and the second adds (1280 − 160) ÷ 8 = 140, making the state 300 with the output still 1, and as the state keeps climbing, the output first reaches 5 at sample 18, when the state passes 1152, 4.5 codes, whereas the integer version from the same start never moves at all.
   </p>
   <pre><code class="language-c">/* state holds y * 256 (EMA_FRAC_BITS = 8) */
 int32_t target = x * (1 &lt;&lt; 8);                      /* scale the input into the state's units */
@@ -183,20 +191,16 @@ if (!e-&gt;primed) { e-&gt;state = target; e-&gt;primed = true; }
 else  e-&gt;state += (target - e-&gt;state) &gt;&gt; e-&gt;k;   /* the IIR update, alpha = 1 / 2^k */
 return (e-&gt;state + 128) &gt;&gt; 8;              /* round to nearest on the way out */</code></pre>
   <p>
-    Line by line: the first line scales the input by 256, so it lives in the same units as the state. The <code>if</code> primes the state on the first call, so it starts at the first reading and not at zero (common mistake 3 explains why). The <code>else</code> applies the IIR equation with the shift. The last line adds half of 256 and shifts by 8, which divides by 256 with rounding. Notice that the state is never divided by 256 inside the loop. Only the output is, so the fraction bits survive from one sample to the next.
+    The first line scales the input by 256, so that it lives in the same units as the state, the <code>if</code> primes the state on the first call, so that it starts at the first reading rather than at zero (common mistake 3 explains why), and the <code>else</code> applies equation (2) with the shift. The last line adds half of 256 and shifts by 8, dividing by 256 with rounding, and the state is never divided by 256 inside the loop, only the output, so the fraction bits survive from one sample to the next.
   </p>
   <div class="warning">Right-shifting a negative signed value is implementation-defined in C, and gcc shifts arithmetically. Keep these filters on non-negative signals, or check the compiler's behaviour before you rely on it.</div>
 
-  <h2>Median of three: removing spikes</h2>
+  <h2>The median of three for spike removal</h2>
   <p>
-    A loose wire, a switching transient or a noise burst gives one wild sample. A moving average smears that spike over its whole window: an 8-sample average adds one-eighth of the spike to each of eight outputs. An EMA follows the spike at one-eighth of its size and then decays slowly. A <a href="../reference/glossary.html#median-filter">median filter</a> removes a lone spike completely, because the median of a set of values ignores the most extreme ones.
+    A loose wire, a switching transient or a noise burst gives one wild sample, which a moving average smears over its whole window, an 8-sample average adding one-eighth of the spike to each of eight outputs, while an EMA follows the spike at one-eighth of its size and then decays slowly. A <a href="../reference/glossary.html#median-filter">median filter</a> removes a lone spike completely, because the median of a set of values ignores the most extreme ones.
   </p>
-
-  <div class="analogy">
-    <p>The median of three is asking three witnesses and believing the one in the middle. If one of them saw something wildly different, a spike, their answer is ignored, however far off it is. An average would have been dragged towards the odd one out.</p>
-  </div>
   <p>
-    For a window of three samples, the median is the middle value once the three are sorted. The median of (10, 1000, 10) is 10, so the spike is gone. The cost is a delay of one sample on a real step, because the median needs the new value and the one before it. A worked sequence shows both effects. The inputs 10, 10, 10, 1000, 10 give the outputs 10, 10, 10, 10, 10. The inputs 10, 10, 10, 20, 20 give 10, 10, 10, 10, 20: the real edge arrives one sample late. Use the median first and the averaging second, so the spike never reaches the average.
+    For a window of three samples the median is the middle value once the three are sorted, the median of (10, 1000, 10) being 10, so the spike is gone, at the cost of a delay of one sample on a real step, because the median needs the new value and the one before it. A worked sequence shows both effects, the inputs 10, 10, 10, 1000, 10 giving the outputs 10, 10, 10, 10, 10, and the inputs 10, 10, 10, 20, 20 giving 10, 10, 10, 10, 20, the real edge arriving one sample late, so the median runs first and the averaging second, so that the spike never reaches the average.
   </p>
   <pre><code class="language-c">int32_t median3_update(median3_t *m, int32_t x) {
     m-&gt;hist[0] = m-&gt;hist[1];               /* shift the three-sample history */
@@ -207,22 +211,26 @@ return (e-&gt;state + 128) &gt;&gt; 8;              /* round to nearest on the w
     return max32(min32(a, b), min32(max32(a, b), c));  /* median, without sorting */
 }</code></pre>
   <p>
-    Line by line: the first three assignments keep the last three inputs in a small history, oldest first. The <code>if</code> passes the input straight through for the first two calls, because there are not yet three samples to compare. The return line computes the median without sorting. <code>min32(a, b)</code> is the smaller of the two oldest values. <code>max32(a, b)</code> is the larger, and <code>min32(max32(a, b), c)</code> is the smaller of that larger value and the newest one. The outer <code>max32</code> then picks the larger of the two results, which is the middle value of the three. Check it on (10, 1000, 10): the result is 10. On (2, 9, 5) it gives 5, the middle of the three.
+    The first three assignments keep the last three inputs in a small history, oldest first, and the <code>if</code> passes the input straight through for the first two calls, because there are not yet three samples to compare, while the return line computes the median without sorting. <code>min32(a, b)</code> is the smaller of the two oldest values, <code>max32(a, b)</code> the larger and <code>min32(max32(a, b), c)</code> the smaller of that larger value and the newest one, so the outer <code>max32</code>, picking the larger of the two results, gives the middle value of the three, 10 for (10, 1000, 10) and 5 for (2, 9, 5).
   </p>
 
+  <div class="analogy">
+    <p>The median of three resembles asking three witnesses and believing the one in the middle, so that a witness who saw something wildly different, a spike, is ignored however far off the answer, whereas an average would have been dragged towards the odd one out. The comparison breaks for two witnesses who agree on a wrong answer, because two neighbouring spikes outvote the single good sample, so the median of three removes only lone spikes.</p>
+  </div>
+
   <p>
-    Run the three filters side by side. The step input reproduces the lesson's tables. Then try the noisy step, the spikes and the slow wave, and see which filter wins on each. The last input shows aliasing: a signal above half the sample rate, which no filter can repair.
+    The widget below runs the three filters side by side, its step input reproducing the lesson's tables, and the noisy step, the spikes and the slow wave show which filter wins on each, while the last input shows aliasing, a signal above half the sample rate that no filter can repair.
   </p>
   <div class="widget filterlab"></div>
 
   <h2>Try it: the host tests</h2>
   <p>
-    The project <code>projects/0107-filter-host</code> holds the filters in plain C and tests their step responses with Unity. Each expected number was computed by running the same equation, not by hand. Build and run it from the workspace root.
+    The project <code>projects/0107-filter-host</code> holds the filters in plain C and tests their step responses with Unity, each expected number having been computed by running the same equation rather than by hand, and you build and run it from the workspace root.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0107-filter-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0107-filter-host/starter --test</code> from the workspace root. Expected output: the build runs, and ctest reports <code>The following tests FAILED</code>. The placeholders return the input unchanged, so the step-response tests fail. That is correct at this point.</li>
-    <li>Your task: write <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> in <code>src/filters.c</code>. Read the test names first; each one is a behaviour. Write the moving average first, because its tests are the simplest. Then the EMA, then the median.</li>
-    <li>Run the tests again with the same command. You will know it works when the Unity summary at the end of the output reads <code>11 Tests 0 Failures 0 Ignored</code>. The reference solution is in <code>projects/0107-filter-host/solution</code> and prints exactly that line.</li>
+    <li>Open <code>projects/0107-filter-host/starter</code> in VS Code, or run <code>python -I tools/build.py projects/0107-filter-host/starter --test</code> from the workspace root, after which the build runs and ctest reports <code>The following tests FAILED</code>, correctly at this point, because the placeholders return the input unchanged, so the step-response tests fail.</li>
+    <li>Write <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> in <code>src/filters.c</code>, reading the test names first, since each one is a behaviour, and writing the moving average first, because its tests are the simplest, then the EMA and then the median.</li>
+    <li>Run the tests again with the same command, the changes having worked when the Unity summary at the end of the output reads <code>11 Tests 0 Failures 0 Ignored</code>, exactly the line printed by the reference solution in <code>projects/0107-filter-host/solution</code>.</li>
   </ol>
   <details>
     <summary>Hint for the moving average</summary>
@@ -235,63 +243,65 @@ return (e-&gt;state + 128) &gt;&gt; 8;              /* round to nearest on the w
 
   <h2>Try it: the Pico filter on a noisy reading</h2>
   <p>
-    The Wokwi potentiometer is perfectly steady, so the simulator shows no noise. The project <code>projects/0107-filter-pico</code> adds a seeded pseudo-random noise of about ±16 codes and a spike of 600 codes on every 25th sample, then prints one CSV row per sample: time, raw, median, moving average and EMA. The first printed line is <code>FILTER OK</code>, the second is the header <code>ms,raw,median,ma8,ema</code>, and a row follows every 50 ms.
+    The Wokwi potentiometer is perfectly steady, so the simulator shows no noise, and the project <code>projects/0107-filter-pico</code> therefore adds a seeded pseudo-random noise of about ±16 codes and a spike of 600 codes on every 25th sample, printing one CSV row per sample with the time, raw, median, moving average and EMA values. The first printed line is <code>FILTER OK</code>, the second the header <code>ms,raw,median,ma8,ema</code>, and a row follows every 50 ms.
   </p>
   <ol class="steps">
-    <li>Copy your finished <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> from the host project into <code>projects/0107-filter-pico/starter/filters.c</code>, keeping the init functions that are already there.</li>
-    <li>In <code>starter/main.c</code>, replace the three placeholder lines <code>m = raw</code>, <code>a = raw</code> and <code>e = raw</code>. Run <code>median3_update</code> on <code>raw</code> first. Then pass the median output to both <code>ma_update</code> and <code>ema_update</code>, so the two smoothers run side by side on the same de-spiked signal, which is what the CSV columns compare. The reference solution does exactly this, and the starter's comment describes it as a chain.</li>
-    <li>Print <code>FILTER OK</code> once, before the loop starts, as the reference solution does. The starter's comment asks for it after the eight-sample window fills. Either version prints the text that the automatic check looks for.</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor should show <code>FILTER OK</code>, then the header, then rows every 50 ms. The spike rows are at 1250 ms and 2500 ms: their <code>raw</code> column is about 600 codes higher than its neighbours, and their <code>median</code>, <code>ma8</code> and <code>ema</code> columns barely move. The 0 ms row is the exception. The median has no full window at start-up, so it passes its first inputs through, and the spike shows in the <code>median</code> column on that first row.</li>
-    <li>Copy the CSV from the serial monitor into a file and plot the columns, or paste it into a spreadsheet. To see what the spike does to an average, change one line in <code>main.c</code> so that <code>ma_update</code> takes <code>raw</code> instead of <code>m</code>, rebuild, and look at <code>ma8</code>. It now rises by about 75 codes for eight rows after each spike, because 600 ÷ 8 = 75. Change the line back before you go on.</li>
+    <li>Copy your finished <code>ma_update</code>, <code>ema_update</code> and <code>median3_update</code> from the host project into <code>projects/0107-filter-pico/starter/filters.c</code>, keeping the init functions already there.</li>
+    <li>In <code>starter/main.c</code>, replace the three placeholder lines <code>m = raw</code>, <code>a = raw</code> and <code>e = raw</code>, running <code>median3_update</code> on <code>raw</code> first and then passing the median output to both <code>ma_update</code> and <code>ema_update</code>, so that the two smoothers run side by side on the same de-spiked signal, which the CSV columns compare, exactly as the reference solution does and as the starter's comment describes as a chain.</li>
+    <li>Print <code>FILTER OK</code> once before the loop starts, as the reference solution does, although the starter's comment asks for it after the eight-sample window fills, either version printing the text the automatic check looks for.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>, and the serial monitor should show <code>FILTER OK</code>, the header and rows every 50 ms, the spike rows at 1250 ms and 2500 ms having a <code>raw</code> column about 600 codes higher than their neighbours while their <code>median</code>, <code>ma8</code> and <code>ema</code> columns barely move. The 0 ms row is the exception, because the median has no full window at start-up and passes its first inputs through, so the spike shows in the <code>median</code> column on that first row.</li>
+    <li>Copy the CSV from the serial monitor into a file and plot the columns, or paste it into a spreadsheet, and to see what the spike does to an average, change one line in <code>main.c</code> so that <code>ma_update</code> takes <code>raw</code> instead of <code>m</code>, rebuild and look at <code>ma8</code>, which now rises by about 75 codes for eight rows after each spike, because 600 ÷ 8 = 75, then change the line back before going on.</li>
   </ol>
-  <p>The reference solution is in <code>projects/0107-filter-pico/solution</code>. It prints <code>FILTER OK</code> and the CSV header first.</p>
+  <p>
+    The reference solution, which prints <code>FILTER OK</code> and the CSV header first, is in <code>projects/0107-filter-pico/solution</code>.
+  </p>
 
-  <div class="win">You wrote a moving average without a loop, an integer IIR with the rounding that keeps it out of the dead band, and a median that removes spikes. The host tests prove the step responses, and the same C runs on the Pico.</div>
+  <div class="win">You wrote a moving average without a loop, an integer IIR with the rounding that keeps it out of the dead band and a median that removes spikes, the host tests proving the step responses while the same C runs on the Pico.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
   <p>
-    These are the mistakes that a first implementation of these filters usually contains. Each one has a symptom you can see in the test output, the serial monitor or the spreadsheet.
+    A first implementation of these filters usually contains the mistakes below, each with a symptom visible in the test output, the serial monitor or the spreadsheet.
   </p>
-  <h3>Mistake 1: overwriting the slot before subtracting it</h3>
+  <h3>The slot overwritten before it is subtracted</h3>
   <p>
-    If the moving average stores the new sample first and then does <code>sum += x - buf[idx]</code>, it subtracts the value it has just written. The sum stays at zero, and the output stays at zero for any input. The symptom is a flat zero in the <code>ma8</code> column, while <code>raw</code> moves. The fix is the order in the running-sum code: add the new sample and subtract the old one before the write. The host test <code>test_ma_step_response_rises_in_quarters</code> fails with 0 instead of 250 on the first update.
+    The <code>ma8</code> column stays flat at zero while <code>raw</code> moves, and the host test <code>test_ma_step_response_rises_in_quarters</code> fails with 0 instead of 250 on the first update, because the moving average stores the new sample first and then does <code>sum += x - buf[idx]</code>, subtracting the value it has just written, so the sum stays at zero. Follow the order of the running-sum code, adding the new sample and subtracting the old one before the write.
   </p>
-  <h3>Mistake 2: an integer EMA with no fraction bits</h3>
+  <h3>An integer EMA without fraction bits</h3>
   <p>
-    The integer update <code>y += (x - y) &gt;&gt; 3</code> stalls once the gap to the input is smaller than 8 codes. With an input of 5 it stays at 0 forever. The symptom is an <code>ema</code> column that stops short of the <code>raw</code> column and never moves again. The host test <code>test_integer_ema_without_fraction_stalls</code> repeats the same integer equation and shows the stall in its assertion. The fix is the scaled state with rounding on the way out, as in the code above.
+    The <code>ema</code> column stops short of the <code>raw</code> column and never moves again, because the integer update <code>y += (x - y) &gt;&gt; 3</code> stalls once the gap to the input is smaller than 8 codes, staying at 0 forever with an input of 5, as the host test <code>test_integer_ema_without_fraction_stalls</code> shows by repeating the same integer equation in its assertion. Use the scaled state with rounding on the way out, as in the code above.
   </p>
-  <h3>Mistake 3: starting the EMA at zero</h3>
+  <h3>The EMA started at zero</h3>
   <p>
-    If the state starts at zero, a steady reading of 1000 comes out as 125, 234, 330 and 414 in the first four samples, which is the step response of an empty filter. For a sensor that starts at room temperature, the first second of readings is wrong, and a controller that uses them will act on a temperature that does not exist. The symptom is a slow ramp at start-up that the reading does not have. The fix is to prime the state from the first sample, which the <code>primed</code> flag in the project does.
+    A slow ramp appears at start-up that the reading does not have, a steady reading of 1000 coming out as 125, 234, 330 and 414 in the first four samples, the step response of an empty filter, because the state starts at zero, so for a sensor starting at room temperature the first second of readings is wrong and a controller using them acts on a temperature that does not exist. Prime the state from the first sample, as the <code>primed</code> flag in the project does.
   </p>
-  <h3>Mistake 4: averaging before removing spikes</h3>
+  <h3>Averaging before spike removal</h3>
   <p>
-    If the moving average reads the raw signal and the median is computed afterwards, the spike is already spread across eight outputs. The spike of 600 codes appears as a rise of 600 ÷ 8 = 75 codes in the <code>ma8</code> column for eight rows, and the median filter downstream cannot take it back. The symptom is a rectangular bump in the averaged column at every spike. The fix is the order the project uses: median first, then the averaging.
+    A rectangular bump appears in the averaged column at every spike, the 600-code spike showing as a rise of 600 ÷ 8 = 75 codes in the <code>ma8</code> column for eight rows, because the moving average reads the raw signal and the median is computed afterwards, by which time the spike is already spread across eight outputs that the median cannot take back. Use the project's order, median first and then the averaging.
   </p>
-  <h3>Mistake 5: a window of zero, or a window larger than the buffer</h3>
+  <h3>A window of zero, or one larger than the buffer</h3>
   <p>
-    A window of zero makes the program divide by zero when it computes <code>sum / window</code>, and C leaves division by zero undefined. A window larger than the buffer writes past its end. Both are bugs in the configuration, not in the arithmetic, and the symptom is a crash or nonsense values that depend on the compiler. The fix is to clamp the window in the init function, as <code>ma_init</code> does, so the function cannot be given a bad size.
+    The program crashes or produces nonsense values that depend on the compiler, because a window of zero makes it divide by zero in <code>sum / window</code>, which C leaves undefined, while a window larger than the buffer writes past its end, both bugs lying in the configuration rather than the arithmetic. Clamp the window in the init function, as <code>ma_init</code> does, so that the function cannot be given a bad size.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Filter lag and tests in sensor drivers</h2></summary>
   <p>
-    Professional firmware filters sensor readings in the driver layer, close to the ADC, and documents each filter's time constant or cutoff next to the code. A reviewer asks two questions of every filter: what is the lag in samples or seconds, and what happens to the control loop's stability when that lag is added to the loop's own delay. A filter with a long time constant inside a fast PID loop can make a stable loop oscillate, so the filter and the loop are tuned together (lesson <a href="0108-pid-control.html">108</a>).
+    Professional firmware filters sensor readings in the driver layer, close to the ADC, and documents each filter's time constant or cutoff next to the code, a reviewer asking of every filter what its lag is in samples or seconds and what happens to the control loop's stability when that lag is added to the loop's own delay. A filter with a long time constant inside a fast PID loop can make a stable loop oscillate, so the filter and the loop are tuned together (lesson <a href="0108-pid-control.html">108</a>).
   </p>
   <p>
-    Reviewers also expect the filter to come with tests. The host tests in this lesson use the step response as the test, because a step response shows in one picture how fast a filter moves, how far it goes, and whether it lands exactly on the input. The same tests run on the PC in milliseconds, which is why the project does its arithmetic there first. Klipper's documented <code>smooth_time</code> and <code>pid_deriv_time</code> options are the same design choice made in a shipping product: a documented window, applied to the measurement before the control law uses it.
+    Reviewers also expect the filter to come with tests, this lesson's host tests using the step response, because it shows in one picture how fast a filter moves, how far it goes and whether it lands exactly on the input, and since the same tests run on the PC in milliseconds, the project does its arithmetic there first. Klipper's documented <code>smooth_time</code> and <code>pid_deriv_time</code> options are the same design choice made in a shipping product, a documented window applied to the measurement before the control law uses it.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A filter sees samples, so it can remove noise inside the band of your signal, but it cannot undo aliasing from undersampling.</li>
-    <li>A moving average is FIR: a running sum and a ring buffer give constant cost per sample. Its lag is about (N − 1) ÷ 2 samples.</li>
-    <li>A first-order EMA is IIR: y += (x − y) × α, and with α = 1 ÷ 2<sup>k</sup> it is a shift. Its time constant is −1 ÷ ln(1 − α), about 7.5 samples for k = 3.</li>
-    <li>An integer EMA stalls in a dead band. Keep 8 fraction bits in the state, and round when you shift back down.</li>
-    <li>Prime the EMA from the first sample, so that it does not ramp up from zero.</li>
-    <li>A median of three removes a lone spike completely, at the cost of one sample of delay on a real edge. Run it before any averaging.</li>
-    <li>Subtract the old sample before you overwrite its slot, and clamp the window in the init function.</li>
+    <li>A filter sees samples, so it can remove noise inside the band of your signal but cannot undo aliasing from undersampling.</li>
+    <li>A moving average is FIR, a running sum and a ring buffer giving constant cost per sample, with a lag of about (N − 1) ÷ 2 samples.</li>
+    <li>A first-order EMA is IIR, y += (x − y) × α, a shift when α = 1 ÷ 2<sup>k</sup>, with a time constant of −1 ÷ ln(1 − α), about 7.5 samples for k = 3.</li>
+    <li>An integer EMA stalls in a dead band, so the state keeps 8 fraction bits and the output is rounded when shifted back down.</li>
+    <li>The EMA is primed from the first sample, so that it does not ramp up from zero.</li>
+    <li>A median of three removes a lone spike completely at the cost of one sample of delay on a real edge, and it runs before any averaging.</li>
+    <li>The old sample is subtracted before its slot is overwritten, and the window is clamped in the init function.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

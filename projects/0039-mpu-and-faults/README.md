@@ -6,13 +6,13 @@ Lesson: [The MPU and how faults happen](https://jouhis.github.io/embedded-course
 
 ## Try it in Wokwi
 
-The project `projects/0039-mpu-and-faults` is a single demo. It prints the fault status registers, the vector table offset register and the MPU presence flag from the device header.
+The project `projects/0039-mpu-and-faults` is a single demo that prints the fault status registers, the vector table offset register and the MPU presence flag from the device header.
 
 1. Open `projects/0039-mpu-and-faults` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Read the serial monitor. The line `__MPU_PRESENT (header):     0x00000000` should appear, with the zero exactly as printed.
-3. Open `third_party/cmsis-device-f1/Include/stm32f103xb.h` at line 50 and confirm that `__MPU_PRESENT` is defined as `0U`. The demo's output and the header must agree.
-4. Compare the `SCB->CFSR` and `SCB->HFSR` lines. Both should read `0x00000000`, because the demo does not fault. Both registers reset to `0x00000000` (PM0056 Rev 7, sections 4.4.10 and 4.4.11). If either is not zero, write the value down, and check PM0056 sections 4.4.10 and 4.4.11 before you explain it.
-5. Note the `SCB->VTOR` line. The project does not write that register, so the value is whatever the reset left behind. Write it down in your notes, so you can compare it with the vector table address that lesson 42 covers.
+2. Read the serial monitor, where the line `__MPU_PRESENT (header):     0x00000000` should appear exactly as printed.
+3. Open `third_party/cmsis-device-f1/Include/stm32f103xb.h` at line 50 and confirm that `__MPU_PRESENT` is defined as `0U`, so that the demo's output and the header agree.
+4. Compare the `SCB->CFSR` and `SCB->HFSR` lines, which should both read `0x00000000` because the demo does not fault and both registers reset to that value (PM0056 Rev 7, sections 4.4.10 and 4.4.11). If either is non-zero, write the value down and check those sections before explaining it.
+5. Note the `SCB->VTOR` line. The project does not write that register, so its value is whatever reset left there; record it so that you can compare it with the vector table address covered in lesson 42.
 
 ## Done when
 
@@ -23,6 +23,6 @@ The serial monitor prints `__MPU_PRESENT (header):     0x00000000`.
 <details>
 <summary>Hint</summary>
 
-The SCB base is `0xE000ED00`. Add the CFSR offset `0x28` to get `0xE000ED28`, and add `0x2C` for HFSR. The HFSR bit `FORCED` is bit 30, so its mask is `0x40000000`.
+The SCB base is `0xE000ED00`, so adding the CFSR offset `0x28` gives `0xE000ED28` and adding `0x2C` gives HFSR. The HFSR bit `FORCED` is bit 30, with the mask `0x40000000`.
 
 </details>

@@ -6,13 +6,13 @@ Lesson: [Layered and event-driven architecture; active objects](https://jouhis.g
 
 ## Try it in Wokwi
 
-The project is `projects/0077-active-objects-button-blinker`. The framework, `ao.c` and `ao.h`, is complete in both folders. Together they are about a hundred lines with their comments (58 lines in `ao.c` and 41 in `ao.h`), so you can read the whole queue and dispatcher. The starter `main.c` is a working super loop: a press toggles the blink, and the LED flips every 500 ms. Your job is to move its logic into the two AO files and reduce `main.c` to a tick and a dispatch.
+The project is `projects/0077-active-objects-button-blinker`. The framework, `ao.c` and `ao.h`, is complete in both folders and comes to about a hundred lines with comments (58 lines in `ao.c` and 41 in `ao.h`), short enough to read the whole queue and dispatcher. The starter `main.c` is a working super loop in which a press toggles the blink and the LED flips every 500 ms, and your job is to move its logic into the two AO files and reduce `main.c` to a tick and a dispatch.
 
-1. Open `projects/0077-active-objects-button-blinker/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Click the button in the diagram, and the monitor prints `blink on`, then `blink off` on the next click.
-2. Your task, part 1: in `button_ao.c`, write a handler that reacts to `SIG_TICK`, debounces the pin with the integrator from lesson 52, and calls `ao_publish()` with `SIG_PRESS` once per confirmed press. In `button_ao_init()`, set up the pin, and register the handler with `ao_start()`.
-3. Your task, part 2: in `blinker_ao.c`, write a handler that toggles the blink on `SIG_PRESS`, flips the LED every 50 ticks while blinking, and prints `blink on` or `blink off`. Subscribe it to both signals in `blinker_ao_init()` with `AO_SUB(SIG_TICK) | AO_SUB(SIG_PRESS)`.
-4. Your task, part 3: in `main.c`, delete the super loop body. Keep the 10 ms tick, publish `SIG_TICK` with `ao_publish()`, and call `ao_dispatch_all()` on every pass. Print `AO OK` once after the two init calls.
-5. You will know it works when the monitor prints `AO OK` at the start, and each click gives one `blink on` or `blink off` line, with the LED behaving as before.
+1. Open `projects/0077-active-objects-button-blinker/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Click the button in the diagram, and the monitor prints `blink on`, then `blink off` on the next click.
+2. In `button_ao.c`, write a handler that reacts to `SIG_TICK`, debounces the pin with the integrator from lesson 52 and calls `ao_publish()` with `SIG_PRESS` once per confirmed press, and in `button_ao_init()` set up the pin and register the handler with `ao_start()`.
+3. In `blinker_ao.c`, write a handler that toggles the blink on `SIG_PRESS`, flips the LED every 50 ticks while blinking and prints `blink on` or `blink off`, subscribing it to both signals in `blinker_ao_init()` with `AO_SUB(SIG_TICK) | AO_SUB(SIG_PRESS)`.
+4. In `main.c`, delete the super loop body, keep the 10 ms tick, publish `SIG_TICK` with `ao_publish()` and call `ao_dispatch_all()` on every pass, printing `AO OK` once after the two init calls.
+5. It works when the monitor prints `AO OK` at the start and each click gives one `blink on` or `blink off` line, with the LED behaving as before.
 
 ## Files you work on
 
@@ -29,14 +29,14 @@ The serial monitor prints `AO OK`.
 <details>
 <summary>Hint for the handler's switch</summary>
 
-Each handler gets the AO as `ao_t *`. Cast it to your own struct, such as `button_t *`, because the first member is the `ao_t`. The solution's `button_handler()` and `blinker_handler()` show the cast and the switch.
+Each handler gets the AO as `ao_t *`, which you cast to your own struct, such as `button_t *`, because the first member is the `ao_t`, and the solution's `button_handler()` and `blinker_handler()` show the cast and the switch.
 
 </details>
 
 <details>
 <summary>Hint if nothing happens after the refactor</summary>
 
-Check that each AO was registered with `ao_start()`, and that the blinker subscribed to `SIG_PRESS`. A missing subscription drops the press without an error. `ao_dropped()` counts the full queues; the framework does not count missing subscribers.
+Check that each AO was registered with `ao_start()` and that the blinker subscribed to `SIG_PRESS`, since a missing subscription drops the press without an error, `ao_dropped()` counting full queues but not missing subscribers.
 
 </details>
 

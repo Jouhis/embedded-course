@@ -6,11 +6,11 @@ Lesson: [Bench lab 7: The flaky LED strip](https://jouhis.github.io/embedded-cou
 
 ## Stage 1: in Wokwi
 
-1. Open `projects/bench07-ws2812-strip/starter`, build and run. The ring of 8 LEDs cycles through four colours, and the log names them: red, green, blue, white.
-2. Compare: when the log says red, the ring shows green, and the other way round. That's a firmware bug the simulator does show.
-3. **Task 1:** read the datasheet's "data transmission method" and fix `grb()`. The WS2812 takes green first, then red, then blue, most significant bit first. The PIO shifts out from bit 31, so the 24 bits go in the top of the word: `g << 24 | r << 16 | b << 8`. Run again: the colours match the log.
+1. Open `projects/bench07-ws2812-strip/starter`, build and run it. The ring of 8 LEDs cycles through four colours, and the log names them: red, green, blue and white.
+2. Compare the two. When the log says red, the ring shows green, and the other way round, a firmware bug the simulator does show.
+3. **Task 1:** read the datasheet's "data transmission method" and fix `grb()`. The WS2812 takes green first, then red, then blue, most significant bit first, and since the PIO shifts out from bit 31, the 24 bits go in the top of the word: `g << 24 | r << 16 | b << 8`. Run again, and the colours match the log.
 
-In Wokwi that's the end: the data line is ideal and has no voltage, so the level problem can't appear.
+In Wokwi that is the end, because the data line is ideal and has no voltage, so the level problem cannot appear.
 
 ## Files you work on
 

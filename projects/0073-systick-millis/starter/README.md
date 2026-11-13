@@ -6,11 +6,11 @@ Lesson: [SysTick and a millisecond time base](https://jouhis.github.io/embedded-
 
 ## Try it in Wokwi
 
-The project `projects/0073-systick-millis` starts the counter 256 ms before its wrap, and prints the timeout after 2000 ms. The LED is the Blue Pill's on-board LED on PC13, and it toggles without blocking, using the same `timed_out()` check.
+The project `projects/0073-systick-millis` starts the counter 256 ms before its wrap and prints the timeout after 2 000 ms, while the Blue Pill's on-board LED on PC13 toggles without blocking, using the same `timed_out()` check.
 
-1. Open `projects/0073-systick-millis/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Your task: start SysTick at 1 kHz in `main()`, add one to `g_ms` in the handler, and return 1 from `timed_out()` when the timeout has passed, using the unsigned subtraction.
-3. You will know it works when the serial monitor shows `WRAP passed` and then `TIMEOUT elapsed=2000 ms`, and the LED blinks at 1 Hz.
+1. Open `projects/0073-systick-millis/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Start SysTick at 1 kHz in `main()`, add one to `g_ms` in the handler, and make `timed_out()` return 1 once the timeout has passed, using the unsigned subtraction.
+3. The program works when the serial monitor shows `WRAP passed` and then `TIMEOUT elapsed=2000 ms`, and the LED blinks at 1 Hz.
 
 The program reads the elapsed time *before* it prints `TIMEOUT elapsed=`. Sending those 16 characters at 115200 baud takes about 1.4 ms, and SysTick keeps counting meanwhile, so a `millis()` call placed after the text would print 2001. When you time something, take the timestamp first and print after.
 
@@ -27,7 +27,7 @@ The serial monitor prints `TIMEOUT elapsed=2000 ms`.
 <details>
 <summary>Hint</summary>
 
-The starter's `timed_out()` only needs one line: compare `(uint32_t)(millis() - start_ms)` with `timeout_ms`.
+The starter's `timed_out()` needs only one line, comparing `(uint32_t)(millis() - start_ms)` with `timeout_ms`.
 
 </details>
 

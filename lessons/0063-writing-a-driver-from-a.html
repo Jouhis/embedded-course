@@ -11,98 +11,99 @@
 <body data-lesson="0063">
 <main>
   <p class="lesson-meta"></p>
-  <h1>Writing a driver from a datasheet: the "mystery sensor"</h1>
-  <p class="subtitle">Most firmware jobs start with a datasheet and a part number on the desk. This lesson gives you a short datasheet for an unknown I2C sensor, and asks you to write the driver from it, without guessing.</p>
+  <h1>Writing a driver from a datasheet</h1>
+  <p class="subtitle">A sensor driver built from its register map</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>find the address, register map, data format and data-ready rule in a datasheet, and write the three driver functions that use them</strong>, checking the part with its WHO_AM_I register first.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>A new sensor and its datasheet</h2>
   <p>
-    Lesson <a href="0060-the-i2c-protocol.html">60</a> showed the I2C bus as a logic analyzer records it: start, address, acknowledge, register pointer, repeated start, data. Lesson <a href="0061-an-i2c-oled-display-and.html">61</a> wrote a driver for an OLED, with a control byte, page addressing and a framebuffer. Lesson <a href="0045-stdint-types-integer-promotion-overflow.html">45</a> showed how a cast changes the meaning of a number. This lesson joins those three ideas into one job.
+    Lesson <a href="0060-the-i2c-protocol.html">60</a> showed the I2C bus as a logic analyser records it, with start, address, acknowledge, register pointer, repeated start and data, lesson <a href="0061-an-i2c-oled-display-and.html">61</a> wrote a driver for an OLED with a control byte, page addressing and a framebuffer, and lesson <a href="0045-stdint-types-integer-promotion-overflow.html">45</a> showed how a cast changes the meaning of a number. This lesson joins the three into one job, writing a driver for an unknown sensor called the MYS-1 from nothing but its short datasheet.
   </p>
   <p>
-    The job is common. A new sensor arrives on a new board, and the only documentation is its datasheet. The engineer must find the bus address, learn which registers hold what, and turn the raw bytes into a number a human can read. Nobody on the team can say "it probably works like the last one". The driver must match the datasheet, and the engineer must prove it, because a wrong temperature in a heater controller or a battery charger can cause real damage.
+    The job is common: a new sensor arrives on a new board with its datasheet as the only documentation, and the engineer must find the bus address, learn which registers hold what and turn the raw bytes into a number a human can read. Assuming that it works like the last one is not an option, because the driver must match the datasheet and the engineer must prove it, since a wrong temperature in a heater controller or a battery charger can cause real damage.
   </p>
 
-  <h2>Concept 1: a driver is a layer between the application and the bus</h2>
+  <h2>The driver as a layer between application and bus</h2>
   <p>
-    A <a href="../reference/glossary.html#device-driver">device driver</a> is the code that turns device operations into bus transactions. The application calls something like <code>mystery_read_celsius()</code>, which means nothing to the bus. Underneath, the driver writes a control register, polls a status register, and reads two bytes, and each of those is an I2C transfer. The I2C hardware then turns each transfer into wire-level conditions, and the sensor answers on the pins.
+    A <a href="../reference/glossary.html#device-driver">device driver</a> is the code that turns device operations into bus transactions. The application calls something like <code>mystery_read_celsius()</code>, which means nothing to the bus, and underneath the driver writes a control register, polls a status register and reads two bytes, each an I2C transfer that the I2C hardware turns into wire-level conditions, to which the sensor answers on its pins.
   </p>
   <p>
-    Each layer hides one detail from the layer above it. The application does not know the register numbers. The driver does not know the pin numbers, which are set in one <code>mystery_init()</code> call. The SDK's <code>i2c_write_blocking()</code> does not know the register map at all. The RP2040's I2C hardware turns a queued byte into a START, a byte, and a STOP or a repeated START. This is the same layering you already know from computer architecture: an instruction becomes a memory transaction, and the memory transaction becomes a signal on a bus. A driver is the layer that does that translation for one device.
+    Each layer hides one detail from the layer above. The application does not know the register numbers, the driver does not know the pin numbers, which are set in one <code>mystery_init()</code> call, the SDK's <code>i2c_write_blocking()</code> knows nothing of the register map, and the RP2040's I2C hardware turns a queued byte into a START, a byte and a STOP or repeated START. The layering matches the one in computer architecture, where an instruction becomes a memory transaction and the transaction becomes a signal on a bus, a driver doing that translation for one device.
   </p>
   <p>
-    The layers also decide where bugs live. If the temperature is wrong, the bug is in the conversion layer, not in the bus. If the bus shows no acknowledge, the bug is in the address or the wiring, not in the conversion. This lesson's structure makes this easy to check, because the three public functions each correspond to one layer's job.
+    The layers also decide where bugs live: a wrong temperature points to the conversion layer rather than the bus, while a missing acknowledge points to the address or the wiring rather than the conversion. The lesson's structure makes this easy to check, because each of the three public functions corresponds to one layer's job.
   </p>
 
   <div class="analogy">
-    <p>A driver is an interpreter between two people who do not share a language. The application speaks in temperatures and "is a new reading ready?". The sensor speaks in register addresses, status bits and pairs of bytes. The interpreter translates both ways, so neither side has to learn the other's language, and swapping the sensor means hiring a new interpreter, not retraining the application.</p>
+    <p>A driver acts as an interpreter between two people without a shared language, the application speaking in temperatures and in whether a new reading is ready, the sensor in register addresses, status bits and pairs of bytes. The interpreter translates both ways, so neither side has to learn the other's language, and swapping the sensor means hiring a new interpreter rather than retraining the application. A human interpreter can ask for clarification, however, whereas a driver must already contain every rule the datasheet states.</p>
   </div>
 
-  <h2>Concept 2: five questions a datasheet answers</h2>
+  <h2>Five questions a datasheet answers</h2>
   <p>
-    For a register-based sensor, a datasheet answers five questions. Find each answer before you write code, and write the answer down next to the code that uses it.
+    For a register-based sensor a datasheet answers five questions, and each answer should be found before writing code and noted next to the code that uses it.
   </p>
   <ol>
-    <li><strong>Address:</strong> the 7-bit I2C address the device answers to. The MYS-1 has no address pin, so its address is fixed at <code>0x48</code> (datasheet section 2).</li>
-    <li><strong>Register map:</strong> the registers, their addresses, which bits do what, and whether each is readable or writable (section 3.1).</li>
-    <li><strong>Protocol:</strong> how the register pointer is set, and whether a read moves on to the next register (section 3.2).</li>
+    <li><strong>Address:</strong> the 7-bit I2C address the device answers to, which for the MYS-1, with no address pin, is fixed at <code>0x48</code> (datasheet section 2).</li>
+    <li><strong>Register map:</strong> the registers, their addresses, the meaning of their bits and whether each is readable or writable (section 3.1).</li>
+    <li><strong>Protocol:</strong> how the register pointer is set and whether a read moves on to the next register (section 3.2).</li>
     <li><strong>Data format:</strong> the scale, the sign and the byte order of each value (section 4.1).</li>
-    <li><strong>Timing:</strong> when a new sample is ready, how long it stays, and what reading the data does to the flags (section 4.2).</li>
+    <li><strong>Timing:</strong> when a new sample is ready, how long it remains and what reading the data does to the flags (section 4.2).</li>
   </ol>
   <p>
-    The answers are all in the MYS-1 datasheet, which is laid out like a real one. Its register table, its transaction table and its timing rules are the parts you will use. Read the whole datasheet once, and then read the three facts below again while you work.
+    All the answers are in the MYS-1 datasheet, which is laid out like a real one, its register table, transaction table and timing rules being the parts this lesson uses. Read the whole datasheet once, and then return to the three sections below while working.
   </p>
 
-  <h2>Concept 3: the register pointer and the repeated start</h2>
+  <h2>The register pointer and the repeated start</h2>
   <p>
-    Many register-based I2C devices work the same way. The master writes one byte, which sets a <a href="../reference/glossary.html#register-pointer">register pointer</a> inside the device. Later bytes in the same transaction are data for the register the pointer names. A read returns the byte at the pointer, and the pointer moves on by one. The MYS-1 works this way, and section 3.2 of its datasheet says so.
+    Many register-based I2C devices work the same way: the master writes one byte that sets a <a href="../reference/glossary.html#register-pointer">register pointer</a> inside the device, later bytes in the same transaction are data for the register the pointer names, and a read returns the byte at the pointer and moves the pointer on by one. The MYS-1 works this way, as section 3.2 of its datasheet states.
   </p>
   <p>
-    To read one register, the master must first write the pointer and then read the data. The question is whether the bus is released in between. A STOP between the two would release it, and another master could use the bus in the gap. A <a href="../reference/glossary.html#repeated-start">repeated start</a> (also called RESTART) starts the second part without a STOP, so the bus stays claimed. The datasheet's transaction table asks for the RESTART, and says that a STOP would let another master use the bus in between.
+    Reading one register therefore means writing the pointer and then reading the data, and the question is whether the bus is released in between. A STOP between the two would release it, letting another master use the bus in the gap, whereas a <a href="../reference/glossary.html#repeated-start">repeated start</a> (RESTART) begins the second part without a STOP, so the bus stays claimed. The datasheet's transaction table asks for the RESTART and warns that a STOP would let another master in.
   </p>
   <p>
-    The RP2040 generates these conditions in its I2C hardware. Its datasheet describes START, STOP and RESTART generation in section 4.3.7. The SDK exposes the choice as one argument. Calling <code>i2c_write_blocking()</code> with <code>nostop = true</code> leaves the bus claimed, and the next transfer starts with a repeated start. The SDK source sets <code>restart_on_next</code> from that argument in <code>i2c.c</code>, at line 241.
-  </p>
-
-  <h2>Concept 4: the data-ready flag and why you poll it</h2>
-  <p>
-    The MYS-1 measures on its own schedule. A new sample is ready every 500 ms once measurement is enabled, and each sample sets a flag called DRDY, the <a href="../reference/glossary.html#data-ready-flag">data-ready flag</a>. DRDY is bit 0 of the STATUS register, at address <code>0x27</code>. Samples are not queued: if you do not read one before the next arrives, the older value is lost (datasheet section 4.2).
-  </p>
-  <p>
-    The driver therefore waits for DRDY before it reads the temperature. It reads STATUS in a loop, with a short sleep between reads, and stops when bit 0 is set. A loop with no limit can hang the whole firmware if the sensor is unplugged, so the loop also has a deadline. The datasheet's usage steps say to give up after about 2 s. The SDK provides <code>make_timeout_time_ms()</code> for the deadline, in <code>pico/time.h</code>, and <code>time_reached()</code> to test it, in <code>hardware/timer.h</code>.
-  </p>
-  <p>
-    Polling is simple and enough for a sensor that updates twice per second. The alternative is an interrupt on a DRDY pin, which the MYS-1 does not have. The lesson's choice follows from the part, and a different part would change it.
+    The RP2040 generates these conditions in its I2C hardware, whose START, STOP and RESTART generation its datasheet describes in section 4.3.7, and the SDK exposes the choice as one argument: <code>i2c_write_blocking()</code> called with <code>nostop = true</code> leaves the bus claimed, so the next transfer starts with a repeated start, the SDK source setting <code>restart_on_next</code> from that argument in <code>i2c.c</code> at line 241.
   </p>
 
-  <h2>Concept 5: a signed number from two bytes</h2>
+  <h2>Polling the data-ready flag</h2>
   <p>
-    The temperature is a signed 16-bit value, in units of 1/64 °C. The datasheet calls it two's complement, which is the standard way to store negative integers in binary. In two's complement, the top bit is the sign, and a negative value is the bit pattern you get by subtracting the magnitude from 2 to the power 16. The <a href="../reference/glossary.html#two-s-complement">two's complement</a> entry in the glossary has the rule in full.
+    The MYS-1 measures on its own schedule, a new sample being ready every 500 ms once measurement is enabled, and each sample sets DRDY, the <a href="../reference/glossary.html#data-ready-flag">data-ready flag</a>, bit 0 of the STATUS register at address <code>0x27</code>. Samples are not queued, so if one is not read before the next arrives, the older value is lost (datasheet section 4.2).
   </p>
   <p>
-    The two bytes are TEMP_L at <code>0x28</code> (the low byte) and TEMP_H at <code>0x29</code> (the high byte). A burst read from <code>0x28</code> returns TEMP_L first, then TEMP_H, because the pointer increments after each byte. The driver combines them as <code>(TEMP_H &lt;&lt; 8) | TEMP_L</code>, which puts the high byte in the top 8 bits. Then it casts the result to a signed type, so that the sign bit is read as a sign. Only after that cast does it divide by 64.
+    The driver therefore waits for DRDY before reading the temperature, reading STATUS in a loop with a short sleep between reads until bit 0 is set. A loop without a limit could hang the whole firmware if the sensor were unplugged, so it also has a deadline, the datasheet's usage steps advising to give up after about 2 s, and the SDK provides <code>make_timeout_time_ms()</code> in <code>pico/time.h</code> to set it and <code>time_reached()</code> in <code>hardware/timer.h</code> to test it.
   </p>
   <p>
-    The order of the cast matters. A value stored as unsigned is always positive, so a negative temperature becomes a large number. Lesson <a href="0045-stdint-types-integer-promotion-overflow.html">45</a> explains the conversion rules. The worked example below shows the difference with real numbers.
+    Polling is simple and sufficient for a sensor that updates twice a second, the alternative being an interrupt on a DRDY pin, which the MYS-1 lacks, so the lesson's choice follows from the part and a different part could change it.
   </p>
 
-  <h2>Worked example: one temperature read, step by step</h2>
+  <h2>A signed temperature from two bytes</h2>
   <p>
-    Start with the driver's first read after power-up, and follow every transfer. The steps below use the datasheet's example bytes, <code>0x05</code> for TEMP_H and <code>0xA0</code> for TEMP_L, so the answer is known in advance.
+    The temperature is a signed 16-bit value in units of 1/64 °C, stored, as the datasheet says, in two's complement, the standard way of storing negative integers in binary, in which the top bit is the sign and a negative value is the bit pattern obtained by subtracting the magnitude from 2<sup>16</sup>, with the full rule in the glossary entry on <a href="../reference/glossary.html#two-s-complement">two's complement</a>. Converting the raw value gives the temperature
   </p>
-  <ol>
-    <li><strong>Identify the part.</strong> Write the pointer <code>0x0F</code>, restart, and read one byte. The result is <code>0xA7</code>. If it is not, stop, because nothing else in the datasheet applies to this device.</li>
-    <li><strong>Enable measurement.</strong> Write <code>0x01</code> to CTRL at <code>0x20</code>. Bit 0 is MEAS_EN, and the first sample arrives 500 ms later.</li>
-    <li><strong>Wait for DRDY.</strong> Read STATUS at <code>0x27</code> every 10 ms. The first reads return 0x00. About 50 reads later, bit 0 is set and the status reads 0x01. The loop breaks.</li>
-    <li><strong>Read the pair in one burst.</strong> Write the pointer <code>0x28</code>, restart, and read two bytes. The first byte is TEMP_L, <code>0xA0</code>. The second is TEMP_H, <code>0x05</code>. The sensor latched the sample when TEMP_L was read, and reading TEMP_H clears DRDY.</li>
-    <li><strong>Combine the bytes.</strong> <code>(0x05 &lt;&lt; 8) | 0xA0</code> is <code>0x0500 | 0x00A0</code>, which is <code>0x05A0</code>, or 1440 in decimal.</li>
-    <li><strong>Scale.</strong> 1440 is a positive value, so the cast changes nothing. Divide by 64: 1440 ÷ 64 = 22.5 °C.</li>
+  <p class="eq"><span>T = (int16_t)((TEMP_H &lt;&lt; 8) | TEMP_L) ÷ 64</span><span class="eq-n">(1)</span></p>
+  <p>
+    where TEMP_L at <code>0x28</code> is the low byte and TEMP_H at <code>0x29</code> the high byte. A burst read from <code>0x28</code> returns TEMP_L first and then TEMP_H, because the pointer increments after each byte, and the driver shifts the high byte into the top 8 bits, casts the result to a signed type so that the sign bit is read as a sign, and only then divides by 64.
+  </p>
+  <p>
+    The order of the cast matters, because a value stored as unsigned is always positive, turning a negative temperature into a large number. Lesson <a href="0045-stdint-types-integer-promotion-overflow.html">45</a> explains the conversion rules, and the worked example below shows the difference with real numbers.
+  </p>
+
+  <h2>Worked example: one temperature read</h2>
+  <p>
+    We follow every transfer of the driver's first read after power-up, using the datasheet's example bytes, <code>0x05</code> for TEMP_H and <code>0xA0</code> for TEMP_L, so that the answer is known in advance. Before starting, estimate the temperature from those two bytes.
+  </p>
+  <ol class="steps">
+    <li><strong>Identify the part.</strong> Write the pointer <code>0x0F</code>, restart and read one byte, which should be <code>0xA7</code>, and if it is not, stop, because nothing else in the datasheet applies to the device.</li>
+    <li><strong>Enable measurement.</strong> Write <code>0x01</code> to CTRL at <code>0x20</code>, setting bit 0, MEAS_EN, after which the first sample arrives 500 ms later.</li>
+    <li><strong>Wait for DRDY.</strong> Read STATUS at <code>0x27</code> every 10 ms, the first reads returning 0x00 until, about 50 reads later, bit 0 is set, the status reads 0x01 and the loop ends.</li>
+    <li><strong>Read the pair in one burst.</strong> Write the pointer <code>0x28</code>, restart and read two bytes, the first being TEMP_L, <code>0xA0</code>, and the second TEMP_H, <code>0x05</code>, the sensor having latched the sample when TEMP_L was read and clearing DRDY when TEMP_H is read.</li>
+    <li><strong>Combine the bytes.</strong> <code>(0x05 &lt;&lt; 8) | 0xA0</code> is <code>0x0500 | 0x00A0</code>, or <code>0x05A0</code>, which is 1 440 in decimal.</li>
+    <li><strong>Scale.</strong> 1 440 is positive, so the cast changes nothing, and equation (1) gives 1 440 ÷ 64 = 22.5 °C.</li>
   </ol>
   <p>
-    The negative case shows why the cast matters. Suppose the bytes are TEMP_L <code>0xC0</code> and TEMP_H <code>0xFF</code>. Combined, they give <code>0xFFC0</code>, which in binary is 1111 1111 1100 0000. As a signed 16-bit number, the top bit is set, so the value is 0xFFC0 − 65536 = −64. Then −64 ÷ 64 = −1.0 °C. Read as unsigned, the same bits are 65,472, and 65,472 ÷ 64 = 1,023.0, which is a plausible-looking but wrong temperature.
+    The negative case shows why the cast matters. With TEMP_L <code>0xC0</code> and TEMP_H <code>0xFF</code> the combined value is <code>0xFFC0</code>, or 1111 1111 1100 0000 in binary, whose top bit is set, so as a signed 16-bit number it is 0xFFC0 − 65 536 = −64, and −64 ÷ 64 = −1.0 °C. Read as unsigned, the same bits are 65 472, and 65 472 ÷ 64 = 1 023.0, a plausible-looking but wrong temperature.
   </p>
 
   <div class="widget anim" data-title="One temperature read, transfer by transfer" data-ms="2400">
@@ -134,16 +135,16 @@
     </ol>
   </div>
 
-  <h2>The code, explained line by line</h2>
+  <h2>The driver code line by line</h2>
   <p>
-    The excerpts below come from the reference solution, <code>mystery.c</code>. The starter provides the two register helpers, and you write the three public functions. Start with the helpers, because every public function uses them.
+    The excerpts below come from the reference solution, <code>mystery.c</code>. The starter provides the two register helpers and you write the three public functions, so the helpers come first, since every public function uses them.
   </p>
   <pre><code class="language-c">static bool reg_write(uint8_t reg, uint8_t value) {
     uint8_t frame[2] = { reg, value };          /* pointer, then data */
     return i2c_write_blocking(MYSTERY_I2C, MYSTERY_ADDR, frame, 2, false) == 2;
 }</code></pre>
   <p>
-    A write to one register is a two-byte transfer. The first byte is the pointer, and the second is the value. The transfer ends with a STOP, because the argument <code>false</code> means the bus is released afterwards. The function returns <code>true</code> only if the SDK reports that both bytes were written. The SDK returns the number of bytes written, or PICO_ERROR_GENERIC (a negative value) when no device acknowledges the address. Comparing with 2 catches both a missing sensor and a partial write.
+    A write to one register is a two-byte transfer, the pointer followed by the value, ending with a STOP because the argument <code>false</code> releases the bus afterwards. The function returns <code>true</code> only if the SDK reports both bytes written, the SDK returning the number of bytes written or PICO_ERROR_GENERIC, a negative value, when no device acknowledges the address, so the comparison with 2 catches both a missing sensor and a partial write.
   </p>
   <pre><code class="language-c">static bool reg_read(uint8_t reg, uint8_t *buf, size_t len) {
     if (i2c_write_blocking(MYSTERY_I2C, MYSTERY_ADDR, &amp;reg, 1, true) != 1) {
@@ -152,7 +153,7 @@
     return i2c_read_blocking(MYSTERY_I2C, MYSTERY_ADDR, buf, len, false) == (int)len;
 }</code></pre>
   <p>
-    This is the repeated-start pattern from Concept 3, in two SDK calls. The first call writes the pointer with <code>nostop = true</code>, so the bus stays claimed and the SDK sets up a RESTART for the next transfer. The second call reads <code>len</code> bytes, and its <code>false</code> argument ends the transfer with a STOP. If the pointer write fails, the function returns before reading, so the caller never receives bytes from an unknown register. The cast to <code>int</code> compares the SDK's signed return value with the unsigned length.
+    This is the repeated-start pattern in two SDK calls. The first writes the pointer with <code>nostop = true</code>, keeping the bus claimed and making the SDK set up a RESTART for the next transfer, and the second reads <code>len</code> bytes, its <code>false</code> argument ending the transfer with a STOP. If the pointer write fails, the function returns before reading, so the caller never receives bytes from an unknown register, and the cast to <code>int</code> lets the SDK's signed return value be compared with the unsigned length.
   </p>
   <pre><code class="language-c">bool mystery_init(void) {
     i2c_init(MYSTERY_I2C, MYSTERY_BAUD_HZ);             /* I2C0 at 100 kHz */
@@ -163,7 +164,7 @@
     return reg_write(REG_CTRL, CTRL_MEAS_EN);       /* CTRL bit 0 starts measurement */
 }</code></pre>
   <p>
-    <code>i2c_init()</code> turns the I2C0 block on at the given rate. The two <code>gpio_set_function()</code> calls connect the pins to the I2C block, as lesson 60 showed. GP4 and GP5 are I2C0's default pins in the RP2040's GPIO function table (RP2040 datasheet, section 2.19.2, Table 279). The pull-up calls turn on the chip's internal resistors, which are 50 to 80 kΩ according to the electrical table (section 5.5.3.4). They are too weak for a real bus. The diagram adds external 4.7 kΩ resistors, which is what the datasheet asks for. The last line writes <code>0x01</code> to CTRL, which starts measurement.
+    <code>i2c_init()</code> turns the I2C0 block on at the given rate, and the two <code>gpio_set_function()</code> calls connect the pins to it, as in lesson 60, GP4 and GP5 being I2C0's default pins in the RP2040's GPIO function table (RP2040 datasheet, section 2.19.2, Table 279). The pull-up calls enable the chip's internal resistors, 50 to 80 kΩ according to the electrical table (section 5.5.3.4), which are too weak for a real bus, so the diagram adds external 4.7 kΩ resistors as the MYS-1 datasheet asks. The last line writes <code>0x01</code> to CTRL, starting measurement.
   </p>
   <pre><code class="language-c">bool mystery_read_celsius(float *celsius) {
     absolute_time_t deadline = make_timeout_time_ms(DRDY_TIMEOUT_MS);
@@ -189,77 +190,77 @@
     return true;
 }</code></pre>
   <p>
-    The deadline is set once, before the loop, so the time limit covers the whole wait. <code>reg_read()</code> returns <code>false</code> on a bus error, and the function passes that error up. The loop tests DRDY with a bit mask, and only then does the temperature read happen. The burst read takes both bytes in one transfer, so they come from the same latched sample. The conversion first builds an unsigned <code>uint16_t</code>, which keeps the exact bit pattern of the two bytes, and then casts it to <code>int16_t</code>, which reads the top bit as the sign. The division uses <code>TEMP_LSB_PER_C</code>, which is 64.0 as a float, so the result is a float in degrees Celsius.
+    The deadline is set once, before the loop, so the limit covers the whole wait, and <code>reg_read()</code> returning <code>false</code> on a bus error passes that error up. The loop tests DRDY with a bit mask, and only then does the temperature read happen, as a burst that takes both bytes from the same latched sample. The conversion first builds an unsigned <code>uint16_t</code>, which keeps the exact bit pattern of the two bytes, and then casts it to <code>int16_t</code>, which reads the top bit as the sign, before dividing by <code>TEMP_LSB_PER_C</code>, the float 64.0, so the result is a float in degrees Celsius.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The MYS-1 is a <strong>Wokwi custom chip</strong>: C code compiled to WebAssembly, which the simulator runs as if it were a real part on the I2C bus. Its source is <code>projects/0063-mystery-sensor/chip/mystery.chip.c</code>. Try not to open it until you have finished. It is the datasheet written as code, so it gives the answers away.
+    The MYS-1 is a <strong>Wokwi custom chip</strong>, C code compiled to WebAssembly that the simulator runs as if it were a real part on the I2C bus. Its source is <code>projects/0063-mystery-sensor/chip/mystery.chip.c</code>, but avoid opening it until you have finished, because it is the datasheet written as code and gives the answers away.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0063-mystery-sensor/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Keep the datasheet open in a second window: <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">MYS-1 datasheet</a>.</li>
-    <li>Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
-    <li>Start the simulator: <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Right now the serial monitor prints <code>MYSTERY whoami failed</code> every second, because <code>mystery_whoami()</code> is not written yet.</li>
-    <li>Your task: in <code>mystery.c</code>, replace the three <code>TODO(learner)</code> functions. <code>mystery_init</code> brings up I2C0 on GP4 and GP5, turns on the pulls, and starts measuring. <code>mystery_whoami</code> reads WHO_AM_I into <code>*id</code>. <code>mystery_read_celsius</code> polls DRDY with a timeout, reads TEMP_L and TEMP_H in one burst, and converts the value.</li>
-    <li>Expected result: the serial monitor prints <code>MYSTERY OK id=0xA7 temp=22.xx C</code> once per second. The first temperature is between 22.5 and 23 °C, and the values change slowly from one line to the next. If the read times out, the solution prints <code>MYSTERY read timed out</code>, and the starter prints <code>MYSTERY read failed, id=0xA7</code>.</li>
+    <li>Open <code>projects/0063-mystery-sensor/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), and keep the <a href="../projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html">MYS-1 datasheet</a> open in a second window.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.</li>
+    <li>Start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The serial monitor now prints <code>MYSTERY whoami failed</code> every second, because <code>mystery_whoami()</code> is not yet written.</li>
+    <li>Replace the three <code>TODO(learner)</code> functions in <code>mystery.c</code>: <code>mystery_init</code> brings up I2C0 on GP4 and GP5, enables the pulls and starts measuring, <code>mystery_whoami</code> reads WHO_AM_I into <code>*id</code>, and <code>mystery_read_celsius</code> polls DRDY with a timeout, reads TEMP_L and TEMP_H in one burst and converts the value.</li>
+    <li>The serial monitor should print <code>MYSTERY OK id=0xA7 temp=22.xx C</code> once a second, the first temperature lying between 22.5 and 23 °C and the values changing slowly from line to line. On a timeout the solution prints <code>MYSTERY read timed out</code> and the starter <code>MYSTERY read failed, id=0xA7</code>.</li>
   </ol>
   <details>
     <summary>Hint for the init function</summary>
-    <p>The same steps as lesson 60: <code>i2c_init</code>, then <code>gpio_set_function</code> on both pins, then the pulls. The last step is one <code>reg_write</code> to CTRL with bit 0 set. The datasheet names that bit <code>MEAS_EN</code>.</p>
+    <p>The steps are those of lesson 60, <code>i2c_init</code>, then <code>gpio_set_function</code> on both pins, then the pulls, followed by one <code>reg_write</code> to CTRL with bit 0 set, the bit the datasheet names <code>MEAS_EN</code>.</p>
   </details>
   <details>
     <summary>Hint for the read function</summary>
-    <p>Poll STATUS in a loop. Break out when bit 0 is set. Return <code>false</code> if <code>time_reached(deadline)</code> is true first. Then use <code>reg_read(REG_TEMP_L, raw, 2)</code>, and do the conversion from the section above.</p>
+    <p>Poll STATUS in a loop, breaking out when bit 0 is set and returning <code>false</code> if <code>time_reached(deadline)</code> becomes true first, then call <code>reg_read(REG_TEMP_L, raw, 2)</code> and apply the conversion above.</p>
   </details>
   <p>
-    The reference solution is in <code>projects/0063-mystery-sensor/solution</code>. Try first, compare after. The diagram adds 4.7 kΩ pull-ups on SDA and SCL, which a real board would also need.
+    The reference solution is in <code>projects/0063-mystery-sensor/solution</code>, so try first and compare afterwards. The diagram adds 4.7 kΩ pull-ups on SDA and SCL, which a real board would also need.
   </p>
 
-  <div class="win">You turned a short datasheet into a driver. You checked the identity register, enabled measurement, waited for data-ready, and read a signed value from two registers. The same steps work for any register-based sensor.</div>
+  <div class="win">You turned a short datasheet into a driver, checking the identity register, enabling measurement, waiting for data-ready and reading a signed value from two registers, steps that work for any register-based sensor.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <h3>Mistake 1: measurement is never enabled</h3>
+  <h3>Measurement never enabled</h3>
   <p>
-    <strong>Symptom:</strong> the WHO_AM_I read succeeds and prints <code>0xA7</code>, but every temperature read fails after its timeout. The starter prints <code>MYSTERY read failed, id=0xA7</code>, and the solution prints <code>MYSTERY read timed out</code>. <strong>Cause:</strong> the write to CTRL is missing or writes the wrong value, so DRDY never sets. The identity check passes, because WHO_AM_I is a fixed value that does not depend on the measurement. <strong>Fix:</strong> check the CTRL write, which must be <code>0x01</code> to address <code>0x20</code>, and check its return value.
+    The WHO_AM_I read succeeds and prints <code>0xA7</code>, but every temperature read fails after its timeout, the starter printing <code>MYSTERY read failed, id=0xA7</code> and the solution <code>MYSTERY read timed out</code>. The write to CTRL is missing or writes the wrong value, so DRDY never sets, while the identity check passes because WHO_AM_I is a fixed value independent of measurement. Check that the CTRL write puts <code>0x01</code> at address <code>0x20</code>, and check its return value.
   </p>
-  <h3>Mistake 2: the cast to a signed type is missing</h3>
+  <h3>The cast to a signed type missing</h3>
   <p>
-    <strong>Symptom:</strong> a cold reading shows about 1,023 °C. <strong>Cause:</strong> the two bytes are combined into an unsigned value and divided by 64. A negative temperature such as −1.0 °C has the bits <code>0xFFC0</code>, and read as unsigned that is 65,472, so the result is 1,023.0. <strong>Fix:</strong> cast to <code>int16_t</code> before the division, as the solution does. The simulated sensor stays above 22 °C, so the simulator will never show the bug. Test the conversion with the raw value <code>0xFFC0</code>, which must give −1.0 °C. Lesson 80 shows how to write that test on the PC.
+    A cold reading shows about 1 023 °C, because the two bytes are combined into an unsigned value and divided by 64, so −1.0 °C, with the bits <code>0xFFC0</code>, reads as 65 472 and gives 1 023.0. Cast to <code>int16_t</code> before the division, as the solution does. The simulated sensor stays above 22 °C, so the simulator never shows this bug, and the conversion should be tested with the raw value <code>0xFFC0</code>, which must give −1.0 °C, a test that lesson 80 shows how to write on the PC.
   </p>
-  <h3>Mistake 3: the bytes are combined in the wrong order</h3>
+  <h3>The bytes combined in the wrong order</h3>
   <p>
-    <strong>Symptom:</strong> the temperature is far outside the room range, and it is not the same every time, for example −383.92 °C for the datasheet's example. <strong>Cause:</strong> the driver used <code>raw[0]</code> as the high byte, so the sign and the magnitude come from TEMP_L. For the datasheet example, <code>0xA005</code> is −24,571 counts, or −383.92 °C. <strong>Fix:</strong> the high byte is TEMP_H, which is <code>raw[1]</code> in a burst read that starts at 0x28. Compare each index with the register it was read from.
+    The temperature lies far outside the room range, −383.92 °C for the datasheet's example, because the driver used <code>raw[0]</code> as the high byte, taking the sign and the magnitude from TEMP_L, so the example becomes <code>0xA005</code>, −24 571 counts. The high byte is TEMP_H, <code>raw[1]</code> in a burst read starting at 0x28, so compare each index with the register it was read from.
   </p>
-  <h3>Mistake 4: reading the two bytes in separate transactions</h3>
+  <h3>The two bytes read in separate transactions</h3>
   <p>
-    <strong>Symptom:</strong> a reading can jump by up to about 4 °C from the one before it, even when the room is steady. <strong>Cause:</strong> the sensor latches a sample when TEMP_L is read. If TEMP_H is read in its own transaction before TEMP_L, the high byte comes from the previous latch and the low byte from the new one. One step of the high byte is 256 counts, which is 4 °C, so the error can be that large. <strong>Fix:</strong> read TEMP_L and TEMP_H in one burst from 0x28, as the driver does, so the two bytes always come from one latch.
+    A reading can jump by up to about 4 °C from the previous one in a steady room, because the sensor latches a sample when TEMP_L is read, so if TEMP_H is read in its own transaction before TEMP_L, the high byte comes from the previous latch and the low byte from the new one, and one step of the high byte is 256 counts, or 4 °C. Read TEMP_L and TEMP_H in one burst from 0x28, as the driver does, so that both bytes come from the same latch.
   </p>
-  <h3>Mistake 5: no pull-ups on a real board</h3>
+  <h3>No pull-ups on a real board</h3>
   <p>
-    <strong>Symptom:</strong> on a breadboard with longer wires, WHO_AM_I fails, or the sensor does not acknowledge its address. The starter prints <code>MYSTERY whoami failed</code>. <strong>Cause:</strong> the RP2040's internal pulls are 50 to 80 kΩ, which is too weak for a bus with long wires and a fast edge. The datasheet says external 4.7 kΩ pull-ups to 3.3 V are required (section 2). <strong>Fix:</strong> add the two resistors, as the diagram does. Keep the internal pulls on as well, because they cost nothing.
+    On a breadboard with longer wires WHO_AM_I fails or the sensor does not acknowledge its address, the starter printing <code>MYSTERY whoami failed</code>, because the RP2040's internal 50 to 80 kΩ pulls are too weak for a bus with long wires and fast edges, while the datasheet requires external 4.7 kΩ pull-ups to 3.3 V (section 2). Add the two resistors, as the diagram does, and leave the internal pulls enabled as well, since they cost nothing.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Production drivers and debugging a wrong reading</h2></summary>
   <p>
-    A production driver is a small, reviewed file. It has the address and the register map as named constants, each with a comment that names the datasheet section. Its public functions return a status, so the caller can react to a missing sensor. Its conversion is a pure function that a unit test can call with known raw bytes. The reviewer's first questions are the ones in this lesson: is the value signed where the datasheet says so, is the read a burst where the datasheet requires it, is there a timeout, and what happens when the bus returns an error.
+    A production driver is a small, reviewed file holding the address and the register map as named constants, each commented with its datasheet section, with public functions that return a status so that the caller can react to a missing sensor and a conversion written as a pure function that a unit test can call with known raw bytes. A reviewer's first questions are those of this lesson: whether the value is signed where the datasheet says so, whether the read is a burst where the datasheet requires it, whether there is a timeout and what happens when the bus returns an error.
   </p>
   <p>
-    The same pattern covers most sensors. The register map changes, the conversion changes, and the protocol details change, but the structure of the driver does not. An engineer who can read a datasheet's register table, its transaction table and its timing rules can write a driver for almost any register-based part.
+    The same pattern covers most sensors, the register map, the conversion and the protocol details changing while the structure of the driver stays the same, so an engineer who can read a datasheet's register table, transaction table and timing rules can write a driver for almost any register-based part.
   </p>
   <p>
-    When a reading is wrong on a real board, check the four facts in the order they were read in this lesson. Confirm the address and the identity value on the bus. Confirm that measurement is enabled. Check the byte order and the sign in the conversion. Then look at the timing on a logic analyzer, which shows whether the bytes came from one sample. Most sensor bugs are found in one of those four places.
+    When a reading is wrong on a real board, check the four facts in the order this lesson read them: the address and the identity value on the bus, then whether measurement is enabled, then the byte order and the sign in the conversion, and finally the timing on a logic analyser, which shows whether the bytes came from one sample. Most sensor bugs are found in one of those four places.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A driver turns device operations into bus transactions. Each layer hides one detail from the layer above it.</li>
-    <li>A datasheet answers five questions: address, register map, protocol, data format and timing. Find each answer before you write code.</li>
-    <li>Read a register with the pointer write set to <code>nostop = true</code>, which makes the read a repeated start, so the bus stays claimed.</li>
-    <li>Wait for the data-ready flag, and give the wait a deadline, so that a missing sensor does not hang the firmware.</li>
-    <li>Read TEMP_L and TEMP_H in one burst. The sensor latches the sample on the low-byte read, so the two bytes match.</li>
-    <li>Combine the bytes, cast to a signed 16-bit type, then divide by 64. Test the negative case with the raw value 0xFFC0, which must give −1.0 °C.</li>
+    <li>A driver turns device operations into bus transactions, each layer hiding one detail from the layer above.</li>
+    <li>A datasheet answers five questions, address, register map, protocol, data format and timing, each of which is answered before code is written.</li>
+    <li>A register is read with the pointer write set to <code>nostop = true</code>, so the read follows a repeated start and the bus stays claimed.</li>
+    <li>The driver waits for the data-ready flag with a deadline, so that a missing sensor cannot hang the firmware.</li>
+    <li>TEMP_L and TEMP_H are read in one burst, because the sensor latches the sample on the low-byte read, so the two bytes match.</li>
+    <li>The bytes are combined, cast to a signed 16-bit type and divided by 64, and the negative case is tested with the raw value 0xFFC0, which must give −1.0 °C.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

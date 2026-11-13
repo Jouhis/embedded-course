@@ -11,48 +11,44 @@
 <body data-lesson="0060">
 <main>
   <p class="lesson-meta"></p>
-  <h1>The I2C protocol, decoded with a logic analyzer</h1>
-  <p class="subtitle">I2C puts a whole conversation on two wires. A logic analyzer records both wires, and once you can read a START, an address and an ACK in the capture, you can debug any I2C sensor.</p>
+  <h1>The I2C protocol</h1>
+  <p class="subtitle">A two-wire addressed bus for sensors, read from a logic-analyser capture</p>
 
   <div class="goal">
     By the end of this lesson you can read a register from an I2C device with the Pico SDK (register pointer, repeated start, read), and decode the same transaction from a logic-analyzer capture: start, address with R/W, ACK and NACK, data and stop.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Many sensors on two wires</h2>
   <p>
-    Lesson 16 showed you a pull-up resistor and an open-drain output: a pin that can only pull a line low, with a resistor that lets it go high. Lesson 53 showed UART, a link with one wire each way, one pair of devices, and no shared clock. Lesson 58 read an analogue sensor directly into a pin. Real sensors are different. A gyroscope, a temperature sensor, an EEPROM and an OLED display all sit on the same two wires, and they are all addressed by number. That is I2C.
+    Lesson 16 showed a pull-up resistor and an open-drain output, a pin that can only pull a line low with a resistor that lets it go high, lesson 53 showed UART, a link with one wire each way between one pair of devices and no shared clock, and lesson 58 read an analogue sensor directly into a pin. Real sensors usually work differently, because a gyroscope, a temperature sensor, an EEPROM and an OLED display can all sit on the same two wires and be addressed by number, which is what I2C provides.
   </p>
   <p>
-    I2C is the everyday bus of small sensors. Many motion sensors, temperature sensors, EEPROMs and OLED displays speak it. When one of them stops responding in a product, the fastest diagnosis is a logic-analyzer capture, and reading that capture needs the protocol's rules. This lesson builds those rules from the wires up, then uses the rules on a simulated MPU6050 motion sensor.
-  </p>
-
-  <h2>The concepts, one at a time</h2>
-  <p>
-    I2C has five ideas: the two open-drain wires, the START and STOP conditions, the byte and its acknowledge bit, the address with its read or write bit, and the register read. Each one depends on the one before, so take them in order.
+    I2C is the everyday bus of small sensors, spoken by many motion sensors, temperature sensors, EEPROMs and OLED displays. When one of them stops responding in a product, the fastest diagnosis is a logic-analyser capture, which can only be read with the protocol's rules in mind, so this lesson builds those rules from the wires up and then applies them to a simulated MPU6050 motion sensor.
   </p>
 
-  <h3>Two wires, both open-drain</h3>
+  <h2>Open-drain SDA and SCL lines</h2>
   <p>
-    I2C (Inter-Integrated Circuit) has two wires. SDA carries data and SCL carries the clock. Both are <strong><a href="../reference/glossary.html#open-drain-output">open-drain</a></strong>: a device can pull a line low, but it cannot drive it high. A <strong><a href="../reference/glossary.html#pull-up-resistor">pull-up resistor</a></strong> on each line takes it high when nobody pulls it low. The NXP specification says that when the bus is free, both lines are high, and that the output stages must be open-drain so that devices can perform the wired-AND function <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.1</a>.
+    I2C rests on five ideas, the two open-drain wires, the START and STOP conditions, the byte with its acknowledge bit, the address with its read or write bit and the register read, each depending on the one before. I2C (Inter-Integrated Circuit) has two wires, SDA carrying data and SCL the clock, and both are <strong><a href="../reference/glossary.html#open-drain-output">open-drain</a></strong>, so a device can pull a line low but cannot drive it high, while a <strong><a href="../reference/glossary.html#pull-up-resistor">pull-up resistor</a></strong> on each line takes it high when nobody pulls it low. The NXP specification states that both lines are high when the bus is free and that the output stages must be open-drain so that devices can perform the wired-AND function <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.1</a>.
   </p>
   <p>
-    The reason is safety and sharing. Two devices can drive the same wire without a short circuit, because neither can connect the wire to the supply. If one device pulls low and the other releases, the wire is low, and that is a valid result.
+    The arrangement makes sharing safe. Two devices can drive the same wire without a short circuit, because neither can connect it to the supply, so if one pulls low while the other releases, the wire is low, which is a valid result.
   </p>
 
-  <h3>START and STOP</h3>
+  <h2>START and STOP conditions</h2>
   <p>
-    The master starts every transaction and generates every clock pulse. A <strong><a href="../reference/glossary.html#repeated-start">START</a></strong> is SDA falling while SCL is high, and a STOP is SDA rising while SCL is high <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.4</a>. The RP2040 I2C block uses the same definitions <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.3.6.1</a>. The NXP specification calls the master a controller, and the RP2040 datasheet calls it a master. This lesson uses master.
-    <span class="sidenote">The data line may change only while the clock is low, except for START and STOP. That is what makes the sampling rule simple: the receiver reads SDA while SCL is high.</span>
+    The master starts every transaction and generates every clock pulse. A <strong><a href="../reference/glossary.html#repeated-start">START</a></strong> is SDA falling while SCL is high and a STOP is SDA rising while SCL is high <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.4</a>, definitions the RP2040 I2C block shares <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.3.6.1</a>. The NXP specification calls the master a controller while the RP2040 datasheet calls it a master, the term this lesson uses.
+    <span class="sidenote">Apart from START and STOP, the data line may change only while the clock is low, which keeps the sampling rule simple: the receiver reads SDA while SCL is high.</span>
   </p>
-  <h3>How one bit gets onto the wire</h3>
+
+  <h2>Bit timing and clock stretching</h2>
   <p>
-    A single bit takes one clock pulse, and the sequence inside that pulse is the whole protocol at the lowest level. The master, which owns the clock, first pulls SCL low. While SCL is low, the sender changes SDA to the value of the next bit. Then the master releases SCL, which rises through the pull-up. While SCL is high, SDA holds still, and the receiver reads it. Then SCL falls again, and the cycle repeats. Eight of these pulses make a byte, and a ninth pulse carries the ACK.
-  </p>
-  <p>
-    Think of it as a handshake that happens at a fixed beat. The receiver never has to guess when a bit starts, because the clock says so, and the sender never changes a bit while the receiver is reading it. That is also why the bus can be slow: the master chooses the beat. In standard mode the beat is at most 100 kbit/s, and the master chooses the speed, not the sensor.
+    A single bit takes one clock pulse, and the sequence within that pulse is the whole protocol at its lowest level. The master, which owns the clock, first pulls SCL low, the sender sets SDA to the next bit while SCL is low, and the master then releases SCL, which rises through the pull-up, after which SDA holds still while the receiver reads it, until SCL falls again and the cycle repeats. Eight such pulses make a byte, and a ninth carries the ACK.
   </p>
   <p>
-    Sometimes a sensor needs more time than the master's beat allows. It can then hold SCL low after a byte, which the NXP specification calls clock stretching. The master cannot continue until the line is released, so the transfer simply pauses <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.9</a>. Most simple sensors cannot stretch the clock, because they have no clock driver. A logic analyzer shows stretching as a long low period on SCL, which is a useful clue when a transfer is slow.
+    The receiver therefore never has to guess when a bit starts, because the clock tells it, and the sender never changes a bit while the receiver is reading it. The master chooses the beat, which in standard mode is at most 100 kbit/s, so the speed is set by the master rather than the sensor.
+  </p>
+  <p>
+    A sensor that needs more time than the master's beat allows can hold SCL low after a byte, which the NXP specification calls clock stretching, and since the master cannot continue until the line is released, the transfer simply pauses <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.9</a>. Many simple sensors never stretch the clock, and a logic analyser shows stretching as a long low period on SCL, a useful clue when a transfer is slow.
   </p>
 
   <figure>
@@ -77,111 +73,112 @@
     <figcaption>Figure 1. Simplified bus timing. START and STOP change SDA while SCL is high. Every other change of SDA happens while SCL is low.</figcaption>
   </figure>
 
-  <h3>Bytes and the acknowledge bit</h3>
+  <h2>Bytes and the acknowledge bit</h2>
   <p>
-    Every byte on the bus is eight bits, sent most significant bit first, and every byte is followed by an acknowledge bit <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.5</a>. The ninth clock after the eighth data bit belongs to the receiver. If the receiver pulls SDA low during that clock, it has taken the byte: that is an <strong><a href="../reference/glossary.html#ack-and-nack">ACK</a></strong>. If SDA stays high, the byte was not taken: that is a <strong>NACK</strong>. The NXP specification lists the reasons for a NACK, including no device at the address, and a receiver that cannot take more bytes <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.6</a>.
+    Every byte on the bus has eight bits, sent most significant bit first, and is followed by an acknowledge bit <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.5</a>, the ninth clock after the eighth data bit belonging to the receiver. If the receiver pulls SDA low during that clock, it has taken the byte, an <strong><a href="../reference/glossary.html#ack-and-nack">ACK</a></strong>, and if SDA stays high, the byte was not taken, a <strong>NACK</strong>. The NXP specification lists the reasons for a NACK, among them no device at the address and a receiver that cannot take more bytes <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.6</a>.
   </p>
   <p>
-    The NACK also has a second use. A master that is reading ends the read by NACKing the last byte it receives, and then it sends a STOP. The NXP specification says a controller-receiver must signal the end of the transfer <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.6, item 5</a>, and its Device ID reading sequence ends by NACKing the last byte <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.17</a>. So a NACK in a read is normal, and a NACK in a write means something is wrong.
+    The NACK has a second use, because a reading master ends the read by NACKing the last byte it receives and then sending a STOP. The NXP specification requires a controller-receiver to signal the end of the transfer <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.6, item 5</a>, and its Device ID reading sequence ends by NACKing the last byte <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.17</a>, so a NACK in a read is normal, whereas a NACK in a write means something is wrong.
   </p>
 
-  <h3>Addresses and the R/W bit</h3>
+  <h2>Addresses and the R/W bit</h2>
   <p>
-    The first byte after a START is the address. It carries a 7-bit device address in bits 7 to 1, and the least significant bit is the R/W flag: 0 means the master writes, and 1 means the master reads <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.10</a>. The RP2040 datasheet draws the same byte in its figure of the 7-bit format <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.3.6.2.1</a>.
+    The first byte after a START is the address, carrying a 7-bit device address in bits 7 to 1 and the R/W flag in the least significant bit, 0 meaning that the master writes and 1 that it reads <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.10</a>, and the RP2040 datasheet draws the same byte in its figure of the 7-bit format <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, section 4.3.6.2.1</a>.
   </p>
   <p>
-    The address in your code is 7 bits, but the wire carries 8. So address 0x68 appears on the wire as 0xD0 for a write (0x68 shifted left by one, plus a 0 for write) and 0xD1 for a read. The SDK does the shift for you, and the logic analyzer shows the 8-bit byte. The two numbers, 0x68 and 0xD0, describe the same device, and mixing them up is the commonest I2C mistake.
+    The address in the code has 7 bits while the wire carries 8, so address 0x68 appears on the wire as 0xD0 for a write, 0x68 shifted left by one plus a 0, and as 0xD1 for a read. The SDK performs the shift and the logic analyser shows the 8-bit byte, so 0x68 and 0xD0 describe the same device, and mixing them up is the commonest I2C mistake.
   </p>
 
   <div class="analogy">
-    <p>An I²C address works like a roll call in a classroom. The teacher calls one name, and only that student puts a hand up: the ACK. If nobody by that name is in the room, no hand goes up, and the teacher hears silence: the NACK. Every device hears every name, which is why two devices with the same address on one bus answer together and garble the reply.</p>
+    <p>An I2C address works like a roll call in a classroom: the teacher calls one name and only that student raises a hand, the ACK, while if nobody of that name is present, no hand goes up and the teacher hears silence, the NACK. Every device hears every name, which is why two devices with the same address on one bus answer together and garble the reply. A roll call ends after each name, however, whereas on I2C the answering device then stays in the conversation for the bytes that follow.</p>
   </div>
 
-  <h2>Reading a register, step by step</h2>
+  <h2>Register reads with a repeated START</h2>
   <p>
-    Most sensors have registers, and reading one takes two transfers. First the master writes the register number to the device, which sets the device's <strong><a href="../reference/glossary.html#register-pointer">register pointer</a></strong>. Then the master reads the byte the pointer points to. The two transfers are joined by a <strong>repeated START</strong>: the master does not send a STOP between them, so it keeps the bus. The NXP specification says a repeated START keeps the bus busy and is functionally the same as a START <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.4</a>.
+    Most sensors have registers, and reading one takes two transfers: the master first writes the register number to the device, which sets the device's <strong><a href="../reference/glossary.html#register-pointer">register pointer</a></strong>, and then reads the byte it points to. A <strong>repeated START</strong> joins the two transfers, the master sending no STOP between them and so keeping the bus, and the NXP specification states that a repeated START keeps the bus busy and is functionally identical to a START <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.4</a>.
   </p>
   <pre><code class="language-c">/* 1. START, 0xD0 (write to 0x68), ACK, 0x75 (the register), ACK -- no STOP */
 i2c_write_blocking(i2c0, 0x68, &amp;reg, 1, true);   /* nostop = true */
 /* 2. repeated START, 0xD1 (read from 0x68), ACK, one data byte, NACK, STOP */
 i2c_read_blocking(i2c0, 0x68, &amp;value, 1, false);  /* nostop = false: STOP at the end */</code></pre>
   <p>
-    The SDK's <code>nostop</code> argument selects the join. The SDK header says that with <code>nostop</code> true, the master keeps control of the bus at the end of the transfer, and the next transfer begins with a restart rather than a start <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">Pico SDK, hardware/i2c.h</a>. With <code>false</code>, the transfer ends with a STOP.
+    The SDK's <code>nostop</code> argument selects the join. According to the SDK header, with <code>nostop</code> true the master keeps control of the bus at the end of the transfer and the next transfer begins with a restart rather than a start <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">Pico SDK, hardware/i2c.h</a>, while with <code>false</code> the transfer ends with a STOP.
   </p>
 
-  <h3>A write for contrast</h3>
+  <h2>Register writes</h2>
   <p>
-    A write needs no repeated start, because it has nothing to wait for. The wake-up write in this lesson sends the address, the register number and the value, and then stops. Its wire sequence is START, 0xD0 with W, ACK, 0x6B, ACK, 0x00, ACK, STOP. The sensor acknowledges each of the three bytes, and the master ends with a STOP, which frees the bus.
+    A write needs no repeated start, because it has nothing to wait for. The wake-up write in this lesson sends the address, the register number and the value and then stops, its wire sequence being START, 0xD0 with W, ACK, 0x6B, ACK, 0x00, ACK, STOP, in which the sensor acknowledges each of the three bytes and the master's STOP frees the bus.
   </p>
   <p>
-    Compare that with the read. The read's first transfer is the same as the write but without the value byte, and it is followed by a repeated START rather than a STOP. A repeated START belongs to the same transaction, with the direction of the data changed, and the bus is never released. Once you see the two patterns side by side, you can read most register-based devices, because most of them follow one of these two shapes.
+    The read's first transfer is the same as the write without the value byte, followed by a repeated START instead of a STOP, so it belongs to the same transaction with the data direction reversed and the bus never released. With the two patterns side by side, most register-based devices can be read, because most of them follow one of these two shapes.
   </p>
   <p>
-    The write is also the first place to check when the sensor does not respond. If the address is wrong, the first byte gets no ACK, and the sequence stops there. If the address is acknowledged but a later byte is not, the bus cannot tell you why. Whether a device acknowledges an unknown register is decided by its datasheet, so check that before you blame the wiring.
-  </p>
-
-  <h3>The MPU6050 in this lesson</h3>
-  <p>
-    The device in this lesson is the MPU6050, a motion sensor with an accelerometer and a gyroscope. Its WHO_AM_I register is at address 0x75, and its default value is 0x68, which is the device's 7-bit address with the AD0 pin low <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">InvenSense RM-MPU-6000A, register map, section 4.34</a>. Connecting AD0 high changes the address to 0x69 <a href="https://docs.wokwi.com/parts/wokwi-mpu6050" target="_blank" rel="noopener">Wokwi, MPU6050 part</a>.
-  </p>
-  <p>
-    The sensor powers up in sleep mode, as the register description says <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">RM-MPU-6000A, section 4</a>. The SLEEP bit is bit 6 of PWR_MGMT_1, register 107 (0x6B), and setting it puts the device to sleep <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">RM-MPU-6000A, section 4.30</a>. So the code writes 0 to PWR_MGMT_1 to clear the bit and wake the sensor before it reads any measurements.
+    The write is also the first thing to check when a sensor does not respond. A wrong address gets no ACK on the first byte, ending the sequence there, while an acknowledged address followed by an unacknowledged byte cannot be explained by the bus itself, since whether a device acknowledges an unknown register is decided by its datasheet, which should be checked before blaming the wiring.
   </p>
 
-  <h2>Worked example: one transaction on the wire</h2>
+  <h2>The MPU6050 motion sensor</h2>
   <p>
-    Trace one read of WHO_AM_I, with the bytes in the order the wire carries them. The master is the Pico, and the target is the MPU6050 at 0x68.
+    The device in this lesson is the MPU6050, a motion sensor combining an accelerometer and a gyroscope, whose WHO_AM_I register at address 0x75 holds a default value of 0x68, the device's 7-bit address with the AD0 pin low <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">InvenSense RM-MPU-6000A, register map, section 4.34</a>, while connecting AD0 high changes the address to 0x69 <a href="https://docs.wokwi.com/parts/wokwi-mpu6050" target="_blank" rel="noopener">Wokwi, MPU6050 part</a>.
+  </p>
+  <p>
+    The sensor powers up in sleep mode, as the register description says <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">RM-MPU-6000A, section 4</a>, the SLEEP bit being bit 6 of PWR_MGMT_1, register 107 (0x6B), which puts the device to sleep when set <a href="https://cdn.sparkfun.com/datasheets/Sensors/Accelerometers/RM-MPU-6000A.pdf" target="_blank" rel="noopener">RM-MPU-6000A, section 4.30</a>. The code therefore writes 0 to PWR_MGMT_1 to clear the bit and wake the sensor before reading any measurement.
+  </p>
+
+  <h2>Worked example: one WHO_AM_I transaction</h2>
+  <p>
+    We trace one read of WHO_AM_I with the bytes in wire order, the master being the Pico and the target the MPU6050 at 0x68. Before reading the steps, predict who drives SDA during the data byte and who sends the final NACK.
   </p>
   <ol class="steps">
-    <li><strong>START.</strong> SDA falls while SCL is high. The bus is now busy.</li>
-    <li><strong>Address byte, write.</strong> The master sends 0xD0, which is 0x68 shifted left, plus 0 for write. The bits 1 1 0 1 0 0 0 0 go out MSB first. The sensor pulls SDA low on the ninth clock, so the byte is ACKed.</li>
-    <li><strong>Register byte.</strong> The master sends 0x75, the WHO_AM_I register number. The sensor ACKs. The register pointer now points at WHO_AM_I.</li>
-    <li><strong>Repeated START.</strong> The master does not send a STOP. It sends a repeated START, which keeps the bus.</li>
-    <li><strong>Address byte, read.</strong> The master sends 0xD1, which is 0x68 shifted left, plus 1 for read. The sensor ACKs.</li>
-    <li><strong>Data byte.</strong> The sensor sends 0x68 on SDA, one bit per clock, MSB first. The master does not drive SDA during these clocks.</li>
-    <li><strong>NACK and STOP.</strong> The master NACKs the data byte, which ends the read, and then sends a STOP. The bus is free again.</li>
+    <li><strong>START.</strong> SDA falls while SCL is high, and the bus is now busy.</li>
+    <li><strong>Address byte, write.</strong> The master sends 0xD0, 0x68 shifted left plus 0 for write, as the bits 1 1 0 1 0 0 0 0 MSB first, and the sensor pulls SDA low on the ninth clock, acknowledging the byte.</li>
+    <li><strong>Register byte.</strong> The master sends 0x75, the WHO_AM_I register number, and the sensor's ACK leaves its register pointer at WHO_AM_I.</li>
+    <li><strong>Repeated START.</strong> Instead of a STOP the master sends a repeated START, keeping the bus.</li>
+    <li><strong>Address byte, read.</strong> The master sends 0xD1, 0x68 shifted left plus 1 for read, and the sensor ACKs.</li>
+    <li><strong>Data byte.</strong> The sensor sends 0x68 on SDA, one bit per clock, MSB first, while the master leaves SDA undriven.</li>
+    <li><strong>NACK and STOP.</strong> The master NACKs the data byte, ending the read, and sends a STOP, freeing the bus again.</li>
   </ol>
   <p>
-    The capture should show exactly that: one START, the address 0x68 with W, the register 0x75, a repeated START, the address 0x68 with R, the data 0x68, a NACK and one STOP. If your decode shows a STOP between the register byte and the second START, the code is wrong, and the mistakes section shows why.
+    The capture should show exactly that sequence: one START, the address 0x68 with W, the register 0x75, a repeated START, the address 0x68 with R, the data 0x68, a NACK and one STOP. A decode with a STOP between the register byte and the second START means the code is wrong, for the reason given in the mistakes section.
   </p>
 
   <p>
-    Build the same transaction and read it on the wires. Click each field to see who drives SDA and why. Then tick no device at this address, and the STOP bug, and compare the waveforms with the correct one.
+    The widget below builds the same transaction on the wires, and clicking a field shows who drives SDA and why. Then tick the options for no device at this address and for the STOP bug, and compare those waveforms with the correct one.
   </p>
   <div class="widget buswave" data-bus="i2c"></div>
 
-  <h2>Reading a capture, field by field</h2>
+  <h2>Decoding a logic-analyser capture</h2>
   <p>
-    The logic analyzer records two digital channels, and the decoder turns them into bytes. A decoder does not invent anything, so each line in its table can be checked against the waveform under it. Work through the capture in the same order every time, and you will catch the common faults quickly.
+    The logic analyser records two digital channels and its decoder turns them into bytes, inventing nothing, so every line of its table can be checked against the waveform beneath. Working through each capture in the same order catches the common faults quickly.
   </p>
   <ol class="steps">
-    <li><strong>Find the START.</strong> Look for SDA falling while SCL is high. The decoder marks this with a START label. If there is no START, the master never began a transfer, so look at the code, not the bus.</li>
-    <li><strong>Read the address byte.</strong> The decoder shows the 7-bit address and the R/W bit. Check that the address is the one you expect, and that the next bit after it is the ACK. An ACK means a device answered on the bus. A NACK here means no device at that address, or a wrong address in the code.</li>
-    <li><strong>Read each data byte and its ACK.</strong> Each byte is followed by one ACK or NACK. Within a write, the target ACKs every byte. Within a read, the target ACKs each byte it sends, and the master NACKs the last one.</li>
-    <li><strong>Check for a repeated START.</strong> Between the pointer write and the read, there should be a START with no STOP before it. A STOP there means the code released the bus, which is mistake 2 below.</li>
-    <li><strong>Find the STOP.</strong> The transaction ends with a STOP, which the decoder marks. If the STOP is missing, the master is still holding the bus, and the next transfer will look odd.</li>
+    <li><strong>Find the START.</strong> Look for SDA falling while SCL is high, which the decoder labels START, and if there is none, the master never began a transfer, so the code rather than the bus is at fault.</li>
+    <li><strong>Read the address byte.</strong> The decoder shows the 7-bit address and the R/W bit, so check that the address is the expected one and that the next bit is an ACK, which means a device answered, whereas a NACK here means no device at that address or a wrong address in the code.</li>
+    <li><strong>Read each data byte and its ACK.</strong> Each byte is followed by one ACK or NACK, the target acknowledging every byte of a write, while in a read the target sends the bytes and the master NACKs the last one.</li>
+    <li><strong>Check for a repeated START.</strong> Between the pointer write and the read there should be a START with no STOP before it, and a STOP there means the code released the bus, the second mistake below.</li>
+    <li><strong>Find the STOP.</strong> The transaction ends with a STOP, marked by the decoder, and if it is missing, the master still holds the bus and the next transfer will look odd.</li>
   </ol>
   <p>
-    Keep the capture and the code side by side. If the register number on the wire differs from the one in your code, the bug is in the call's arguments. If the value on the wire is right but your variable is wrong, the bug is after the read.
+    Keep the capture and the code side by side: if the register number on the wire differs from the one in the code, the bug lies in the call's arguments, and if the value on the wire is right but the variable is wrong, the bug comes after the read.
   </p>
 
-  <h2>Pull-ups and the rise time</h2>
+  <h2>Pull-up resistors and rise time</h2>
   <p>
-    A pull-up sets how fast the line rises after a device lets go. The rise time has a limit: the NXP specification gives a maximum rise time of 1000 ns for standard mode, which is 100 kbit/s <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, Table 10</a>. The RC time constant of the pull-up and the bus capacitance sets the rise time. Section 7.1 gives the rule: the rise time from 30 % to 70 % of VDD is 0.8473 × R × C <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 7.1</a>.
+    A pull-up sets how fast the line rises after a device lets go, and the rise time is limited, the NXP specification giving a maximum of 1 000 ns for standard mode at 100 kbit/s <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, Table 10</a>. The pull-up and the bus capacitance form an RC circuit, and section 7.1 gives the rise time from 30 % to 70 % of VDD as
+  </p>
+  <p class="eq"><span>t<sub>r</sub> = 0.8473 × R × C</span><span class="eq-n">(1)</span></p>
+  <p>
+    where R is the pull-up resistance and C the bus capacitance <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 7.1</a>. For the diagram's 4.7 kΩ resistors on a bus of about 100 pF the rise time is 0.8473 × 4 700 Ω × 100 pF = 0.40 µs, inside the 1 000 ns limit, and the largest resistor that still meets the limit is 1 000 ns ÷ (0.8473 × 100 pF) = 11.8 kΩ, so 4.7 kΩ has room to spare, while a longer bus with more capacitance needs a smaller resistor.
   </p>
   <p>
-    Work the numbers for the diagram's 4.7 kΩ resistors on a bus of about 100 pF. The rise time is 0.8473 × 4700 Ω × 100 pF = 0.40 µs, which is inside the 1000 ns limit. The same section gives the largest resistor that meets the limit: 1000 ns ÷ (0.8473 × 100 pF) = 11.8 kΩ. So 4.7 kΩ has room to spare, and a longer bus with more capacitance needs a smaller resistor.
+    The RP2040's internal pull-ups are 50 to 80 kΩ according to its digital I/O table <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, Table 625</a>, so at 100 pF a 65 kΩ pull-up would take about 5 µs to rise, far beyond the limit. That is why the diagram adds external resistors and why the solution's comment calls the internal pull-up weak, and since a weak pull-up can still work on a short bench wire, the problem tends to hide.
   </p>
   <p>
-    The RP2040's internal pull-ups are 50 to 80 kΩ, according to the digital I/O table <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, Table 625</a>. At 100 pF, a 65 kΩ pull-up would take about 5 µs to rise, which is far over the limit. That is why the diagram adds external resistors, and why the solution's comment says the internal pull-up is weak. A weak pull-up can still work on a short bench wire, which is how the problem hides.
-  </p>
-  <p>
-    The pins are GP4 for SDA and GP5 for SCL. In the RP2040's GPIO function table they are I2C0's SDA and SCL pins, so the pair is valid for the I2C0 peripheral <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, GPIO function table (Table 279)</a>. They are also the Pico board's default I2C pair: the SDK's board header <code>boards/pico.h</code> defines <code>PICO_DEFAULT_I2C</code> as 0, <code>PICO_DEFAULT_I2C_SDA_PIN</code> as 4 and <code>PICO_DEFAULT_I2C_SCL_PIN</code> as 5. "Default" only names the pair, though: nothing connects the pins to the I2C block until your code sets their GPIO function to I2C with <code>gpio_set_function()</code>.
+    The pins are GP4 for SDA and GP5 for SCL, which the RP2040's GPIO function table lists as I2C0's SDA and SCL, so the pair is valid for the I2C0 peripheral <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">RP2040 datasheet, GPIO function table (Table 279)</a>. They are also the Pico board's default I2C pair, the SDK's board header <code>boards/pico.h</code> defining <code>PICO_DEFAULT_I2C</code> as 0, <code>PICO_DEFAULT_I2C_SDA_PIN</code> as 4 and <code>PICO_DEFAULT_I2C_SCL_PIN</code> as 5, but "default" only names the pair, and nothing connects the pins to the I2C block until the code sets their GPIO function to I2C with <code>gpio_set_function()</code>.
   </p>
 
-  <h2>The code, line by line</h2>
+  <h2>The I2C driver code line by line</h2>
   <p>
-    The solution's two helpers and its main loop show every rule from this lesson. Read the write helper first, because the wake-up uses it.
+    The solution's two helpers and its main loop show every rule of this lesson, starting with the write helper that the wake-up uses.
   </p>
   <pre><code class="language-c">/* Write one register. One transaction: START, address+W, register, data, STOP. */
 static int write_reg(uint8_t reg, uint8_t value) {
@@ -190,10 +187,10 @@ static int write_reg(uint8_t reg, uint8_t value) {
     return n == 2 ? PICO_OK : PICO_ERROR_GENERIC;
 }</code></pre>
   <ol class="steps">
-    <li><code>uint8_t buf[2] = {reg, value};</code> puts the register number and the data in one array. The first byte after the address is the register pointer, and the second is the value. One transfer writes both.</li>
-    <li><code>i2c_write_blocking(I2C_PORT, MPU_ADDR, buf, 2, false)</code> sends START, the address with the write bit, the two bytes, and a STOP. The 7-bit <code>MPU_ADDR</code> is given to the SDK, which adds the write bit.</li>
-    <li><code>false</code> is <code>nostop</code>, so the SDK ends the transfer with a STOP. That is correct here, because nothing needs the bus after the write.</li>
-    <li>The return value is the number of bytes the device acknowledged, or an error. The SDK returns an error if the address is not acknowledged, so a missing device shows up here.</li>
+    <li><code>uint8_t buf[2] = {reg, value};</code> places the register number and the data in one array, the first byte after the address being the register pointer and the second the value, so one transfer writes both.</li>
+    <li><code>i2c_write_blocking(I2C_PORT, MPU_ADDR, buf, 2, false)</code> sends START, the address with the write bit, the two bytes and a STOP, the SDK adding the write bit to the 7-bit <code>MPU_ADDR</code>.</li>
+    <li><code>false</code> is <code>nostop</code>, so the SDK ends the transfer with a STOP, which is correct because nothing needs the bus after the write.</li>
+    <li>The return value is the number of bytes the device acknowledged, or an error if the address was not acknowledged, so a missing device shows up here.</li>
   </ol>
   <pre><code class="language-c">/* Read one register: a write of the register pointer, then a read. The two are joined by a */
 /* repeated START (nostop = true), so the bus is never released between them. */
@@ -206,10 +203,10 @@ static int read_reg(uint8_t reg, uint8_t *value) {
     return n == 1 ? PICO_OK : PICO_ERROR_GENERIC;
 }</code></pre>
   <ol class="steps">
-    <li><code>i2c_write_blocking(..., &amp;reg, 1, true)</code> sends the address with the write bit, then the register number. With <code>nostop</code> true, it leaves the bus held, and the SDK's next transfer starts with a repeated START.</li>
-    <li><code>if (n != 1)</code> catches a NACK on either byte. A write that returns 1 byte means the register number was acknowledged. A failed address returns an error, which is not 1.</li>
-    <li><code>i2c_read_blocking(..., value, 1, false)</code> sends a repeated START, the address with the read bit, and reads one byte. The SDK NACKs that last byte and sends a STOP, because <code>nostop</code> is false.</li>
-    <li>The function returns OK only when the read got exactly one byte. The caller does not see partial results.</li>
+    <li><code>i2c_write_blocking(..., &amp;reg, 1, true)</code> sends the address with the write bit and then the register number, and with <code>nostop</code> true it leaves the bus held, so the SDK's next transfer starts with a repeated START.</li>
+    <li><code>if (n != 1)</code> catches a NACK on either byte, a return of 1 meaning the register number was acknowledged, while a failed address returns an error, which is not 1.</li>
+    <li><code>i2c_read_blocking(..., value, 1, false)</code> sends a repeated START and the address with the read bit and reads one byte, which the SDK NACKs before sending a STOP, because <code>nostop</code> is false.</li>
+    <li>The function returns OK only when the read obtained exactly one byte, so the caller never sees partial results.</li>
   </ol>
   <pre><code class="language-c">int main(void) {
     stdio_init_all();
@@ -231,76 +228,78 @@ static int read_reg(uint8_t reg, uint8_t *value) {
     }
 }</code></pre>
   <ol class="steps">
-    <li><code>i2c_init(I2C_PORT, I2C_HZ)</code> starts the I2C0 block at 100 kbit/s, the standard mode, and returns the baud rate it achieved.</li>
-    <li><code>gpio_set_function()</code> on GP4 and GP5 connects the pins to the I2C block. Without this, the pins are ordinary GPIO and the block sees nothing.</li>
-    <li>The wake write sends register 0x6B with the value 0, which clears the SLEEP bit. The message after a failure names the step, so the log tells you which transfer went wrong.</li>
-    <li>The loop reads WHO_AM_I once a second and prints it only if the value is 0x68. A mismatch prints the value that was read, which is useful when the bus is wired to a different device.</li>
+    <li><code>i2c_init(I2C_PORT, I2C_HZ)</code> starts the I2C0 block at 100 kbit/s, standard mode, and returns the baud rate it achieved.</li>
+    <li><code>gpio_set_function()</code> on GP4 and GP5 connects the pins to the I2C block, without which they remain ordinary GPIO and the block sees nothing.</li>
+    <li>The wake write sends register 0x6B with the value 0, clearing the SLEEP bit, and its failure message names the step, so the log shows which transfer went wrong.</li>
+    <li>The loop reads WHO_AM_I once a second and reports success only for 0x68, while a mismatch prints the value read, which helps when the bus is wired to a different device.</li>
   </ol>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The project <code>projects/0060-the-i2c-protocol</code> wires a Wokwi MPU6050 to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups. A logic analyzer is connected to the same two wires, on channels D0 and D1. The program wakes the sensor, then reads WHO_AM_I once a second. When you stop the simulator, the logic analyzer writes its recording to <code>wokwi.vcd</code> in the project root <a href="https://docs.wokwi.com/parts/wokwi-logic-analyzer" target="_blank" rel="noopener">Wokwi, logic analyzer part</a>.
+    The project <code>projects/0060-the-i2c-protocol</code> wires a Wokwi MPU6050 to GP4 (SDA) and GP5 (SCL) with 4.7 kΩ pull-ups, and a logic analyser on channels D0 and D1 watches the same two wires. The program wakes the sensor and then reads WHO_AM_I once a second, and when the simulator stops, the logic analyser writes its recording to <code>wokwi.vcd</code> in the project root <a href="https://docs.wokwi.com/parts/wokwi-logic-analyzer" target="_blank" rel="noopener">Wokwi, logic analyzer part</a>.
   </p>
   <ol class="steps">
     <li>Open <code>projects/0060-the-i2c-protocol/starter</code> in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).</li>
-    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
-    <li>Your task: wake the sensor with <code>write_reg(REG_PWR_MGMT_1, 0x00)</code>, and print <code>MPU6050 WHO_AM_I=0x68</code> when the read matches. Then change the pointer write in <code>read_reg()</code> to a repeated start (<code>nostop = true</code>), so the read does not follow a STOP. Stop the simulator, open <code>wokwi.vcd</code> in PulseView, and add the I2C decoder on the two channels.</li>
-    <li>You will know it works when the serial monitor prints <code>MPU6050 WHO_AM_I=0x68</code>, and the decoder shows one START, the address 0x68 with the write bit, the register 0x75, a repeated START, the address with the read bit, the data 0x68, and one STOP.</li>
+    <li>Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>.</li>
+    <li>Wake the sensor with <code>write_reg(REG_PWR_MGMT_1, 0x00)</code> and print <code>MPU6050 WHO_AM_I=0x68</code> when the read matches, then change the pointer write in <code>read_reg()</code> to a repeated start (<code>nostop = true</code>) so that the read no longer follows a STOP. Stop the simulator, open <code>wokwi.vcd</code> in PulseView and add the I2C decoder on the two channels.</li>
+    <li>The program works when the serial monitor prints <code>MPU6050 WHO_AM_I=0x68</code> and the decoder shows one START, the address 0x68 with the write bit, the register 0x75, a repeated START, the address with the read bit, the data 0x68 and one STOP.</li>
   </ol>
   <details>
     <summary>Hint for reading the decode</summary>
-    <p>PulseView shows the address byte as 7 bits plus R/W. A write frame reads 0x68 W, and a read frame reads 0x68 R. Find the ACK bits. Each byte should have an ACK after it, except the last read byte, which the master NACKs.</p>
+    <p>PulseView shows the address byte as 7 bits plus R/W, so a write frame reads 0x68 W and a read frame 0x68 R. Find the ACK bits: every byte should be followed by an ACK except the last read byte, which the master NACKs.</p>
   </details>
   <details>
     <summary>Hint for the repeated start</summary>
-    <p>In the SDK, the write call's last argument is <code>nostop</code>. Set it to <code>true</code> for the register pointer write, and leave the read's <code>nostop</code> as <code>false</code>.</p>
+    <p>In the SDK the write call's last argument is <code>nostop</code>, so set it to <code>true</code> for the register pointer write and leave the read's <code>nostop</code> at <code>false</code>.</p>
   </details>
-  <p>The reference solution is in <code>projects/0060-the-i2c-protocol/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0060-the-i2c-protocol/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You read a register from an I2C device, joined the write and the read with a repeated start, and decoded both from a logic-analyzer capture. You can now check any I2C sensor's address, register and ACK on the wire.</div>
+  <div class="win">You read a register from an I2C device, joined the write and the read with a repeated start and decoded both from a logic-analyser capture, so you can now check any I2C sensor's address, register and ACK on the wire.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>The address passed already shifted</h3>
   <p>
-    <strong>Mistake 1: the shifted address.</strong> Symptom: the write returns an error, and the solution prints <code>I2C FAIL: read 0x00</code>, because the read never got an address acknowledge. The bug is usually passing 0xD0 as the address, which the SDK then shifts again. Fix: pass the 7-bit address 0x68. The analyzer shows the 8-bit byte, so compare with 0xD0 there, not in the code.
+    The write returns an error and the solution prints <code>I2C FAIL: read 0x00</code>, because the read never received an address acknowledge, the usual cause being 0xD0 passed as the address, which the SDK then shifts again. Pass the 7-bit address 0x68, and compare with 0xD0 only in the analyser, which shows the 8-bit byte.
   </p>
+  <h3>A STOP between the write and the read</h3>
   <p>
-    <strong>Mistake 2: a STOP between the write and the read.</strong> Symptom: the code works and prints <code>WHO_AM_I=0x68</code>, but the decoder shows two separate transactions, each with its own START and STOP, instead of one with a repeated START. A single master on a quiet bus gets away with it, and a bus shared with another master does not. Fix: pass <code>nostop = true</code> on the register write, as the solution does.
+    The code works and prints <code>WHO_AM_I=0x68</code>, but the decoder shows two separate transactions, each with its own START and STOP, instead of one with a repeated START, which a single master on a quiet bus gets away with but a bus shared with another master does not. Pass <code>nostop = true</code> on the register write, as the solution does.
   </p>
+  <h3>A pull-up that is too weak</h3>
   <p>
-    <strong>Mistake 3: a pull-up that is too weak.</strong> Symptom: on the bench wire it works, but on a longer wire or at a higher speed the decoder shows slow, rounded edges, and some transfers fail. The internal pull-up of 50 to 80 kΩ rises too slowly for a bus with real capacitance. Fix: add external pull-ups of a few kilohms, as the diagram does, and check the rise time with the formula in section 7.1.
+    Transfers work on the bench wire but some fail on a longer wire or at a higher speed, with slow, rounded edges in the decoder, because the internal 50 to 80 kΩ pull-up rises too slowly for a bus with real capacitance. Add external pull-ups of a few kilohms, as the diagram does, and check the rise time with equation (1).
   </p>
+  <h3>The sensor left asleep</h3>
   <p>
-    <strong>Mistake 4: the sensor left asleep.</strong> Symptom: the device answers its address, but its measurements do not change. The SLEEP bit is set at power-up, so the sensor does not measure until the wake write clears it. Fix: write 0 to PWR_MGMT_1 before reading any measurement register. The wake write in <code>main()</code> prints <code>I2C FAIL</code> if it is not acknowledged.
+    The device answers its address, but its measurements never change, because the SLEEP bit is set at power-up and the sensor does not measure until the wake write clears it. Write 0 to PWR_MGMT_1 before reading any measurement register, and note that the wake write in <code>main()</code> prints <code>I2C FAIL</code> if it is not acknowledged.
   </p>
+  <h3>The wrong address for AD0</h3>
   <p>
-    <strong>Mistake 5: the wrong address for AD0.</strong> Symptom: the write gets no acknowledge, and the decoder shows a NACK straight after the address byte. The board has AD0 high, so the device is at 0x69, and the code asks for 0x68. Fix: match the address to the AD0 pin, or scan the bus to find the device, which is what an address scan does.
-  </p>
-  </details>
-
-  <details class="fold depth"><summary><h2>More than one master</h2></summary>
-  <p>
-    This lesson has one master, the Pico, so the bus never has a conflict. The protocol allows more. Two masters can start a transfer at the same moment, and then both drive SDA. The NXP specification's rule is simple: while SCL is high, each master checks that SDA matches what it sent. The first time a master sends a 1 and reads back a 0, it has lost arbitration, turns off its SDA driver, and waits. Nothing is corrupted, because the bit that won was the one the other master had also sent, so the winner's data is intact <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.8</a>.
-  </p>
-  <p>
-    That is why I2C can run several masters on one bus without a separate arbiter chip. It is also why a second master on your bench can cause a problem that looks like a sensor fault. A bus that works with one master can fail intermittently when a second master is added, and a logic analyzer shows the lost arbitration as a transfer that stops early. Clock stretching, from the bit section, adds one more case: a slow sensor can hold SCL low, so a transfer that the code expects to take 100 µs can take longer. A timeout in the driver is the defence, and the SDK's timeout functions cover that case.
+    The write gets no acknowledge and the decoder shows a NACK straight after the address byte, because the board has AD0 high, which puts the device at 0x69 while the code asks for 0x68. Match the address to the AD0 pin, or find the device with an address scan.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Multi-master arbitration and bus debugging</h2></summary>
   <p>
-    Professional I2C debugging starts with the bus, not the code. The first question is whether the device acknowledges its address, and one logic-analyzer capture answers that. Once you can read the decode, most bus faults show up as one of the five mistakes above.
+    This lesson has one master, the Pico, so the bus never has a conflict, but the protocol allows more. Two masters can start a transfer at the same moment and both drive SDA, and the NXP specification's rule is that each master checks, while SCL is high, that SDA matches what it sent. The first master to send a 1 and read back a 0 has lost arbitration, turns off its SDA driver and waits, and nothing is corrupted, because the winning bit is the one the other master had also sent, so the winner's data is intact <a href="https://www.nxp.com/docs/en/user-guide/UM10204.pdf" target="_blank" rel="noopener">UM10204, section 3.1.8</a>.
+  </p>
+  <p>
+    That is why I2C can run several masters on one bus without a separate arbiter chip, and also why a second master on the bench can cause a problem that looks like a sensor fault: a bus that works with one master can fail intermittently once a second is added, the logic analyser showing the lost arbitration as a transfer that stops early. Clock stretching adds one more case, since a slow sensor holding SCL low can make a transfer the code expects to take 100 µs last longer, and a timeout in the driver, which the SDK's timeout functions provide, is the defence.
+  </p>
+  <p>
+    Professional I2C debugging therefore starts with the bus rather than the code, the first question being whether the device acknowledges its address, which one logic-analyser capture answers, and once the decode can be read, most bus faults turn out to be one of the five mistakes above.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>I2C has two open-drain wires, SDA and SCL. Pull-ups make the high level, so several devices can share the bus safely.</li>
-    <li>A START is SDA falling while SCL is high. A STOP is SDA rising while SCL is high. A repeated START keeps the bus.</li>
-    <li>Every byte is eight bits, MSB first, and is followed by an ACK or a NACK. A master NACKs the last byte of a read.</li>
-    <li>The address is 7 bits on the wire plus a R/W bit, so 0x68 is 0xD0 for a write and 0xD1 for a read.</li>
-    <li>A register read is a write of the register pointer, a repeated START, and a read. Pass <code>nostop = true</code> on the pointer write.</li>
-    <li>The rise time is 0.8473 × R × C, and the standard-mode limit is 1000 ns. Use external pull-ups for real buses, because the RP2040's internal ones are weak.</li>
-    <li>The MPU6050 powers up asleep. Clear the SLEEP bit in PWR_MGMT_1 (0x6B) before reading its measurements.</li>
+    <li>I2C has two open-drain wires, SDA and SCL, whose high level comes from pull-ups, so several devices can share the bus safely.</li>
+    <li>A START is SDA falling while SCL is high, a STOP is SDA rising while SCL is high, and a repeated START keeps the bus.</li>
+    <li>Every byte has eight bits, MSB first, followed by an ACK or a NACK, and a master NACKs the last byte of a read.</li>
+    <li>The address is 7 bits on the wire plus a R/W bit, so 0x68 becomes 0xD0 for a write and 0xD1 for a read.</li>
+    <li>A register read is a write of the register pointer, a repeated START and a read, with <code>nostop = true</code> on the pointer write.</li>
+    <li>The rise time is 0.8473 × R × C with a standard-mode limit of 1 000 ns, so real buses need external pull-ups, the RP2040's internal ones being weak.</li>
+    <li>The MPU6050 powers up asleep, so the SLEEP bit in PWR_MGMT_1 (0x6B) must be cleared before its measurements are read.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

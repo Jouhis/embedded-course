@@ -6,13 +6,13 @@ Lesson: [Pointers to registers and struct overlays](https://jouhis.github.io/emb
 
 ## Try it in Wokwi
 
-The project `projects/0047-register-pointers` is a Blue Pill. The starter gives you the register struct and the base addresses, and it has two mistakes in them. The CMSIS GPIO definitions are not used in this project: RCC, SysTick and USART1 still come from CMSIS, and the GPIO port is yours to write.
+The project `projects/0047-register-pointers` is a Blue Pill whose starter provides the register struct and base addresses with two mistakes in them. The CMSIS GPIO definitions are not used: RCC, SysTick and USART1 still come from CMSIS, while the GPIO port is yours to write.
 
-1. Open `projects/0047-register-pointers/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `LED on` and `LED off` lines, but the on-board LED does not blink, because the loop only prints: it does not write BSRR yet.
-2. Your task has two parts. First, correct the base address of `MY_GPIOC_BASE`: it is GPIOA's address in the starter. Second, put the struct fields in the offset order from the reference manual (RM0008 Rev 21, section 9.2 and Table 59), because the starter swaps `CRL` and `CRH`.
-3. Then write the PC13 configuration line in `main`, using the value from the worked example, and the BSRR toggling in the loop. The comments marked `TODO(learner)` in the starter say where.
-4. Add the line `uart_puts("OWN STRUCT OK\r\n");` directly after `uart_init();` in `main`. The solution makes the same call, and it tells you that the struct is in use before the LED starts.
-5. You will know it works when the serial monitor prints `OWN STRUCT OK`, followed by `LED on` and `LED off` lines every 500 ms, and the on-board LED blinks.
+1. Open `projects/0047-register-pointers/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `LED on` and `LED off` lines, but the on-board LED does not blink, because the loop only prints and does not yet write BSRR.
+2. The task has two parts. First correct `MY_GPIOC_BASE`, which holds GPIOA's address in the starter, and then put the struct fields in the offset order of the reference manual (RM0008 Rev 21, section 9.2 and Table 59), because the starter swaps `CRL` and `CRH`.
+3. Then write the PC13 configuration line in `main` with the value from the worked example, and the BSRR toggling in the loop, where the comments marked `TODO(learner)` indicate.
+4. Add the line `uart_puts("OWN STRUCT OK\r\n");` directly after `uart_init();` in `main`, the same call the solution makes, which shows that the struct is in use before the LED starts.
+5. The program works when the serial monitor prints `OWN STRUCT OK`, followed by `LED on` and `LED off` lines every 500 ms, and the on-board LED blinks.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `OWN STRUCT OK`.
 <details>
 <summary>Hint for the base address and offsets</summary>
 
-GPIOA and GPIOC are different ports, so their base addresses differ by 0x800 (the CMSIS header gives GPIOA_BASE and GPIOC_BASE as APB2 base plus 0x800 and 0x1000). Check the field order against the offset comments in the struct: each field is 4 bytes, so the declaration order sets the offsets.
+GPIOA and GPIOC are different ports whose base addresses differ by 0x800, since the CMSIS header gives GPIOA_BASE and GPIOC_BASE as the APB2 base plus 0x800 and 0x1000. Check the field order against the offset comments in the struct, remembering that each field is 4 bytes, so the declaration order sets the offsets.
 
 </details>
 
 <details>
 <summary>Hint for BSRR</summary>
 
-PC13 is pin 13. Its set bit is 13, and its reset bit is 13 + 16 = 29. The LED is wired active low, so the LED is on when PC13 is low. Use the reset bit to turn it on, and the set bit to turn it off.
+PC13 is pin 13, with set bit 13 and reset bit 13 + 16 = 29. The LED is wired active low, so it is on when PC13 is low, which means the reset bit turns it on and the set bit turns it off.
 
 </details>
 

@@ -6,13 +6,13 @@ Lesson: [Capstone 5: RTOS threads and PID heater control](https://jouhis.github.
 
 ## Try it: close the loop yourself
 
-The starter has the whole RTOS layer and the safety monitor. The PID step in `controller_step()` is a stub that always gives a duty of 0, so the heater never comes on. Your task is to wire the PID into that step.
+The starter has the whole RTOS layer and the safety monitor, but the PID step in `controller_step()` is a stub that always gives a duty of 0, so the heater never comes on, and your task is to wire the PID into that step.
 
 1. Open `projects/0117-dryer-rtos-pid/starter` in VS Code, or run `python -I tools/build.py projects/0117-dryer-rtos-pid/starter` from the workspace root.
-2. Open `app/controller.c` and find the `TODO(learner)` comment in the heating branch. Convert the setpoint and the measured temperature to degrees C, call `pid_update()`, and convert its 0.0 to 1.0 result to permille. Expect the duty to be a whole number from 0 to 1000, with no decimal part.
-3. Run the host tests: `python -I tools/build.py projects/0117-dryer-host-tests/starter --test`. Before your change, the summary reads `75% tests passed, 2 tests failed out of 8`, and the two failing programs are `controller` and `closed_loop`.
-4. You know it works when the summary reads `100% tests passed out of 8`. The closed-loop program also prints two lines: `[closed loop] PLA 45 C: settle 75.6 s, overshoot 0.36 C, final 45.00 C` and `[closed loop] dead heater: runaway latched at 80.4 s`. Those match the table above. The reference is in `projects/0117-dryer-rtos-pid/solution`, and its host project is `projects/0117-dryer-host-tests/solution`.
-5. Optional: change `TUNED_KP` in `tuning.h` to 0.02 and rerun the closed loop. Predict first whether the settling time gets longer or shorter, then check.
+2. Open `app/controller.c`, find the `TODO(learner)` comment in the heating branch, convert the setpoint and the measured temperature to degrees C, call `pid_update()` and convert its 0.0 to 1.0 result to permille, expecting the duty to be a whole number from 0 to 1000 with no decimal part.
+3. Run the host tests with `python -I tools/build.py projects/0117-dryer-host-tests/starter --test`, whose summary before your change reads `75% tests passed, 2 tests failed out of 8`, the two failing programs being `controller` and `closed_loop`.
+4. The change works when the summary reads `100% tests passed out of 8` and the closed-loop program prints the two lines `[closed loop] PLA 45 C: settle 75.6 s, overshoot 0.36 C, final 45.00 C` and `[closed loop] dead heater: runaway latched at 80.4 s`, matching the table above, the reference being in `projects/0117-dryer-rtos-pid/solution` and its host project in `projects/0117-dryer-host-tests/solution`.
+5. Optionally, change `TUNED_KP` in `tuning.h` to 0.02 and rerun the closed loop, predicting first whether the settling time gets longer or shorter and then checking.
 
 ## Files you work on
 

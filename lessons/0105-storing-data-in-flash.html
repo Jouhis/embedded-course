@@ -12,68 +12,72 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Storing data in flash</h1>
-  <p class="subtitle">A setpoint, a calibration value or a counter has to survive the power going off, and on most microcontrollers the only place that keeps data without power is the flash that holds the program. Flash has its own rules: you erase it in big blocks, you can only clear bits, and each block wears out. You will build a small settings store that follows those rules and keeps a good copy even when the power fails in the middle of a save.</p>
+  <p class="subtitle">Power-safe settings in erase-block memory</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>save a setting in flash as a log of records with a sequence number and a CRC, so that it survives resets, spreads the wear over many saves, and keeps the last good copy through a power cut at any moment</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Settings that survive a power cut</h2>
   <p>
-    <a href="0104-bootloaders-and-firmware-updates.html">Lesson 104</a> split the flash into slots and kept the old image until the new one had proven itself. <a href="0103-designing-a-serial-protocol.html">Lesson 103</a> used a CRC to catch a frame that was damaged on the way. This lesson uses both ideas again, at a much smaller scale: a 12-byte record instead of a firmware image.
+    <a href="0104-bootloaders-and-firmware-updates.html">Lesson 104</a> split the flash into slots and kept the old image until the new one had proven itself, and <a href="0103-designing-a-serial-protocol.html">lesson 103</a> used a CRC to catch a frame damaged on the way, two ideas this lesson applies again at a much smaller scale, to a 12-byte record instead of a firmware image.
   </p>
   <p>
-    Almost every product keeps a few values across power cycles. The capstone's filament dryer has a setpoint that the user picks with two buttons. Other devices keep a sensor's calibration offset, a count of operating hours, or a network address. The user expects the value to be there after the plug is pulled, and nobody pulls the plug at a convenient moment. The code that saves the value must assume the power can go between any two instructions.
-  </p>
-
-  <h2>The rules of flash</h2>
-  <p>
-    The Pico's program lives in a 2 MB Winbond W25Q16JV chip next to the RP2040 (<a href="https://pip.raspberrypi.com/documents/RP-008307-DS-pico-datasheet.pdf" target="_blank" rel="noopener">Pico datasheet, chapter 1</a>). It is NOR flash, and it does not behave like RAM. Three rules decide everything in this lesson (<a href="https://www.winbond.com/resource-files/W25Q16JV_DTR%20RevI%2005252026%20Plus.pdf" target="_blank" rel="noopener">W25Q16JV datasheet Rev I, section 1</a>, and the <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_flash/include/hardware/flash.h" target="_blank" rel="noopener">SDK's hardware/flash.h</a>):
+    Almost every product keeps a few values across power cycles, the capstone's filament dryer having a setpoint the user picks with two buttons while other devices keep a sensor's calibration offset, a count of operating hours or a network address. The user expects the value to be there after the plug is pulled, and since nobody pulls the plug at a convenient moment, the code saving the value must assume that the power can go between any two instructions.
   </p>
 
-  <div class="analogy">
-    <p>Flash is a notebook written in pen with a strange eraser. Writing can only turn 1s into 0s, like inking in boxes on squared paper. The eraser turns everything back to 1, but it only erases a whole page at once, and the page wears out after enough erasing. Every flash storage scheme is a plan for living with that notebook.</p>
-  </div>
+  <h2>The rules of NOR flash</h2>
+  <p>
+    The Pico's program lives in a 2 MB Winbond W25Q16JV chip next to the RP2040 (<a href="https://pip.raspberrypi.com/documents/RP-008307-DS-pico-datasheet.pdf" target="_blank" rel="noopener">Pico datasheet, chapter 1</a>), a NOR flash that does not behave like RAM, three rules deciding everything in this lesson (<a href="https://www.winbond.com/resource-files/W25Q16JV_DTR%20RevI%2005252026%20Plus.pdf" target="_blank" rel="noopener">W25Q16JV datasheet Rev I, section 1</a>, and the <a href="https://github.com/raspberrypi/pico-sdk/blob/2.3.1/src/rp2_common/hardware_flash/include/hardware/flash.h" target="_blank" rel="noopener">SDK's hardware/flash.h</a>).
+  </p>
   <ol>
     <li><strong>Erase sets bits to 1, a sector at a time.</strong> The smallest erase is a 4 KB sector (4096 bytes, 16 pages). After it, every byte reads 0xFF. The chip has 512 such sectors.</li>
     <li><strong>Program can only clear bits, a page at a time.</strong> A program operation writes up to one 256-byte page, and it can only change bits from 1 to 0. Writing a byte that is not 0xFF gives the AND of the old and the new value. The only way back to 1 is to erase the whole sector.</li>
-    <li><strong>Each sector wears out.</strong> The datasheet promises at least 100,000 program-erase cycles and more than 20 years of data retention (section 2). After that, bits may stop erasing or may lose their value.</li>
+    <li><strong>Each sector wears out.</strong> The datasheet promises at least 100 000 program-erase cycles and more than 20 years of data retention (section 2). After that, bits may stop erasing or may lose their value.</li>
   </ol>
   <p>
-    Rule 2 is the one that surprises programmers. Here is one byte, programmed twice without an erase between:
+    Rule 2 is the one that surprises programmers, as one byte programmed twice without an erase in between shows.
   </p>
   <pre><code class="language-plaintext">after erase              1111 1111   0xFF
 program 0x5A             0101 1010   0xFF AND 0x5A = 0x5A   (correct)
 program 0xA5, no erase   0000 0000   0x5A AND 0xA5 = 0x00   (neither value)</code></pre>
   <p>
-    So changing a single saved byte really means: copy the sector somewhere, erase it, and program it again. That is slow, it wears the sector, and between the erase and the program the old value no longer exists anywhere.
+    Changing a single saved byte therefore really means copying the sector somewhere, erasing it and programming it again, which is slow, wears the sector and leaves the old value existing nowhere between the erase and the program.
   </p>
 
-  <h3>Flash on the Pico: offsets, XIP and interrupts</h3>
+  <div class="analogy">
+    <p>Flash resembles a notebook written in pen with a strange eraser, writing only turning 1s into 0s like inking in boxes on squared paper, while the eraser turns everything back to 1 but only a whole page at once, and the page wears out after enough erasing, so every flash storage scheme is a plan for living with that notebook. The comparison breaks on reading, though, because a notebook can be read while someone writes in it, whereas the flash chip cannot be read at all while it erases or programs.</p>
+  </div>
+
+  <h2>Flash offsets, XIP and interrupts on the Pico</h2>
   <p>
-    The RP2040 runs its program straight from this chip, which is called execute in place (XIP). The chip is mapped at <code>XIP_BASE</code>, 0x10000000, so reading saved data is a plain memory read: the byte at flash offset <code>off</code> is at address <code>XIP_BASE + off</code>. The SDK's write functions take the offset, not the address: <code>flash_range_erase(off, count)</code> needs a sector-aligned offset and a whole number of sectors, and <code>flash_range_program(off, data, count)</code> needs a page-aligned offset and a whole number of pages.
+    The RP2040 runs its program straight from this chip, which is called execute in place (XIP), the chip being mapped at <code>XIP_BASE</code>, 0x10000000, so reading saved data is a plain memory read, the byte at flash offset <code>off</code> lying at address <code>XIP_BASE + off</code>. The SDK's write functions take the offset rather than the address, <code>flash_range_erase(off, count)</code> needing a sector-aligned offset and a whole number of sectors and <code>flash_range_program(off, data, count)</code> a page-aligned offset and a whole number of pages.
   </p>
   <p>
-    While the chip erases or programs, it cannot be read, so for that time nothing may run from flash. The SDK's functions run from RAM, but an interrupt handler or the vector table in flash would be fetched in the middle of the operation. The SDK header says to disable interrupts around the calls, and to stop the other core if both are running (<code>multicore_lockout</code>, or <code>flash_safe_execute()</code> from <code>pico/flash.h</code>, which does both). The data you program must also be in RAM, not in flash.
+    While the chip erases or programs it cannot be read, so nothing may run from flash during that time, and although the SDK's functions run from RAM, an interrupt handler or the vector table in flash would be fetched in the middle of the operation. The SDK header therefore says to disable interrupts around the calls and to stop the other core if both are running (<code>multicore_lockout</code>, or <code>flash_safe_execute()</code> from <code>pico/flash.h</code>, which does both), and the data being programmed must also lie in RAM, not in flash.
   </p>
   <div class="note">
     The program starts at offset 0 and grows upwards, so settings go at the other end. The last two sectors of the 2 MB chip start at 0x200000 − 2 × 0x1000 = 0x1FE000. The linker symbol <code>__flash_binary_end</code> marks where the program ends; the demo below prints both, so you can see the gap.
   </div>
 
-  <h2>Two problems with the obvious save</h2>
+  <h2>Wear and power loss in a single-copy save</h2>
   <p>
-    The obvious way to save a setting is to keep it in one place: erase its sector, then program the new value. The starter project does exactly this. It works on the bench, and it has two problems that show only in the field.
+    The obvious way to save a setting is to keep it in one place, erasing its sector and then programming the new value, which is exactly what the starter project does, and although it works on the bench, it has two problems that show only in the field.
   </p>
   <p>
-    <strong>Wear.</strong> Every save erases the same sector. If the firmware saves once a minute, 100,000 cycles last 100,000 / 1440 saves a day = 69 days. A product that saves only when the user changes something lasts much longer, but a counter of operating hours or a "last state" that is saved on every change will wear out the sector within a year.
+    The first is wear, because every save erases the same sector, so the store lasts
+  </p>
+  <p class="eq"><span>t = N × s ÷ r</span><span class="eq-n">(1)</span></p>
+  <p>
+    where N is the rated number of program-erase cycles, s the number of saves per erase of any one sector and r the number of saves per day, so with s = 1 and one save a minute, 100 000 cycles last 100 000 ÷ 1 440 = 69 days. A product saving only when the user changes something lasts much longer, but a count of operating hours or a "last state" saved on every change will wear out the sector within a year.
   </p>
   <p>
-    <strong>Power loss.</strong> A 4 KB sector erase takes 45 ms typically and up to 400 ms (datasheet section 9.6). For that whole time, and until the program finishes, the old value is gone and the new one is not written yet. A power cut in that window leaves an erased sector, and the next boot has no setting at all. The same happens if the cut comes halfway through the program: the record is only partly written, and nothing tells the next boot that it is incomplete.
+    The second is power loss, because a 4 KB sector erase takes 45 ms typically and up to 400 ms (datasheet section 9.6), during which, and until the program finishes, the old value is gone while the new one is not yet written, so a power cut in that window leaves an erased sector and the next boot has no setting at all. A cut halfway through the program has the same effect, leaving a partly written record with nothing to tell the next boot that it is incomplete.
   </p>
 
-  <h2>The fix: a log of records</h2>
+  <h2>A log of records</h2>
   <p>
-    Never overwrite the only copy. Write each new value into a fresh, already erased place, and leave the old one alone until the new one is complete. Three small pieces make that work:
+    The fix is never to overwrite the only copy, writing each new value into a fresh, already erased place and leaving the old one alone until the new one is complete, which three small pieces make work.
   </p>
   <ol>
     <li><strong>Slots.</strong> The two sectors are split into 32 slots of one page each. Each save writes one record into the next free slot, so one erase serves 16 saves.</li>
@@ -81,9 +85,8 @@ program 0xA5, no erase   0000 0000   0x5A AND 0xA5 = 0x00   (neither value)</cod
     <li><strong>A CRC.</strong> A record torn by a power cut, or a bit that went bad, fails its CRC and is ignored, so the next older record wins. This is the CRC-16/CCITT-FALSE from lesson 103.</li>
   </ol>
   <p>
-    The log erases a sector only when it moves into that sector's first slot. At that moment the newest record is in the other sector, so the erase destroys only older copies. A power cut during the erase leaves the newest record untouched. This is the same rule as lesson 104's update: the old copy stays until the new one exists.
+    The log erases a sector only when it moves into that sector's first slot, at which moment the newest record lies in the other sector, so the erase destroys only older copies and a power cut during it leaves the newest record untouched, the same rule as lesson 104's update, keeping the old copy until the new one exists.
   </p>
-
   <figure>
     <svg viewBox="0 0 640 170" role="img" aria-label="Two flash sectors of 16 slots each. Slots 0 to 20 hold records with sequence numbers 1 to 21. Slot 21 holds a torn record, and slots 22 to 31 are blank." style="max-width:760px">
       <g font-family="var(--sans)" font-size="12" fill="currentColor">
@@ -130,9 +133,9 @@ program 0xA5, no erase   0000 0000   0x5A AND 0xA5 = 0x00   (neither value)</cod
     <figcaption>Figure 1. The two settings sectors after 21 saves and a power cut during the 22nd. Each box is a 256-byte slot, labelled with its record's sequence number. Loading scans all 32 slots and takes slot 20 (sequence 21), because slot 21's CRC fails.</figcaption>
   </figure>
 
-  <h3>The record</h3>
+  <h2>The record layout</h2>
   <p>
-    A record is 12 bytes at the start of its slot, and the rest of the page stays 0xFF. The fields are ordered so that the struct has no padding (lesson 48), and a <code>_Static_assert</code> checks that it is 12 bytes.
+    A record is 12 bytes at the start of its slot, the rest of the page staying 0xFF, its fields ordered so that the struct has no padding (lesson 48), which a <code>_Static_assert</code> confirms by checking that it is 12 bytes.
   </p>
   <table>
     <thead><tr><th>Bytes</th><th>Field</th><th>Why it is there</th></tr></thead>
@@ -144,30 +147,30 @@ program 0xA5, no erase   0000 0000   0x5A AND 0xA5 = 0x00   (neither value)</cod
     </tbody>
   </table>
 
-  <h2>Worked example: a power cut, byte by byte</h2>
+  <h2>Worked example: a power cut byte by byte</h2>
   <p>
-    Start where Figure 1 starts: 21 saves are done, and slot 20 holds sequence 21 with a setpoint of 80 °C. The RP2040 is little-endian, so each field is stored low byte first:
+    The example starts where Figure 1 starts, with 21 saves done and slot 20 holding sequence 21 with a setpoint of 80 °C, each field stored low byte first, because the RP2040 is little-endian. Before following the steps, predict which setpoint the device starts with after the cut, and where the save after that goes.
   </p>
   <pre><code class="language-plaintext">slot 20   54 54 45 53 | 15 00 00 00 | 50 00 | 09 E1
           magic SETT    seq 21        80      CRC 0xE109</code></pre>
-  <p>
-    The user sets 81 °C. The store finds slot 20 as the newest, so the new record gets sequence 22 and goes into slot 21. Its CRC is 0x1CD8. Slot 21 is not the first slot of a sector, so no erase is needed. The program starts, and the power fails after the first 10 bytes:
-  </p>
+  <ol class="steps">
+    <li><strong>The new save.</strong> The user sets 81 °C, and the store, finding slot 20 the newest, gives the new record sequence 22 in slot 21, with a CRC of 0x1CD8, and since slot 21 is not the first slot of a sector, no erase is needed.</li>
+    <li><strong>The cut.</strong> The program starts, and the power fails after the first 10 bytes, leaving the slot as shown below.</li>
+  </ol>
   <pre><code class="language-plaintext">slot 21   54 54 45 53 | 16 00 00 00 | 51 00 | FF FF
           magic OK      seq 22        81      CRC not written</code></pre>
+  <ol class="steps" start="3">
+    <li><strong>The next boot.</strong> The scan reads all 32 slots, and slot 21 has the right magic and the highest sequence number, but the CRC computed over its first 10 bytes, 0x1CD8, does not match the stored 0xFFFF, so it is rejected and the newest valid record is slot 20, the device starting with 80 °C, the last value saved completely, which is the best any design can do when the power goes before a save finishes.</li>
+    <li><strong>The following save.</strong> The user now sets 82 °C, and since the newest valid record is still slot 20, the obvious next slot is slot 21 again, but programming over its torn bytes would AND the new ones into them, turning the setpoint byte into 0x51 AND 0x52 = 0x50, 80 again, while the CRC bytes, still 0xFF, would take the new record's CRC exactly, so the slot would say 80 °C under the CRC for 82 °C, the check would reject it and the new save would be lost too.</li>
+    <li><strong>The blank check.</strong> The store therefore checks that a slot is blank before using it, skips slot 21 and writes sequence 22 with 82 °C into slot 22.</li>
+  </ol>
   <p>
-    At the next boot, the scan reads all 32 slots. Slot 21 has the right magic and the highest sequence number, but the CRC of its first 10 bytes is 0x1CD8, not 0xFFFF, so it is rejected. The newest valid record is slot 20, and the device starts with 80 °C, the last value that was saved completely. The user's change to 81 °C is lost, which is the best any design can do when the power goes before the save finishes.
+    The wear has changed too, because the two sectors are erased in turn, each once per 32 saves, so with s = 32 in equation (1), 100 000 cycles allow 3.2 million saves, which at one save a minute is 3 200 000 ÷ 1 440 = 2 222 days, about six years instead of 69 days, and saving only when the value changes stretches it much further.
   </p>
-  <p>
-    Now the user sets 82 °C. The newest valid record is still slot 20, so the obvious next slot is slot 21 again. But slot 21 is not blank, and programming over it would AND the new bytes into the torn ones. The setpoint byte would become 0x51 AND 0x52 = 0x50, which is 80 again. The CRC bytes were still 0xFF, so they would take the new record's CRC exactly. The slot would say 80 °C under the CRC for 82 °C, the check would reject it, and the new save would be lost too. The store therefore checks that a slot is blank before it uses it, skips slot 21, and writes sequence 22 with 82 °C into slot 22.
-  </p>
-  <div class="note">
-    The wear has changed too. The two sectors are erased in turn, each once per 32 saves, so 100,000 cycles allow 3.2 million saves. At one save a minute, that is 3,200,000 / 1440 = 2,222 days, about six years instead of 69 days. Saving only when the value changes stretches it much further.
-  </div>
 
-  <h2>The code, line by line</h2>
+  <h2>The settings store code line by line</h2>
   <p>
-    The store is <code>src/settings.c</code>. It keeps nothing in RAM: every call reads the flash, so a reset changes nothing. It reaches the flash only through three functions in <code>flash_port.h</code>, so the same file runs on the Pico and in the host tests, which is the hardware abstraction from <a href="0076-driver-design-and-hardware-abstraction.html">lesson 76</a>. Loading is a scan:
+    The store is <code>src/settings.c</code>, which keeps nothing in RAM, every call reading the flash, so a reset changes nothing, and which reaches the flash only through three functions in <code>flash_port.h</code>, so that the same file runs on the Pico and in the host tests, the hardware abstraction of <a href="0076-driver-design-and-hardware-abstraction.html">lesson 76</a>. Loading is a scan.
   </p>
   <pre><code class="language-c">static bool record_valid(const settings_record_t *r) {
     return r-&gt;magic == RECORD_MAGIC &amp;&amp; record_crc(r) == r-&gt;crc;
@@ -186,10 +189,7 @@ static int newest_slot(settings_record_t *newest) {
     return best;
 }</code></pre>
   <p>
-    The magic check comes first, because it rejects the blank slots cheaply. The comparison <code>r.seq &gt; newest-&gt;seq</code> keeps the highest sequence number wherever it is, so the scan works after the log has wrapped from slot 31 back to slot 0. The <code>memcpy</code> copies the bytes into a local struct, which avoids reading a struct through a pointer into flash.
-  </p>
-  <p>
-    Saving picks the slot after the newest record:
+    The magic check comes first, because it rejects the blank slots cheaply, and the comparison <code>r.seq &gt; newest-&gt;seq</code> keeps the highest sequence number wherever it is, so the scan works after the log has wrapped from slot 31 back to slot 0, while the <code>memcpy</code> copies the bytes into a local struct, which avoids reading a struct through a pointer into flash. Saving picks the slot after the newest record.
   </p>
   <pre><code class="language-c">unsigned next = (slot == NO_SLOT) ? 0u : ((unsigned)slot + 1u) % SLOT_COUNT;
 for (;;) {
@@ -204,10 +204,7 @@ for (;;) {
 }
 /* then: build a 256-byte page of 0xFF, copy the record in, program it */</code></pre>
   <p>
-    The <code>% SLOT_COUNT</code> makes the log a ring, like the ring buffer of <a href="0070-usart-and-exti-interrupts-with.html">lesson 70</a>, but in flash. Reaching slot 0 or slot 16 means the log moves into a sector, so that sector is erased first. The skip loop always stops, because at most 15 slots lie between the newest record and the next sector's first slot. The page buffer is <code>static</code>: it must be in RAM for the Pico's program call, and 256 bytes is a lot of stack.
-  </p>
-  <p>
-    On the Pico, <code>flash_port_pico.c</code> is all the hardware-specific code there is:
+    The <code>% SLOT_COUNT</code> makes the log a ring, like the ring buffer of <a href="0070-usart-and-exti-interrupts-with.html">lesson 70</a> but in flash, and reaching slot 0 or slot 16 means that the log moves into a sector, which is therefore erased first. The skip loop always stops, because at most 15 slots lie between the newest record and the next sector's first slot, and the page buffer is <code>static</code>, because it must be in RAM for the Pico's program call and 256 bytes is a lot of stack. On the Pico, <code>flash_port_pico.c</code> is all the hardware-specific code there is.
   </p>
   <pre><code class="language-c">void flash_port_erase_sector(uint32_t offset) {
     uint32_t irq = save_and_disable_interrupts();
@@ -221,16 +218,16 @@ const uint8_t *flash_port_read(uint32_t offset) {
 
   <h2>Try it on the PC</h2>
   <p>
-    The project is <code>projects/0105-flash-settings</code>, a host-test project like lessons 80 and 81. A power cut is hard to time on a board, so the tests use a fake flash in <code>test/fake_flash.c</code>. It is 8 KB of RAM that follows the three rules: erase sets 0xFF, program ANDs the new bytes into the old ones, and both check their alignment. A test can schedule a power cut for the next erase (the erase finishes, then the power goes) or the next program (only the first 10 bytes are written). "The power goes" is a <code>longjmp</code> back into the test, which then loads the setting as a fresh boot would.
+    The project <code>projects/0105-flash-settings</code> is a host-test project like those of lessons 80 and 81, and since a power cut is hard to time on a board, the tests use a fake flash in <code>test/fake_flash.c</code>, 8 KB of RAM that follows the three rules, erase setting 0xFF, program ANDing the new bytes into the old ones and both checking their alignment. A test can schedule a power cut for the next erase, which finishes before the power goes, or the next program, of which only the first 10 bytes are written, the power going being a <code>longjmp</code> back into the test, which then loads the setting as a fresh boot would.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0105-flash-settings/starter</code> in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run <code>python -I tools/build.py projects/0105-flash-settings/starter --test</code>. The starter uses the obvious save, and 5 of the 9 tests fail.</li>
-    <li>Read the failures. Each one is a field problem from this lesson: 21 erases for 21 saves, the torn record's 81 °C loaded as if it were complete, the default 50 °C after a cut during the erase, and a flipped bit with no older copy to fall back on.</li>
-    <li>Your task: finish the three functions marked <code>TODO(learner)</code> in <code>src/settings.c</code>. Check the CRC in <code>record_valid()</code>, scan all 32 slots in <code>newest_slot()</code>, and make <code>settings_save()</code> write the next slot, erase only at a sector's first slot, and skip slots that are not blank.</li>
-    <li>Run the tests again. You will know it works when the summary reads <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>.</li>
+    <li>Open <code>projects/0105-flash-settings/starter</code> in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, or run <code>python -I tools/build.py projects/0105-flash-settings/starter --test</code>, the starter using the obvious save, so that 5 of the 9 tests fail.</li>
+    <li>Read the failures, each a field problem from this lesson, 21 erases for 21 saves, the torn record's 81 °C loaded as if it were complete, the default 50 °C after a cut during the erase and a flipped bit with no older copy to fall back on.</li>
+    <li>Finish the three functions marked <code>TODO(learner)</code> in <code>src/settings.c</code>, checking the CRC in <code>record_valid()</code>, scanning all 32 slots in <code>newest_slot()</code> and making <code>settings_save()</code> write the next slot, erase only at a sector's first slot and skip slots that are not blank.</li>
+    <li>Run the tests again, the changes having worked when the summary reads <em>9 Tests 0 Failures 0 Ignored</em> and <em>OK</em>.</li>
   </ol>
   <p>
-    The starter prints these lines (paths shortened):
+    The starter prints these lines (paths shortened).
   </p>
   <pre><code class="language-plaintext">test_settings.c:56:test_21_saves_cost_at_most_2_erases:FAIL: Expected 21 to be less than or equal to 2
 test_settings.c:62:test_100_saves_wrap_around_and_share_the_wear:FAIL: Expected 100 to be less than or equal to 4
@@ -245,39 +242,43 @@ FAIL</code></pre>
     <p>Do the three in order and run the tests after each one. The CRC check alone fixes nothing yet, because the starter has only one copy. Once <code>newest_slot()</code> scans every slot and <code>settings_save()</code> writes the next one, the wear tests and the cut tests pass together. <code>test_a_save_after_a_cut_sticks</code> is the one that needs the blank check.</p>
   </details>
   <p>
-    The reference solution is in <code>projects/0105-flash-settings/solution</code>. The folder <code>projects/0105-flash-settings-pico</code> builds the same <code>settings.c</code> for the Pico with the real flash port. In Wokwi it saves 60 to 80 °C, 21 saves that move the log into the second sector, and prints <em>DEMO OK: read 80 C back from flash</em>. Wokwi simulates the flash writes but no reset that keeps the flash, so every simulation starts blank. On a real Pico, unplug it and plug it in again: the first line then shows the value saved before the power went.
+    The reference solution is in <code>projects/0105-flash-settings/solution</code>, and the folder <code>projects/0105-flash-settings-pico</code> builds the same <code>settings.c</code> for the Pico with the real flash port, saving 60 to 80 °C in Wokwi, 21 saves that move the log into the second sector, and printing <em>DEMO OK: read 80 C back from flash</em>. Wokwi simulates the flash writes but no reset that keeps the flash, so every simulation starts blank, whereas on a real Pico unplugging the board and plugging it in again makes the first line show the value saved before the power went.
   </p>
 
   <div class="win">You built a settings store that survives resets and a power cut at any moment, spreads the wear over 32 slots, and proved both with tests that cut the power on purpose.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>Programming without an erase</h3>
   <p>
-    <strong>Mistake 1: programming without an erase.</strong> The code writes a new value over an old one and reads back something that is neither. Symptom: a saved value comes back with bits missing: the AND of the old and the new value, never larger than either. Fix: program only slots you know are blank, and check with a read-back in a test.
+    A saved value comes back with bits missing, the AND of the old and the new value and never larger than either, because the code wrote a new value over an old one. Program only slots known to be blank, and check with a read-back in a test.
   </p>
+  <h3>Interrupts left on during an erase</h3>
   <p>
-    <strong>Mistake 2: interrupts left on during an erase.</strong> An interrupt fires while the chip is busy, and its handler in flash cannot be fetched. Symptom: the device hangs or faults now and then during a save, and never on the bench where no interrupts are running. Fix: wrap every erase and program in <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, and use <code>flash_safe_execute()</code> when the second core is running.
+    The device hangs or faults now and then during a save, though never on a bench where no interrupts run, because an interrupt fires while the chip is busy and its handler in flash cannot be fetched. Wrap every erase and program in <code>save_and_disable_interrupts()</code> and <code>restore_interrupts()</code>, and use <code>flash_safe_execute()</code> when the second core is running.
   </p>
+  <h3>An address where an offset belongs</h3>
   <p>
-    <strong>Mistake 3: an address where an offset belongs.</strong> <code>flash_range_erase(XIP_BASE + off, ...)</code> passes 0x101FE000 instead of 0x1FE000, far past the end of a 2 MB chip. Symptom: the save works or fails depending on how the chip treats an address it doesn't have, which is not something to rely on. Fix: keep offsets and addresses apart in the names, as <code>flash_port_read(offset)</code> does, and add <code>XIP_BASE</code> only when reading.
+    The save works or fails depending on how the chip treats an address it does not have, which is nothing to rely on, because <code>flash_range_erase(XIP_BASE + off, ...)</code> passes 0x101FE000 instead of 0x1FE000, far past the end of a 2 MB chip. Keep offsets and addresses apart in the names, as <code>flash_port_read(offset)</code> does, and add <code>XIP_BASE</code> only when reading.
   </p>
+  <h3>A record trusted without its CRC</h3>
   <p>
-    <strong>Mistake 4: trusting a record without a CRC.</strong> The magic matches, so the code believes the rest. Symptom: after a power cut the device starts with a value that was never completely saved, such as the 81 °C in the starter's failing test, or with a mix of old and new bits. Fix: check the CRC on every load, and fall back to the next older record.
+    After a power cut the device starts with a value that was never completely saved, such as the 81 °C in the starter's failing test, or with a mix of old and new bits, because the magic matched and the code believed the rest. Check the CRC on every load and fall back to the next older record.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Versioned settings and flash file systems</h2></summary>
   <p>
-    Products store more than one value, so the record usually holds a version number and a whole settings struct, and the firmware knows how to read the older versions after an update. Teams often use a library instead of their own log: <a href="https://github.com/littlefs-project/littlefs" target="_blank" rel="noopener">littlefs</a>, a small file system, says it "is designed to handle random power failures" and provides wear leveling. Whatever the library, the review questions are the ones in this lesson: what happens if the power fails here, and how many erases does each save cost? A test with a fake flash that can cut the power answers both on the PC.
+    Products store more than one value, so the record usually holds a version number and a whole settings struct, with firmware that knows how to read the older versions after an update, and teams often use a library instead of their own log, such as <a href="https://github.com/littlefs-project/littlefs" target="_blank" rel="noopener">littlefs</a>, a small file system that says it "is designed to handle random power failures" and provides wear leveling. Whatever the library, the review questions are this lesson's, what happens if the power fails here and how many erases each save costs, and a test with a fake flash that can cut the power answers both on the PC.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>NOR flash erases a 4 KB sector to 0xFF and programs a 256-byte page by clearing bits. Writing over data without an erase gives the AND of the two values.</li>
-    <li>The W25Q16JV on the Pico promises at least 100,000 program-erase cycles. Saving in one place once a minute wears it out in 69 days.</li>
-    <li>On the Pico, flash is read at <code>XIP_BASE + offset</code> and written by offset. Interrupts must be off during an erase or program, and the other core stopped.</li>
+    <li>NOR flash erases a 4 KB sector to 0xFF and programs a 256-byte page by clearing bits, so writing over data without an erase gives the AND of the two values.</li>
+    <li>The W25Q16JV on the Pico promises at least 100 000 program-erase cycles, which saving in one place once a minute uses up in 69 days.</li>
+    <li>On the Pico, flash is read at <code>XIP_BASE + offset</code> and written by offset, with interrupts off and the other core stopped during an erase or program.</li>
     <li>A log of records, each with a sequence number and a CRC, writes new values into fresh slots and never overwrites the only copy.</li>
-    <li>Erasing a sector only when the log moves into it keeps the newest record safe in the other sector, and divides the wear by the number of slots.</li>
+    <li>Erasing a sector only when the log moves into it keeps the newest record safe in the other sector and divides the wear by the number of slots.</li>
     <li>A record torn by a power cut fails its CRC, so the store loads the previous one, and the next save skips the torn slot.</li>
   </ul>
 

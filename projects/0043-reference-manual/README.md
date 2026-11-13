@@ -6,14 +6,14 @@ Lesson: [Navigating a reference manual](https://jouhis.github.io/embedded-course
 
 ## Try it in Wokwi
 
-The project `projects/0043-reference-manual` is a single demo. It prints the base address of GPIOC and the addresses of four registers that the struct computes.
+The project `projects/0043-reference-manual` is a single demo that prints the GPIOC base address and the addresses of four registers computed through the structs.
 
 1. Open `projects/0043-reference-manual` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Before you read the output, write down the expected lines: `GPIOC base:           0x40011000`, `GPIOC->CRH address:   0x40011004`, `GPIOC->BSRR address:  0x40011010`, `RCC->APB2ENR address: 0x40021018` and `USART1->DR address:   0x40013804`. Each one is a base plus an offset from the header.
-3. Compare the serial monitor with your list. All five lines should match exactly. If one differs, find the struct member or base macro that you used and check its offset.
-4. Open RM0008 in your own copy and find the GPIO register map. Find the offset of `CRH` and `BSRR` and the reset value of each, and write the section number next to each answer. The header cannot give you the reset values, so this is the step where the manual is the only source. The answers to check against are: CRH at offset 0x04 with reset value 0x4444 4444 (section 9.2.2), and BSRR at offset 0x10 with reset value 0x0000 0000 (section 9.2.5).
+2. Before reading the output, write down the expected lines: `GPIOC base:           0x40011000`, `GPIOC->CRH address:   0x40011004`, `GPIOC->BSRR address:  0x40011010`, `RCC->APB2ENR address: 0x40021018` and `USART1->DR address:   0x40013804`, each a base plus an offset from the header.
+3. Compare the serial monitor with your list, which should match on all five lines. If one differs, find the struct member or base macro you used and check its offset.
+4. In your own copy of RM0008, find the GPIO register map and look up the offset and reset value of `CRH` and `BSRR`, noting the section number beside each answer; since the header cannot give reset values, the manual is the only source here. The answers to check against are CRH at offset 0x04 with reset value 0x4444 4444 (section 9.2.2) and BSRR at offset 0x10 with reset value 0x0000 0000 (section 9.2.5).
 
-Reading a reference manual is the job, and the simulator is only a check. The demo's outputs are the addresses that the compiler computes, so they confirm your reading of the header.
+Reading the reference manual is the real task, and the simulator only checks it: the demo prints the addresses the compiler computes, so it confirms your reading of the header.
 
 ## Done when
 
@@ -24,6 +24,6 @@ The serial monitor prints `USART1->DR address:   0x40013804`.
 <details>
 <summary>Hint</summary>
 
-In the struct `GPIO_TypeDef`, the fields are CRL, CRH, IDR, ODR, BSRR, BRR and LCKR, in that order, each 4 bytes wide. CRH is at offset 4, and BSRR is at offset 16, which is `0x10`. For the RCC, count the fields of `RCC_TypeDef` until you reach APB2ENR.
+The fields of `GPIO_TypeDef` are CRL, CRH, IDR, ODR, BSRR, BRR and LCKR, in that order and each 4 bytes wide, so CRH is at offset 4 and BSRR at 16, or `0x10`. For the RCC, count the fields of `RCC_TypeDef` up to APB2ENR.
 
 </details>

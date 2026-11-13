@@ -6,12 +6,12 @@ Lesson: [Designing a serial protocol: framing, checksums, CRC](https://jouhis.gi
 
 ## Try it on the PC first: COBS and CRC by test
 
-The host project is `projects/0103-serial-framing-tests`. It contains 15 tests. In the starter, 11 of them fail, because the COBS encoder and decoder and the CCITT CRC are still `TODO(learner)`. The four that pass in the starter are three error-path tests, which pass because the stub returns 0 for "failed", and the empty-input CRC test, which passes because the stub returns the initial value 0xFFFF for an empty message.
+The host project `projects/0103-serial-framing-tests` contains 15 tests, of which 11 fail in the starter, because the COBS encoder and decoder and the CCITT CRC are still `TODO(learner)`, while the four that pass are three error-path tests, passing because the stub returns 0 for failure, and the empty-input CRC test, passing because the stub returns the initial value 0xFFFF for an empty message.
 
-1. From the workspace root, run `python -I tools/build.py projects/0103-serial-framing-tests/starter --test`. The output ends with `15 Tests 11 Failures 0 Ignored`, and ctest reports that the framing test failed.
-2. Read `test/test_framing.c`. The vectors are the encodings of `{}`, `{00}`, `{11 22 00 33}` and a full 254-byte block. Each one states an expected output.
-3. Write `cobs_encode()` in `src/cobs.c`, then `cobs_decode()`, then the CRC in `src/crc16.c`. Run the command after each one. The first failing test names the case you should fix next.
-4. You will know it works when the output ends with `15 Tests 0 Failures 0 Ignored`, and ctest reports `100% tests passed`. The CRC test reads `0x29B1`.
+1. From the workspace root, run `python -I tools/build.py projects/0103-serial-framing-tests/starter --test`, whose output ends with `15 Tests 11 Failures 0 Ignored` while ctest reports that the framing test failed.
+2. Read `test/test_framing.c`, whose vectors are the encodings of `{}`, `{00}`, `{11 22 00 33}` and a full 254-byte block, each stating an expected output.
+3. Write `cobs_encode()` in `src/cobs.c`, then `cobs_decode()` and then the CRC in `src/crc16.c`, running the command after each, the first failing test naming the case to fix next.
+4. The changes have worked when the output ends with `15 Tests 0 Failures 0 Ignored`, ctest reports `100% tests passed` and the CRC test reads `0x29B1`.
 
 ## Files you work on
 

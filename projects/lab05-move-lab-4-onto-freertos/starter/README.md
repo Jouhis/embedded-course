@@ -6,13 +6,13 @@ Lesson: [Lab 5: Move Lab 4 onto FreeRTOS](https://jouhis.github.io/embedded-cour
 
 ## The project
 
-The project is `projects/lab05-move-lab-4-onto-freertos`. The unchanged modules are in `app/`: the sensor, the display, the SSD1306 driver, the font and the formatting. Two shared files change, `app/hal.h` (it gains a button callback) and `app/ui.c` (buttons arrive as events and are debounced by time). Each folder has its own RTOS layer and board file.
+The project is `projects/lab05-move-lab-4-onto-freertos`, with the unchanged modules in `app/`, the sensor, the display, the SSD1306 driver, the font and the formatting. Two shared files change, `app/hal.h`, which gains a button callback, and `app/ui.c`, in which buttons arrive as events and are debounced by time, and each folder has its own RTOS layer and board file.
 
 1. `solution/`: complete. `app.c` holds the tasks, `hal_bluepill.c` the board file, and `main.c` the start-up. It prints `LAB5 OK`.
 2. `starter/`: the same files with `TODO(learner)` in three places: the sensor's poll, the button callback, and the UI's sample handling. It also has a `TODO(learner)` in the button interrupt in `hal_bluepill.c`.
 3. In VS Code, open the folder you are working in, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The simulator stops early (see the known issue below), so the check is the expected output. The wiring is the Lab 4 Blue Pill wiring: the OLED and the sensor on PB6 and PB7, the buttons on PB12 and PB13.
 
-Blue Pill only. The Pico is not part of this lab; Lab 4 keeps the Pico build of the same `app/` modules, and this lab does not change Lab 4.
+The lab is Blue Pill only, because the Pico is not part of it, Lab 4 keeping the Pico build of the same `app/` modules, and this lab does not change Lab 4.
 
 **Known issue: the simulator stops early.** The lab builds, but it cannot run in Wokwi. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (the open issue in `CHANGELOG.md`, which lesson 92 also describes). In the simulator the output stops after the first task's first output, or prints nothing. `LAB5 OK` is printed before the scheduler starts, so it may be the only line you see there. On a real Blue Pill the solution's first line, `// EXPECT: LAB5 OK`, is what the board prints.
 

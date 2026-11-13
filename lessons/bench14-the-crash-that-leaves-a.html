@@ -11,11 +11,7 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Bench lab 14: The crash that leaves a note</h1>
-  <p class="subtitle">A device in the field resets and nobody saw why. Make the firmware write a note as it dies, keep that note through the reset, and read it on the next boot, without ever mistaking power-on garbage for a crash.</p>
-
-  <div class="note">
-    <strong>This bench lab is optional.</strong> It needs only a Pico 2 and its USB cable. It doesn't count towards your progress. Time: about 50 minutes.
-  </div>
+  <p class="subtitle">Post-mortem crash records in reset-surviving RAM</p>
 
   <div class="goal">
     By the end of this lab you can <strong>record the cause and location of a crash in RAM that survives a reset, and validate that record with a magic number and a CRC so a power-on never reads as a crash</strong>.
@@ -23,22 +19,25 @@
 
   <h2>What survives a reset</h2>
   <p>
-    Lesson <a href="0084-robustness.html">84</a> added a <a href="../reference/glossary.html#watchdog">watchdog</a> and a HardFault handler. Together they turn a hang or a fault into a reset, which keeps the device running. They also destroy the evidence: after the reset, the firmware starts from scratch and nobody knows what went wrong. A <strong>post-mortem record</strong> fixes that. The dying firmware writes what it knows to a place that survives the reset, and the next boot reads it, logs it and clears it.
+    A device in the field resets and nobody saw why, so this lab makes the firmware write a note as it dies, keep that note through the reset and read it on the next boot, without ever mistaking power-on garbage for a crash. It is optional, needing only a Pico 2 and its USB cable, it does not count towards your progress, and it takes about 50 minutes.
   </p>
   <p>
-    Two places on the RP2350 survive a watchdog reset:
+    Lesson <a href="0084-robustness.html">84</a> added a <a href="../reference/glossary.html#watchdog">watchdog</a> and a HardFault handler, which together turn a hang or a fault into a reset and so keep the device running. They also destroy the evidence, because after the reset the firmware starts from scratch and nobody knows what went wrong. A <strong>post-mortem record</strong> fixes that, the dying firmware writing what it knows to a place that survives the reset and the next boot reading it, logging it and clearing it.
+  </p>
+  <p>
+    Two places on the RP2350 survive a watchdog reset.
   </p>
   <ul>
     <li><strong>The watchdog's scratch registers</strong>, eight 32-bit registers. A watchdog reset leaves them alone; a power-on or the RUN pin clears them <a href="https://datasheets.raspberrypi.com/rp2350/rp2350-datasheet.pdf" target="_blank" rel="noopener">(RP2350 datasheet, section 12.9.5)</a>. The SDK uses scratch 4 to 7 for its own reboot handling, so this lab uses scratch 0 only, for a run counter.</li>
     <li><strong>SRAM</strong>, as long as the start-up code doesn't clear it. The C start-up code zeroes every ordinary static variable (the <code>.bss</code> section) on every boot, reset or not. The SDK's <code>__uninitialized_ram(name)</code> places a variable in a section start-up leaves alone, a <a href="../reference/glossary.html#no-init-ram-noinit">no-init</a> region.</li>
   </ul>
   <p>
-    No-init RAM has a catch. After a power-on, nobody has written it, and SRAM powers up holding random bits. So the next boot must be able to tell "a crash note" from "garbage". This lab uses two checks: a <strong>magic number</strong>, a fixed 32-bit value that random data matches with a probability of one in four billion, and a <strong>CRC-32</strong> over the note's fields, which also catches a note that was only half written when the reset hit.
+    No-init RAM has a catch, because after a power-on nobody has written it and SRAM powers up holding random bits, so the next boot must be able to tell a crash note from garbage. This lab uses two checks, a <strong>magic number</strong>, a fixed 32-bit value that random data matches with a probability of one in four billion, and a <strong>CRC-32</strong> over the note's fields, which also catches a note that was only half written when the reset hit.
   </p>
 
   <h2>The program</h2>
   <p>
-    <code>projects/bench14-crash-note</code> crashes on purpose, twice, and counts runs in scratch 0:
+    <code>projects/bench14-crash-note</code> crashes on purpose, twice, and counts runs in scratch 0.
   </p>
   <ul>
     <li><strong>Run 1</strong>: enables the watchdog with a 2 s timeout, then gets stuck in a loop that keeps writing its position into the note. The watchdog resets the chip.</li>
@@ -48,43 +47,56 @@
 
   <h2>Stage 1: in Wokwi</h2>
   <ol class="steps">
-    <li>Build and run the starter. Run 1 gets stuck and is reset; run 2 faults and is reset; run 3 finishes. But both runs 2 and 3 print <code>no valid note</code>.</li>
-    <li><strong>Task 1.</strong> The note is an ordinary <code>static</code>, which start-up zeroes on every boot. Declare it with <code>__uninitialized_ram(note)</code> instead. Run again: run 2 reports the stuck loop and run 3 the HardFault, with PC and LR.</li>
-    <li>Look up the reported LR in the build's disassembly (<code>arm-none-eabi-objdump -d build/blink.elf</code>) or the map file. It's in <code>main</code>, right after the call to the NULL callback. The stacked PC is 0: the address the code tried to run.</li>
+    <li>Build and run the starter. Run 1 prints <code>no valid note</code> and gets stuck, and since the simulator does not reset the chip on a watchdog timeout, the log stops there.</li>
+    <li><strong>Task 1.</strong> The note is an ordinary <code>static</code>, which start-up zeroes on every boot, so declare it with <code>__uninitialized_ram(note)</code> instead and rebuild. The runs that would show the note need a real reset, so you see the result on the board.</li>
   </ol>
   <p>
-    In the simulator, the starter's weak check, <code>note.cause != CAUSE_NONE</code>, looks fine. That's because simulated RAM starts as zeros, so a fresh start never shows a note.
+    In the simulator, the starter's weak check, <code>note.cause != CAUSE_NONE</code>, looks fine, because simulated RAM starts as zeros, so a fresh start never shows a note.
   </p>
 
   <h2>Stage 2: on the board</h2>
   <ol class="steps">
-    <li>Flash the version with Task 1 done but the weak check still in place. Open the serial port; it disconnects and reconnects at each reset (the board re-enumerates on USB), so reopen it if your terminal doesn't do so by itself. You get the same three runs.</li>
-    <li>Now unplug the board for ten seconds and plug it back in, without BOOTSEL. Look at run 1's first lines. With the weak check you may see a "note" with a random cause, PC and uptime: power-on garbage, read as a crash.</li>
-    <li><strong>Task 2.</strong> Replace <code>note_valid()</code> with the real check: the magic number matches and the stored CRC matches a CRC computed over the other fields. Flash, repeat the power cycle: <code>no valid note (power-on, or RAM held garbage)</code>, every time.</li>
-    <li>Note that <code>reset by watchdog: yes/no</code> agrees: <code>watchdog_caused_reboot()</code> reads the chip's reset reason, a second, independent source of truth.</li>
+    <li>Flash the version with Task 1 done but the weak check still in place, and open the serial port. It disconnects and reconnects at each reset, because the board re-enumerates on USB, so reopen it if your terminal does not do so by itself. Run 2 reports the stuck loop and run 3 the HardFault, with PC and LR.</li>
+    <li>Look up the reported LR in the build's disassembly (<code>arm-none-eabi-objdump -d build/blink.elf</code>) or the map file. It is in <code>main</code>, right after the call to the NULL callback, while the stacked PC is 0, the address the code tried to run.</li>
+    <li>Now unplug the board for ten seconds and plug it back in without BOOTSEL, then look at run 1's first lines. With the weak check you may see a note with a random cause, PC and uptime, power-on garbage read as a crash.</li>
+    <li><strong>Task 2.</strong> Replace <code>note_valid()</code> with the real check, in which the magic number matches and the stored CRC matches a CRC computed over the other fields. Flash and repeat the power cycle, which now prints <code>no valid note (power-on, or RAM held garbage)</code> every time.</li>
+    <li>Note that <code>reset by watchdog: yes/no</code> agrees, because <code>watchdog_caused_reboot()</code> reads the chip's reset reason, a second, independent source of truth.</li>
   </ol>
   <p>
-    Whether you see garbage at step 2 depends on the chip and on how long it was off. Very short power cuts can leave SRAM almost intact, so an old, valid-looking note comes back. That's a second reason the program clears the note after reading it: a note must be reported once, not on every boot after it.
+    Whether you see garbage at the power cycle depends on the chip and on how long it was off, because very short power cuts can leave SRAM almost intact, so that an old, valid-looking note comes back. That is a second reason the program clears the note after reading it, since a note must be reported once rather than on every boot after it.
   </p>
 
-  <div class="win">Your firmware now explains its own resets. In a product, this note plus a counter of resets by cause is often the first thing a support engineer asks for.</div>
+  <div class="win">Your firmware now explains its own resets, and in a product this note plus a counter of resets by cause is often the first thing a support engineer asks for.</div>
 
-  <details class="fold mistakes"><summary><h2>Common mistakes</h2></summary>
-  <ol>
-    <li><strong>A note in ordinary static RAM.</strong> Start-up zeroes it, so it never survives. Use a no-init section.</li>
-    <li><strong>Trusting a single field.</strong> Random RAM often has a nonzero cause field. Use a magic number and a CRC.</li>
-    <li><strong>Not clearing the note after reading it.</strong> The same crash is reported on every later boot, and the crash statistics are wrong.</li>
-    <li><strong>Doing too much in the HardFault handler.</strong> <code>printf</code> there may fault again or never finish. Write a few words to RAM and reset; log on the next boot.</li>
-    <li><strong>Using the SDK's scratch registers.</strong> Scratch 4 to 7 belong to the SDK's reboot logic; writing them can change what happens on the next reset.</li>
-  </ol>
+  <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
+  <h3>A note in ordinary static RAM</h3>
+  <p>
+    The next boot never finds a note, because start-up zeroes ordinary static variables. Put the note in a no-init section.
+  </p>
+  <h3>A single field trusted</h3>
+  <p>
+    A power-on reports a crash that never happened, because random RAM often has a nonzero cause field. Validate the note with a magic number and a CRC.
+  </p>
+  <h3>The note not cleared after reading</h3>
+  <p>
+    The same crash is reported on every later boot and the crash statistics are wrong, because the note was left in place. Clear it once it has been logged.
+  </p>
+  <h3>Too much work in the HardFault handler</h3>
+  <p>
+    The handler faults again or never finishes, because <code>printf</code> there depends on state the fault may have broken. Write a few words to RAM and reset, logging on the next boot.
+  </p>
+  <h3>The SDK's scratch registers used</h3>
+  <p>
+    The next reset behaves unexpectedly, because scratch 4 to 7 belong to the SDK's reboot logic. Use only scratch 0 to 3 for your own data.
+  </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A post-mortem record keeps the cause of a reset: write it while dying, read and clear it on the next boot.</li>
-    <li>The watchdog scratch registers survive a watchdog reset; no-init RAM survives any reset that keeps power.</li>
-    <li>After power-on, SRAM is random; a magic number plus a CRC tells a real note from garbage, and catches half-written notes.</li>
-    <li>Calling a NULL function pointer on a Cortex-M faults because the target address has bit 0 clear; the stacked LR shows the caller.</li>
+    <li>A post-mortem record keeps the cause of a reset, written while dying and read and cleared on the next boot.</li>
+    <li>The watchdog scratch registers survive a watchdog reset, and no-init RAM survives any reset that keeps power.</li>
+    <li>After power-on SRAM is random, so a magic number plus a CRC tells a real note from garbage and catches half-written notes.</li>
+    <li>Calling a NULL function pointer on a Cortex-M faults, because the target address has bit 0 clear, and the stacked LR shows the caller.</li>
     <li>Wokwi starts RAM at zero, so weak validity checks look fine in simulation and fail on a real power-up.</li>
   </ul>
 

@@ -9,9 +9,9 @@ Lesson: [The memory map and memory-mapped registers](https://jouhis.github.io/em
 The project has a starter and a solution. The starter blinks the LED through `GPIOC->BSRR`, and your task is to replace those two writes with raw writes.
 
 1. Open `projects/0038-memory-map/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Find the two `TODO(learner)` lines in `main.c`. Compute the BSRR address from GPIOC base and the BSRR offset, then write `GPIO_BSRR_BR13` and `GPIO_BSRR_BS13` through a `volatile` pointer to that address.
-3. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor should print `LED on` and `LED off` in turn, and the LED should blink at about the same rate.
-4. Compare with `projects/0038-memory-map/solution`. Its first lines print `BSRR address: 0x40011010` and the line `address check OK: &GPIOC->BSRR matches`. If your first line differs, recheck the base and the offset.
+2. Find the two `TODO(learner)` lines in `main.c`. Compute the BSRR address from the GPIOC base and the BSRR offset, then write `GPIO_BSRR_BR13` and `GPIO_BSRR_BS13` through a `volatile` pointer to that address.
+3. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor should print `LED on` and `LED off` in turn while the LED blinks at about the same rate.
+4. Compare with `projects/0038-memory-map/solution`, whose first lines print `BSRR address: 0x40011010` and `address check OK: &GPIOC->BSRR matches`. If your first line differs, recheck the base and the offset.
 
 ## Files you work on
 
@@ -26,7 +26,7 @@ The serial monitor prints `address check OK: &GPIOC->BSRR matches`.
 <details>
 <summary>Hint</summary>
 
-The GPIOC base is `0x40011000`, and the BSRR offset is the 5th word of `GPIO_TypeDef`, which is `0x10`. The pointer type must be `volatile uint32_t *`.
+The GPIOC base is `0x40011000` and the BSRR offset is the fifth word of `GPIO_TypeDef`, `0x10`. The pointer type must be `volatile uint32_t *`.
 
 </details>
 

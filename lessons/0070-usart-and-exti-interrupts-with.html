@@ -12,62 +12,65 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>USART and EXTI interrupts with a ring buffer</h1>
-  <p class="subtitle">A serial command line should not miss a byte just because the main loop is busy. An interrupt takes each byte as it arrives, a ring buffer holds them until main is ready, and an EXTI interrupt catches a button press the same way.</p>
+  <p class="subtitle">Interrupt-driven serial receive and button input</p>
 
   <div class="goal">
     By the end of this lesson you can enable the USART1 receive interrupt in the peripheral and the NVIC, write the handler so it clears its flags in the right order, implement a single-producer, single-consumer ring buffer that is safe on one core, and route PA0 to EXTI line 0 through AFIO.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Bytes that arrive while main is busy</h2>
   <p>
-    Lessons 53 and 57 covered serial output and interrupts in general terms. Lesson 72 covers the NVIC, the interrupt controller inside the core, and lesson 73 covers SysTick. This lesson puts those ideas on two real STM32 peripherals: the USART, which receives bytes from a serial monitor or a GPS module, and the EXTI controller, which turns a pin edge into an interrupt.
+    Lessons 53 and 57 covered serial output and interrupts in general terms, and lessons 72 and 73 will cover the NVIC, the interrupt controller inside the core, and SysTick. This lesson puts those ideas onto two real STM32 peripherals, the USART, which receives bytes from a serial monitor or a GPS module, and the EXTI controller, which turns a pin edge into an interrupt.
   </p>
   <p>
-    The problem is a common one in industry. A device such as a GPS receiver or a Modbus slave sends bytes at a fixed rate, and the firmware does other work between them. If the code is busy for longer than one byte time, a byte is overwritten and lost. At 115200 baud, one byte takes about 87 microseconds, so a loop that takes a few milliseconds will lose data. The fix is to let an interrupt take each byte the moment it arrives, and to let main process the bytes later.
-  </p>
-
-  <h2>Concepts, one at a time</h2>
-  <h3>Polling and interrupts</h3>
-  <p>
-    A <em>polled</em> receiver checks a status flag in a loop: "is a byte ready?" If the loop does something slow, the flag is checked late. An <em>interrupt</em> reverses the arrangement. The peripheral raises a request line, the core stops what it is doing, saves its registers, and runs a short handler called the interrupt service routine (ISR). The handler does the minimum work, and the core then resumes. Lesson 34 described the entry sequence.
-  </p>
-  <p>
-    The request has to go through a chain. The peripheral raises a flag in its status register. If its interrupt-enable bit is set, the request goes to the NVIC, and the NVIC sends it to the core when its priority allows. Each link in that chain needs its own setting, and each setting is a separate register. A missing setting in any link means the handler never runs, and nothing reports why.
+    The problem is common in industry: a device such as a GPS receiver or a Modbus slave sends bytes at a fixed rate while the firmware does other work between them, and if the code stays busy for longer than one byte time, a byte is overwritten and lost. At 115 200 baud one byte takes about 87 µs, so a loop lasting a few milliseconds loses data, and the fix is to let an interrupt take each byte the moment it arrives and a ring buffer hold it until main is ready to process it.
   </p>
 
-  <h3>The NVIC and priorities</h3>
+  <h2>Polling and interrupts</h2>
   <p>
-    The Nested Vectored Interrupt Controller (NVIC) numbers each interrupt, and it enables and prioritises them. Each interrupt number, such as <code>USART1_IRQn</code>, selects an entry in the vector table. The STM32F1 implements four priority bits, so priorities run from 0 to 15, and a lower number is a higher priority (PM0056 Rev 7, section 4.3.7 and Table 42: the processor implements bits[7:4] of each priority field, and a lower value gives a higher priority). A pending interrupt with a higher priority can interrupt a running handler. The header confirms the four bits: <code>__NVIC_PRIO_BITS</code> is 4 in <code>stm32f103xb.h</code>.
-    <a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf" target="_blank" rel="noopener">PM0056 Rev 7, section 4.3.7 (NVIC_IPRx), the NVIC section</a>
+    A <em>polled</em> receiver checks a status flag in a loop, asking whether a byte is ready, so if the loop does something slow, the flag is checked late. An <em>interrupt</em> reverses the arrangement, the peripheral raising a request line, the core stopping what it is doing, saving its registers and running a short handler called the interrupt service routine (ISR), which does the minimum work before the core resumes, following the entry sequence of lesson 34.
+  </p>
+  <p>
+    The request passes through a chain: the peripheral raises a flag in its status register, the request goes to the NVIC if the peripheral's interrupt-enable bit is set, and the NVIC sends it to the core when its priority allows. Each link of the chain needs its own setting in a separate register, and a missing setting in any link means that the handler never runs, with nothing reporting why.
   </p>
 
-  <h3>Status flags and write-1-to-clear</h3>
+  <h2>The NVIC and interrupt priorities</h2>
   <p>
-    A <em>flag</em> is a bit in a status register that the hardware sets when an event happens. The handler must clear the flag, or the interrupt fires again the moment the handler returns. There are two common ways to clear a flag. Some flags clear when you read or write a data register. Others are <em>write-1-to-clear</em>: reading the bit shows 1 while the event is pending, and writing a 1 to that bit clears it. A write of 0 does nothing. The EXTI pending register works this way, and the HAL's own macro for it writes the line's bit directly.
+    The Nested Vectored Interrupt Controller (NVIC) numbers, enables and prioritises each interrupt, an interrupt number such as <code>USART1_IRQn</code> selecting an entry in the vector table. The STM32F1 implements four priority bits, so priorities run from 0 to 15 with a lower number meaning a higher priority (PM0056 Rev 7, section 4.3.7 and Table 42: the processor implements bits[7:4] of each priority field, and a lower value gives a higher priority), and a pending interrupt with a higher priority can interrupt a running handler. The header confirms the four bits, <code>__NVIC_PRIO_BITS</code> being 4 in <code>stm32f103xb.h</code>
+    (<a href="https://www.st.com/resource/en/programming_manual/pm0056-stm32f10xxx20xxx21xxxl1xxxx-cortexm3-programming-manual-stmicroelectronics.pdf" target="_blank" rel="noopener">PM0056 Rev 7, section 4.3.7 (NVIC_IPRx), the NVIC section</a>).
   </p>
 
-  <h3>The EXTI controller and AFIO</h3>
+  <h2>Status flags and write-1-to-clear</h2>
   <p>
-    The External Interrupt controller (EXTI) turns an edge on a pin into an interrupt request. It has one line per pin number, lines 0 to 15, and each line can take its pin from any port. The choice of port is made in the Alternate Function I/O block (AFIO), which has four <code>EXTICR</code> registers (RM0008 Rev 21, sections 9.4.3 to 9.4.6). Each covers four lines, with four bits per line, and the port code is 0 for A, 1 for B and 2 for C. The EXTI lines have their own vectors: line 0 has <code>EXTI0_IRQn</code>, and lines 5 to 9 share one handler, while lines 10 to 15 share another (RM0008 Rev 21, Table 63: EXTI0 is position 6, EXTI9_5 is 23 and EXTI15_10 is 40).
+    A <em>flag</em> is a bit in a status register that the hardware sets when an event happens, and the handler must clear it, or the interrupt fires again the moment the handler returns. Flags are cleared in two common ways: some clear when a data register is read or written, while others are <em>write-1-to-clear</em>, reading 1 while the event is pending and clearing when a 1 is written to that bit, a write of 0 doing nothing. The EXTI pending register works the second way, and the HAL's own macro for it writes the line's bit directly.
   </p>
 
-  <h2>Step 1: ask the USART for an interrupt</h2>
+  <h2>The EXTI controller and AFIO</h2>
   <p>
-    The receive interrupt is enabled by <code>RXNEIE</code> in <code>USART1-&gt;CR1</code>. <code>RXNE</code> is the flag in <code>USART1-&gt;SR</code> that means the receive data register holds a byte. With the enable bit set, the flag raises the interrupt (RM0008 Rev 21, section 27.6.1, bit 5, and section 27.6.4, bit 5).
+    The External Interrupt controller (EXTI) turns an edge on a pin into an interrupt request, with one line per pin number, lines 0 to 15, each able to take its pin from any port. The port is chosen in the Alternate Function I/O block (AFIO), whose four <code>EXTICR</code> registers (RM0008 Rev 21, sections 9.4.3 to 9.4.6) each cover four lines with four bits per line, the port code being 0 for A, 1 for B and 2 for C. The EXTI lines have their own vectors, line 0 having <code>EXTI0_IRQn</code> while lines 5 to 9 share one handler and lines 10 to 15 another (RM0008 Rev 21, Table 63: EXTI0 is position 6, EXTI9_5 is 23 and EXTI15_10 is 40).
+  </p>
+
+  <h2>Enabling the USART receive interrupt</h2>
+  <p>
+    The receive interrupt is enabled by <code>RXNEIE</code> in <code>USART1-&gt;CR1</code>, while <code>RXNE</code> is the flag in <code>USART1-&gt;SR</code> meaning that the receive data register holds a byte, so with the enable bit set the flag raises the interrupt (RM0008 Rev 21, section 27.6.1, bit 5, and section 27.6.4, bit 5).
   </p>
   <pre><code class="language-c">USART1-&gt;CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_RXNEIE | USART_CR1_UE;</code></pre>
   <p>
-    Line by line: <code>TE</code> enables the transmitter, <code>RE</code> the receiver, <code>RXNEIE</code> the receive interrupt, and <code>UE</code> the whole USART. The header defines each as a mask, so the <code>|</code> sets all four bits at once. The assignment overwrites <code>CR1</code>, which is safe here because this is the only code that sets the register. In a larger program, a read-modify-write with <code>|=</code> would keep settings that another function had made.
+    <code>TE</code> enables the transmitter, <code>RE</code> the receiver, <code>RXNEIE</code> the receive interrupt and <code>UE</code> the whole USART, each defined in the header as a mask, so the <code>|</code> sets all four bits at once. The assignment overwrites <code>CR1</code>, which is safe here because no other code sets the register, whereas in a larger program a read-modify-write with <code>|=</code> would keep settings made by another function.
   </p>
   <p>
-    The peripheral's request is not enough on its own. The NVIC must enable the line. <code>USART1_IRQn</code> is 37 in the header, so it selects the entry at index 16 + 37 = 53 in the vector table (RM0008 Rev 21, Table 63 lists USART1 at position 37; PM0056 Rev 7, Table 16 places IRQ n at exception 16 + n). The startup file lists <code>USART1_IRQHandler</code> at that position, which is how the link finds the handler by name. <code>NVIC_EnableIRQ()</code> sets the enable bit for that number, and <code>NVIC_SetPriority()</code> sets its priority.
+    The peripheral's request is not enough on its own, because the NVIC must enable the line as well. <code>USART1_IRQn</code> is 37 in the header, selecting the vector table entry at index
+  </p>
+  <p class="eq"><span>vector index = 16 + IRQn</span><span class="eq-n">(1)</span></p>
+  <p>
+    where the first 16 entries are the core's own exceptions, so USART1 sits at 16 + 37 = 53 (RM0008 Rev 21, Table 63 lists USART1 at position 37; PM0056 Rev 7, Table 16 places IRQ n at exception 16 + n). The startup file lists <code>USART1_IRQHandler</code> at that position, which is how the link finds the handler by name, and <code>NVIC_EnableIRQ()</code> sets the enable bit for that number while <code>NVIC_SetPriority()</code> sets its priority.
   </p>
   <pre><code class="language-c">NVIC_SetPriority(USART1_IRQn, 2U);   /* lower number is higher priority */
 NVIC_EnableIRQ(USART1_IRQn);</code></pre>
 
-  <h2>Step 2: the handler clears its flags in order</h2>
+  <h2>Clearing the receive flags in the handler</h2>
   <p>
-    The handler is named <code>USART1_IRQHandler</code>, which is the name the startup file gives that vector. RXNE clears when you read <code>DR</code>. The overrun flag, <code>ORE</code>, means a byte arrived before the last one was read, so the old byte was overwritten. The sequence for clearing ORE is a read of <code>SR</code>, followed by a read of <code>DR</code> (RM0008 Rev 21, section 27.6.1: RXNE is cleared by a read of USART_DR, and ORE by a read of USART_SR followed by a read of USART_DR). The HAL's own clear macro does the same two reads, in that order. So the handler reads <code>SR</code> first, then <code>DR</code>, and it does both even when only ORE is set.
+    The handler is named <code>USART1_IRQHandler</code>, the name the startup file gives that vector. RXNE clears when <code>DR</code> is read, while the overrun flag, <code>ORE</code>, meaning that a byte arrived before the last one was read and overwrote it, clears through a read of <code>SR</code> followed by a read of <code>DR</code> (RM0008 Rev 21, section 27.6.1: RXNE is cleared by a read of USART_DR, and ORE by a read of USART_SR followed by a read of USART_DR), the same two reads in the same order as the HAL's own clear macro. The handler therefore reads <code>SR</code> first and then <code>DR</code>, doing both even when only ORE is set.
   </p>
   <pre><code class="language-c">void USART1_IRQHandler(void) {
     uint32_t sr = USART1-&gt;SR;                 /* step 1: SR ... */
@@ -80,19 +83,16 @@ NVIC_EnableIRQ(USART1_IRQn);</code></pre>
     if (sr &amp; USART_SR_ORE) { g_rx_dropped++; }
 }</code></pre>
   <p>
-    Line by line: the first line copies <code>SR</code> into a local variable. Reading it once and testing the copy means that the bits the handler tests are the bits from one moment, not a mix. The <code>if</code> enters the body when either event happened. Reading <code>DR</code> returns the received byte and clears RXNE and ORE. The cast to <code>uint8_t</code> keeps the byte, because this course uses 8-bit frames. The inner test hands the byte to main only when RXNE was set, and the last line counts an overrun separately, so the loss is visible.
+    The first line copies <code>SR</code> into a local variable, so that the bits the handler tests all come from one moment rather than a mix, and the <code>if</code> enters the body when either event happened. Reading <code>DR</code> returns the received byte and clears RXNE and ORE, the cast to <code>uint8_t</code> keeping the byte, because this course uses 8-bit frames, and the inner test hands the byte to main only when RXNE was set, while the last line counts an overrun separately so that the loss stays visible.
   </p>
   <div class="warning">An interrupt that does not clear its flag is entered again as soon as it returns, and the program appears to hang. For RXNE, reading DR is the clear. For EXTI, the clear is a write of 1 to the pending bit (RM0008 Rev 21, section 10.3.6), which the next section shows.</div>
 
-  <h2>Step 3: a ring buffer between the interrupt and main</h2>
+  <h2>A ring buffer between the interrupt and main</h2>
   <p>
-    The interrupt is the producer: it adds bytes. Main is the consumer: it takes them out. A ring buffer is an array with a write index (the head) and a read index (the tail), and both wrap around the array. The size is a power of two, so <code>index &amp; (SIZE − 1)</code> is the wrap, with no division. A ring is the usual structure for this, and it is in the glossary.
-    <a href="../reference/glossary.html#ring-buffer">Glossary: ring buffer</a>
+    The interrupt is the producer, adding bytes, and main the consumer, taking them out. A ring buffer is an array with a write index, the head, and a read index, the tail, both wrapping around the array, and with a power-of-two size the wrap is <code>index &amp; (SIZE − 1)</code>, needing no division. A ring is the usual structure for this job, as the glossary entry describes
+    (<a href="../reference/glossary.html#ring-buffer">Glossary: ring buffer</a>).
   </p>
 
-  <div class="analogy">
-    <p>Picture a conveyor belt bent into a circle, as in a sushi bar. The cook, the interrupt, puts plates on at one point; the diner, main, takes them off at another. Each moves only their own marker, the head or the tail, so they never need to talk. If the cook gets a whole lap ahead, there is nowhere to put the next plate: that is a full buffer, and a byte is dropped.</p>
-  </div>
   <figure>
     <svg font-family="JetBrains Mono, monospace" viewBox="0 0 440 120" role="img" aria-label="A ring of 8 slots with the tail pointing at the oldest byte and the head pointing at the next free slot">
       <g stroke="currentColor" fill="none" stroke-width="1.5">
@@ -137,12 +137,16 @@ static int ring_get(ByteRing *r, uint8_t *byte) {          /* consumer: main */
     return 1;
 }</code></pre>
   <p>
-    Line by line for <code>ring_put</code>. It reads <code>head</code> into a local, because only the producer writes it, so the local is always current. The full test subtracts the tail from the head and compares with 16, the size. The arithmetic is done in <code>uint16_t</code>, so the difference wraps the way the counters do. The slot is <code>head &amp; 15U</code>, which is the index for a 16-entry array. The byte is written to the slot first, and only then is the head advanced. <code>ring_get</code> is the mirror image: it returns 0 when the counters are equal, reads the slot at the tail, and advances the tail last.
+    <code>ring_put</code> reads <code>head</code> into a local, which is always current because only the producer writes it, and its full test subtracts the tail from the head and compares the result with 16, the size, the arithmetic being done in <code>uint16_t</code> so that the difference wraps the way the counters do. The slot is <code>head &amp; 15U</code>, the index into a 16-entry array, and the byte is written to the slot first, the head advancing only afterwards. <code>ring_get</code> is the mirror image, returning 0 when the counters are equal, reading the slot at the tail and advancing the tail last.
   </p>
 
-  <h3>A worked trace across the wrap</h3>
+  <div class="analogy">
+    <p>A ring buffer resembles the circular conveyor belt of a sushi bar, the cook, here the interrupt, putting plates on at one point and the diner, main, taking them off at another. Each moves only their own marker, the head or the tail, so they never need to talk, and if the cook gets a whole lap ahead, there is nowhere for the next plate, a full buffer in which a byte is dropped. A real cook would simply wait, however, whereas an interrupt cannot wait for space, which is why the ring must be sized for the longest stretch during which main does not read it.</p>
+  </div>
+
+  <h2>Worked example: the ring buffer across the 16-bit wrap</h2>
   <p>
-    The head and tail are free-running 16-bit counters, not indexes. They go up to 65535 and wrap to zero, and the slot number is always the low four bits. The difference <code>head − tail</code> still gives the number of bytes queued, as long as it is computed in 16 bits. Here is a trace with the tail just before the wrap.
+    The head and tail are free-running 16-bit counters rather than indexes, counting up to 65 535 and wrapping to zero, while the slot number is always their low four bits, and the difference <code>head − tail</code> still gives the number of queued bytes as long as it is computed in 16 bits. The trace below starts with the tail just before the wrap, so before reading it, predict what <code>head − tail</code> gives once the head has wrapped and the tail has not.
   </p>
   <table>
     <thead><tr><th>Step</th><th>head</th><th>tail</th><th>head − tail (16-bit)</th><th>Slot written or read</th></tr></thead>
@@ -155,7 +159,7 @@ static int ring_get(ByteRing *r, uint8_t *byte) {          /* consumer: main */
     </tbody>
   </table>
   <p>
-    The step that matters is the difference at the wrap. Between the second and third rows, the head went from 65535 to 0. The 16-bit subtraction <code>0 − 65534</code> gives 2 modulo 65536, which is the right answer, and it is 2 because the head is two bytes past the tail. A plain signed subtraction of two 32-bit values would give −65534, and the full test would never fire. The unsigned 16-bit form is why the code casts to <code>uint16_t</code>.
+    The step that matters is the difference at the wrap, between the second and third rows, where the head goes from 65 535 to 0. The 16-bit subtraction <code>0 − 65534</code> gives 2 modulo 65 536, the right answer, since the head is two bytes past the tail, whereas a plain signed subtraction of two 32-bit values would give −65 534 and the full test would never fire, which is why the code casts to <code>uint16_t</code>.
   </p>
 
   <div class="widget anim" data-title="The ring buffer across the 16-bit wrap">
@@ -213,21 +217,21 @@ static int ring_get(ByteRing *r, uint8_t *byte) {          /* consumer: main */
     </ol>
   </div>
 
-<h3>Why this needs no lock on one core</h3>
+  <h2>Lock-free safety on a single core</h2>
   <p>
-    The argument for safety without a lock has four parts. The solution's self-test checks it in code before the hardware runs.
+    The argument that the ring is safe without a lock has four parts, and the solution's self-test checks the code before the hardware runs.
   </p>
   <ol class="steps">
-    <li><strong>Each index has one writer.</strong> Only the interrupt writes <code>head</code>, and only main writes <code>tail</code>. Each side reads the other's index and never writes it.</li>
-    <li><strong>Each index is read or written in one access.</strong> The argument assumes that a 16-bit access to an aligned address is not split into two bus transactions. That is the usual behaviour on this core, but it is an assumption, and the Arm Cortex-M3 Technical Reference Manual is the source to check before you reuse the argument on another core.</li>
-    <li><strong>The order is fixed.</strong> The producer writes the slot before it publishes the head, and <code>volatile</code> stops the compiler from swapping them. The consumer reads the head before it reads the slot, so it never reads a slot that has not been written.</li>
-    <li><strong>The interrupt cannot break main's half.</strong> If the interrupt runs between two steps of <code>ring_get</code>, it only adds a byte at the head. It does not touch the tail, so main's view of the tail stays valid.</li>
+    <li><strong>Each index has one writer.</strong> Only the interrupt writes <code>head</code> and only main writes <code>tail</code>, each side reading the other's index without ever writing it.</li>
+    <li><strong>Each index is read or written in one access.</strong> The argument assumes that a 16-bit access to an aligned address is not split into two bus transactions, the usual behaviour on this core but still an assumption, for which the Arm Cortex-M3 Technical Reference Manual is the source to check before reusing the argument on another core.</li>
+    <li><strong>The order is fixed.</strong> The producer writes the slot before publishing the head, with <code>volatile</code> stopping the compiler from swapping the two, and the consumer reads the head before the slot, so it never reads a slot that has not been written.</li>
+    <li><strong>The interrupt cannot break main's half.</strong> An interrupt running between two steps of <code>ring_get</code> only adds a byte at the head without touching the tail, so main's view of the tail stays valid.</li>
   </ol>
   <div class="note">This argument is for one core, with the interrupt as the only producer. Two cores, or a second producer, need memory barriers and atomic operations: the RP2040's second core is in lesson 64, and the RTOS queues and mutexes that handle this are in Part 7. The volatile qualifier gives ordering for the compiler, not atomicity. Lesson 46 made the same point.</div>
 
-  <h2>Step 4: EXTI and a button on PA0</h2>
+  <h2>A button on PA0 through EXTI line 0</h2>
   <p>
-    A button on PA0 can raise an interrupt through the EXTI controller. The choice of port for line 0 is made in <code>AFIO-&gt;EXTICR</code>. Line 0 is in <code>EXTICR[0]</code>, and its field is the low four bits of that register. Port A has code 0, so PA0 is an all-zero field. Line 13 is in <code>EXTICR[3]</code>, and PC13 is the value 2 there (RM0008 Rev 21, section 9.4.3 for EXTICR1 and section 9.4.6 for EXTICR4).
+    A button on PA0 can raise an interrupt through the EXTI controller, the port for line 0 being chosen in <code>AFIO-&gt;EXTICR</code>, where line 0 occupies the low four bits of <code>EXTICR[0]</code>. Port A has code 0, so PA0 is an all-zero field, while line 13 lives in <code>EXTICR[3]</code>, where PC13 is the value 2 (RM0008 Rev 21, section 9.4.3 for EXTICR1 and section 9.4.6 for EXTICR4).
   </p>
   <pre><code class="language-c">RCC-&gt;APB2ENR |= RCC_APB2ENR_AFIOEN;       /* AFIO needs its clock to take writes */
 AFIO-&gt;EXTICR[0] = (AFIO-&gt;EXTICR[0] &amp; ~AFIO_EXTICR1_EXTI0) | AFIO_EXTICR1_EXTI0_PA;
@@ -244,86 +248,86 @@ void EXTI0_IRQHandler(void) {
     }
 }</code></pre>
   <p>
-    Line by line. The first line enables the AFIO clock, which RM0008 Rev 21 (section 10.2.5, note 1) says should be enabled before the EXTICR registers are configured. The <code>EXTICR</code> write is also ignored without it, as lesson 67 found for the GPIO ports. The second line clears the four bits of the line-0 field with a mask, and then writes <code>AFIO_EXTICR1_EXTI0_PA</code>, which is zero. Because the value is zero, the mask-and-set pattern here mainly documents intent: it would matter if line 0 were routed to another port. <code>FTSR</code>, the falling-trigger register, selects the falling edge, because the button pulls the pin to ground when pressed. <code>PR</code> is cleared before the line is unmasked, so a stale pending flag from startup does not fire at once. <code>IMR</code> unmasks line 0, and the NVIC enables <code>EXTI0_IRQn</code>, which is interrupt number 6 in the header and at position 6 in RM0008 Rev 21, Table 63.
+    The first line enables the AFIO clock, which RM0008 Rev 21 (section 10.2.5, note 1) says should be on before the EXTICR registers are configured, since without it the <code>EXTICR</code> write is ignored, as lesson 67 found for the GPIO ports. The second line clears the four bits of the line-0 field with a mask and writes <code>AFIO_EXTICR1_EXTI0_PA</code>, which is zero, so here the mask-and-set pattern mainly documents intent and would matter only if line 0 were routed to another port. <code>FTSR</code>, the falling-trigger register, selects the falling edge, because the button pulls the pin to ground when pressed, and <code>PR</code> is cleared before the line is unmasked, so that a stale pending flag from startup cannot fire at once. <code>IMR</code> unmasks line 0, and the NVIC enables <code>EXTI0_IRQn</code>, interrupt number 6 in the header and position 6 in RM0008 Rev 21, Table 63.
   </p>
   <p>
-    The handler checks that line 0 is the one pending, which matters if the shared lines are used later. It clears the pending bit by writing 1 to it, and then counts the press. The clear comes before the count, so the handler is ready for the next edge as soon as it returns.
+    The handler checks that line 0 is the one pending, which matters if the shared lines are used later, then clears the pending bit by writing 1 to it and counts the press, the clear coming first so that the handler is ready for the next edge as soon as it returns.
   </p>
   <p>
-    A real button also bounces, so one press can raise several edges. Lesson 52 covered debouncing in polled code, and the same idea applies here.
-    <a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf" target="_blank" rel="noopener">RM0008 Rev 21, the AFIO and EXTI sections (9.4.3 for EXTICR1, 10.2.5 for the line mapping, and 10.3.6 for the pending register)</a>
+    A real button also bounces, so one press can raise several edges, and the debouncing of lesson 52, written there for polled code, applies here too
+    (<a href="https://www.st.com/resource/en/reference_manual/rm0008-stm32f101xx-stm32f102xx-stm32f103xx-stm32f105xx-and-stm32f107xx-advanced-armbased-32bit-mcus-stmicroelectronics.pdf" target="_blank" rel="noopener">RM0008 Rev 21, the AFIO and EXTI sections (9.4.3 for EXTICR1, 10.2.5 for the line mapping, and 10.3.6 for the pending register)</a>).
   </p>
   <div class="warning">The EXTI0 interrupt is a different vector from the EXTI lines 5 to 9 and 10 to 15, which share two handlers. Line 0 has its own. If you move the button to PA5, the handler changes to <code>EXTI9_5_IRQHandler</code>, and you must check PR for the right line inside it.</div>
 
   <h2>Pin setup for the receive line and the button</h2>
   <p>
-    The solution also configures the two GPIO pins that the code relies on, and the lesson's starter leaves one of them to you. PA10 is the receive pin. It is in <code>CRH</code>, with its field at bit 8, and it is a floating input, the CNF value 01 with MODE 00, which is 0x4. PA0 is the button, in <code>CRL</code>, with its field at bit 0, and it is an input with a pull-up. The pull-up input uses CNF 10 with MODE 00, which is 0x8, and the pull-up is selected by setting the pin's bit in <code>ODR</code> (RM0008 Rev 21, section 9.2.2 and Table 20).
+    The solution also configures the two GPIO pins the code relies on, the starter leaving one of them to you. PA10, the receive pin, lies in <code>CRH</code> with its field at bit 8 and is a floating input, CNF 01 with MODE 00, or 0x4, while PA0, the button, lies in <code>CRL</code> with its field at bit 0 and is an input with a pull-up, CNF 10 with MODE 00, or 0x8, the pull-up being selected by setting the pin's bit in <code>ODR</code> (RM0008 Rev 21, section 9.2.2 and Table 20).
   </p>
   <pre><code class="language-c">GPIOA-&gt;CRL = (GPIOA-&gt;CRL &amp; ~0xFU) | 0x8U;   /* PA0: input with pull-up */
 GPIOA-&gt;BSRR = GPIO_BSRR_BS0;               /* ODR bit 0 = 1 selects the pull-up */</code></pre>
   <p>
-    The HAL source confirms those encodings. Its constants for input with pull-up use CNF 10, floating input uses CNF 01, and its pull-up code sets the ODR bit. Lesson 67 gives the rest of the pattern.
+    The HAL source confirms those encodings, its constants for input with pull-up using CNF 10 and for floating input CNF 01, and its pull-up code setting the ODR bit, while lesson 67 gives the rest of the pattern.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The starter prints <code>RING FAIL</code> and stops, because the ring is not written yet. Its job is to make that line print <code>RING OK</code>. Then it accepts commands: <code>toggle</code> flips the PC13 LED, and <code>st</code> prints the button count. The Wokwi serial monitor sends what you type to USART1 RX on A10, and the button is on A0.
+    The starter prints <code>RING FAIL</code> and stops, because the ring is not yet written, and the job is to make that line print <code>RING OK</code>, after which the program accepts commands, <code>toggle</code> flipping the PC13 LED and <code>st</code> printing the button count. The Wokwi serial monitor sends what you type to USART1 RX on A10, and the button is on A0.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0070-uart-exti-ring/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>RING FAIL</code>.</li>
-    <li>Your task, marked <code>TODO(learner)</code>. Step 1: write <code>ring_put</code> and <code>ring_get</code> as in the code above. Step 2: add <code>USART_CR1_RXNEIE</code> to <code>CR1</code>, and enable <code>USART1_IRQn</code> in the NVIC. Step 3: set up EXTI line 0 in <code>button_init</code>: enable AFIO, route PA0, set the falling edge, clear and unmask the line, and enable <code>EXTI0_IRQn</code>.</li>
-    <li>You will know it works when the monitor prints <code>RING OK</code> first. Type <code>toggle</code> and press Enter: the LED flips, and the monitor says so. Click the button in the diagram, then type <code>st</code>, and the count goes up by one per click.</li>
+    <li>Open <code>projects/0070-uart-exti-ring/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. The monitor prints <code>RING FAIL</code>.</li>
+    <li>At the <code>TODO(learner)</code> markers, step 1 writes <code>ring_put</code> and <code>ring_get</code> as in the code above, step 2 adds <code>USART_CR1_RXNEIE</code> to <code>CR1</code> and enables <code>USART1_IRQn</code> in the NVIC, and step 3 sets up EXTI line 0 in <code>button_init</code>, enabling AFIO, routing PA0, setting the falling edge, clearing and unmasking the line and enabling <code>EXTI0_IRQn</code>.</li>
+    <li>The program works when the monitor prints <code>RING OK</code> first, typing <code>toggle</code> and pressing Enter flips the LED with a message from the monitor, and clicking the button in the diagram followed by <code>st</code> shows the count rising by one per click.</li>
   </ol>
   <details>
     <summary>Hint for the ring</summary>
-    <p>Each function is three or four lines. The size is 16, so the index mask is 15. Use <code>uint16_t</code> casts on the arithmetic, so the difference wraps the same way the counters do.</p>
+    <p>Each function is three or four lines, the size of 16 giving an index mask of 15, and <code>uint16_t</code> casts on the arithmetic make the difference wrap the same way the counters do.</p>
   </details>
   <details>
     <summary>Hint for the interrupt enable</summary>
-    <p>Without RXNEIE, the peripheral never raises RXNE as an interrupt, and the ring stays empty. Without <code>NVIC_EnableIRQ(USART1_IRQn)</code>, the request is pending and nothing runs.</p>
+    <p>Without RXNEIE the peripheral never raises RXNE as an interrupt and the ring stays empty, and without <code>NVIC_EnableIRQ(USART1_IRQn)</code> the request stays pending and nothing runs.</p>
   </details>
   <details>
     <summary>Hint for EXTI</summary>
-    <p>PA0 goes to line 0 with the port code 0, which means all zero bits in <code>EXTICR[0]</code>. The falling trigger is <code>FTSR</code>, and the unmask is <code>IMR</code>. Enable the AFIO clock first (RM0008 Rev 21, section 10.2.5, note 1), or the EXTICR write does nothing.</p>
+    <p>PA0 goes to line 0 with port code 0, all zero bits in <code>EXTICR[0]</code>, the falling trigger is <code>FTSR</code> and the unmask <code>IMR</code>, and the AFIO clock must be enabled first (RM0008 Rev 21, section 10.2.5, note 1), or the EXTICR write does nothing.</p>
   </details>
-  <p>The reference solution is in <code>projects/0070-uart-exti-ring/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0070-uart-exti-ring/solution</code>, so try first and compare afterwards.</p>
 
   <div class="win">You moved a serial command line and a button into interrupts, with a ring buffer that needs no lock on one core, and you can explain each step of the handler's flag clearing from the register sequence.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <h3>Mistake 1: RING OK prints, and typing does nothing</h3>
+  <h3>RING OK printed but typing ignored</h3>
   <p>
-    The self-test passes, but typed characters never echo. The usual cause is that <code>RXNEIE</code> is not set in <code>CR1</code>, or <code>USART1_IRQn</code> is not enabled in the NVIC. Without the first, the peripheral never raises RXNE as an interrupt, and without the second the request stays pending and nothing runs. The symptom is the same either way. The fix is both lines, as the hint describes. In the debugger, put a breakpoint in <code>USART1_IRQHandler</code>: it should be hit once per typed character.
+    The self-test passes but typed characters never echo, usually because <code>RXNEIE</code> is not set in <code>CR1</code> or <code>USART1_IRQn</code> is not enabled in the NVIC, the first leaving the peripheral without an interrupt for RXNE and the second leaving the request pending with nothing run, so the symptom is the same either way. Add both lines, as the hint describes, and in the debugger set a breakpoint in <code>USART1_IRQHandler</code>, which should be hit once per typed character.
   </p>
-  <h3>Mistake 2: the button count climbs without presses</h3>
+  <h3>A button count that climbs without presses</h3>
   <p>
-    After the handler runs once, the <code>st</code> count keeps going up, or the program seems to stall. The cause is a missing clear. If the handler does not write 1 to <code>EXTI-&gt;PR</code>, the pending bit stays set, and the interrupt is taken again as soon as it returns. The fix is the clear, before the count. A quick test is to read <code>EXTI-&gt;PR</code> in the debugger after a press: bit 0 should be 0.
+    After the handler runs once, the <code>st</code> count keeps rising or the program seems to stall, because the handler never writes 1 to <code>EXTI-&gt;PR</code>, so the pending bit stays set and the interrupt is taken again as soon as it returns. Clear the bit before counting, and check in the debugger after a press that bit 0 of <code>EXTI-&gt;PR</code> reads 0.
   </p>
-  <h3>Mistake 3: the button does nothing</h3>
+  <h3>A button that does nothing</h3>
   <p>
-    The button works in the polled version of the code, but the EXTI version never counts. Check the order: the AFIO clock comes first (RM0008 Rev 21, section 10.2.5, note 1), because the <code>EXTICR</code> write is ignored without it. Then check <code>FTSR</code> for the falling edge, <code>IMR</code> for the unmask, and <code>NVIC_EnableIRQ(EXTI0_IRQn)</code> for the NVIC. Any one of those missing leaves the button silent, and each one is a single line to check.
+    The button works in the polled version of the code but the EXTI version never counts, so check the order, the AFIO clock coming first (RM0008 Rev 21, section 10.2.5, note 1) because the <code>EXTICR</code> write is ignored without it, then <code>FTSR</code> for the falling edge, <code>IMR</code> for the unmask and <code>NVIC_EnableIRQ(EXTI0_IRQn)</code> for the NVIC. Any one of them missing leaves the button silent, and each is a single line to check.
   </p>
-  <h3>Mistake 4: characters come out garbled, now and then</h3>
+  <h3>Occasionally garbled characters</h3>
   <p>
-    Most characters are right, and occasionally one is wrong or missing. A common cause is a producer that advances <code>head</code> before writing the slot. The consumer can then read a slot that still holds the old byte. The fix is the order in <code>ring_put</code>: write the slot, then publish the head. Because the bug depends on timing, it does not show in a simulator run as easily as on hardware. A host test of the ring is the best way to catch it, which is why the solution runs the self-test before any interrupt.
+    Most characters are right but now and then one is wrong or missing, a common cause being a producer that advances <code>head</code> before writing the slot, so that the consumer can read a slot still holding the old byte. Keep the order in <code>ring_put</code>, writing the slot and then publishing the head. Because the bug depends on timing, it shows less readily in a simulator run than on hardware, and a host test of the ring is the best way to catch it, which is why the solution runs its self-test before any interrupt.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Interrupt-driven receive buffers in production</h2></summary>
   <p>
-    Production firmware almost always uses interrupt-driven receive buffers, because a polled receiver cannot keep up with a busy main loop. A reviewer looks for three things in such code: that the handler does the minimum work, that the status flags are cleared in the order the reference manual gives (RM0008 Rev 21, section 27.6.1), and that the buffer is safe for the number of producers and cores in the design. The third point is where a single-core argument like this one stops being enough. A second core, a DMA channel or a second interrupt that writes the same index all need a different design, usually an RTOS queue or a DMA ring with a half-transfer interrupt.
+    Production firmware almost always uses interrupt-driven receive buffers, because a polled receiver cannot keep up with a busy main loop. A reviewer checks that the handler does the minimum work, that the status flags are cleared in the order the reference manual gives (RM0008 Rev 21, section 27.6.1) and that the buffer is safe for the number of producers and cores in the design, the third point being where a single-core argument like this one stops being enough. A second core, a DMA channel or a second interrupt writing the same index all need a different design, usually an RTOS queue or a DMA ring with a half-transfer interrupt.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A peripheral interrupt needs three settings: the peripheral's enable bit, the NVIC enable and priority, and the handler's clear of the flag.</li>
-    <li>On the STM32F1, <code>USART1_IRQn</code> is 37, which is vector index 53, and <code>EXTI0_IRQn</code> is 6, which is vector index 22 (RM0008 Rev 21, Table 63, positions 37 and 6).</li>
-    <li>Clear an overrun by reading <code>SR</code> and then <code>DR</code>. Clear an EXTI pending bit by writing 1 to it.</li>
-    <li>A ring buffer uses free-running 16-bit counters, with the slot at <code>counter &amp; 15</code>, and the difference computed in <code>uint16_t</code> is correct across the wrap.</li>
-    <li>On one core, with a single producer, the ring needs no lock if the producer writes the slot before it publishes the head.</li>
-    <li>AFIO routes a pin to an EXTI line through <code>EXTICR</code>, and its clock should be on before that write (RM0008 Rev 21, section 10.2.5, note 1).</li>
-    <li>The lock-free argument depends on assumptions about access size and core count, and a design with more producers or cores needs a different structure.</li>
+    <li>A peripheral interrupt needs the peripheral's enable bit, the NVIC enable and priority, and a handler that clears the flag.</li>
+    <li>On the STM32F1 <code>USART1_IRQn</code> is 37, vector index 53, and <code>EXTI0_IRQn</code> is 6, vector index 22 (RM0008 Rev 21, Table 63, positions 37 and 6).</li>
+    <li>An overrun is cleared by reading <code>SR</code> and then <code>DR</code>, and an EXTI pending bit by writing 1 to it.</li>
+    <li>A ring buffer uses free-running 16-bit counters with the slot at <code>counter &amp; 15</code>, and their difference computed in <code>uint16_t</code> stays correct across the wrap.</li>
+    <li>On one core with a single producer the ring needs no lock, provided the producer writes the slot before publishing the head.</li>
+    <li>AFIO routes a pin to an EXTI line through <code>EXTICR</code>, with its clock enabled before that write (RM0008 Rev 21, section 10.2.5, note 1).</li>
+    <li>The lock-free argument rests on assumptions about access size and core count, so a design with more producers or cores needs a different structure.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

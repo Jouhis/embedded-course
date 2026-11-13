@@ -6,13 +6,13 @@ Lesson: [volatile, const, and static](https://jouhis.github.io/embedded-course/l
 
 ## Hands-on: find the missing qualifier
 
-The project has a repeating timer that sets a flag every 100 ms. Its callback runs in interrupt context, and `main` waits for the flag. The starter has one missing qualifier.
+The project's repeating timer sets a flag every 100 ms from a callback running in interrupt context, `main` waits for the flag, and the starter lacks one qualifier.
 
 1. Open `projects/0046-volatile-flag/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build uses `-O2`, so the compiler can optimise the wait. Expected: the build finishes with no errors.
-3. Start the simulator: <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `waiting for the first tick`. Then it prints nothing more, because the first wait loop runs forever. (If your Wokwi token is not set, you cannot run the simulator; read the disassembly in step 5 instead.)
-4. Your task: find the one qualifier that `tick_seen` needs, and add it. The variable is shared with an ISR, so the compiler must reload it on every pass. You will know it works when the serial monitor prints `VOLATILE FLAG OK`, and then a `tick` line every 100 ms while the LED toggles.
-5. Check the compiler output. Run `arm-none-eabi-objdump -d -C build/blink.elf` and find the first wait loop in `main`. In the starter you should see `b` to its own address (encoding `e7fe`) with no load before it. After your fix, the wait loop should contain a byte load (`ldrb`) and a branch that goes back to that load.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The build uses `-O2`, so the compiler can optimise the wait, and it should finish without errors.
+3. Start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The serial monitor prints `waiting for the first tick` and then nothing more, because the first wait loop runs forever. Without a Wokwi token the simulator cannot run, so read the disassembly in step 5 instead.
+4. Find the one qualifier that `tick_seen` needs and add it, remembering that the variable is shared with an ISR, so the compiler must reload it on every pass. The fix works when the serial monitor prints `VOLATILE FLAG OK` and then a `tick` line every 100 ms while the LED toggles.
+5. Check the compiler output by running `arm-none-eabi-objdump -d -C build/blink.elf` and finding the first wait loop in `main`. In the starter it is a `b` to its own address (encoding `e7fe`) with no load before it, and after the fix the loop should contain a byte load (`ldrb`) and a branch back to that load.
 
 ## Files you work on
 
@@ -27,7 +27,7 @@ The serial monitor prints `VOLATILE FLAG OK`.
 <details>
 <summary>Hint</summary>
 
-Look at the declaration: the comment next to `tick_seen` says the callback writes it from interrupt context. The keyword is one that the earlier examples in this lesson used.
+Look at the declaration: the comment beside `tick_seen` says that the callback writes it from interrupt context, and the keyword is one the earlier examples in this lesson used.
 
 </details>
 

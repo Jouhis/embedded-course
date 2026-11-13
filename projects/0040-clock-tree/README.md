@@ -6,12 +6,12 @@ Lesson: [Clock tree and PLLs](https://jouhis.github.io/embedded-course/lessons/0
 
 ## Try it in Wokwi
 
-The project `projects/0040-clock-tree` is a single demo. It prints `SystemCoreClock`, the value of `RCC_CFGR`, the clock source bits and the PLL multiplier field. The demo does not change the clock, so you are checking the reset state.
+The project `projects/0040-clock-tree` is a single demo that prints `SystemCoreClock`, the value of `RCC_CFGR`, the clock source bits and the PLL multiplier field. It does not change the clock, so what you check is the reset state.
 
 1. Open `projects/0040-clock-tree` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Read the first line, `SystemCoreClock (Hz): 0x007A1200`. That is 8000000 in decimal, the HSI value. The line `PLLMUL field: 0x00000000` should follow, which means no multiplier is selected.
-3. Read the `SWS (clock source): 0x00000000` line. Zero means HSI, as the header defines `RCC_CFGR_SWS_HSI`. Explain why the PLL field reads zero even though the chip has a PLL.
-4. Press <kbd>F5</kbd> to debug, stop at `main`, and type `print/x RCC->CFGR` in the debug console. Check that bits 3 and 2 are zero, which is the SWS value in the line above.
+2. Read the first line, `SystemCoreClock (Hz): 0x007A1200`, which is 8000000 in decimal, the HSI value. It should be followed by `PLLMUL field: 0x00000000`, meaning that no multiplier is selected.
+3. Read the `SWS (clock source): 0x00000000` line, where zero means HSI, as the header defines `RCC_CFGR_SWS_HSI`, and explain why the PLL field reads zero although the chip has a PLL.
+4. Press <kbd>F5</kbd> to debug, stop at `main`, and type `print/x RCC->CFGR` in the debug console, checking that bits 3 and 2 are zero, the SWS value above.
 
 ## Done when
 
@@ -22,6 +22,6 @@ The serial monitor prints `SystemCoreClock (Hz): 0x007A1200`.
 <details>
 <summary>Hint</summary>
 
-The SWS field is bits 3 and 2 of `RCC_CFGR`, so shift right by two and mask two bits. A value of 0 means HSI, 4 means HSE and 8 means PLL. The PLLMUL field is bits 21 to 18, so it is zero when no multiplier is set.
+The SWS field is bits 3 and 2 of `RCC_CFGR`, so shift right by two and mask two bits; a value of 0 means HSI, 4 HSE and 8 PLL. The PLLMUL field is bits 21 to 18, which is zero while no multiplier is set.
 
 </details>

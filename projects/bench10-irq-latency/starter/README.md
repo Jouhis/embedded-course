@@ -7,11 +7,11 @@ Lesson: [Bench lab 10: Measure interrupt latency](https://jouhis.github.io/embed
 ## On the board: measure the starter
 
 1. Build `projects/bench10-irq-latency/starter` and copy `build/blink.bin` to the ST-LINK drive, as in bench lab 9. The VCP prints `BENCH10 ready at 4000000 Hz`.
-2. In PulseView, sample at 24 MHz (or the highest your analyzer offers), trigger on a rising edge of D0, and press B1.
-3. Put cursors on the PC13 rising edge and the PA5 rising edge. Write down the time. Repeat for ten presses. A button bounces (bench lab 4), so use the first edge of each press only.
-4. Convert to cycles: time / 250 ns.
+2. In PulseView, sample at 24 MHz (or the highest your analyzer offers), trigger on a rising edge of D0 and press B1.
+3. Put cursors on the PC13 rising edge and the PA5 rising edge and write down the time, repeating for ten presses. A button bounces (bench lab 4), so use only the first edge of each press.
+4. Convert to cycles as time ÷ 250 ns.
 
-The starter is written the way a generic driver layer often is. The handler loops over all sixteen EXTI lines to find the pending one, calls a callback through a function pointer, and the callback formats a log entry with `snprintf()` before it drives the pin. Every one of those steps runs before the edge you measure.
+The starter is written the way a generic driver layer often is. Its handler loops over all sixteen EXTI lines to find the pending one and calls a callback through a function pointer, and the callback formats a log entry with `snprintf()` before it drives the pin, so every one of those steps runs before the edge you measure.
 
 ## Files you work on
 

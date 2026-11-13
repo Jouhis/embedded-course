@@ -6,12 +6,12 @@ Lesson: [Devicetree: describing hardware](https://jouhis.github.io/embedded-cour
 
 ## Try it in Wokwi
 
-The starter blinks led0 and has a `TODO(learner)` note in the overlay where the second LED and button go. The wiring is already in the diagram: the second LED on GP16 through a resistor, and the button from GP14 to ground. Add the overlay nodes, then wire the button to the second LED in the loop.
+The starter blinks led0 and has a `TODO(learner)` note in the overlay where the second LED and the button go, the wiring already being in the diagram, with the second LED on GP16 through a resistor and the button from GP14 to ground, so you add the overlay nodes and then wire the button to the second LED in the loop.
 
 1. Open `projects/0096-devicetree/starter` in VS Code.
-2. In `boards/rpi_pico.overlay`, copy the three blocks from the TODO(learner) comment: the `led1` node on GP16, the `button_0` node on GP14 with `compatible = "vnd,user-button"`, and the aliases `led1` and `sw0`. The binding file is already in `dts/bindings/input`.
+2. In `boards/rpi_pico.overlay`, copy the three blocks from the TODO(learner) comment, the `led1` node on GP16, the `button_0` node on GP14 with `compatible = "vnd,user-button"` and the aliases `led1` and `sw0`, the binding file already being in `dts/bindings/input`.
 3. In `src/main.c`, add the two `GPIO_DT_SPEC_GET` lines that the TODO(learner) comment shows, configure `led1` as an output and `button` as an input, and in the loop set `led1` to `gpio_pin_get_dt(&button)`.
-4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then open `build/zephyr/zephyr.dts` and find `button_0`. The line should show `gpios = `, with a comment naming your overlay. Start the simulator. You will know it works when the serial monitor prints `DEVICETREE OK` and the second LED follows the button.
+4. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, open `build/zephyr/zephyr.dts` and find `button_0`, whose line should show `gpios = ` with a comment naming your overlay, then start the simulator, the change having worked when the serial monitor prints `DEVICETREE OK` and the second LED follows the button.
 
 ## Files you work on
 

@@ -6,11 +6,11 @@ Lesson: [Writing your own linker script and startup file](https://jouhis.github.
 
 ## Try it in Wokwi
 
-The starter has the CMake change done, and the startup and linker script partly written. The build succeeds, but `OWN STARTUP FAIL` prints, because the copy loop is missing.
+The starter has the CMake change done and the startup and linker script partly written, so the build succeeds, but `OWN STARTUP FAIL` prints because the copy loop is missing.
 
-1. Open `projects/0068-own-startup-linker/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints the two values and `OWN STARTUP FAIL`. The values shown are `g_initialised = 0x00000000` and `g_zeroed = 0x00000000` until the copy works.
-2. Your task. Step 1: write the copy loop from `_sidata` to `_sdata`, up to `_edata`, in `startup.c`. Step 2: write the clear loop from `_sbss` to `_ebss`. Step 3: add the `.bss` section to `minimal.ld`, with `_sbss` and `_ebss` around its contents. The starter script does not have this section, so step 2 cannot link until step 3 is done.
-3. You will know it works when the monitor prints `OWN STARTUP OK`, after `g_initialised = 0xCAFEF00D`.
+1. Open `projects/0068-own-startup-linker/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints the two values and `OWN STARTUP FAIL`, the values reading `g_initialised = 0x00000000` and `g_zeroed = 0x00000000` until the copy works.
+2. Step 1 writes the copy loop in `startup.c` from `_sidata` to `_sdata`, up to `_edata`, step 2 writes the clear loop from `_sbss` to `_ebss`, and step 3 adds the `.bss` section to `minimal.ld` with `_sbss` and `_ebss` around its contents. The starter script lacks that section, so step 2 cannot link until step 3 is done.
+3. The program works when the monitor prints `OWN STARTUP OK` after `g_initialised = 0xCAFEF00D`.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `OWN STARTUP OK`.
 <details>
 <summary>Hint for the copy loop</summary>
 
-The source pointer `src` already points at `_sidata`. The destination runs from `&_sdata` up to, not including, `&_edata`. Copy one word per step, and advance both pointers.
+The source pointer `src` already points at `_sidata`, and the destination runs from `&_sdata` up to, but not including, `&_edata`, so copy one word per step and advance both pointers.
 
 </details>
 
 <details>
 <summary>Hint for the linker script</summary>
 
-Copy the pattern of the `.data` block. A `.bss` block has `_sbss = .;` at its start and `_ebss = .;` at its end, and it uses `> RAM` with no `AT>` part.
+Follow the pattern of the `.data` block: a `.bss` block has `_sbss = .;` at its start and `_ebss = .;` at its end and uses `> RAM` without an `AT>` part.
 
 </details>
 

@@ -6,12 +6,12 @@ Lesson: [STM32 HAL and CubeMX-generated code](https://jouhis.github.io/embedded-
 
 ## Try it in Wokwi
 
-The project rebuilds lesson 67's two LEDs with the HAL. It adds a push button on PA0, which the code reads and reports over the serial monitor. The starter gives you the PC13 LED, the UART and the time base, and five `TODO(learner)` steps for the rest.
+The project rebuilds the two LEDs of lesson 67 with the HAL and adds a push button on PA0, which the code reads and reports over the serial monitor. The starter provides the PC13 LED, the UART and the time base, with five `TODO(learner)` steps for the rest.
 
-1. Open `projects/0069-stm32-hal-blink/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `HAL starter: serial link works`, and PC13 blinks.
-2. Your task. Step 1: initialise PB0 as a push-pull output. Step 2: initialise PA0 as an input with the pull-up. Step 3: toggle PB0 when its deadline passes, every 150 ms. Step 4: print `button pressed` on a falling edge of PA0, with the 20 ms lockout the solution uses.
-3. You will know it works when the external LED blinks faster than PC13, and clicking the button in the diagram prints `button pressed` once for each click.
-4. Step 5: once steps 1 to 4 work, print `HAL OK` where `TODO(learner) 5` is, after the starter's banner. Rebuild, and expect that line once at start.
+1. Open `projects/0069-stm32-hal-blink/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `HAL starter: serial link works` and PC13 blinks.
+2. Step 1 initialises PB0 as a push-pull output, step 2 initialises PA0 as an input with the pull-up, step 3 toggles PB0 whenever its deadline passes, every 150 ms, and step 4 prints `button pressed` on a falling edge of PA0, with the 20 ms lockout the solution uses.
+3. The program works when the external LED blinks faster than PC13 and each click of the button in the diagram prints `button pressed` once.
+4. Step 5, once steps 1 to 4 work, prints `HAL OK` at `TODO(learner) 5`, after the starter's banner, so rebuild and expect that line once at start.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `HAL OK`.
 <details>
 <summary>Hint for step 2</summary>
 
-A pull-up input is `GPIO_MODE_INPUT` with `GPIO_PULLUP`. The button pulls the pin low when pressed, so the idle level is high.
+A pull-up input is `GPIO_MODE_INPUT` with `GPIO_PULLUP`, and since the button pulls the pin low when pressed, the idle level is high.
 
 </details>
 
 <details>
 <summary>Hint for step 4</summary>
 
-Read the pin with `HAL_GPIO_ReadPin()`. A press is a change from `GPIO_PIN_SET` to `GPIO_PIN_RESET`. Keep `last_button` up to date at the end of each loop, or you will print on every loop instead of on each press.
+Read the pin with `HAL_GPIO_ReadPin()`, a press being a change from `GPIO_PIN_SET` to `GPIO_PIN_RESET`, and update `last_button` at the end of each loop, or the message prints on every loop instead of on each press.
 
 </details>
 

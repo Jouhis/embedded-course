@@ -6,12 +6,12 @@ Lesson: [Bare-metal blink with CMSIS only](https://jouhis.github.io/embedded-cou
 
 ## Try it in Wokwi
 
-The Wokwi diagram has the onboard LED on PC13, and a second LED on PB0 through a 220 Ω resistor. The solution is complete. The starter has four `TODO(learner)` steps for the PB0 LED, and a fifth for the pass line.
+The Wokwi diagram has the onboard LED on PC13 and a second LED on PB0 behind a 220 Ω resistor. The solution is complete, while the starter has four `TODO(learner)` steps for the PB0 LED and a fifth for the pass line.
 
-1. Open `projects/0067-bare-metal-blink/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Only PC13 blinks, at 500 ms. The monitor prints `TWO LED starter: serial link works` once, which only shows that the serial link works.
-2. Your task. Step 1: also enable the GPIOB clock. Step 2: set PB0 to a push-pull output at 2 MHz. PB0 is in CRL, so its field starts at bit 0. Step 3: start PB0 low, which is off for an active-high LED. Step 4: copy the PC13 block for PB0, with a 150 ms half period.
-3. You will know it works when the external LED on PB0 blinks faster than the onboard one, about every 150 ms, while PC13 keeps its 500 ms rhythm. If PB0 stays dark, check step 1 first.
-4. Step 5: once both LEDs blink, print `TWO LED OK` where `TODO(learner) 5` is, after the starter's banner. Rebuild, and expect that line once at start.
+1. Open `projects/0067-bare-metal-blink/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. Only PC13 blinks, at 500 ms, and the monitor prints `TWO LED starter: serial link works` once, which shows only that the serial link works.
+2. Step 1 enables the GPIOB clock as well, step 2 sets PB0 to a push-pull output at 2 MHz, its field in CRL starting at bit 0, step 3 starts PB0 low, which is off for an active-high LED, and step 4 copies the PC13 block for PB0 with a 150 ms half period.
+3. The program works when the external LED on PB0 blinks faster than the onboard one, about every 150 ms, while PC13 keeps its 500 ms rhythm, and if PB0 stays dark, step 1 is the first thing to check.
+4. Step 5, once both LEDs blink, prints `TWO LED OK` at `TODO(learner) 5`, after the starter's banner, so rebuild and expect that line once at start.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `TWO LED OK`.
 <details>
 <summary>Hint for step 2</summary>
 
-PB0 is pin 0, so it is in `GPIOB->CRL`, and its field starts at bit 0. The same mask-and-set line as PC13, with the shift changed to zero, does the job.
+PB0 is pin 0, so it is in `GPIOB->CRL` with its field starting at bit 0, and the same mask-and-set line as for PC13, with the shift changed to zero, does the job.
 
 </details>
 
 <details>
 <summary>Hint for step 4</summary>
 
-PB0 is active high, so setting bit 0 of `BSRR` turns it on, and bit 16 turns it off. Use `next_external_ms`, `external_on` and `LED_EXTERNAL_HALF_MS`, the names the PC13 block already uses with its own variables.
+PB0 is active high, so setting bit 0 of `BSRR` turns it on and bit 16 turns it off. Use `next_external_ms`, `external_on` and `LED_EXTERNAL_HALF_MS`, the counterparts of the variables the PC13 block already uses.
 
 </details>
 

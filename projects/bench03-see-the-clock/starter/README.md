@@ -6,9 +6,9 @@ Lesson: [Bench lab 3: See the clock](https://jouhis.github.io/embedded-course/le
 
 ## Stage 1: in Wokwi
 
-1. Open `projects/bench03-see-the-clock/starter`, build and run. The diagram has a logic analyzer part on GP0 (UART0 TX) and GP21.
-2. The log shows `clk_sys=150000000 clk_peri=150000000`, ten test lines, then `after the PLL change: clk_sys=100000000 clk_peri=48000000`, and ten more test lines, all readable.
-3. The program reports the new clk_peri itself. It knows the clock changed. The UART divisor doesn't.
+1. Open `projects/bench03-see-the-clock/starter`, build and run it, the diagram having a logic analyzer part on GP0 (UART0 TX) and GP21.
+2. The log shows `clk_sys=150000000 clk_peri=150000000`, ten test lines, then `after the PLL change: clk_sys=100000000 clk_peri=48000000` and ten more test lines, all readable.
+3. The program reports the new clk_peri itself, so it knows the clock changed, whereas the UART divisor does not.
 
 ## Files you work on
 

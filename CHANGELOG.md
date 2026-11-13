@@ -11,6 +11,23 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.1.4 (2026-11-13)
+
+- **Every lesson, lab and bench lab rewritten in one voice.** The prose is new; the facts,
+  numbers, sources, steps, code, figures, widgets and quizzes are unchanged.
+  - Headings name the topic.
+  - The page title is the topic, and the subtitle is a short phrase.
+  - Common mistakes are listed as symptom, cause and fix, each under its own heading.
+- **Numbered formulas.** Key formulas stand on their own line with a number, and the text explains each one.
+- **Fact fixes found while rewriting.**
+  - Lesson 111 no longer has career content.
+  - Lesson 114 states the rate-monotonic bound correctly.
+  - Lesson 117 says which of lessons 118 to 120 add Modbus, the bootloader and CI.
+  - Bench lab 14 no longer says the Wokwi stage reaches runs 2 and 3: the simulator never resets
+    on the watchdog, so the notes are read on the board.
+  - Several cross-references now name the section they point to.
+- For maintainers: the `lesson-writing` skill in `.claude/skills` holds the lesson format and the writing style.
+
 ## 0.1.3 (2026-11-11)
 
 - Lesson 108's balancing cart: the live traces stay inside their boxes; they no longer run over

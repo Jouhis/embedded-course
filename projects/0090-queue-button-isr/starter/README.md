@@ -8,14 +8,18 @@ Lesson: [Queues, semaphores and event groups](https://jouhis.github.io/embedded-
 
 **Known issue.** The projects in this lesson build, but they cannot run in the Wokwi simulator. Its STM32 model lacks working interrupt masking and handles PendSV wrongly, so FreeRTOS cannot start its tasks there (see `CHANGELOG.md`). In the simulator the output stops after the first task's first output, or prints nothing. The expected output below is what a real Blue Pill prints. Do the steps anyway, so the code is ready.
 
-The project `projects/0090-queue-button-isr` has three tasks. A producer sends three numbers into a queue, a consumer prints them and then prints `QUEUE OK`, and a button task waits on a binary semaphore that the EXTI interrupt on PB12 gives. Open the starter in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+The project `projects/0090-queue-button-isr` has three tasks, a producer sending three numbers into a queue, a consumer printing them and then `QUEUE OK`, and a button task waiting on a binary semaphore that the EXTI interrupt on PB12 gives. Open the starter in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
 
-1. In `starter/main.c`, find the `TODO(learner)` in `consumer_task`. When the item is 3, print `QUEUE OK` with the same mutex pattern as `log_line()`. Expected lines before your change: `QUEUE item=1`, `QUEUE item=2`, `QUEUE item=3`.
-2. In `EXTI15_10_IRQHandler`, replace the TODO(learner) marker. Give `button_sem` with `xSemaphoreGiveFromISR()`, passing `&woken`, then call `portYIELD_FROM_ISR(woken)`. Do not use `xSemaphoreGive()` here.
-3. Build and simulate. The simulator stops early. On a real Blue Pill, click the pushbutton. Expected on the serial monitor: `BUTTON pressed n=1`, then `n=2`, and so on, one line per click.
-4. Compare with `projects/0090-queue-button-isr/solution/main.c`. The solution prints `QUEUE OK` about 400 ms after start. The producer sends item 1 at 0 ms, item 2 at 200 ms and item 3 at 400 ms, and the consumer prints the OK line when item 3 arrives.
+1. In `starter/main.c`, find the `TODO(learner)` in `consumer_task` and, when the item is 3, print `QUEUE OK` with the same mutex pattern as `log_line()`, the lines before your change being `QUEUE item=1`, `QUEUE item=2` and `QUEUE item=3`.
+2. In `EXTI15_10_IRQHandler`, replace the TODO(learner) marker by giving `button_sem` with `xSemaphoreGiveFromISR()`, passing `&woken`, and then calling `portYIELD_FROM_ISR(woken)`, without using `xSemaphoreGive()` here.
+3. Build and simulate, and since the simulator stops early, click the pushbutton on a real Blue Pill, where the serial monitor should show `BUTTON pressed n=1`, then `n=2` and so on, one line per click.
+4. Compare with `projects/0090-queue-button-isr/solution/main.c`, which prints `QUEUE OK` about 400 ms after start, because the producer sends item 1 at 0 ms, item 2 at 200 ms and item 3 at 400 ms, and the consumer prints the OK line when item 3 arrives.
+
+The interrupt behind step 2 is set up before the scheduler starts.
 
 The EXTI interrupt is configured in `button_exti_init()`: PB12 is an input with a pull-up, EXTI line 12 is routed to port B through AFIO, and the interrupt is on the falling edge. The routing uses `AFIO->EXTICR[3]`, which is the EXTICR4 register, whose field for line 12 is the lowest four bits (`stm32f103xb.h` line 2448). Lesson 70 covers EXTI in detail.
+
+With the routing in place, each falling edge on PB12 sets the pending bit that the handler clears.
 
 ## Files you work on
 

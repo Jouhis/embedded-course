@@ -11,8 +11,8 @@
 <body data-lesson="0064" data-concept>
 <main>
   <p class="lesson-meta"></p>
-  <h1>Multicore on the RP2040: FIFOs and spinlocks</h1>
-  <p class="subtitle">The RP2040 has two cores that share one memory. Two cores running at once make a race that one core can never have, and the chip gives you two tools to stop it: a FIFO to pass messages and a spinlock to take turns.</p>
+  <h1>Multicore on the RP2040</h1>
+  <p class="subtitle">Two cores sharing memory through FIFOs and spinlocks</p>
 
   <p class="note"><strong>Concept lesson, optional for the Wokwi path.</strong> Wokwi simulates only one Pico core (see <code>NOTES.md</code>), so there is no multicore project to run. You will learn the mechanisms from the datasheet, predict races on paper, and review code for the bugs they cause. To run the code for real, use any Raspberry Pi Pico board with the Pico SDK; the same reasoning applies there, where both cores run at the same time.</p>
 
@@ -20,36 +20,36 @@
     By the end of this lesson you can <strong>launch core 1 with the Pico SDK, pass a value between the cores through the SIO FIFO, protect a shared counter with a hardware spinlock, and spot a shared-data race in a code review</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>A second processor on the chip</h2>
   <p>
-    Lesson <a href="0063-writing-a-driver-from-a.html">63</a> ended with a driver that talks to one sensor from one core. Lesson <a href="0061-an-i2c-oled-display-and.html">61</a> put a display on the same I2C bus, and lesson <a href="0057-interrupts-in-practice.html">57</a> showed the only way code on a single core can run in the middle of other code: an interrupt. This lesson adds a second processor. The RP2040 on the Pico has two Arm Cortex-M0+ cores, and both can run your C code at the same time.
+    Lesson <a href="0063-writing-a-driver-from-a.html">63</a> ended with a driver talking to one sensor from one core, lesson <a href="0061-an-i2c-oled-display-and.html">61</a> put a display on the same I2C bus, and lesson <a href="0057-interrupts-in-practice.html">57</a> showed the only way code on a single core can run in the middle of other code, an interrupt. This lesson adds a second processor, because the RP2040 on the Pico has two Arm Cortex-M0+ cores, both able to run C code at the same time.
   </p>
   <p>
-    The reason to do this is timing. A common product layout puts the user interface, the display and the logging on one core, and a time-critical job such as sampling a sensor at a fixed rate or driving a motor on the other. The slow core can then take as long as it needs without making the fast core late. The price is that the two cores have to share data, such as the newest sensor reading or a buffer of samples. Almost every multicore bug comes from that shared data, and reviewers look at each shared variable with care.
-  </p>
-
-  <h2>Two cores, one memory</h2>
-  <p>
-    A <strong><a href="../reference/glossary.html#cpu-core">CPU core</a></strong> is one processor. It has its own registers and its own stack pointer, and it repeats one cycle: fetch an instruction from memory, decode it, execute it, and move to the next. Lesson <a href="0028-fetch-decode-execute.html">28</a> described that cycle for one CPU. A dual-core chip is two of those cycles running side by side, each with its own program counter.
-  </p>
-  <p>
-    Both cores reach the same <strong>SRAM</strong> (the on-chip read-write memory that holds your variables and stacks), the same peripherals and the same GPIO pins, through the chip's bus fabric. The bus is the set of wires and switches that carries each access from a core to its target. When both cores want the bus in the same cycle, they compete for it, and one of them waits. The RP2040 datasheet describes this shared bus in section 2.1, and it notes that multiple masters may compete for bus access <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.1 and 2.5.3.2)</a>.
-  </p>
-  <p>
-    Each core has its own stack, so local variables are safe. A global variable has one address in SRAM, and both cores can read and write it. Nothing in the hardware groups your C statements so that one core finishes them before the other starts. For any two statements, one core's statement can land between two of the other core's statements. Programmers call this <strong>interleaving</strong>, and it is the root of every race in this lesson.
+    The reason to use both is timing. A common product layout puts the user interface, the display and the logging on one core and a time-critical job, such as sampling a sensor at a fixed rate or driving a motor, on the other, so that the slow core can take as long as it needs without making the fast core late. The price is that the cores must share data, such as the newest sensor reading or a buffer of samples, and since almost every multicore bug comes from that shared data, reviewers examine each shared variable with care.
   </p>
 
-  <h2>Why one core is different</h2>
+  <h2>Two cores sharing one memory</h2>
   <p>
-    On a single core, interleaving happens in only one way: an interrupt runs in the middle of foreground code. You can stop that. Lesson <a href="0057-interrupts-in-practice.html">57</a> used this: the foreground code switches interrupts off for a few instructions, the interrupt cannot run, and the update is safe. That trick is only half a fix on two cores. Switching interrupts off on core 0 does nothing to core 1, which keeps running its own instructions. You need a lock that both cores see, and that the hardware makes indivisible.
+    A <strong><a href="../reference/glossary.html#cpu-core">CPU core</a></strong> is one processor with its own registers and stack pointer, repeating one cycle of fetching an instruction from memory, decoding and executing it and moving to the next, the cycle that lesson <a href="0028-fetch-decode-execute.html">28</a> described for one CPU. A dual-core chip runs two of those cycles side by side, each with its own program counter.
   </p>
   <p>
-    The RP2040 gives you that lock, and a message channel too. Both live in the <strong>SIO</strong> block, the single-cycle I/O block that sits directly on each core's I/O port. A read or write to the SIO takes one cycle, while a normal bus access takes two or more <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1)</a>. The SIO holds the inter-core FIFOs, the 32 hardware spinlocks, and the GPIO registers that both cores can share.
+    Both cores reach the same <strong>SRAM</strong> (the on-chip read-write memory holding variables and stacks), the same peripherals and the same GPIO pins through the chip's bus fabric, the set of wires and switches that carries each access from a core to its target. When both cores want the bus in the same cycle, they compete for it and one waits, and the RP2040 datasheet describes this shared bus in section 2.1, noting that multiple masters may compete for bus access <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.1 and 2.5.3.2)</a>.
+  </p>
+  <p>
+    Each core has its own stack, so local variables are safe, but a global variable has one address in SRAM that both cores can read and write. Nothing in the hardware groups C statements so that one core finishes them before the other starts, so between any two statements of one core a statement of the other can land, which is called <strong>interleaving</strong> and is the root of every race in this lesson.
   </p>
 
-  <h2>The race in one line</h2>
+  <h2>Interrupt masking on one core and on two</h2>
   <p>
-    In C, <code>count++</code> is three steps: load the value from memory into a register, add one, and store the register back. The compiler usually emits one instruction for each step, and the other core can run its own steps between yours. Take a counter that starts at 5. Core 0 loads 5. Core 1 loads 5 before core 0 has stored anything. Both add one and both store 6. Two increments happened, and the counter went up by one.
+    On a single core, interleaving happens in only one way, an interrupt running in the middle of foreground code, and it can be stopped, as lesson <a href="0057-interrupts-in-practice.html">57</a> did by switching interrupts off for a few instructions so that the update is safe. On two cores that trick is only half a fix, because switching interrupts off on core 0 does nothing to core 1, which keeps running its own instructions, so a lock is needed that both cores see and that the hardware makes indivisible.
+  </p>
+  <p>
+    The RP2040 provides that lock and a message channel as well, both in the <strong>SIO</strong>, the single-cycle I/O block sitting directly on each core's I/O port, where a read or write takes one cycle while a normal bus access takes two or more <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1)</a>. The SIO holds the inter-core FIFOs, the 32 hardware spinlocks and the GPIO registers that both cores can share.
+  </p>
+
+  <h2>A lost update in count++</h2>
+  <p>
+    In C, <code>count++</code> is three steps, loading the value from memory into a register, adding one and storing the register back, and the compiler usually emits one instruction for each, so the other core can run its own steps in between. With a counter starting at 5, core 0 loads 5 and core 1 loads 5 before core 0 has stored anything, both add one and both store 6, so two increments raise the counter by only one.
   </p>
   <figure>
     <svg font-family="JetBrains Mono, monospace" viewBox="0 0 480 170" role="img" aria-label="Two cores each load count, which is 5. Both add one and store 6, so count ends at 6 and not 7">
@@ -72,16 +72,16 @@
     <figcaption>Figure 1. A lost update. Both cores read before either one writes, so the second store overwrites the first increment.</figcaption>
   </figure>
   <p>
-    Run it at scale and the loss adds up. If core 0 and core 1 each run <code>shared++</code> 100000 times with no lock, the true total is 200000, and the result can be any lower number. Each lost update is rare on any one step, so a test may pass a hundred times and fail on the hundred-and-first run. That is why multicore races are found by review and by design, not only by testing.
+    At scale the loss adds up: if core 0 and core 1 each run <code>shared++</code> 100 000 times without a lock, the true total is 200 000 and the result can be any lower number. Each lost update is rare on any one step, so a test may pass a hundred times and fail on the hundred-and-first run, which is why multicore races are found by review and by design rather than by testing alone.
   </p>
   <div class="warning"><code>volatile</code> does not fix this. Lesson <a href="0046-volatile-const-and-static.html">46</a> showed that <code>volatile</code> forces a reload on each access, but it gives no atomicity and no ordering between the two cores. The cppreference page on <code>volatile</code> says exactly that <a href="https://en.cppreference.com/w/c/language/volatile" target="_blank" rel="noopener">(cppreference: volatile)</a>.</div>
 
-  <h2>Starting core 1</h2>
+  <h2>Launching core 1</h2>
   <p>
-    After reset, core 0 runs the boot sequence. Core 1 does not run your code. The datasheet says that core 1 goes into a deep sleep state and stays there until user code wakes it through the mailbox, which is the inter-core FIFO described below <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.3.1.1 and 2.8.2)</a>. Core 1 needs three things before it can run: a stack pointer, an entry point and a vector table, which is the table of handler addresses the core jumps to on an exception (lesson <a href="0042-startup-code-and-the-vector.html">42</a>).
+    After reset, core 0 runs the boot sequence while core 1 runs no user code, the datasheet stating that core 1 enters a deep sleep state and stays there until user code wakes it through the mailbox, the inter-core FIFO described below <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.3.1.1 and 2.8.2)</a>. Before it can run, core 1 needs a stack pointer, an entry point and a vector table, the table of handler addresses the core jumps to on an exception (lesson <a href="0042-startup-code-and-the-vector.html">42</a>).
   </p>
   <p>
-    The datasheet gives a six-word handshake for this, with both cores moving through a small state machine together (section 2.8.2). You never write it yourself. The Pico SDK wraps it in one call:
+    The datasheet gives a six-word handshake for this, with both cores moving through a small state machine together (section 2.8.2), but it is never written by hand, because the Pico SDK wraps it in one call.
   </p>
   <pre><code class="language-c">#include "pico/multicore.h"
 
@@ -97,40 +97,40 @@ int main(void) {
     /* core 0 carries on with its own work */
 }</code></pre>
   <p>
-    Line by line: the <code>#include</code> brings in the SDK's multicore API. <code>core1_entry</code> is an ordinary function, but the SDK calls it on core 1, so it has no arguments and no return value to send back. Its <code>while (true)</code> loop keeps core 1 busy, as a real program would. In <code>main</code>, <code>multicore_launch_core1</code> takes the function pointer, wakes core 1 through the handshake, and returns on core 0 once core 1 has started. Core 0 then carries on. The SDK's default stack for core 1 sits below core 0's stack; <code>multicore_launch_core1_with_stack</code> lets you give core 1 a stack of your own, which is the better choice when the two stacks must be sized separately.
+    The <code>#include</code> brings in the SDK's multicore API, and <code>core1_entry</code> is an ordinary function that the SDK calls on core 1, so it takes no arguments and returns nothing, its <code>while (true)</code> loop keeping core 1 busy as a real program would. In <code>main</code>, <code>multicore_launch_core1</code> takes the function pointer, wakes core 1 through the handshake and returns on core 0 once core 1 has started, after which core 0 carries on. The SDK's default stack for core 1 sits below core 0's stack, while <code>multicore_launch_core1_with_stack</code> gives core 1 a stack of its own, the better choice when the two stacks must be sized separately.
   </p>
 
-  <h2>Tool 1: the inter-core FIFOs</h2>
+  <h2>The inter-core FIFOs</h2>
   <p>
-    A <strong><a href="../reference/glossary.html#inter-core-fifo">FIFO</a></strong> (first in, first out) is a queue: items come out in the order they went in. The SIO has two hardware FIFOs. Each is 32 bits wide and eight entries deep. One carries words from core 0 to core 1, and the other carries words from core 1 to core 0. Each core writes to its outgoing FIFO and reads from its incoming one. A status register, <code>FIFO_ST</code>, reports whether the incoming FIFO has data (the VLD bit) and whether the outgoing FIFO has room (the RDY bit) <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.4)</a>.
+    A <strong><a href="../reference/glossary.html#inter-core-fifo">FIFO</a></strong> (first in, first out) is a queue whose items come out in the order they went in. The SIO has two hardware FIFOs, each 32 bits wide and eight entries deep, one carrying words from core 0 to core 1 and the other from core 1 to core 0, so each core writes to its outgoing FIFO and reads from its incoming one, while a status register, <code>FIFO_ST</code>, reports whether the incoming FIFO has data (the VLD bit) and whether the outgoing one has room (the RDY bit) <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.4)</a>.
   </p>
   <p>
-    If you write to a full FIFO or read an empty one, the FIFO keeps its contents, but a sticky error flag is set (WOF or ROE). That is a sign of a bug in your protocol, so the SDK's blocking calls check the status for you. <code>multicore_fifo_push_blocking()</code> waits until there is room, and <code>multicore_fifo_pop_blocking()</code> waits until a word arrives. The pop sleeps with the <code>WFE</code> (wait for event) instruction between checks, and the push sends an event with <code>SEV</code> (send event) after each word, so the waiting core is woken without busy looping. The SDK also has <code>multicore_fifo_pop_timeout_us()</code> for a bounded wait <a href="https://www.raspberrypi.com/documentation/pico-sdk/high_level.html" target="_blank" rel="noopener">(Pico SDK, pico_multicore)</a>.
+    Writing to a full FIFO or reading an empty one leaves the contents intact but sets a sticky error flag (WOF or ROE), a sign of a bug in the protocol, so the SDK's blocking calls check the status first, <code>multicore_fifo_push_blocking()</code> waiting until there is room and <code>multicore_fifo_pop_blocking()</code> until a word arrives. The pop sleeps with the <code>WFE</code> (wait for event) instruction between checks and the push sends an event with <code>SEV</code> (send event) after each word, so the waiting core is woken without busy looping, and <code>multicore_fifo_pop_timeout_us()</code> provides a bounded wait <a href="https://www.raspberrypi.com/documentation/pico-sdk/high_level.html" target="_blank" rel="noopener">(Pico SDK, pico_multicore)</a>.
   </p>
   <p>
-    The FIFO is also the right tool to hand over ownership of data. Suppose core 1 fills slot 3 of a four-slot sample buffer, and core 0 should process it. Core 1 pushes the number 3 into the FIFO and then stops touching slot 3. Core 0 pops the 3, reads slot 3, and only then gives the slot back. At any moment, one core owns each slot, and the message is the hand-over. No core spins, and no lock is held while the sample is processed.
+    The FIFO is also the right tool for handing over ownership of data. Suppose core 1 fills slot 3 of a four-slot sample buffer for core 0 to process: core 1 pushes the number 3 into the FIFO and stops touching slot 3, and core 0 pops the 3, reads slot 3 and only then gives the slot back. Each slot thus has one owner at any moment, the message being the hand-over, so no core spins and no lock is held while the sample is processed.
   </p>
   <p>
-    The FIFO can also raise an interrupt. The datasheet lists the FIFO IRQ outputs as system interrupts 15 (SIO_IRQ_PROC0) and 16 (SIO_IRQ_PROC1), and says that core 0 typically uses 15 and core 1 uses 16 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.3.1.4 and 2.3.2, Table 80)</a>. A handler on core 1 can therefore wake when a word arrives, instead of waiting in a pop.
-  </p>
-
-  <div class="analogy">
-    <p>The FIFOs are two pneumatic tubes between two offices, one in each direction. Each office drops capsules in its outgoing tube and takes them from its incoming one, in order. Nobody shares a desk, so nobody fights over one. A full tube makes the sender wait, and an empty one makes the receiver wait.</p>
-  </div>
-
-  <h2>Tool 2: hardware spinlocks</h2>
-  <p>
-    A <strong><a href="../reference/glossary.html#hardware-spinlock">spinlock</a></strong> is a lock that is held by spinning: a core repeats a check until the check succeeds. The SIO provides 32 of them, each one bit in a register, at addresses SPINLOCK0 to SPINLOCK31 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.3)</a>. Each lock has two operations. A <em>read</em> tries to claim it: the read returns nonzero if the claim worked, and zero if someone already holds it. A <em>write</em> of any value releases it. If both cores try to claim the same lock in the same clock cycle, core 0 succeeds.
+    The FIFO can also raise an interrupt, the datasheet listing the FIFO IRQ outputs as system interrupts 15 (SIO_IRQ_PROC0) and 16 (SIO_IRQ_PROC1), with core 0 typically using 15 and core 1 using 16 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, sections 2.3.1.4 and 2.3.2, Table 80)</a>, so a handler on core 1 can wake when a word arrives instead of waiting in a pop.
   </p>
 
   <div class="analogy">
-    <p>A spinlock is the key to a single-occupancy room hanging on a hook. Whoever takes the key goes in; anyone else who arrives keeps checking the hook until the key is back. The hardware makes "look at the hook and take the key" a single step, so two people can never both take it. The waiting is busy, which is why the time inside must be short.</p>
+    <p>The FIFOs work like two pneumatic tubes between two offices, one in each direction, each office dropping capsules into its outgoing tube and taking them from its incoming one in order. Nobody shares a desk, so nobody fights over one, and a full tube makes the sender wait while an empty one makes the receiver wait. Real tubes carry any parcel, however, whereas each FIFO entry is a single 32-bit word, so larger data travels as an index or a pointer to memory that the receiver then owns.</p>
   </div>
+
+  <h2>Hardware spinlocks</h2>
   <p>
-    The hardware makes the claim indivisible. That is the part a software lock cannot do alone, because two cores can each read a flag as free and each set it. A lock that works across cores needs an operation that reads and claims in one step, and the spinlock is that operation. The datasheet says spinlocks are for short critical sections, the stretches of code that must not be interleaved with other cores. A core that loses a race spins and does no other work, so a long hold wastes the other core's time.
+    A <strong><a href="../reference/glossary.html#hardware-spinlock">spinlock</a></strong> is a lock held by spinning, a core repeating a check until it succeeds. The SIO provides 32 of them, each one bit in a register at addresses SPINLOCK0 to SPINLOCK31 <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.3)</a>, with two operations: a <em>read</em> tries to claim the lock, returning nonzero if the claim worked and zero if someone already holds it, and a <em>write</em> of any value releases it. If both cores try to claim the same lock in the same clock cycle, core 0 succeeds.
   </p>
   <p>
-    The SDK wraps the hardware in a small API. This is a complete example, and each line is explained below it:
+    The hardware makes the claim indivisible, which a software lock cannot achieve alone, because two cores could each read a flag as free and each set it, so a lock that works across cores needs an operation that reads and claims in one step, and the spinlock provides it. The datasheet intends spinlocks for short critical sections, the stretches of code that must not be interleaved with the other core, because a core that loses a race spins and does no other work, so a long hold wastes the other core's time.
+  </p>
+
+  <div class="analogy">
+    <p>A spinlock resembles the key to a single-occupancy room hanging on a hook: whoever takes the key goes in, and anyone else arriving keeps checking the hook until the key returns. The hardware makes looking at the hook and taking the key a single step, so two people can never both take it. A person waiting for a key would sit down, though, whereas a spinning core keeps checking at full speed, which is why the time inside must be short.</p>
+  </div>
+  <p>
+    The SDK wraps the hardware in a small API, and the complete example below is explained line by line after it.
   </p>
   <pre><code class="language-c">static spin_lock_t *counter_lock;      /* made once, in main(), with spin_lock_init() */
 static volatile uint32_t shared_count;
@@ -141,37 +141,37 @@ void bump_shared(void) {
     spin_unlock(counter_lock, saved);                  /* release, and restore interrupts */
 }</code></pre>
   <p>
-    Line by line. <code>counter_lock</code> is a pointer to the lock, not the lock itself. It is set up once, in <code>main()</code>, with <code>counter_lock = spin_lock_init((uint)spin_lock_claim_unused(true));</code>. <code>spin_lock_claim_unused(true)</code> returns the number of a free lock that nobody else in the program has claimed. On the RP2040 the SDK reserves locks 0 to 13 for itself, 14 and 15 for an operating system and 16 to 23 for shared striped use, so claimed locks come from the range 24 to 31, and the call panics if none is free <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK, hardware_sync)</a>. Picking a number by hand risks colliding with a library that already uses it.
+    <code>counter_lock</code> is a pointer to the lock rather than the lock itself, set up once in <code>main()</code> with <code>counter_lock = spin_lock_init((uint)spin_lock_claim_unused(true));</code>, where <code>spin_lock_claim_unused(true)</code> returns the number of a free lock that nothing else in the program has claimed. On the RP2040 the SDK reserves locks 0 to 13 for itself, 14 and 15 for an operating system and 16 to 23 for shared striped use, so claimed locks come from the range 24 to 31, and the call panics if none is free <a href="https://www.raspberrypi.com/documentation/pico-sdk/hardware.html" target="_blank" rel="noopener">(Pico SDK, hardware_sync)</a>, whereas a number picked by hand risks colliding with a library that already uses it.
   </p>
   <p>
-    Inside <code>bump_shared</code>, the first line calls <code>spin_lock_blocking</code>. Its name matters: it is the form that also disables interrupts on the calling core before it spins. The SDK does this with <code>save_and_disable_interrupts</code>, which returns the old interrupt state, and then claims the lock. The return value is kept in <code>saved</code>. This prevents a deadlock on one core: if an interrupt handler on core 0 tried to take the same lock while the foreground code held it, the handler would spin forever. The second line does the protected work. The third line is <code>spin_unlock</code>, which releases the lock and then restores the interrupt state from <code>saved</code>. The state must be passed back, so the function must not change it in between.
+    Inside <code>bump_shared</code>, the first line calls <code>spin_lock_blocking</code>, the form that also disables interrupts on the calling core before spinning, using <code>save_and_disable_interrupts</code>, which returns the old interrupt state kept in <code>saved</code>, and then claiming the lock. This prevents a deadlock on one core, since an interrupt handler on core 0 trying to take the same lock while the foreground code held it would spin forever. The second line does the protected work, and the third, <code>spin_unlock</code>, releases the lock and restores the interrupt state from <code>saved</code>, which must therefore stay unchanged in between.
   </p>
   <p>
-    The <code>volatile</code> on <code>shared_count</code> is not what protects it. The lock does. The keyword only makes the compiler reload the value inside the lock, which is still needed, because the other core may have changed it while this core was waiting.
+    The <code>volatile</code> on <code>shared_count</code> is not what protects it, because the lock does, and the keyword only makes the compiler reload the value inside the lock, which is still needed, since the other core may have changed it while this core waited.
   </p>
   <div class="note">The lock protects the data, not the code. Every access to <code>shared_count</code> on both cores must take the same lock. One unlocked read or write in one place is enough to break it.</div>
 
   <p>
-    Make the lost update happen. Step the two cores so that both load before either stores, then run many increments at once. Then take the spinlock and try the same order: the second core spins until the first has stored.
+    The widget below makes the lost update happen: step the two cores so that both load before either stores, then run many increments at once, and then take the spinlock and try the same order, in which the second core spins until the first has stored.
   </p>
   <div class="widget racestep" data-preset="cores"></div>
 
-  <h2>Which tool for which job</h2>
+  <h2>Choosing between FIFOs, spinlocks and atomic GPIO</h2>
   <p>
-    Choose the tool by the shape of the sharing, not by habit. Each rule below gives the tool to use and the reason.
+    The tool follows from the shape of the sharing rather than from habit, and each rule below gives the tool and the reason.
   </p>
   <ol>
-    <li><strong>Passing a message, or handing over ownership of a buffer:</strong> use a FIFO. Send an index or a pointer, and let the receiving core own the data after the pop. The hand-over happens once, and the data is never shared while both cores can touch it.</li>
-    <li><strong>Sharing a counter or a small structure that both cores read and write:</strong> use a spinlock around every access. Keep the critical section to a few lines, so the other core spins for only a short time.</li>
-    <li><strong>Setting or clearing one GPIO bit from both cores:</strong> use the SIO's atomic GPIO registers, the SET, CLR and XOR aliases, not a read-modify-write on the output register. The datasheet says both cores can write these registers, and that the result is as though core 0 wrote first and core 1 wrote immediately afterward <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.2)</a>. A read-modify-write on the OUT register can lose the other core's change.</li>
+    <li><strong>Passing a message or handing over a buffer:</strong> use a FIFO, sending an index or a pointer and letting the receiving core own the data after the pop, so the hand-over happens once and the data is never shared while both cores can touch it.</li>
+    <li><strong>Sharing a counter or small structure that both cores read and write:</strong> use a spinlock around every access, keeping the critical section to a few lines so that the other core spins only briefly.</li>
+    <li><strong>Setting or clearing one GPIO bit from both cores:</strong> use the SIO's atomic GPIO registers, the SET, CLR and XOR aliases, rather than a read-modify-write on the output register. The datasheet says both cores can write these registers with the result as though core 0 wrote first and core 1 immediately afterward <a href="https://datasheets.raspberrypi.com/rp2040/rp2040-datasheet.pdf" target="_blank" rel="noopener">(RP2040 datasheet, section 2.3.1.2)</a>, whereas a read-modify-write on the OUT register can lose the other core's change.</li>
   </ol>
   <p>
-    The cost is the same in every case. A lock or a FIFO wait is time that the other core might have spent on work, so keep the shared part as short as you can. Moving work out of the critical section is usually the best speed-up, and it is the change a reviewer asks for first.
+    The cost is the same in every case, a lock or a FIFO wait being time the other core might have spent working, so the shared part should be as short as possible, and moving work out of the critical section is usually the best speed-up and the first change a reviewer asks for.
   </p>
 
-  <h2>Predict the race</h2>
+  <h2>Race prediction exercises</h2>
   <p>
-    Work through each question before you open the answer. The questions use the same ideas as the section above.
+    Work through each question before opening the answer, using the ideas of the sections above.
   </p>
 
   <div class="widget quiz" data-title="Predict the race">
@@ -226,9 +226,9 @@ void bump_shared(void) {
     </script>
   </div>
 
-  <h2>Spot the bug</h2>
+  <h2>Code review exercises</h2>
   <p>
-    Each snippet is a real pattern from a review. Read the code, find the bug, then answer.
+    Each snippet is a pattern from a real review, so read the code and find the bug before answering.
   </p>
 
   <div class="widget quiz" data-title="Spot the bug">
@@ -310,47 +310,63 @@ void bump_shared(void) {
     </script>
   </div>
 
-  <div class="win">You can launch core 1, pass a value through the FIFO, protect shared data with a spinlock, and find the common mistakes in a review: an unlocked read-modify-write, a lock that an early return leaves held, a flag that is set before its data, and a blocking wait made while holding a lock.</div>
+  <div class="win">You can launch core 1, pass a value through the FIFO and protect shared data with a spinlock, and you can find the common review mistakes: an unlocked read-modify-write, a lock left held by an early return, a flag set before its data and a blocking wait made while holding a lock.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
   <p>
-    The mistakes below are the ones that show up in real reviews. Each one comes with its symptom and its fix, so you can recognise it in a log or in a code review.
+    The mistakes below appear in real reviews, each with its symptom and fix, so that it can be recognised in a log or in a code review.
   </p>
-  <ol>
-    <li><strong>An unlocked read-modify-write.</strong> Code such as <code>shared_count++</code> with no lock, called from both cores. Symptom: the total is low, and the low value changes from run to run. Fix: take the lock around every access on both cores, or move the update to one core and send the new value through a FIFO.</li>
-    <li><strong>A lock left held by an early return.</strong> A function takes the lock, hits an error and returns before <code>spin_unlock</code>. Symptom: the other core stops making progress. A debugger shows it stuck inside <code>spin_lock_blocking</code>, and the serial log stops after the error. Fix: have one exit path, so the unlock always runs. Store the result in a variable, let every branch fall through to <code>spin_unlock</code>, and return the variable at the end.</li>
-    <li><strong>A flag published before the data.</strong> Core 0 sets <code>ready = 1</code> and then fills the buffer. Core 1 sees the flag and reads the buffer too early. Symptom: the first few samples are wrong, rarely, and only on some runs. Fix: fill the data first, then hand over with a FIFO push. If you must use a shared flag, put a memory barrier (<code>__dmb()</code>, which the SDK provides) between the data write and the flag write, and another between seeing the flag and reading the data. <code>volatile</code> is not a barrier.</li>
-    <li><strong>A blocking wait while holding the lock.</strong> Core 0 takes the lock, then calls <code>multicore_fifo_pop_blocking()</code> to wait for core 1. Core 1 needs the same lock before it can send the message, so it spins. Symptom: both cores stop, and neither makes progress. This is a <strong><a href="../reference/glossary.html#deadlock">deadlock</a></strong>: each core waits for the other. Fix: finish the wait before taking the lock, or send the message before taking it.</li>
-    <li><strong>Taking the same lock twice.</strong> A helper that takes the lock is called from a function that already holds it. Symptom: the core hangs at the second <code>spin_lock_blocking</code> forever, and the other core carries on. The SDK comments say that a hardware spinlock may not be acquired re-entrantly. Fix: split the code into an outer function that takes the lock and an inner function that assumes it is held.</li>
-    <li><strong>Trusting <code>volatile</code> as protection.</strong> The code is marked <code>volatile</code>, so the author assumes it is safe. Symptom: the same lost updates as the first mistake. Fix: read the lock as the protection, and use <code>volatile</code> only to stop the compiler caching the value inside the lock.</li>
-  </ol>
+  <h3>An unlocked read-modify-write</h3>
   <p>
-    Look at each mistake from the same angle. Ask which core can see the data, which lock or FIFO covers it, and whether any path leaves the lock held or waits for the other core while holding it. Those three questions find most multicore bugs.
+    The total comes out low, by a different amount on every run, because code such as <code>shared_count++</code> is called from both cores without a lock. Take the lock around every access on both cores, or move the update to one core and send the new value through a FIFO.
+  </p>
+  <h3>A lock left held by an early return</h3>
+  <p>
+    The other core stops making progress, a debugger showing it stuck inside <code>spin_lock_blocking</code> and the serial log ending after an error, because a function took the lock, hit the error and returned before <code>spin_unlock</code>. Give the function one exit path, storing the result in a variable, letting every branch fall through to <code>spin_unlock</code> and returning the variable at the end.
+  </p>
+  <h3>A flag published before the data</h3>
+  <p>
+    The first few samples are occasionally wrong on some runs, because core 0 sets <code>ready = 1</code> before filling the buffer and core 1 sees the flag and reads the buffer too early. Fill the data first and hand it over with a FIFO push, or, if a shared flag is unavoidable, place a memory barrier (<code>__dmb()</code>, which the SDK provides) between the data write and the flag write and another between seeing the flag and reading the data, remembering that <code>volatile</code> is not a barrier.
+  </p>
+  <h3>A blocking wait while holding the lock</h3>
+  <p>
+    Both cores stop and neither makes progress, because core 0 takes the lock and calls <code>multicore_fifo_pop_blocking()</code> to wait for core 1, while core 1 needs the same lock before it can send the message and spins, each core waiting for the other in a <strong><a href="../reference/glossary.html#deadlock">deadlock</a></strong>. Finish the wait before taking the lock, or send the message before taking it.
+  </p>
+  <h3>The same lock taken twice</h3>
+  <p>
+    The core hangs forever at the second <code>spin_lock_blocking</code> while the other core carries on, because a helper that takes the lock is called from a function already holding it, and as the SDK comments state, a hardware spinlock may not be acquired re-entrantly. Split the code into an outer function that takes the lock and an inner one that assumes it is held.
+  </p>
+  <h3>volatile trusted as protection</h3>
+  <p>
+    The same lost updates as with an unlocked read-modify-write appear, because the author assumed that marking the data <code>volatile</code> made it safe. Treat the lock as the protection and use <code>volatile</code> only to stop the compiler caching the value inside the lock.
+  </p>
+  <p>
+    Each mistake yields to the same three questions, which core can see the data, which lock or FIFO covers it, and whether any path leaves the lock held or waits for the other core while holding it, and those questions find most multicore bugs.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Multicore design and review in products</h2></summary>
   <p>
-    Multicore firmware shows up where one part of a product must never wait for another: a motor loop beside a user interface, a sensor sampler beside a network stack, or a fast protocol engine beside slow logging. The usual split is to give each core one job and one owner for each piece of data. The FIFO carries the data between the two jobs. A spinlock appears only where the data really is shared, and it guards a short list of variables.
+    Multicore firmware appears where one part of a product must never wait for another, a motor loop beside a user interface, a sensor sampler beside a network stack or a fast protocol engine beside slow logging. The usual split gives each core one job and each piece of data one owner, with the FIFO carrying data between the two jobs and a spinlock appearing only where data really is shared, guarding a short list of variables.
   </p>
   <p>
-    A senior engineer reviewing this code asks for three things. First, a comment next to each lock that names the data it protects, so the next reader knows what must be locked. Second, a check that no path leaves the lock held, and that no blocking call sits inside a critical section. Third, a clear reason for every shared variable: why it cannot be a FIFO message instead. Those three checks are short, and they catch the mistakes above before they reach a board.
+    A senior engineer reviewing such code asks for a comment beside each lock naming the data it protects, so that the next reader knows what must be locked, a check that no path leaves a lock held and no blocking call sits inside a critical section, and a clear reason for every shared variable explaining why it cannot be a FIFO message instead. Those checks are short, and they catch the mistakes above before they reach a board.
   </p>
   <p>
-    The SDK builds higher-level tools on the same hardware. Its <code>critical_section</code> API is a spinlock with a name, and its mutex and queue types are built on the same ideas. Use those when they fit.
+    The SDK builds higher-level tools on the same hardware, its <code>critical_section</code> API being a spinlock with a name and its mutex and queue types resting on the same ideas, and these are the ones to use when they fit.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>Two cores share one SRAM and one set of peripherals, so any shared variable can be changed by either core between two of the other core's steps.</li>
-    <li>Disabling interrupts protects only the core that disables them. A lock that both cores see is needed for shared data.</li>
-    <li><code>count++</code> is a load, an add and a store, so two cores can lose an update. <code>volatile</code> does not prevent this.</li>
-    <li>Core 1 sleeps after reset. <code>multicore_launch_core1()</code> wakes it through the SDK's handshake on the inter-core FIFO.</li>
-    <li>Each inter-core FIFO is 32 bits wide and eight entries deep. Use it to pass messages and hand over ownership of data.</li>
-    <li>The SIO has 32 hardware spinlocks. A read claims one, a write releases it, and <code>spin_lock_blocking()</code> also disables interrupts on the calling core.</li>
-    <li>Use the SIO's SET, CLR and XOR aliases for GPIO bits that both cores touch, rather than a read-modify-write.</li>
-    <li>The common mistakes are an unlocked update, an early return that keeps a lock, a flag set before its data, a blocking wait inside a lock, and taking the same lock twice.</li>
+    <li>Two cores share one SRAM and one set of peripherals, so either core can change a shared variable between two of the other core's steps.</li>
+    <li>Disabling interrupts protects only the core that disables them, so shared data needs a lock that both cores see.</li>
+    <li><code>count++</code> is a load, an add and a store, so two cores can lose an update, which <code>volatile</code> does not prevent.</li>
+    <li>Core 1 sleeps after reset until <code>multicore_launch_core1()</code> wakes it through the SDK's handshake on the inter-core FIFO.</li>
+    <li>Each inter-core FIFO is 32 bits wide and eight entries deep and serves to pass messages and hand over ownership of data.</li>
+    <li>The SIO has 32 hardware spinlocks, a read claiming one and a write releasing it, and <code>spin_lock_blocking()</code> also disables interrupts on the calling core.</li>
+    <li>GPIO bits that both cores touch are changed through the SIO's SET, CLR and XOR aliases rather than a read-modify-write.</li>
+    <li>The common mistakes are an unlocked update, an early return that keeps a lock, a flag set before its data, a blocking wait inside a lock and taking the same lock twice.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">

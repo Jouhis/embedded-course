@@ -6,16 +6,16 @@ Lesson: [Reading ARM assembly](https://jouhis.github.io/embedded-course/lessons/
 
 ## Try it: step through it in the debugger
 
-The debugger shows the same instructions one at a time, with the registers beside them. You will use the GDB console. Lesson 54 covers GDB in depth.
+The debugger shows the same instructions one at a time with the registers beside them, and here you use the GDB console, which lesson 54 covers in depth.
 
-1. Open `projects/0032-reading-arm-assembly` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
-2. In a terminal, run `arm-none-eabi-objdump -d build/blink.elf` and find `sum_to`. The workspace's build folder is a Debug build, so the addresses will match the Debug listing in the mistakes section, not the Release listing above. To get the listing above, reconfigure the build with `-DCMAKE_BUILD_TYPE=Release` in a new build folder, and check the addresses again.
-3. Press <kbd>F5</kbd> to start the simulator under GDB. In the GDB console, type `break *0x10000280` and then `continue`. This stops on the first instruction of `sum_to`.
-4. In the GDB console, type `disassemble sum_to` and check that it matches the listing for your build type.
-5. Type `stepi` three times. After each one, type `info registers r0 r2 r3 pc`. Predict each PC before you look: it moves by 2 bytes at a time, and the first `stepi` lands on `10000282` in the Release build.
-6. For a visual view, right-click in the editor and open the disassembly view. The GDB command `layout asm` is for a terminal interface and does not work in VS Code.
+1. Open `projects/0032-reading-arm-assembly` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>) and build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>.
+2. In a terminal, run `arm-none-eabi-objdump -d build/blink.elf` and find `sum_to`. The workspace's build folder holds a Debug build, so the addresses match the Debug listing in the mistakes section rather than the Release listing above. To obtain the listing above, configure a new build folder with `-DCMAKE_BUILD_TYPE=Release` and check the addresses again.
+3. Press <kbd>F5</kbd> to start the simulator under GDB, then type `break *0x10000280` and `continue` in the GDB console, which stops on the first instruction of `sum_to`.
+4. Type `disassemble sum_to` in the GDB console and check that it matches the listing for your build type.
+5. Type `stepi` three times, following each with `info registers r0 r2 r3 pc`. Predict each PC before looking: it moves 2 bytes at a time, and in the Release build the first `stepi` lands on `10000282`.
+6. For a visual view, right-click in the editor and open the disassembly view; the GDB command `layout asm` belongs to a terminal interface and does not work in VS Code.
 
-We did not run these debugger steps inside Wokwi for this lesson, because no Wokwi CI token was available when the lesson was written. The GDB commands are standard, and the listing is real. If the debugger view differs from the steps above, trust what you see and tell the teacher agent.
+These debugger steps were not run inside Wokwi when the lesson was written, because no Wokwi CI token was available at the time. The GDB commands are standard and the listing comes from a real build, so if the debugger view differs from the steps above, trust what you see and ask the teacher agent.
 
 ## Done when
 
@@ -26,6 +26,6 @@ The serial monitor prints `sum_to(100) = 5050`.
 <details>
 <summary>Hint</summary>
 
-If the stop comes from the start of the program instead, the address is wrong: check that the listing's first address for `sum_to` matches the one in your build. Use `info registers pc` to see where you are.
+If the program stops at its start instead, the address is wrong, so check that the first address of `sum_to` in your listing matches the breakpoint, and use `info registers pc` to see where you are.
 
 </details>

@@ -6,14 +6,14 @@ Lesson: [Mocks and fakes](https://jouhis.github.io/embedded-course/lessons/0081-
 
 ## Try it on the PC
 
-The project is `projects/0081-mocks-and-fakes`. It is a host-test project: no Wokwi and no board, only the PC's gcc, Unity and CTest. The starter has the driver header, three functions marked `TODO(learner)` in `src/mys1.c`, and nine tests. Seven of the tests fail on the starter, by design.
+The project is `projects/0081-mocks-and-fakes`, a host-test project with no Wokwi and no board, only the PC's gcc, Unity and CTest, whose starter has the driver header, three functions marked `TODO(learner)` in `src/mys1.c` and nine tests, seven of which fail on the starter by design.
 
-1. Open `projects/0081-mocks-and-fakes/starter` in VS Code, then press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>. The default task builds the host tests and runs them with ctest. No simulator is needed. You can also run `python -I tools/build.py projects/0081-mocks-and-fakes/starter --test` from the workspace root.
-2. Read `test/test_mys1.c`. Find the test that asserts `i2c_write_fake.arg3_val` is false, and say which driver line it protects. The answer is the pointer write in `reg_read`, the one that passes `false` for stop.
-3. Your task: write the three functions marked `TODO(learner)` in `src/mys1.c`: `mys1_start`, `mys1_whoami` and `mys1_read_celsius`. The helpers `reg_write` and `reg_read` are already written, so use them rather than calling the bus directly.
-4. Run the tests again. You will know it works when the summary line reads *9 Tests 0 Failures 0 Ignored* followed by *OK*. Before you start, the same line reads *9 Tests 7 Failures 0 Ignored*.
+1. Open `projects/0081-mocks-and-fakes/starter` in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, the default task building the host tests and running them with ctest without any simulator, or run `python -I tools/build.py projects/0081-mocks-and-fakes/starter --test` from the workspace root.
+2. Read `test/test_mys1.c`, find the test asserting that `i2c_write_fake.arg3_val` is false and say which driver line it protects, the answer being the pointer write in `reg_read` that passes `false` for stop.
+3. Write the three functions marked `TODO(learner)` in `src/mys1.c`, `mys1_start`, `mys1_whoami` and `mys1_read_celsius`, using the helpers `reg_write` and `reg_read`, which are already written, rather than calling the bus directly.
+4. Run the tests again, and the driver works when the summary line reads *9 Tests 0 Failures 0 Ignored* followed by *OK*, where before you start it reads *9 Tests 7 Failures 0 Ignored*.
 
-The starter prints the following lines in a real run of `python -I tools/build.py projects/0081-mocks-and-fakes/starter --test`. The first two are shown, and the last two are the summary:
+A real run of `python -I tools/build.py projects/0081-mocks-and-fakes/starter --test` on the starter prints the following lines, the first two shown and the last two being the summary.
 
 ```plaintext
 test_mys1.c:66:test_start_sets_measurement_enable:FAIL: Expected TRUE Was FALSE
@@ -23,7 +23,7 @@ test_mys1.c:85:test_whoami_returns_identity:FAIL: Expected TRUE Was FALSE
 FAIL
 ```
 
-The two tests that pass in the starter check failure paths: a NACK on the pointer write, and no read after a failed pointer write. They pass because the starter returns `false` everywhere. The reference solution is in `projects/0081-mocks-and-fakes/solution`. It prints *9 Tests 0 Failures 0 Ignored* and *OK*. Try the exercise first, then compare.
+The two tests passing in the starter check failure paths, a NACK on the pointer write and no read after a failed pointer write, and they pass only because the starter returns `false` everywhere. The reference solution in `projects/0081-mocks-and-fakes/solution` prints *9 Tests 0 Failures 0 Ignored* and *OK*, so try the exercise first and compare afterwards.
 
 ## Files you work on
 
@@ -34,7 +34,7 @@ The two tests that pass in the starter check failure paths: a NACK on the pointe
 <details>
 <summary>Hint</summary>
 
-Start with `mys1_start`, one line that calls `reg_write` with `MYS1_REG_CTRL` and `MYS1_CTRL_MEAS_EN`. Then `mys1_whoami`, one line that calls `reg_read`. For `mys1_read_celsius`, loop over `reg_read(MYS1_REG_STATUS, ...)` while `polls` is below `MYS1_MAX_POLLS`, and stop when the DRDY bit is set. Then read two bytes starting at `MYS1_REG_TEMP_L`, and cast the combined value to `int16_t` before dividing by 64. The timeout test counts the status polls.
+Start with `mys1_start`, one line calling `reg_write` with `MYS1_REG_CTRL` and `MYS1_CTRL_MEAS_EN`, then `mys1_whoami`, one line calling `reg_read`. For `mys1_read_celsius`, loop over `reg_read(MYS1_REG_STATUS, ...)` while `polls` is below `MYS1_MAX_POLLS`, stopping when the DRDY bit is set, then read two bytes starting at `MYS1_REG_TEMP_L` and cast the combined value to `int16_t` before dividing by 64, remembering that the timeout test counts the status polls.
 
 </details>
 

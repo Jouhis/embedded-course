@@ -6,12 +6,12 @@ Lesson: [Startup code and the vector table](https://jouhis.github.io/embedded-co
 
 ## Try it in Wokwi
 
-The project `projects/0042-startup-code` is a single demo. Its two globals are `volatile`, so the compiler cannot fold their values into constants. The demo prints what it finds at `main()` and the linker symbols that the startup code used.
+The project `projects/0042-startup-code` is a single demo whose two globals are `volatile`, so the compiler cannot fold their values into constants. It prints what it finds at `main()` together with the linker symbols the startup code used.
 
-1. Open `projects/0042-startup-code` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F5</kbd> to debug.
-2. Set a breakpoint on `Reset_Handler`, and continue. Step over `SystemInit`, then step into the copy loop. The loop repeats twice for `.data`, and the destination address goes from `0x20000000` to `0x20000004`.
+1. Open `projects/0042-startup-code` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator under the debugger with <kbd>F5</kbd>.
+2. Set a breakpoint on `Reset_Handler` and continue, step over `SystemInit`, then step into the copy loop, which repeats twice for `.data` while the destination address moves from `0x20000000` to `0x20000004`.
 3. Let the program run to `main`. The serial output should show `g_copied at main(): 0x0000CAFE` and `g_cleared at main(): 0x00000000`.
-4. Compare the symbol lines with the map file. The serial output should show `_sidata (flash):0x080004E0`, `_sdata (RAM):  0x20000000`, `_edata (RAM):  0x20000008` and `_ebss: 0x20000028`. These match the `.data` and `.bss` lines in `build/blink.map`.
+4. Compare the symbol lines with the map file. The output should show `_sidata (flash):0x080004E0`, `_sdata (RAM):  0x20000000`, `_edata (RAM):  0x20000008` and `_ebss: 0x20000028`, matching the `.data` and `.bss` lines in `build/blink.map`.
 
 ## Done when
 
@@ -22,6 +22,6 @@ The serial monitor prints `g_copied at main(): 0x0000CAFE`.
 <details>
 <summary>Hint</summary>
 
-If the breakpoint on `Reset_Handler` does not stop, look up its address with `arm-none-eabi-nm -n build/blink.elf | grep Reset_Handler`. The debugger should stop at `0x080002F0`, and the vector table's word 1 holds that address with bit 0 set.
+If the breakpoint on `Reset_Handler` does not stop, look up its address with `arm-none-eabi-nm -n build/blink.elf | grep Reset_Handler`. The debugger should stop at `0x080002F0`, and word 1 of the vector table holds that address with bit 0 set.
 
 </details>

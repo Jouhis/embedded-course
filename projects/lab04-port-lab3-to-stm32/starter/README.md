@@ -6,7 +6,7 @@ Lesson: [Lab 4: Port Lab 3 to the STM32 behind a HAL](https://jouhis.github.io/e
 
 ## The project layout
 
-The project is `projects/lab04-port-lab3-to-stm32`. The shared application is in `app/` at the top. Each board has a starter and a solution folder, and each folder is a complete Wokwi project with its own `CMakeLists.txt`, `diagram.json` and `wokwi.toml`.
+The project is `projects/lab04-port-lab3-to-stm32`, with the shared application in `app/` at the top. Each board has a starter and a solution folder, and each folder is a complete Wokwi project with its own `CMakeLists.txt`, `diagram.json` and `wokwi.toml`.
 
 1. `starter/bluepill`: the Blue Pill project with the board file left as TODO(learner).
 2. `starter/pico`: the Pico project, complete. It is the worked example for the Blue Pill file.

@@ -6,9 +6,9 @@ Lesson: [Timers: PWM, input capture, encoder mode](https://jouhis.github.io/embe
 
 ## Try it in Wokwi
 
-1. Open `projects/0071-timers/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Your task: fill in the three `TODO(learner)` blocks. Set TIM2 to 1 kHz PWM, TIM3 to the 50 Hz servo signal with input capture on TI3, and TIM4 to encoder mode 3. Use the two worked examples above for the numbers.
-3. You will know it works when the serial monitor prints `POLL pulse_us=1500 SERVO OK` and the LED is dimmed to about a quarter of its full brightness. `POLL` measures the servo pulse a second way: it polls PB0 and reads TIM3's counter at each edge, which works in the simulator. On a real board the next line, repeated every 500 ms, reads `CAPTURE pulse_us=1500 ENC count=0`.
+1. Open `projects/0071-timers/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Fill in the three `TODO(learner)` blocks, setting TIM2 to 1 kHz PWM, TIM3 to the 50 Hz servo signal with input capture on TI3 and TIM4 to encoder mode 3, taking the numbers from the two worked examples.
+3. The program works when the serial monitor prints `POLL pulse_us=1500 SERVO OK` and the LED is dimmed to about a quarter of its full brightness. `POLL` measures the servo pulse a second way, polling PB0 and reading TIM3's counter at each edge, which works in the simulator, while on a real board the next line, repeated every 500 ms, reads `CAPTURE pulse_us=1500 ENC count=0`.
 
 In the simulator the `CAPTURE` line prints `pulse_us=0` even for the solution, because Wokwi does not simulate input capture (see the note above). The `POLL` line is the one the simulator can check.
 
@@ -25,14 +25,14 @@ The serial monitor prints `SERVO OK`.
 <details>
 <summary>Hint for the LED timer</summary>
 
-With `PSC = 7`, set `ARR` so that `1 MHz ÷ (ARR + 1) = 1000 Hz`. Then choose PWM mode 1 in `OC1M`, which is `110` in binary, and set the preload bit.
+With `PSC = 7`, choose `ARR` so that `1 MHz ÷ (ARR + 1) = 1000 Hz`, then select PWM mode 1 in `OC1M`, `110` in binary, and set the preload bit.
 
 </details>
 
 <details>
 <summary>Hint for the capture</summary>
 
-Channel 3 captures the rising edge, and channel 4 captures the falling edge on the same input. The register `CCMR2` chooses the input for each channel, and `CCER` chooses the edge. Channel 4 uses the falling-edge polarity bit `CC4P`.
+Channel 3 captures the rising edge and channel 4 the falling edge of the same input, `CCMR2` choosing the input of each channel and `CCER` the edge, with channel 4 using the falling-edge polarity bit `CC4P`.
 
 </details>
 

@@ -6,13 +6,13 @@ Lesson: [Bootloaders and firmware updates](https://jouhis.github.io/embedded-cou
 
 ## Try it in Wokwi
 
-The starter builds the bootloader and the application into one image, as the previous section describes, but its bootloader never accepts the slot. Your job is the two functions that decide and hand over: the header checks from the worked example, and the jump from the section before it.
+The starter builds the bootloader and the application into one image, as the previous section describes, but its bootloader never accepts the slot, and your job is the two functions that decide and hand over, the header checks from the worked example and the jump from the section before it.
 
-1. Open `projects/0104-bootloader-and-app/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `BOOT: checking application slot`, then `BOOT: no valid image, staying in the bootloader`.
-2. Write `slot_is_valid()` in `main.c`, marked `TODO(learner)`. Make the five checks in the order the comment lists, the same order as the worked example: magic, vector offset, image end, stack pointer, reset handler. Return 0 as soon as one fails.
-3. Write `jump_to_app()`, the second `TODO(learner)`. Read word 0 and word 1 of the application's vector table, then disable interrupts, set `SCB->VTOR`, set the MSP and call the reset handler through a function pointer, in that order.
-4. Build and run again. You will know it works when the monitor prints `BOOT: image valid, jumping` and then the application's own line, `BOOT -> APP OK`.
-5. Now see the other branch. Change the magic check to compare with `0x41505032` (`APP2`), build and run: the bootloader refuses the slot and stays put, which is what protects a device from a half-written update. Change it back.
+1. Open `projects/0104-bootloader-and-app/starter` in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, the monitor printing `BOOT: checking application slot` and then `BOOT: no valid image, staying in the bootloader`.
+2. Write `slot_is_valid()` in `main.c`, marked `TODO(learner)`, making the five checks in the order the comment lists, the same as the worked example's, magic, vector offset, image end, stack pointer and reset handler, and returning 0 as soon as one fails.
+3. Write `jump_to_app()`, the second `TODO(learner)`, reading words 0 and 1 of the application's vector table and then disabling interrupts, setting `SCB->VTOR`, setting the MSP and calling the reset handler through a function pointer, in that order.
+4. Build and run again, the changes having worked when the monitor prints `BOOT: image valid, jumping` followed by the application's own line, `BOOT -> APP OK`.
+5. To see the other branch, change the magic check to compare with `0x41505032` (`APP2`), build and run, and the bootloader refuses the slot and stays put, which is what protects a device from a half-written update, then change it back.
 
 ## Files you work on
 

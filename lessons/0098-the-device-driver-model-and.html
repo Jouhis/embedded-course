@@ -10,85 +10,86 @@
 <body data-lesson="0098">
 <main>
   <p class="lesson-meta"></p>
-  <h1>The device driver model, and the GPIO and I2C APIs</h1>
-  <p class="subtitle">Zephyr's drivers are found through the devicetree, and the application talks to them through generic APIs. You will read a real register from a sensor and handle a button with an interrupt, without naming a register or a pin in your C code.</p>
+  <h1>The device driver model and the GPIO and I2C APIs</h1>
+  <p class="subtitle">Generic driver APIs found through the devicetree</p>
 
   <div class="goal">
     By the end of this lesson you can <strong>read WHO_AM_I from the MYS-1 sensor at 0x48 with <code>i2c_write_read_dt</code>, and count button presses from a GPIO interrupt callback, with the sensor and the button both described in an overlay</strong>.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Portable device code across boards</h2>
   <p>
-    Lesson <a href="0096-devicetree.html">96</a> showed where Zephyr keeps the hardware description: the chip's nodes, the board's nodes and your overlay, merged into one file at build time. It also introduced aliases, so the C code can ask for <code>sw0</code> instead of a pin number. This lesson uses that tree for two kinds of device. A button is a GPIO input whose change you want to hear about straight away, which is the interrupt idea from lesson <a href="0057-interrupts-in-practice.html">57</a>. A sensor is an I2C device, which you read by writing a register address and then reading the answer, as lesson <a href="0060-the-i2c-protocol.html">60</a> described on the wire.
+    Lesson <a href="0096-devicetree.html">96</a> showed where Zephyr keeps the hardware description, the chip's nodes, the board's nodes and your overlay merged into one file at build time, and introduced aliases, so that the C code can ask for <code>sw0</code> instead of a pin number. This lesson uses that tree for two kinds of device, a button, a GPIO input whose change should be heard at once, the interrupt idea of lesson <a href="0057-interrupts-in-practice.html">57</a>, and a sensor, an I2C device read by writing a register address and then reading the answer, as lesson <a href="0060-the-i2c-protocol.html">60</a> described on the wire.
   </p>
   <p>
-    The problem is portability. Suppose the same MYS-1 sensor sits on a Pico in one product and on another board in the next. If your C code contains <code>i2c_write(i2c0, ...)</code> and the GPIO number of the button, you rewrite it for each board. With the driver model, the C code names a node, and the overlay says which bus and address that node uses. The code stays the same and only the description changes. Teams that maintain several boards rely on this.
+    The problem is portability, because if the same MYS-1 sensor sits on a Pico in one product and on another board in the next, C code containing <code>i2c_write(i2c0, ...)</code> and the button's GPIO number must be rewritten for each board. With the driver model the C code names a node and the overlay says which bus and address that node uses, so the code stays the same while only the description changes, which teams maintaining several boards rely on.
   </p>
 
-  <h2>The concepts, one at a time</h2>
-  <h3>A driver is a table of functions for one kind of device</h3>
+  <h2>Drivers as tables of functions</h2>
   <p>
-    A <a href="../reference/glossary.html#device-driver">device driver</a> is the code that knows how one kind of hardware works. In Zephyr it is written as a table of function pointers, called an <a href="../reference/glossary.html#ops-table">ops table</a>, plus the driver's private data. The GPIO driver has a table named <code>struct gpio_driver_api</code> (<code>include/zephyr/drivers/gpio.h:934</code>), whose entries are the operations any GPIO driver must provide. The chip-specific code fills in those entries.
+    A <a href="../reference/glossary.html#device-driver">device driver</a> is the code that knows how one kind of hardware works, written in Zephyr as a table of function pointers, an <a href="../reference/glossary.html#ops-table">ops table</a>, plus the driver's private data. The GPIO driver's table is <code>struct gpio_driver_api</code> (<code>include/zephyr/drivers/gpio.h:934</code>), whose entries are the operations any GPIO driver must provide, filled in by the chip-specific code.
+  </p>
+  <p>
+    A <em>device</em> is one instance of a driver, one GPIO port or one I2C bus, represented as a <code>struct device</code>, the devicetree saying which instances exist and the build creating them at start-up. <code>DEVICE_DT_GET(node)</code> (<code>include/zephyr/device.h:323</code>) gives a pointer to one and <code>device_is_ready()</code> (<code>include/zephyr/device.h:906</code>) tells whether its driver started successfully, while your code never touches the chip's registers but calls a generic function such as <code>gpio_pin_get_dt()</code>, which looks up the device's ops table and calls the right entry.
   </p>
 
   <div class="analogy">
-    <p>A Zephyr driver is like a universal remote. The buttons are the same for every television, which is the API, such as <code>gpio_pin_set_dt()</code>. Behind each button, the remote is programmed for one brand, which is the driver's table of functions. Your code presses buttons and never learns which brand it is talking to.</p>
+    <p>A Zephyr driver resembles a universal remote whose buttons are the same for every television, the API such as <code>gpio_pin_set_dt()</code>, while behind each button the remote is programmed for one brand, the driver's table of functions, so your code presses buttons without learning which brand it talks to. The comparison breaks at the build, though, because a remote is reprogrammed at run time, whereas the devicetree fixes which driver sits behind each device when the firmware is compiled.</p>
   </div>
   <p>
-    A <em>device</em> is one instance of a driver: one GPIO port, or one I2C bus. Zephyr represents it as a <code>struct device</code>. The devicetree says which instances exist, and the build creates them at start-up. You get a pointer to one with <code>DEVICE_DT_GET(node)</code> (<code>include/zephyr/device.h:323</code>), and <code>device_is_ready()</code> (<code>include/zephyr/device.h:906</code>) tells you whether its driver started successfully. Your code never calls the chip's registers. It calls a generic function such as <code>gpio_pin_get_dt()</code>, which looks up the device's ops table and calls the right entry.
-  </p>
-  <p>
-    The indirection costs one function-pointer call per operation, and the program carries the code for every driver it links. In exchange, the same application code compiles against any board whose devicetree names a GPIO or an I2C bus. Lesson <a href="0049-function-pointers-and-callbacks.html">49</a> introduced function pointers, and this is the same idea at the scale of a whole driver.
+    The indirection costs one function-pointer call per operation, and the program carries the code for every driver it links, in exchange for which the same application code compiles against any board whose devicetree names a GPIO or an I2C bus. Lesson <a href="0049-function-pointers-and-callbacks.html">49</a> introduced function pointers, and this is the same idea at the scale of a whole driver.
   </p>
 
-  <h3>GPIO: logical levels, active low and pull-ups</h3>
+  <h2>Logical GPIO levels, active low and pull-ups</h2>
   <p>
-    A <a href="../reference/glossary.html#gpio-general-purpose-input-output">GPIO</a> pin is one wire that software can read as a level or drive as a level. The button in this lesson is wired from GP14 to ground. When nothing presses it, a pull-up resistor inside the chip holds the pin at 1 (high). When you press it, the pin is connected to ground and reads 0 (low).
+    A <a href="../reference/glossary.html#gpio-general-purpose-input-output">GPIO</a> pin is one wire that software can read or drive as a level, the button in this lesson being wired from GP14 to ground, so that with nothing pressing it an internal pull-up resistor holds the pin at 1 (high), while a press connects it to ground and it reads 0 (low).
   </p>
   <p>
-    The overlay says <code>GPIO_ACTIVE_LOW</code>, which means the button is <em>active</em> when the physical level is low. Zephyr's GPIO API works with the <em>logical</em> level: <code>gpio_pin_get_dt()</code> returns 1 when the button is pressed, whichever way the wire is pulled. This is why the solution never tests for 0. The flag belongs to the hardware description, so if a later board wires the button to 3V3 instead, only the overlay changes. The logical-level idea is the same one that lesson <a href="0016-logic-levels-pull-ups-open.html">16</a> introduced for pull-ups.
-  </p>
-
-  <h3>Interrupts: a callback when the pin changes</h3>
-  <p>
-    Polling a pin means reading it on a timer. That is what the polled button of lesson <a href="0097-threads-and-kernel-services.html">97</a> does, and it can miss a short press. An <a href="../reference/glossary.html#interrupt">interrupt</a> reverses the arrangement: the GPIO hardware notices the change, and the CPU runs an <a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a>. The GPIO driver's ISR then calls the functions you registered, which Zephyr calls callbacks. The driver fires them from its handler, for example in <code>gpio_rpi_isr</code> in <code>drivers/gpio/gpio_rpi_pico.c:387</code>, which calls <code>gpio_fire_callbacks</code>.
-  </p>
-  <p>
-    The trigger is chosen with a flag. <code>GPIO_INT_EDGE_TO_ACTIVE</code> is defined as an interrupt "on pin state change to logical level 1" (<code>include/zephyr/drivers/gpio.h:210</code>). Because the button is active low, the logical level 1 means pressed, so the callback fires once for each press and not for each release. An <em>edge</em> is a change from one level to the other, and this flag asks for one kind of edge only.
+    The overlay says <code>GPIO_ACTIVE_LOW</code>, meaning the button is <em>active</em> when the physical level is low, and since Zephyr's GPIO API works with the <em>logical</em> level, <code>gpio_pin_get_dt()</code> returns 1 when the button is pressed whichever way the wire is pulled, which is why the solution never tests for 0. The flag belongs to the hardware description, so a later board wiring the button to 3V3 changes only the overlay, the logical-level idea being the one lesson <a href="0016-logic-levels-pull-ups-open.html">16</a> introduced for pull-ups.
   </p>
 
-  <h3>I2C: a bus of two wires and addresses</h3>
+  <h2>GPIO interrupts and callbacks</h2>
   <p>
-    <a href="../reference/glossary.html#i2c">I2C</a> connects many devices on two wires: SDA carries data, and SCL carries the clock. The master starts each transaction, sends a 7-bit address, and each device on the bus compares that address with its own. Lesson 60 covers the frame format. Here it matters that the address is seven bits, and the eighth bit says whether the master writes or reads. The MYS-1 datasheet gives its address as <code>0x48</code>, the 7-bit form (section 2, the table of the I2C interface in <code>projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html</code>).
+    Polling a pin means reading it on a timer, as the polled button of lesson <a href="0097-threads-and-kernel-services.html">97</a> does, which can miss a short press, whereas an <a href="../reference/glossary.html#interrupt">interrupt</a> reverses the arrangement, the GPIO hardware noticing the change and the CPU running an <a href="../reference/glossary.html#interrupt-service-routine-isr">interrupt service routine (ISR)</a>. The GPIO driver's ISR then calls the functions you registered, which Zephyr calls callbacks, firing them from its handler, for example in <code>gpio_rpi_isr</code> in <code>drivers/gpio/gpio_rpi_pico.c:387</code>, which calls <code>gpio_fire_callbacks</code>.
   </p>
   <p>
-    The sensor has a <a href="../reference/glossary.html#register-pointer">register pointer</a>. The first byte the master writes after the address sets the pointer, and a read returns the register the pointer names. The datasheet's section 3.2 gives the sequence for reading one register: start, address with write, the register number, then a <a href="../reference/glossary.html#repeated-start">repeated start</a>, address with read, one data byte and a stop. The repeated start is the second start condition in the same transaction. The master keeps the bus, and no other master can take it between the register write and the read.
+    A flag chooses the trigger, <code>GPIO_INT_EDGE_TO_ACTIVE</code> being defined as an interrupt "on pin state change to logical level 1" (<code>include/zephyr/drivers/gpio.h:210</code>), and since the button is active low, logical 1 means pressed, so the callback fires once per press and not per release. An <em>edge</em> is a change from one level to the other, and this flag asks for one kind of edge only.
   </p>
 
-  <h2>Worked example: reading WHO_AM_I, byte by byte</h2>
+  <h2>I2C addresses and the register pointer</h2>
   <p>
-    The sensor's WHO_AM_I register is at address <code>0x0F</code>, and the datasheet's table in section 3.1 gives its reset value as <code>0xA7</code>. Read it step by step, as the bus carries it.
+    <a href="../reference/glossary.html#i2c">I2C</a> connects many devices on two wires, SDA carrying data and SCL the clock, the master starting each transaction by sending a 7-bit address that each device on the bus compares with its own. Lesson 60 covers the frame format, and what matters here is that the address has seven bits, the eighth saying whether the master writes or reads, the MYS-1 datasheet giving its address as <code>0x48</code>, the 7-bit form (section 2, the table of the I2C interface in <code>projects/0063-mystery-sensor/MYSTERY-SENSOR-DATASHEET.html</code>).
   </p>
-  <ol>
-    <li><strong>Address byte for the write.</strong> The 7-bit address 0x48 shifts left by one bit, and the low bit is 0 for a write. In binary, 0x48 is 0100 1000. Shifted left, it is 1001 0000, which is <code>0x90</code>. The bus carries <code>0x90</code>, then waits for an acknowledge.</li>
-    <li><strong>Register byte.</strong> The master sends <code>0x0F</code>. The MYS-1 acknowledges it and stores it as the register pointer.</li>
-    <li><strong>Repeated start and address byte for the read.</strong> The master sends a repeated start, then the address with the low bit set to 1 for a read. 0x48 shifted left gives 0x90, and setting the low bit gives <code>0x91</code>.</li>
-    <li><strong>Data byte.</strong> The sensor sends the byte at the pointer, which is <code>0xA7</code>. The master acknowledges nothing more, which is the standard way to end a read, and sends a stop.</li>
+  <p>
+    The sensor has a <a href="../reference/glossary.html#register-pointer">register pointer</a>, set by the first byte the master writes after the address, a read returning the register the pointer names, and the datasheet's section 3.2 gives the sequence for reading one register as start, address with write, the register number, a <a href="../reference/glossary.html#repeated-start">repeated start</a>, address with read, one data byte and a stop. The repeated start is the second start condition in the same transaction, through which the master keeps the bus, so no other master can take it between the register write and the read.
+  </p>
+
+  <h2>Worked example: the WHO_AM_I read byte by byte</h2>
+  <p>
+    The sensor's WHO_AM_I register is at address <code>0x0F</code>, its reset value being <code>0xA7</code> according to the datasheet's table in section 3.1, and the read can be followed step by step as the bus carries it. Before reading on, predict the two address bytes that appear on the bus.
+  </p>
+  <ol class="steps">
+    <li><strong>The address byte for the write.</strong> The 7-bit address 0x48, 0100 1000 in binary, shifts left by one bit to 1001 0000, with the low bit 0 for a write, giving <code>0x90</code>, which the bus carries before waiting for an acknowledge.</li>
+    <li><strong>The register byte.</strong> The master sends <code>0x0F</code>, which the MYS-1 acknowledges and stores as the register pointer.</li>
+    <li><strong>The repeated start and the read address.</strong> The master sends a repeated start, then the address with the low bit set to 1 for a read, 0x90 with the low bit set giving <code>0x91</code>.</li>
+    <li><strong>The data byte.</strong> The sensor sends the byte at the pointer, <code>0xA7</code>, and the master acknowledges nothing more, the standard way to end a read, before sending a stop.</li>
   </ol>
   <p>
-    The driver never shows these bytes. <code>i2c_write_read_dt()</code> builds the two messages for you. The write message has no stop flag, and the read message has <code>I2C_MSG_RESTART</code>, <code>I2C_MSG_READ</code> and <code>I2C_MSG_STOP</code> set (<code>include/zephyr/drivers/i2c.h:1141</code> for the flags in the two-message form, and <code>i2c.h:1662</code> for the helper). The library call includes the repeated start, so your code adds nothing for it.
+    The driver never shows these bytes, because <code>i2c_write_read_dt()</code> builds the two messages, the write message without a stop flag and the read message with <code>I2C_MSG_RESTART</code>, <code>I2C_MSG_READ</code> and <code>I2C_MSG_STOP</code> set (<code>include/zephyr/drivers/i2c.h:1141</code> for the flags in the two-message form and <code>i2c.h:1662</code> for the helper), so the library call includes the repeated start and your code adds nothing for it.
   </p>
 
-  <h2>The code, line by line</h2>
-  <p>The solution is in <code>projects/0098-device-driver-i2c/solution/src/main.c</code>. Here is the sensor part, with each line explained.</p>
+  <h2>The sensor code line by line</h2>
+  <p>
+    The solution is in <code>projects/0098-device-driver-i2c/solution/src/main.c</code>, starting with the sensor part.
+  </p>
   <pre><code class="language-c">static const struct i2c_dt_spec sensor = I2C_DT_SPEC_GET(DT_NODELABEL(mystery));</code></pre>
   <p>
-    <code>DT_NODELABEL(mystery)</code> names the overlay node that has the label <code>mystery</code>. <code>I2C_DT_SPEC_GET</code> reads that node's parent bus and its <code>reg</code> property, and stores both in a struct (<code>include/zephyr/drivers/i2c.h:180</code>). The struct has a <code>bus</code> pointer, which is the <code>struct device</code> of <code>i2c0</code>, and an <code>addr</code> field, which is 0x48. The code never mentions the bus by name.
+    <code>DT_NODELABEL(mystery)</code> names the overlay node labelled <code>mystery</code>, and <code>I2C_DT_SPEC_GET</code> reads that node's parent bus and its <code>reg</code> property into a struct (<code>include/zephyr/drivers/i2c.h:180</code>) with a <code>bus</code> pointer, the <code>struct device</code> of <code>i2c0</code>, and an <code>addr</code> field, 0x48, so the code never mentions the bus by name.
   </p>
   <pre><code class="language-c">#define MYS_REG_WHO_AM_I    0x0Fu
 #define MYS_WHO_AM_I_VALUE  0xA7u</code></pre>
   <p>
-    Both values are named constants. The first is the register address from the datasheet's section 3.1, and the second is the reset value of that register. Naming them lets a reviewer check each number against the datasheet, and it keeps the magic numbers out of the code path.
+    Both values are named constants, the register address from the datasheet's section 3.1 and that register's reset value, so a reviewer can check each number against the datasheet and no magic numbers remain in the code path.
   </p>
   <pre><code class="language-c">static int read_who_am_i(uint8_t *id)
 {
@@ -96,17 +97,20 @@
     return i2c_write_read_dt(&amp;sensor, &amp;reg, 1, id, 1);
 }</code></pre>
   <p>
-    The write part sends one byte from <code>reg</code>, and the read part fills one byte at <code>id</code>. Both lengths are passed explicitly, so the function never guesses how many bytes to move. The return value is 0 on success and a negative error code otherwise, which is why the caller checks <code>rc</code> before it looks at <code>id</code>.
+    The write part sends one byte from <code>reg</code> and the read part fills one byte at <code>id</code>, both lengths being passed explicitly, so the function never guesses how many bytes to move, and the return value is 0 on success and a negative error code otherwise, which is why the caller checks <code>rc</code> before looking at <code>id</code>.
   </p>
   <pre><code class="language-c">if (!i2c_is_ready_dt(&amp;sensor)) {
     printk("I2C bus not ready\n");
     return 0;
 }</code></pre>
   <p>
-    <code>i2c_is_ready_dt()</code> asks whether the bus driver started (<code>include/zephyr/drivers/i2c.h:630</code>). If the subsystem is not compiled in, this check fails, and the message tells you so. The next section explains the Kconfig symbol that fixes it.
+    <code>i2c_is_ready_dt()</code> asks whether the bus driver started (<code>include/zephyr/drivers/i2c.h:630</code>), a check that fails when the subsystem is not compiled in, the message saying so, and the mistakes section explains the Kconfig symbol that fixes it.
   </p>
 
-  <h3>The button, from the pin to the counter</h3>
+  <h2>The button interrupt code</h2>
+  <p>
+    The button part counts presses in a callback.
+  </p>
   <pre><code class="language-c">static volatile uint32_t presses;
 
 static void button_pressed(const struct device *port, struct gpio_callback *cb, uint32_t pins)
@@ -114,79 +118,80 @@ static void button_pressed(const struct device *port, struct gpio_callback *cb, 
     presses++;
 }</code></pre>
   <p>
-    The callback has the signature that <code>gpio_callback_handler_t</code> declares (<code>include/zephyr/drivers/gpio.h:757</code>): it receives the port, the callback record and the pin mask. This one ignores all three, because it only counts. <code>presses</code> is <code>volatile</code>, which tells the compiler the value can change outside the code it sees, namely in the ISR. The main thread reads it, and without <code>volatile</code> the compiler may keep a copy in a register.
+    The callback has the signature that <code>gpio_callback_handler_t</code> declares (<code>include/zephyr/drivers/gpio.h:757</code>), receiving the port, the callback record and the pin mask, all three ignored here, because it only counts. <code>presses</code> is <code>volatile</code>, telling the compiler that the value can change outside the code it sees, namely in the ISR, because without it the compiler may keep a copy in a register while the main thread reads it.
   </p>
   <pre><code class="language-c">gpio_pin_interrupt_configure_dt(&amp;button, GPIO_INT_EDGE_TO_ACTIVE);
 gpio_init_callback(&amp;button_cb, button_pressed, BIT(button.pin));
 gpio_add_callback_dt(&amp;button, &amp;button_cb);</code></pre>
   <p>
-    The three calls set up the interrupt in order. First, <code>gpio_pin_interrupt_configure_dt</code> enables the interrupt on the pin with the edge flag (<code>gpio.h:1106</code>). Second, <code>gpio_init_callback</code> stores the handler and a mask of the pins it cares about (<code>gpio.h:1935</code>). The mask is <code>BIT(button.pin)</code>, so only this pin's events call the handler. Third, <code>gpio_add_callback_dt</code> links the callback record into the GPIO port's list (<code>gpio.h:1992</code>). Until the third call, nothing calls your function.
+    The three calls set up the interrupt in order, <code>gpio_pin_interrupt_configure_dt</code> first enabling the interrupt on the pin with the edge flag (<code>gpio.h:1106</code>), <code>gpio_init_callback</code> then storing the handler and a mask of the pins it cares about (<code>gpio.h:1935</code>), <code>BIT(button.pin)</code>, so that only this pin's events call the handler, and <code>gpio_add_callback_dt</code> finally linking the callback record into the GPIO port's list (<code>gpio.h:1992</code>), before which nothing calls your function.
   </p>
   <pre><code class="language-c">while (1) {
     k_sleep(K_SECONDS(2));
     printk("button presses %u\n", presses);
 }</code></pre>
   <p>
-    The main thread sleeps, wakes every two seconds and prints the count. It reads <code>presses</code> without a lock. That is acceptable here because the read is a single 32-bit access, and the ISR is the only writer. A value that changes under the reader is a stale count, not a corrupt one. Lesson 97 used a mutex because its update was a read-modify-write across two threads, and this counter has only one writer.
+    The main thread sleeps, wakes every two seconds and prints the count, reading <code>presses</code> without a lock, which is acceptable here because the read is a single 32-bit access and the ISR the only writer, so a value changing under the reader gives a stale count rather than a corrupt one. Lesson 97 used a mutex because its update was a read-modify-write across two threads, whereas this counter has only one writer.
   </p>
 
   <h2>Try it in Wokwi</h2>
-  <p>The starter configures the button as an input. The MYS-1 node, the interrupt setup, the counter and the sensor read are left as TODO(learner) notes.</p>
+  <p>
+    The starter configures the button as an input and leaves the MYS-1 node, the interrupt setup, the counter and the sensor read as TODO(learner) notes.
+  </p>
   <ol class="steps">
-    <li>Open <code>projects/0098-device-driver-i2c/starter</code> in VS Code, and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build.</li>
-    <li>In <code>boards/rpi_pico.overlay</code>, add the <code>mystery</code> node under <code>&amp;i2c0</code> at <code>0x48</code>, with the compatible <code>vnd,mystery-sensor</code>, as in the snippet above. The binding file <code>dts/bindings/sensor/vnd,mystery-sensor.yaml</code> is already in the folder.</li>
+    <li>Open <code>projects/0098-device-driver-i2c/starter</code> in VS Code and press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> to build.</li>
+    <li>In <code>boards/rpi_pico.overlay</code>, add the <code>mystery</code> node under <code>&amp;i2c0</code> at <code>0x48</code> with the compatible <code>vnd,mystery-sensor</code>, as in the snippet above, the binding file <code>dts/bindings/sensor/vnd,mystery-sensor.yaml</code> being already in the folder.</li>
     <li>In <code>prj.conf</code>, add <code>CONFIG_I2C=y</code>.</li>
-    <li>In <code>src/main.c</code>, add the sensor spec with <code>I2C_DT_SPEC_GET</code>, check <code>i2c_is_ready_dt()</code>, and read WHO_AM_I with <code>i2c_write_read_dt()</code>. Print <code>MYSTERY WHO_AM_I 0x%02x</code> when the value is 0xA7.</li>
-    <li>Still in <code>main.c</code>, call <code>gpio_pin_interrupt_configure_dt</code> with <code>GPIO_INT_EDGE_TO_ACTIVE</code>, then <code>gpio_init_callback</code> and <code>gpio_add_callback_dt</code>. Finish the callback with the increment.</li>
-    <li>Build, start the simulator, and read the serial monitor. You'll know it works when <code>MYSTERY WHO_AM_I 0xa7</code> appears once near the start, and then <code>button presses N</code> appears every two seconds. Press the button (the <kbd>b</kbd> key in the diagram) and check that N rises.</li>
+    <li>In <code>src/main.c</code>, add the sensor spec with <code>I2C_DT_SPEC_GET</code>, check <code>i2c_is_ready_dt()</code>, read WHO_AM_I with <code>i2c_write_read_dt()</code> and print <code>MYSTERY WHO_AM_I 0x%02x</code> when the value is 0xA7.</li>
+    <li>Still in <code>main.c</code>, call <code>gpio_pin_interrupt_configure_dt</code> with <code>GPIO_INT_EDGE_TO_ACTIVE</code>, then <code>gpio_init_callback</code> and <code>gpio_add_callback_dt</code>, and finish the callback with the increment.</li>
+    <li>Build, start the simulator and read the serial monitor, the changes having worked when <code>MYSTERY WHO_AM_I 0xa7</code> appears once near the start, followed by <code>button presses N</code> every two seconds, and press the button (the <kbd>b</kbd> key in the diagram) to check that N rises.</li>
   </ol>
   <div class="warning">In the Wokwi simulator, Zephyr's I2C driver for the RP2040 gets no answer from the MYS-1 chip: the transfer times out (error -116), even though the same chip and wiring answer the Pico SDK code of lesson 63. So in the simulator this lab prints <code>MYSTERY no answer, error -116</code> instead of the WHO_AM_I line; the button count still works. The code is right for a real Pico; test the I2C part on the board.</div>
   <details>
     <summary>Hint</summary>
     <p>If the bus is "not ready", check <code>build/zephyr/.config</code> for <code>CONFIG_I2C=y</code>. If the read fails, check the address in <code>reg</code>. The count only rises after the interrupt is configured, so check that call first.</p>
   </details>
-  <p>The reference solution is in <code>projects/0098-device-driver-i2c/solution</code>. Try first, compare after.</p>
-  <div class="note">
-    The chip in the diagram is the MYS-1 Wokwi chip from lesson 63, which is compiled to WebAssembly (<code>mystery.chip.wasm</code>) and listed in <code>wokwi.toml</code> with <code>[[chip]]</code>. Our lint does not check custom chips, so the wiring was checked by hand against the chip's pin list. We have not seen this run pass unattended in the simulator, so treat the expected lines above as the target.
-  </div>
+  <p>
+    The reference solution is in <code>projects/0098-device-driver-i2c/solution</code>, to be compared after you have tried. The chip in the diagram is the MYS-1 Wokwi chip from lesson 63, compiled to WebAssembly (<code>mystery.chip.wasm</code>) and listed in <code>wokwi.toml</code> with <code>[[chip]]</code>, and since our lint does not check custom chips, the wiring was checked by hand against the chip's pin list. We have not seen this run pass unattended in the simulator, so treat the expected lines above as the target.
+  </p>
 
-  <div class="win">You read a register from a sensor through the devicetree and the generic I2C API, and counted button presses from a GPIO interrupt, without writing a register address into the button code.</div>
+  <div class="win">You read a register from a sensor through the devicetree and the generic I2C API and counted button presses from a GPIO interrupt, without writing a register address into the button code.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <h3>Leaving out CONFIG_I2C</h3>
+  <h3>CONFIG_I2C left out</h3>
   <p>
-    The overlay describes the sensor, but the I2C driver is compiled only when <code>CONFIG_I2C=y</code>. The DesignWare driver that the Pico's <code>i2c0</code> uses is declared inside the <code>if I2C</code> block of <code>drivers/i2c/Kconfig</code>, at line 163, and that block ends at line 320. Without the symbol, <code>i2c_is_ready_dt()</code> returns false and the console prints <code>I2C bus not ready</code>. The fix is the line in <code>prj.conf</code>, followed by a clean build so that the generated <code>.config</code> updates.
+    The console prints <code>I2C bus not ready</code>, because <code>i2c_is_ready_dt()</code> returns false when the I2C driver is not compiled, which happens without <code>CONFIG_I2C=y</code>, since the DesignWare driver that the Pico's <code>i2c0</code> uses is declared inside the <code>if I2C</code> block of <code>drivers/i2c/Kconfig</code>, at line 163, a block ending at line 320. Add the line to <code>prj.conf</code> and do a clean build, so that the generated <code>.config</code> updates.
   </p>
-  <h3>Wrong address in reg, or an 8-bit address</h3>
+  <h3>A wrong or 8-bit address in reg</h3>
   <p>
-    If the overlay says <code>reg = &lt;0x90&gt;</code>, because the 8-bit write address was copied from the bus trace, the driver addresses a device that is not there. The read then fails, and the solution's code prints <code>MYSTERY no answer, error</code> followed by the negative return code. The datasheet's table gives the 7-bit address, and the 8-bit form is only the bus byte with the R/W bit added. Check the overlay against section 2 of the datasheet, and check the wiring on the diagram: the sensor should sit on GP4 and GP5 with its pull-ups.
+    The read fails and the solution's code prints <code>MYSTERY no answer, error</code> followed by the negative return code, because the overlay says <code>reg = &lt;0x90&gt;</code>, the 8-bit write address copied from a bus trace, so the driver addresses a device that is not there. The datasheet's table gives the 7-bit address, the 8-bit form being only the bus byte with the R/W bit added, so check the overlay against section 2 of the datasheet and the wiring on the diagram, where the sensor should sit on GP4 and GP5 with its pull-ups.
   </p>
-  <h3>Counting on the wrong edge, or on a press without the active-low flag</h3>
+  <h3>The active-low flag missing from the button</h3>
   <p>
-    Suppose the overlay drops <code>GPIO_ACTIVE_LOW</code>. The logical level 1 now means the pin is high, which is the released button. <code>GPIO_INT_EDGE_TO_ACTIVE</code> then fires when the button is let go, and the count rises by one per release. The symptom is a count that matches the presses but lags by a press, or a count that rises when your finger leaves the button. The fix is to put the active-low flag back in the overlay and not in the C code.
+    The count rises when your finger leaves the button rather than when it presses, lagging the presses by one, because the overlay dropped <code>GPIO_ACTIVE_LOW</code>, so logical 1 now means a high pin, the released button, and <code>GPIO_INT_EDGE_TO_ACTIVE</code> fires on release. Put the active-low flag back in the overlay rather than compensating in the C code.
   </p>
-  <h3>Setting up the callback but not the interrupt</h3>
+  <h3>A callback without the interrupt</h3>
   <p>
-    The starter has the button configured as an input and nothing else. If you add <code>gpio_init_callback</code> and <code>gpio_add_callback_dt</code> but forget <code>gpio_pin_interrupt_configure_dt</code>, the pin never raises an interrupt, and the handler is never called. The printed line stays <code>button presses 0</code> forever, while the sensor line prints normally. The fix is the first of the three calls above.
+    The printed line stays <code>button presses 0</code> forever while the sensor line prints normally, because <code>gpio_init_callback</code> and <code>gpio_add_callback_dt</code> were added but <code>gpio_pin_interrupt_configure_dt</code> was forgotten, so the pin never raises an interrupt and the handler is never called. Add the first of the three calls above.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Driver-based code in production firmware</h2></summary>
   <p>
-    Production code uses the driver model so that a board change is an overlay change. A reviewer checks three things in a driver-using change: that every device has its devicetree node and binding, that every call checks readiness before use, and that every interrupt callback does only what the ISR context allows. Lesson 97 explains why the last point matters.
+    Production code uses the driver model so that a board change is an overlay change, a reviewer checking in a driver-using change that every device has its devicetree node and binding, that every call checks readiness before use and that every interrupt callback does only what the ISR context allows, the last point being explained in lesson 97.
   </p>
   <p>
-    Industry sensor drivers, such as those for a real MEMS accelerometer, follow the same pattern: a register map, a read helper that does the repeated start, and an interrupt line that tells the host when a sample is ready. The MYS-1 uses a polled DRDY flag instead of an interrupt, which the datasheet describes in section 4.2, so the course keeps the interrupt example on the button.
+    Industry sensor drivers, such as those for a real MEMS accelerometer, follow the same pattern of a register map, a read helper doing the repeated start and an interrupt line telling the host when a sample is ready, whereas the MYS-1 uses a polled DRDY flag instead of an interrupt, which the datasheet describes in section 4.2, so the course keeps the interrupt example on the button.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
-    <li>A driver is an ops table plus private data. A <code>struct device</code> is one instance, found through the devicetree with <code>DEVICE_DT_GET</code>.</li>
+    <li>A driver is an ops table plus private data, and a <code>struct device</code> is one instance, found through the devicetree with <code>DEVICE_DT_GET</code>.</li>
     <li><code>GPIO_ACTIVE_LOW</code> in the overlay makes <code>gpio_pin_get_dt()</code> return 1 when the button is pressed.</li>
     <li><code>GPIO_INT_EDGE_TO_ACTIVE</code> fires a callback on the change to logical 1, which for an active-low button is the press.</li>
-    <li>Set up an interrupt in three steps: configure the edge, initialise the callback with a pin mask, then add it.</li>
-    <li>The MYS-1 address is 0x48 in 7-bit form, which is 0x90 for a write and 0x91 for a read on the bus.</li>
+    <li>An interrupt is set up in three steps, configuring the edge, initialising the callback with a pin mask and adding it.</li>
+    <li>The MYS-1 address is 0x48 in 7-bit form, which appears on the bus as 0x90 for a write and 0x91 for a read.</li>
     <li><code>i2c_write_read_dt()</code> sends the register pointer and the repeated start for you.</li>
     <li>The I2C driver needs <code>CONFIG_I2C=y</code>, and the callback needs its interrupt configured.</li>
   </ul>

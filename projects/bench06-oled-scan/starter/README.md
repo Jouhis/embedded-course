@@ -6,9 +6,9 @@ Lesson: [Bench lab 6: The OLED that doesn't answer](https://jouhis.github.io/emb
 
 ## Stage 1: in Wokwi
 
-1. Open `projects/bench06-oled-scan/starter`. It's lesson 61's code on the Pico 2, with the pull-up resistors in the diagram. Build and run: the panel shows text.
-2. In `diagram.json`, give the OLED part the attribute `"i2cAddress": "0x3d"` and run again. The panel stays black and the log shows no error at all. That's the fault you'll meet on the bench, and the starter can't tell you about it.
-3. Put the attribute back to 0x3c (or remove it).
+1. Open `projects/bench06-oled-scan/starter`, lesson 61's code on the Pico 2 with the pull-up resistors in the diagram, then build and run it, the panel showing text.
+2. In `diagram.json`, give the OLED part the attribute `"i2cAddress": "0x3d"` and run again, the panel staying black while the log shows no error at all, the fault you will meet on the bench and one the starter cannot report.
+3. Put the attribute back to 0x3c, or remove it.
 
 ## Files you work on
 

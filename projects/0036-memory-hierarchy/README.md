@@ -6,14 +6,14 @@ Lesson: [Memory hierarchy: SRAM, flash, caches, and XIP](https://jouhis.github.i
 
 ## Try it in Wokwi
 
-The project `projects/0036-memory-hierarchy` is a single demo, with no starter and solution split. It prints the address of one object from each region.
+The project `projects/0036-memory-hierarchy` is a single demo without a starter and solution split, which prints the address of one object from each region.
 
 1. Open `projects/0036-memory-hierarchy` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Before you build, predict the region of each of the five lines: the table, the counter, the zeroed global, the stack local, and the function `show_regions`.
+2. Before building, predict the region of each of the five lines: the table, the counter, the zeroed global, the stack local and the function `show_regions`.
 3. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-4. Compare the serial output with your predictions. The const table should print an address starting `0x08`, and the counter should print an address starting `0x20`. The stack local should print an address close to `0x20005000`. The `main() code` line should print an address starting `0x08`, ending in `1` because of the Thumb bit.
+4. Compare the serial output with your predictions. The const table should print an address starting `0x08` and the counter one starting `0x20`, the stack local an address close to `0x20005000`, and the `main() code` line an address starting `0x08` and ending in `1` because of the Thumb bit.
 
-In the build for this lesson, the const table is at `0x080004B8` and the initialised counter at `0x20000000`. Your build should match these numbers, because the toolchain is the same.
+In the build for this lesson the const table is at `0x080004B8` and the initialised counter at `0x20000000`, and your build should match, because the toolchain is the same.
 
 ## Done when
 
@@ -24,6 +24,6 @@ The serial monitor prints `main() code   (flash):`.
 <details>
 <summary>Hint</summary>
 
-The address ranges are the ones in the ST header: flash from `0x08000000` and SRAM from `0x20000000`. An address of a stack local is also in SRAM, but it is near the top of the RAM region, not the bottom.
+The address ranges are those in the ST header, flash from `0x08000000` and SRAM from `0x20000000`. A stack local is also in SRAM, but near the top of the RAM region rather than the bottom.
 
 </details>

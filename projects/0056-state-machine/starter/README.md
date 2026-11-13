@@ -6,12 +6,12 @@ Lesson: [State machines](https://jouhis.github.io/embedded-course/lessons/0056-s
 
 ## Try it in Wokwi
 
-The project is `projects/0056-state-machine`. Three LEDs on GP2 (red), GP3 (yellow) and GP4 (green) show the light, and a button on GP14 is the pedestrian request. The starter has the switch-based function from above, with `TODO(learner)` in each case, and a loop that only handles the timer.
+The project is `projects/0056-state-machine`, in which three LEDs on GP2 (red), GP3 (yellow) and GP4 (green) show the light and a button on GP14 makes the pedestrian request. The starter contains the switch-based function from above with a `TODO(learner)` in each case, and a loop that handles only the timer.
 
-1. Open `projects/0056-state-machine/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-2. Observe the starter. The red light stays on for 3 s and then never changes, because the timeout is not connected to a transition yet.
-3. Your task, in two places. First, in `on_event()`, write the transitions from the table: RED to GREEN on a timeout, GREEN to YELLOW on a timeout or a request, and YELLOW to RED on a timeout. A request in RED or YELLOW returns the same state. Second, in the loop, print `STATE old->new` whenever the state changes, and handle the button press as a `EV_REQUEST`.
-4. You will know it works when the serial monitor prints `STATE MACHINE OK` at startup, then one `STATE RED->GREEN`-style line for each change, and the lights follow the lines. Pressing the button during green makes the light turn yellow early.
+1. Open `projects/0056-state-machine/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+2. Observe the starter: the red light stays on for 3 s and then never changes, because the timeout is not yet connected to a transition.
+3. The task has two parts. In `on_event()`, write the transitions from the table, RED to GREEN on a timeout, GREEN to YELLOW on a timeout or a request and YELLOW to RED on a timeout, with a request in RED or YELLOW returning the same state. In the loop, print `STATE old->new` whenever the state changes and handle the button press as an `EV_REQUEST`.
+4. The program works when the serial monitor prints `STATE MACHINE OK` at startup and then one `STATE RED->GREEN`-style line per change, with the lights following the lines, and a press during green turns the light yellow early.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `STATE MACHINE OK`.
 <details>
 <summary>Hint for the button</summary>
 
-The starter's comments say that a press is an event. The lesson 52 integrator debounce returns `true` once per confirmed press. Call the state machine with `EV_REQUEST` when that happens, and keep the timeout check as it is.
+The starter's comments say that a press is an event, and the integrator debounce of lesson 52 returns `true` once per confirmed press, so call the state machine with `EV_REQUEST` when that happens and keep the timeout check as it is.
 
 </details>
 
 <details>
 <summary>Hint for the printed line</summary>
 
-Compare the state before and after the call. If they differ, print the old name, an arrow, and the new name. The solution uses `state_name[]`, an array of strings indexed by the state.
+Compare the state before and after the call, and if they differ, print the old name, an arrow and the new name. The solution uses `state_name[]`, an array of strings indexed by the state.
 
 </details>
 

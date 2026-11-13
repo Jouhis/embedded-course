@@ -6,12 +6,12 @@ Lesson: [The I2C protocol, decoded with a logic analyzer](https://jouhis.github.
 
 ## Try it in Wokwi
 
-The project `projects/0060-the-i2c-protocol` wires a Wokwi MPU6050 to GP4 (SDA) and GP5 (SCL), with 4.7 kΩ pull-ups. A logic analyzer is connected to the same two wires, on channels D0 and D1. The program wakes the sensor, then reads WHO_AM_I once a second. When you stop the simulator, the logic analyzer writes its recording to `wokwi.vcd` in the project root [Wokwi, logic analyzer part](https://docs.wokwi.com/parts/wokwi-logic-analyzer).
+The project `projects/0060-the-i2c-protocol` wires a Wokwi MPU6050 to GP4 (SDA) and GP5 (SCL) with 4.7 kΩ pull-ups, and a logic analyser on channels D0 and D1 watches the same two wires. The program wakes the sensor and then reads WHO_AM_I once a second, and when the simulator stops, the logic analyser writes its recording to `wokwi.vcd` in the project root [Wokwi, logic analyzer part](https://docs.wokwi.com/parts/wokwi-logic-analyzer).
 
 1. Open `projects/0060-the-i2c-protocol/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>).
-2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
-3. Your task: wake the sensor with `write_reg(REG_PWR_MGMT_1, 0x00)`, and print `MPU6050 WHO_AM_I=0x68` when the read matches. Then change the pointer write in `read_reg()` to a repeated start (`nostop = true`), so the read does not follow a STOP. Stop the simulator, open `wokwi.vcd` in PulseView, and add the I2C decoder on the two channels.
-4. You will know it works when the serial monitor prints `MPU6050 WHO_AM_I=0x68`, and the decoder shows one START, the address 0x68 with the write bit, the register 0x75, a repeated START, the address with the read bit, the data 0x68, and one STOP.
+2. Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*.
+3. Wake the sensor with `write_reg(REG_PWR_MGMT_1, 0x00)` and print `MPU6050 WHO_AM_I=0x68` when the read matches, then change the pointer write in `read_reg()` to a repeated start (`nostop = true`) so that the read no longer follows a STOP. Stop the simulator, open `wokwi.vcd` in PulseView and add the I2C decoder on the two channels.
+4. The program works when the serial monitor prints `MPU6050 WHO_AM_I=0x68` and the decoder shows one START, the address 0x68 with the write bit, the register 0x75, a repeated START, the address with the read bit, the data 0x68 and one STOP.
 
 ## Files you work on
 
@@ -26,14 +26,14 @@ The serial monitor prints `WHO_AM_I=0x68`.
 <details>
 <summary>Hint for reading the decode</summary>
 
-PulseView shows the address byte as 7 bits plus R/W. A write frame reads 0x68 W, and a read frame reads 0x68 R. Find the ACK bits. Each byte should have an ACK after it, except the last read byte, which the master NACKs.
+PulseView shows the address byte as 7 bits plus R/W, so a write frame reads 0x68 W and a read frame 0x68 R. Find the ACK bits: every byte should be followed by an ACK except the last read byte, which the master NACKs.
 
 </details>
 
 <details>
 <summary>Hint for the repeated start</summary>
 
-In the SDK, the write call's last argument is `nostop`. Set it to `true` for the register pointer write, and leave the read's `nostop` as `false`.
+In the SDK the write call's last argument is `nostop`, so set it to `true` for the register pointer write and leave the read's `nostop` at `false`.
 
 </details>
 

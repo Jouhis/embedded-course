@@ -6,13 +6,13 @@ Lesson: [Memory: stack vs heap, static allocation, and detecting stack overflow]
 
 ## Try it in Wokwi
 
-The project is `projects/0078-stack-painting`. The starter prints a stack report, but its painting and measurement functions are stubs marked `TODO(learner)`, so it prints `STACK PAINT FAIL`. The recursion is written for you. In the course's Debug build each call uses a 24-byte frame, and `recurse(16)` makes 17 calls, so the recursion alone uses 408 bytes of the 2048-byte stack.
+The project is `projects/0078-stack-painting`, whose starter prints a stack report but has its painting and measurement functions stubbed out with `TODO(learner)`, so it prints `STACK PAINT FAIL`. The recursion is written for you, and since each call uses a 24-byte frame in the course's Debug build and `recurse(16)` makes 17 calls, the recursion alone uses 408 bytes of the 2 048-byte stack.
 
-1. Open `projects/0078-stack-painting/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>). Build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, then start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*. The monitor prints `STACK PAINT FAIL`.
-2. Your task, part 1: in `paint_unused_stack()`, write the canary into the word at `&__StackBottom`. Then paint every word from the next one up to `current_sp() - PAINT_MARGIN_BYTES` with `PAINT_WORD`. Set `s_paint_limit` to the top of the painted range.
-3. Your task, part 2: in `high_water_bytes()`, scan the painted words from the bottom up, skipping the canary. The first word that is not the paint is the deepest point. Return the distance from `&__StackTop`, or 0 if every word still has the paint.
-4. Build and run. The monitor prints the reserved size and the high-water mark, and then `STACK PAINT OK`. The high-water mark must be at least 408 bytes, the 17 frames of the recursion. In the solution's Debug build it should read 440 bytes: the 408 plus the 32-byte frame of `main()`, which sits above the painted region. If your number differs, check the frame sizes in the disassembly before you change the code.
-5. Optional: in `canary_intact()`, return whether the word at `&__StackBottom` still holds `CANARY_WORD`. The last line of the program prints `CANARY OK` or `CANARY HIT` after a 128-deep recursion, which writes about 1 KB below the reserved stack. In the starter, `canary_intact()` is a stub that always returns true, so the line says `CANARY OK` until you write the check. In the solution, the disassembly places the canary exactly on the depth word of the 85th frame of the overflow, so the solution should print `CANARY HIT`. This lesson could not run the simulator to confirm that, so treat it as the expected result to check on your run.
+1. Open `projects/0078-stack-painting/starter` in VS Code (<kbd>File</kbd> → <kbd>Open Folder</kbd>), build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → *Wokwi: Start Simulator*, and the monitor prints `STACK PAINT FAIL`.
+2. In `paint_unused_stack()`, write the canary into the word at `&__StackBottom`, paint every word from the next one up to `current_sp() - PAINT_MARGIN_BYTES` with `PAINT_WORD` and set `s_paint_limit` to the top of the painted range.
+3. In `high_water_bytes()`, scan the painted words from the bottom up, skipping the canary, and return the distance of the first word that is not paint from `&__StackTop`, or 0 if every word still holds the paint.
+4. Build and run, and the monitor prints the reserved size and the high-water mark, then `STACK PAINT OK`. The high-water mark must be at least 408 bytes, the 17 frames of the recursion, and in the solution's Debug build it should read 440 bytes, the 408 plus the 32-byte frame of `main()`, which sits above the painted region, so a different number calls for checking the frame sizes in the disassembly before changing the code.
+5. Optionally, make `canary_intact()` return whether the word at `&__StackBottom` still holds `CANARY_WORD`. The program's last line prints `CANARY OK` or `CANARY HIT` after a 128-deep recursion that writes about 1 KB below the reserved stack, and since the starter's stub always returns true, the line says `CANARY OK` until you write the check. In the solution the disassembly places the canary exactly on the depth word of the 85th frame of the overflow, so the solution should print `CANARY HIT`, but this lesson could not run the simulator to confirm it, so treat it as the expected result to check on your run.
 
 ## Files you work on
 
@@ -27,14 +27,14 @@ The serial monitor prints `STACK PAINT OK`.
 <details>
 <summary>Hint for the scan</summary>
 
-Walk from `lo + 1` up to `s_paint_limit`, comparing each word with `PAINT_WORD`. The stack grows down, so the first changed word, reached from the bottom, is the lowest one that the stack wrote. Subtract its address from `&__StackTop`, cast to `uintptr_t`, to get bytes.
+Walk from `lo + 1` up to `s_paint_limit`, comparing each word with `PAINT_WORD`, and since the stack grows down, the first changed word reached from the bottom is the lowest one the stack wrote, whose address subtracted from `&__StackTop`, both cast to `uintptr_t`, gives the bytes.
 
 </details>
 
 <details>
 <summary>Hint if the report says 0 bytes</summary>
 
-The scan stops at `s_paint_limit`, so the paint must reach up to that point. If `s_paint_limit` was never set, the loop does nothing and returns 0. Also check that `current_sp()` is read in `paint_unused_stack()`, not earlier in `main()`.
+The scan stops at `s_paint_limit`, so the paint must reach up to that point, and if `s_paint_limit` was never set, the loop does nothing and returns 0. Check also that `current_sp()` is read in `paint_unused_stack()` rather than earlier in `main()`.
 
 </details>
 

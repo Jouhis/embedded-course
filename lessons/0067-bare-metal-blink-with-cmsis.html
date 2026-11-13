@@ -12,50 +12,53 @@
 <main>
   <p class="lesson-meta"></p>
   <h1>Bare-metal blink with CMSIS only</h1>
-  <p class="subtitle">Lesson 47 used a register struct you wrote yourself. Now you use the vendor's CMSIS names, and you add the two things the STM32 needs before a pin does anything: a clock on the port, and a mode in CRL or CRH.</p>
+  <p class="subtitle">GPIO through the vendor's register names</p>
 
   <div class="goal">
     By the end of this lesson you can enable a GPIO port's clock, set a pin's mode in CRL or CRH, drive two LEDs at different rates from the SysTick counter without a blocking delay, and explain why <code>BSRR</code> is safer than <code>ODR</code> for a shared pin.
   </div>
 
-  <h2>Where we are and why it matters</h2>
+  <h2>Two LEDs on the Blue Pill registers</h2>
   <p>
-    Lesson 47 showed how a C struct can lay itself over a block of memory-mapped registers, so that <code>GPIOC-&gt;ODR</code> is a store to a fixed address. Lesson 51 covered GPIO output at a higher level, and lesson 66 built this project's toolchain and showed the device header. This lesson joins those ideas into a program that blinks two LEDs on the real Blue Pill register set.
+    Lesson 47 showed how a C struct can lay itself over a block of memory-mapped registers, so that <code>GPIOC-&gt;ODR</code> is a store to a fixed address, lesson 51 covered GPIO output at a higher level, and lesson 66 built this project's toolchain and showed the device header. This lesson joins those ideas into a program that blinks two LEDs through the real Blue Pill register set, using the vendor's CMSIS names and adding the two things the STM32 needs before a pin does anything, a clock on the port and a mode in CRL or CRH.
   </p>
   <p>
-    Work on a real board starts the same way. A new product has a microcontroller with several status LEDs, and each LED needs its port clocked, its pin configured and its timing set without stopping the rest of the firmware. The configuration mistakes in this lesson are the ones engineers make on their first board bring-up, so the symptoms below are worth remembering.
-  </p>
-
-  <h2>Concepts, one at a time</h2>
-  <h3>A GPIO pin is a switch the CPU controls</h3>
-  <p>
-    A <em>GPIO</em> (general-purpose input/output) pin is a metal leg on the chip that the CPU can drive high or low, or read as an input. High means close to the supply voltage, here 3.3 V. Low means close to ground, which is 0 V. An LED in series with a resistor lights when current flows through it, and you control that current by switching the pin. The glossary defines the term in more detail.
-    <a href="../reference/glossary.html#gpio-general-purpose-input-output">Glossary: GPIO</a>
-  </p>
-  <p>
-    The STM32F1 has three ports, A, B and C, and each port has 16 pins numbered 0 to 15. The name <code>PC13</code> means port C, pin 13. Each pin has its own setting for direction and output type, and the settings live in two configuration registers. The rest of this lesson is about where those bits are and how to write them safely.
+    Work on a real board starts the same way, a new product having a microcontroller with several status LEDs, each needing its port clocked, its pin configured and its timing set without stopping the rest of the firmware. The configuration mistakes in this lesson are the ones engineers make at their first board bring-up, so their symptoms are worth remembering.
   </p>
 
-  <h3>Active low: a 0 lights the LED</h3>
+  <h2>GPIO pins and ports on the STM32F1</h2>
   <p>
-    The Blue Pill's onboard LED is wired between the supply and PC13. Current flows when PC13 is low, so a 0 lights the LED and a 1 turns it off. This is called <em>active low</em>. The external LED on PB0 is the other way round: it sits between PB0 and ground through a 220 Ω resistor, so a 1 lights it and a 0 turns it off. A wrong polarity is the most common reason an LED appears inverted, and the code must match the wiring.
+    A <em>GPIO</em> (general-purpose input/output) pin is a metal leg of the chip that the CPU can drive high or low or read as an input, high meaning close to the supply voltage, here 3.3 V, and low close to ground, 0 V. An LED in series with a resistor lights when current flows through it, a current controlled by switching the pin, and the glossary defines the term in more detail
+    (<a href="../reference/glossary.html#gpio-general-purpose-input-output">Glossary: GPIO</a>).
   </p>
   <p>
-    Ohm's law sets the LED current. With a 3.3 V pin, a red LED that drops about 2 V, and 220 Ω in series, the current is (3.3 − 2) ÷ 220 ≈ 5.9 mA. That is comfortably within what an STM32 pin can supply at low speed.
+    The STM32F1 has three ports, A, B and C, each with 16 pins numbered 0 to 15, so the name <code>PC13</code> means port C, pin 13. Each pin has its own direction and output-type setting, held in two configuration registers, and the rest of this lesson concerns where those bits are and how to write them safely.
   </p>
 
-  <h3>The clock gate: a peripheral is off until you turn it on</h3>
+  <h2>Active-low and active-high LEDs</h2>
   <p>
-    Every peripheral on an STM32 has a clock gate, a single bit in the reset and clock control block (RCC) that powers its register block. Lesson 40 described the clock tree that feeds these gates. While a gate is closed, reads return garbage and writes are ignored. The write does not fault, so the program keeps running and the LED never lights. This is the first thing to check when a register write seems to do nothing.
+    The Blue Pill's onboard LED is wired between the supply and PC13, so current flows when PC13 is low, a 0 lighting the LED and a 1 turning it off, which is called <em>active low</em>. The external LED on PB0 works the other way round, sitting between PB0 and ground through a 220 Ω resistor, so a 1 lights it and a 0 turns it off. A wrong polarity is the most common reason an LED appears inverted, so the code must match the wiring.
+  </p>
+  <p>
+    Ohm's law sets the LED current
+  </p>
+  <p class="eq"><span>I = (V<sub>pin</sub> − V<sub>F</sub>) ÷ R</span><span class="eq-n">(1)</span></p>
+  <p>
+    where V<sub>pin</sub> is the 3.3 V pin voltage, V<sub>F</sub> the LED's forward drop of about 2 V for a red LED and R the 220 Ω resistor, giving (3.3 − 2) ÷ 220 ≈ 5.9 mA, comfortably within what an STM32 pin can supply at low speed.
+  </p>
+
+  <h2>The peripheral clock gate</h2>
+  <p>
+    Every peripheral on an STM32 has a clock gate, a single bit in the reset and clock control block (RCC) that powers its register block, fed by the clock tree of lesson 40. While a gate is closed, reads return garbage and writes are ignored without a fault, so the program keeps running and the LED never lights, which makes the clock the first thing to check when a register write seems to do nothing.
   </p>
 
   <div class="analogy">
-    <p>A peripheral with its clock gated off is a machine that is unplugged. You can press its buttons, which means writing its registers, and nothing happens: on the STM32F1 the writes do not even stick. Enabling the clock in RCC is plugging it in, and it has to come first.</p>
+    <p>A peripheral with its clock gated off is like an unplugged machine: its buttons can be pressed, which here means writing its registers, and nothing happens, and on the STM32F1 the writes do not even stick. Enabling the clock in RCC plugs it in, and it has to come first. An unplugged machine is obviously dark, though, whereas a gated peripheral gives no sign at all, which is why the mistake is so easy to miss.</p>
   </div>
 
-  <h3>Two registers per port: CRL and CRH</h3>
+  <h2>The CRL and CRH configuration registers</h2>
   <p>
-    On the RP2040, a pin's function is one field, and its direction and drive are separate registers. The F1 is different. Each pin owns a 4-bit field, and the fields are split between two registers by pin number. Pins 0 to 7 are in <code>CRL</code>, and pins 8 to 15 are in <code>CRH</code>. Pin <em>n</em> starts at bit <code>(n mod 8) × 4</code>. Inside a field, two bits set the mode and two bits set the configuration.
+    On the RP2040 a pin's function is one field, with direction and drive in separate registers, whereas on the F1 each pin owns a 4-bit field, the fields being split by pin number between two registers, pins 0 to 7 in <code>CRL</code> and pins 8 to 15 in <code>CRH</code>. Pin <em>n</em> starts at bit <code>(n mod 8) × 4</code>, and within a field two bits set the mode and two the configuration.
   </p>
   <figure>
     <svg font-family="JetBrains Mono, monospace" viewBox="0 0 480 120" role="img" aria-label="CRH register: pins 15 to 8, four bits each, with PC13 highlighted at bits 23 to 20">
@@ -77,35 +80,35 @@
     <figcaption>Figure 1. CRH holds pins 8 to 15, four bits each. The rule is <code>start = (pin - 8) × 4</code>, so PC13 starts at bit 20.</figcaption>
   </figure>
   <p>
-    The bit positions come from the device header, which defines <code>GPIO_CRH_MODE13</code> at bit 20 and <code>GPIO_CRH_CNF13</code> at bit 22. RM0008 Rev 21 (section 9.2.2) places MODE13 in bits 21:20 and CNF13 in bits 23:22, so the header agrees. The values come from the reference manual, RM0008 Rev 21 (Table 20 and Table 21, section 9.1), and the HAL source agrees with them: its header defines <code>GPIO_SPEED_FREQ_LOW</code> as the MODE bit pattern 10, which is 2 MHz, and its configuration constants give 00 for general-purpose push-pull and 10 for alternate-function push-pull.
+    The bit positions come from the device header, which defines <code>GPIO_CRH_MODE13</code> at bit 20 and <code>GPIO_CRH_CNF13</code> at bit 22, in agreement with RM0008 Rev 21 (section 9.2.2), which places MODE13 in bits 21:20 and CNF13 in bits 23:22. The values come from the reference manual, RM0008 Rev 21 (Table 20 and Table 21, section 9.1), and the HAL source agrees, its header defining <code>GPIO_SPEED_FREQ_LOW</code> as the MODE bit pattern 10, which is 2 MHz, and its configuration constants giving 00 for general-purpose push-pull and 10 for alternate-function push-pull.
   </p>
 
-  <h3>MODE and CNF: what the two bits mean</h3>
+  <h2>The MODE and CNF bits</h2>
   <p>
-    The MODE bits say the direction and the maximum speed. 00 is input, and the output speeds are 10 MHz, 2 MHz and 50 MHz for 01, 10 and 11 (RM0008 Rev 21, section 9.2.2 and Table 21). The HAL confirms that 10 is 2 MHz and 11 is 50 MHz. The CNF bits say what kind of circuit the pin uses. For an output, 00 is general-purpose push-pull, which drives both high and low (RM0008 Rev 21, Table 20). The value <code>0x2</code> is binary 0010: CNF 00 and MODE 10. That is a push-pull output at 2 MHz. A 2 MHz output is slow enough for an LED, and it causes less electrical noise than a 50 MHz edge.
+    The MODE bits set the direction and the maximum speed, 00 being input and 01, 10 and 11 outputs at 10 MHz, 2 MHz and 50 MHz (RM0008 Rev 21, section 9.2.2 and Table 21), with the HAL confirming that 10 is 2 MHz and 11 is 50 MHz. The CNF bits set the kind of circuit the pin uses, 00 for an output being general-purpose push-pull, which drives both high and low (RM0008 Rev 21, Table 20). The value <code>0x2</code>, binary 0010, is therefore CNF 00 and MODE 10, a push-pull output at 2 MHz, slow enough for an LED and electrically quieter than a 50 MHz edge.
   </p>
 
-  <h2>Worked example: writing PC13 bit by bit</h2>
+  <h2>Worked example: the PC13 field bit by bit</h2>
   <p>
-    The code needs to change one field and keep the others. Build the value step by step.
+    The code needs to change one field while keeping the others, so we build the value step by step. Before starting, work out at which bit PC13's field begins.
   </p>
   <ol class="steps">
-    <li><strong>Find the field.</strong> PC13 is pin 13, so its field starts at <code>(13 − 8) × 4 = 20</code>, and it covers bits 20 to 23.</li>
-    <li><strong>Make a mask for the field.</strong> Four bits set, shifted to bit 20: <code>0xF &lt;&lt; 20</code>, which is <code>0x00F00000</code>. Inverting that gives <code>~(0xF &lt;&lt; 20)</code>, which is <code>0xFF0FFFFF</code>. Anding with it clears only the field.</li>
+    <li><strong>Find the field.</strong> PC13 is pin 13, so its field starts at <code>(13 − 8) × 4 = 20</code> and covers bits 20 to 23.</li>
+    <li><strong>Make a mask for the field.</strong> Four set bits shifted to bit 20 give <code>0xF &lt;&lt; 20</code>, or <code>0x00F00000</code>, whose inverse <code>~(0xF &lt;&lt; 20)</code> is <code>0xFF0FFFFF</code>, so ANDing with it clears only the field.</li>
     <li><strong>Make the new value.</strong> <code>0x2 &lt;&lt; 20</code> is <code>0x00200000</code>, which puts binary 0010 into bits 20 to 23.</li>
-    <li><strong>Combine.</strong> <code>(CRH &amp; 0xFF0FFFFF) | 0x00200000</code>. The other seven CRH fields come through unchanged, because the mask keeps every bit outside PC13's field.</li>
+    <li><strong>Combine.</strong> <code>(CRH &amp; 0xFF0FFFFF) | 0x00200000</code> passes the other seven CRH fields through unchanged, because the mask keeps every bit outside PC13's field.</li>
   </ol>
   <p>
-    The same pattern works for any pin in the register. If the field were written as a plain constant, for example <code>GPIOC-&gt;CRH = 0x00200000</code>, every other pin in port C's <code>CRH</code> would be reset to its default, so PC8 to PC15 would lose their settings. The mask is the safe form.
+    The same pattern works for any pin in the register, whereas writing the field as a plain constant, for example <code>GPIOC-&gt;CRH = 0x00200000</code>, would reset every other pin in port C's <code>CRH</code> to its default, so PC8 to PC15 would lose their settings, which makes the mask the safe form.
   </p>
   <pre><code class="language-c">GPIOC-&gt;CRH = (GPIOC-&gt;CRH &amp; ~(0xFU &lt;&lt; 20)) | (0x2U &lt;&lt; 20);   /* PC13: push-pull, 2 MHz */</code></pre>
   <p>
-    Read the line from the inside out. <code>0xFU &lt;&lt; 20</code> is the mask for the field, and the <code>~</code> inverts it so that a 0 marks the bits to clear. The <code>&amp;</code> clears those four bits and keeps the rest. <code>0x2U &lt;&lt; 20</code> is the new value shifted into place, and the <code>|</code> writes it. The <code>U</code> suffix makes each constant unsigned, so the shifts do not fill the top bit with a sign.
+    The line reads from the inside out: <code>0xFU &lt;&lt; 20</code> is the mask for the field, the <code>~</code> inverts it so that a 0 marks the bits to clear, and the <code>&amp;</code> clears those four bits and keeps the rest, after which <code>0x2U &lt;&lt; 20</code> shifts the new value into place and the <code>|</code> writes it. The <code>U</code> suffix makes each constant unsigned, so the shifts never fill the top bit with a sign.
   </p>
 
-  <h2>Step 1: enable the clock</h2>
+  <h2>Enabling the GPIO port clocks</h2>
   <p>
-    The clock enable bits sit in <code>RCC-&gt;APB2ENR</code>, because the GPIO ports are on the APB2 bus. The device header gives each bit a name, and it lists the positions (RM0008 Rev 21, section 7.3.7, lists the same bits: AFIOEN bit 0, IOPAEN bit 2, IOPBEN bit 3, IOPCEN bit 4 and USART1EN bit 14), which you can check yourself in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>:
+    The clock enable bits sit in <code>RCC-&gt;APB2ENR</code>, because the GPIO ports are on the APB2 bus, and the device header names each bit, at positions that RM0008 Rev 21, section 7.3.7, confirms, AFIOEN at bit 0, IOPAEN at bit 2, IOPBEN at bit 3, IOPCEN at bit 4 and USART1EN at bit 14, all of which can be checked in <code>third_party/cmsis-device-f1/Include/stm32f103xb.h</code>.
   </p>
   <pre><code class="language-c">/* from stm32f103xb.h: the bit positions */
 RCC_APB2ENR_AFIOEN    /* bit 0 */
@@ -116,37 +119,37 @@ RCC_APB2ENR_USART1EN  /* bit 14 */
 
 RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;   /* now GPIOC accepts writes */</code></pre>
   <p>
-    The first five lines are names for bits, and the last line is the enable. <code>|=</code> sets bit 4 and leaves the other enable bits alone, so enabling GPIOC does not turn off the USART or any other clock. This is a read-modify-write, which is safe here because only the main code writes this register.
+    The first five lines name bits and the last is the enable, its <code>|=</code> setting bit 4 while leaving the other enable bits alone, so enabling GPIOC does not turn off the USART or any other clock. This read-modify-write is safe here because only the main code writes this register.
   </p>
   <div class="warning">A missing clock enable does not fault. The write is ignored, the pin stays where reset left it, and the LED never lights. When a register write seems to do nothing, check the clock before anything else.</div>
   <p>
-    On the Pico, the SDK's <code>gpio_init()</code> does this step for you. On the STM32 you write it, and the code that sets a pin always starts with the clock.
+    On the Pico the SDK's <code>gpio_init()</code> performs this step, whereas on the STM32 the code writes it, so pin setup always starts with the clock.
     <span class="sidenote">The enable bits are the clock gating from the RCC section of the reference manual (RM0008 Rev 21, section 5.3.2 and section 7.3.7). Lesson 40 introduced the clock tree, which is the source of the clock that these gated peripherals receive.</span>
   </p>
 
-  <h2>Step 2: the configuration fields</h2>
+  <h2>Configuring PB0 in CRL</h2>
   <p>
-    The PB0 pin is pin 0, so it lives in <code>CRL</code> with its field at bit 0. The same mask-and-set pattern applies, with the shift changed to zero:
+    PB0 is pin 0, so it lives in <code>CRL</code> with its field at bit 0, and the same mask-and-set pattern applies with the shift changed to zero.
   </p>
   <pre><code class="language-c">GPIOB-&gt;CRL = (GPIOB-&gt;CRL &amp; ~(0xFU &lt;&lt; 0)) | (0x2U &lt;&lt; 0);   /* PB0: push-pull, 2 MHz */</code></pre>
   <p>
-    The solution computes each shift from the pin number, as <code>(LED_ONBOARD_PIN - 8U) * PIN_FIELD_BITS</code> for PC13 and <code>LED_EXTERNAL_PIN * PIN_FIELD_BITS</code> for PB0, so the code follows the rule rather than a hard-coded number. The starter shows the PC13 line only, and the learner's first task is to write the PB0 line.
+    The solution computes each shift from the pin number, as <code>(LED_ONBOARD_PIN - 8U) * PIN_FIELD_BITS</code> for PC13 and <code>LED_EXTERNAL_PIN * PIN_FIELD_BITS</code> for PB0, so the code follows the rule rather than a hard-coded number. The starter shows only the PC13 line, and writing the PB0 line is the first task.
   </p>
 
-  <h2>Step 3: BSRR or ODR</h2>
+  <h2>Atomic pin changes with BSRR</h2>
   <p>
-    Lesson 47 introduced both. <code>ODR</code> holds the output level of all 16 pins. Setting one pin with <code>ODR |= bit</code> is a read-modify-write: load, change, store. <code>BSRR</code> does the change in one store: bit <em>n</em> sets pin <em>n</em>, and bit <em>n</em> + 16 resets it. A 0 changes nothing.
+    Lesson 47 introduced both registers. <code>ODR</code> holds the output level of all 16 pins, so setting one pin with <code>ODR |= bit</code> is a read-modify-write of load, change and store, whereas <code>BSRR</code> makes the change in one store, bit <em>n</em> setting pin <em>n</em>, bit <em>n</em> + 16 resetting it and a 0 changing nothing.
   </p>
   <p>
-    For PC13, the set bit is bit 13, so the value <code>0x00002000</code> drives the pin high, which turns the LED off. The reset bit is bit 29, so <code>0x20000000</code> drives it low, which lights the LED. The header names these <code>GPIO_BSRR_BS13</code> and <code>GPIO_BSRR_BR13</code>, and it confirms that BR13 is bit 29. RM0008 Rev 21, section 9.2.5, gives the same layout: BS bits 15:0 set the pins and BR bits 31:16 reset them.
+    For PC13 the set bit is bit 13, so <code>0x00002000</code> drives the pin high and turns the LED off, while the reset bit is bit 29, so <code>0x20000000</code> drives it low and lights the LED. The header names these <code>GPIO_BSRR_BS13</code> and <code>GPIO_BSRR_BR13</code>, confirming that BR13 is bit 29, and RM0008 Rev 21, section 9.2.5, gives the same layout, BS bits 15:0 setting the pins and BR bits 31:16 resetting them.
   </p>
   <p>
-    Use <code>BSRR</code> for any pin that an interrupt or another task might touch, and for every pin you change in the loop. The risk is real even on one core, because an interrupt can run between the load and the store, and then its change is lost. Lesson 70 puts an interrupt on a button pin, which is this same situation.
+    <code>BSRR</code> is the register to use for any pin that an interrupt or another task might touch, and for every pin changed in the loop. The risk is real even on one core, because an interrupt can run between the load and the store and its change is then lost, which is exactly the situation of lesson 70, where an interrupt serves a button pin.
   </p>
 
   <h2>Worked example: two LEDs on one timeline</h2>
   <p>
-    A blocking delay cannot run two LEDs at different rates, so the solution uses a deadline for each LED and a clock that counts milliseconds. Here is a short timeline with the PB0 LED at 150 ms half periods and the PC13 LED at 500 ms half periods. Each row is a moment when a deadline passes.
+    A blocking delay cannot run two LEDs at different rates, so the solution keeps a deadline for each LED and a clock counting milliseconds. The timeline below has the PB0 LED at 150 ms half periods and the PC13 LED at 500 ms, each row being a moment when a deadline passes, so before reading it, predict how many times PB0 toggles before PC13 first does.
   </p>
   <table>
     <thead><tr><th>Time (ms)</th><th>Deadline reached</th><th>Action</th><th>Next deadline</th></tr></thead>
@@ -159,13 +162,13 @@ RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPCEN;   /* now GPIOC accepts writes */</code></
     </tbody>
   </table>
   <p>
-    The timeline shows that the PB0 deadlines fire without waiting for the PC13 deadline, and each deadline moves forward by one half period. The onboard LED changes at 500 ms, 1000 ms and so on, while the external LED changes every 150 ms. The two LEDs share one loop, and neither waits for the other.
+    The PB0 deadlines fire without waiting for the PC13 deadline, each moving forward by one half period, so the onboard LED changes at 500 ms, 1 000 ms and so on while the external LED changes every 150 ms, three times before PC13's first change. The two LEDs share one loop, and neither waits for the other.
   </p>
 
-  <h2>Step 4: SysTick, without blocking</h2>
+  <h2>A non-blocking millisecond clock from SysTick</h2>
   <p>
-    The template's <code>delay_ms()</code> blocks: while it waits, nothing else runs. Two LEDs at different rates cannot share one blocking delay. Instead, let SysTick count milliseconds, and keep a deadline for each LED. SysTick is the 24-bit countdown built into every Cortex-M core. It reloads from <code>LOAD</code> and sets <code>COUNTFLAG</code> when it reaches zero. Reading <code>CTRL</code> clears the flag (PM0056 Rev 7, section 4.5.1: COUNTFLAG is set when the counter reaches 0 and returns 1 only if that happened since the last read).
-    <a href="https://developer.arm.com/documentation/dui0552/latest/" target="_blank" rel="noopener">Arm Cortex-M3 Devices Generic User Guide</a>, and the SysTick section of PM0056 (ST's programming manual for the STM32F10xxx, Rev 7, section 4.5).
+    The template's <code>delay_ms()</code> blocks, nothing else running while it waits, so two LEDs at different rates cannot share it, and instead SysTick counts milliseconds while each LED keeps a deadline. SysTick is the 24-bit countdown built into every Cortex-M core, reloading from <code>LOAD</code> and setting <code>COUNTFLAG</code> when it reaches zero, and reading <code>CTRL</code> clears the flag (PM0056 Rev 7, section 4.5.1: COUNTFLAG is set when the counter reaches 0 and returns 1 only if that happened since the last read), as described in the
+    <a href="https://developer.arm.com/documentation/dui0552/latest/" target="_blank" rel="noopener">Arm Cortex-M3 Devices Generic User Guide</a> and the SysTick section of PM0056 (ST's programming manual for the STM32F10xxx, Rev 7, section 4.5).
   </p>
   <pre><code class="language-c">SysTick-&gt;LOAD = (SystemCoreClock / 1000U) - 1U;   /* 8000 - 1 at 8 MHz: one millisecond */
 SysTick-&gt;VAL  = 0;
@@ -174,80 +177,80 @@ SysTick-&gt;CTRL = SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_ENABLE_Msk;
 /* in the loop: one call per millisecond that has passed */
 if (SysTick-&gt;CTRL &amp; SysTick_CTRL_COUNTFLAG_Msk) { now_ms++; }</code></pre>
   <p>
-    Line by line: the first line loads the reload value. The counter counts down from 7999 to 0, which is 8000 cycles, one millisecond at 8 MHz. <code>VAL = 0</code> clears the counter so the first period starts clean. The <code>CTRL</code> write selects the core clock and enables the counter. The last line is the polling test: <code>COUNTFLAG</code> is set once per wrap, and reading <code>CTRL</code> clears it, so the test both reads and resets the flag. Each time the flag is set, the loop adds one to <code>now_ms</code>.
+    The first line loads the reload value, the counter counting down from 7 999 to 0, which is 8 000 cycles or one millisecond at 8 MHz, and <code>VAL = 0</code> clears the counter so that the first period starts clean. The <code>CTRL</code> write selects the core clock and enables the counter, and the last line is the polling test, in which <code>COUNTFLAG</code> is set once per wrap and reading <code>CTRL</code> clears it, so the test both reads and resets the flag, the loop adding one to <code>now_ms</code> each time it is set.
   </p>
   <p>
-    The solution puts that test in a helper named <code>systick_one_ms_elapsed()</code>. The loop then checks each LED's deadline, and when <code>now_ms</code> reaches it, the code toggles the LED and moves the deadline forward by one half period. A slow LED never holds up a fast one.
+    The solution places that test in a helper named <code>systick_one_ms_elapsed()</code>, and the loop then checks each LED's deadline, toggling the LED when <code>now_ms</code> reaches it and moving the deadline forward by one half period, so a slow LED never holds up a fast one.
     <span class="sidenote">The loop must poll at least once per millisecond, or it misses a COUNTFLAG. Printing a long line over the serial port can take longer than that, which is why the solution prints only at startup. Lesson 73 covers SysTick in full, with its interrupt.</span>
   </p>
 
-  <h2>Code explained: the solution's LED block</h2>
+  <h2>The solution's LED block line by line</h2>
   <pre><code class="language-c">if (now_ms &gt;= next_onboard_ms) {
     next_onboard_ms += LED_ONBOARD_HALF_MS;
     onboard_on = !onboard_on;
     GPIOC-&gt;BSRR = onboard_on ? (1U &lt;&lt; (LED_ONBOARD_PIN + 16U)) : (1U &lt;&lt; LED_ONBOARD_PIN);
 }</code></pre>
   <p>
-    The condition compares the clock with the deadline, and the deadline moves on by a fixed amount rather than being set to <code>now_ms + 500</code>. That choice keeps the blink rate exact: if the loop is late by a millisecond, the next deadline still lands on a multiple of 500. The variable <code>onboard_on</code> records the logical state of the LED, not the pin level, so the code reads clearly. The BSRR line writes the reset bit when the LED should be on, because the LED is active low, and writes the set bit when it should be off.
+    The condition compares the clock with the deadline, and the deadline advances by a fixed amount rather than being set to <code>now_ms + 500</code>, which keeps the blink rate exact, because a loop that is a millisecond late still puts the next deadline on a multiple of 500. The variable <code>onboard_on</code> records the logical state of the LED rather than the pin level, so the code reads clearly, and the BSRR line writes the reset bit when the LED should be on, the LED being active low, and the set bit when it should be off.
   </p>
 
   <h2>Try it in Wokwi</h2>
   <p>
-    The Wokwi diagram has the onboard LED on PC13, and a second LED on PB0 through a 220 Ω resistor. The solution is complete. The starter has four <code>TODO(learner)</code> steps for the PB0 LED, and a fifth for the pass line.
+    The Wokwi diagram has the onboard LED on PC13 and a second LED on PB0 behind a 220 Ω resistor. The solution is complete, while the starter has four <code>TODO(learner)</code> steps for the PB0 LED and a fifth for the pass line.
   </p>
   <ol class="steps">
-    <li>Open <code>projects/0067-bare-metal-blink/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd>, and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Only PC13 blinks, at 500 ms. The monitor prints <code>TWO LED starter: serial link works</code> once, which only shows that the serial link works.</li>
-    <li>Your task. Step 1: also enable the GPIOB clock. Step 2: set PB0 to a push-pull output at 2 MHz. PB0 is in CRL, so its field starts at bit 0. Step 3: start PB0 low, which is off for an active-high LED. Step 4: copy the PC13 block for PB0, with a 150 ms half period.</li>
-    <li>You will know it works when the external LED on PB0 blinks faster than the onboard one, about every 150 ms, while PC13 keeps its 500 ms rhythm. If PB0 stays dark, check step 1 first.</li>
-    <li>Step 5: once both LEDs blink, print <code>TWO LED OK</code> where <code>TODO(learner) 5</code> is, after the starter's banner. Rebuild, and expect that line once at start.</li>
+    <li>Open <code>projects/0067-bare-metal-blink/starter</code> in VS Code, build with <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>B</kbd> and start the simulator with <kbd>F1</kbd> → <em>Wokwi: Start Simulator</em>. Only PC13 blinks, at 500 ms, and the monitor prints <code>TWO LED starter: serial link works</code> once, which shows only that the serial link works.</li>
+    <li>Step 1 enables the GPIOB clock as well, step 2 sets PB0 to a push-pull output at 2 MHz, its field in CRL starting at bit 0, step 3 starts PB0 low, which is off for an active-high LED, and step 4 copies the PC13 block for PB0 with a 150 ms half period.</li>
+    <li>The program works when the external LED on PB0 blinks faster than the onboard one, about every 150 ms, while PC13 keeps its 500 ms rhythm, and if PB0 stays dark, step 1 is the first thing to check.</li>
+    <li>Step 5, once both LEDs blink, prints <code>TWO LED OK</code> at <code>TODO(learner) 5</code>, after the starter's banner, so rebuild and expect that line once at start.</li>
   </ol>
   <details>
     <summary>Hint for step 2</summary>
-    <p>PB0 is pin 0, so it is in <code>GPIOB-&gt;CRL</code>, and its field starts at bit 0. The same mask-and-set line as PC13, with the shift changed to zero, does the job.</p>
+    <p>PB0 is pin 0, so it is in <code>GPIOB-&gt;CRL</code> with its field starting at bit 0, and the same mask-and-set line as for PC13, with the shift changed to zero, does the job.</p>
   </details>
   <details>
     <summary>Hint for step 4</summary>
-    <p>PB0 is active high, so setting bit 0 of <code>BSRR</code> turns it on, and bit 16 turns it off. Use <code>next_external_ms</code>, <code>external_on</code> and <code>LED_EXTERNAL_HALF_MS</code>, the names the PC13 block already uses with its own variables.</p>
+    <p>PB0 is active high, so setting bit 0 of <code>BSRR</code> turns it on and bit 16 turns it off. Use <code>next_external_ms</code>, <code>external_on</code> and <code>LED_EXTERNAL_HALF_MS</code>, the counterparts of the variables the PC13 block already uses.</p>
   </details>
-  <p>The reference solution is in <code>projects/0067-bare-metal-blink/solution</code>. Try first, compare after.</p>
+  <p>The reference solution is in <code>projects/0067-bare-metal-blink/solution</code>, so try first and compare afterwards.</p>
 
-  <div class="win">You turned on a port's clock, configured two pins in different registers, and drove two LEDs at different rates from a polled SysTick counter, with no blocking delay anywhere.</div>
+  <div class="win">You turned on a port's clock, configured two pins in different registers and drove two LEDs at different rates from a polled SysTick counter, with no blocking delay anywhere.</div>
 
   <details class="fold mistakes"><summary><h2>Common mistakes and how to spot them</h2></summary>
-  <h3>Mistake 1: the external LED never lights</h3>
+  <h3>The external LED never lights</h3>
   <p>
-    PC13 blinks, PB0 stays dark, and the code looks right. The most likely cause is the missing GPIOB clock enable from step 1 of the starter. Because the write is ignored, the mode and the output bits never reach the pin, so the LED sees no change. The symptom is one LED working and the other dead, with no error. The fix is <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPBEN;</code> before any GPIOB write. In the debugger, read <code>RCC-&gt;APB2ENR</code>: bit 3 should be 1.
+    PC13 blinks while PB0 stays dark and the code looks right, the most likely cause being the missing GPIOB clock enable of the starter's step 1, which makes the mode and output writes vanish before they reach the pin, so one LED works and the other is dead with no error. Add <code>RCC-&gt;APB2ENR |= RCC_APB2ENR_IOPBEN;</code> before any GPIOB write, and in the debugger check that bit 3 of <code>RCC-&gt;APB2ENR</code> reads 1.
   </p>
-  <h3>Mistake 2: writing CRH with a plain constant</h3>
+  <h3>CRH written with a plain constant</h3>
   <p>
-    Someone writes <code>GPIOC-&gt;CRH = 0x00200000;</code> to configure PC13, and the LED works. Later a different pin on port C stops behaving, for example an input that was set up with a pull-up. The constant reset its field to the default input state. The symptom appears on a pin you did not change. The fix is the mask-and-set pattern, which changes only the field you name.
+    After <code>GPIOC-&gt;CRH = 0x00200000;</code> configures PC13, the LED works, but later a different pin on port C misbehaves, for example an input set up with a pull-up, because the constant reset its field to the default input state, so the symptom appears on a pin nobody changed. Use the mask-and-set pattern, which changes only the named field.
   </p>
-  <h3>Mistake 3: the LED is inverted</h3>
+  <h3>The LED inverted</h3>
   <p>
-    The onboard LED is on when the program says it should be off. The cause is the polarity. PC13 is active low, so the LED is lit by a reset of the pin, which is the upper half of <code>BSRR</code>. If you write the set bit when you meant to light the LED, you have the polarity backwards. The fix is to name the active level in a constant, such as <code>LED_ACTIVE_LOW</code>, and to write one helper that applies it.
+    The onboard LED is on when the program says it should be off, because PC13 is active low and lights on a reset of the pin, the upper half of <code>BSRR</code>, so writing the set bit to light it has the polarity backwards. Name the active level in a constant, such as <code>LED_ACTIVE_LOW</code>, and write one helper that applies it.
   </p>
-  <h3>Mistake 4: one LED blinks slower than the timing says</h3>
+  <h3>One LED blinking slower than its timing</h3>
   <p>
-    The external LED is meant to blink every 150 ms, and it blinks every 300 ms. The most common cause is a slow loop: a serial print, or a long calculation, takes more than a millisecond, so the loop misses a COUNTFLAG. The deadline logic is correct, but the tick count is wrong. The fix is to keep the loop short, to print only at startup, as this project does, and to move the tick into an interrupt, which lesson 73 does.
+    The external LED, meant to blink every 150 ms, blinks every 300 ms, most often because a slow loop, with a serial print or a long calculation taking more than a millisecond, misses a COUNTFLAG, so the deadline logic is correct but the tick count is wrong. Keep the loop short, print only at startup as this project does, and move the tick into an interrupt, as lesson 73 does.
   </p>
   </details>
 
-  <details class="fold depth"><summary><h2>In real projects</h2></summary>
+  <details class="fold depth"><summary><h2>Busy-waiting and deadlines in product code</h2></summary>
   <p>
-    Teams avoid busy-waiting in product code, because a blocking delay holds up everything else, and a button press or a sensor read is missed while the code waits. The deadline pattern in this lesson is the same design that the super-loop uses in production. It is also what a code reviewer looks for: a <code>delay_ms()</code> inside the main loop is a warning sign, and a deadline or a timer interrupt is the usual fix.
+    Teams avoid busy-waiting in product code, because a blocking delay holds up everything else, so a button press or a sensor read is missed while the code waits. The deadline pattern of this lesson is the design the super-loop uses in production, and it is what a code reviewer looks for, a <code>delay_ms()</code> inside the main loop being a warning sign whose usual fix is a deadline or a timer interrupt.
   </p>
   </details>
 
   <h2>Summary</h2>
   <ul>
     <li>A GPIO pin does nothing until its port's clock bit in <code>RCC-&gt;APB2ENR</code> is set.</li>
-    <li>Pins 0 to 7 are configured in <code>CRL</code>, and pins 8 to 15 in <code>CRH</code>. Pin <em>n</em> starts its 4-bit field at <code>(n mod 8) × 4</code>.</li>
+    <li>Pins 0 to 7 are configured in <code>CRL</code> and pins 8 to 15 in <code>CRH</code>, pin <em>n</em> starting its 4-bit field at <code>(n mod 8) × 4</code>.</li>
     <li>The value <code>0x2</code> in a field is CNF 00 and MODE 10, a push-pull output at 2 MHz.</li>
-    <li>Change one field with a mask and a set, so the other pins in the register keep their settings.</li>
-    <li>In <code>BSRR</code>, bit <em>n</em> sets pin <em>n</em> and bit <em>n</em> + 16 resets it. For PC13, bit 13 sets and bit 29 resets.</li>
-    <li>PC13 is active low, so a reset lights its LED. PB0 is active high, so a set lights it.</li>
+    <li>One field is changed with a mask and a set, so the other pins in the register keep their settings.</li>
+    <li>In <code>BSRR</code> bit <em>n</em> sets pin <em>n</em> and bit <em>n</em> + 16 resets it, so for PC13 bit 13 sets and bit 29 resets.</li>
+    <li>PC13 is active low, so a reset lights its LED, while PB0 is active high, so a set lights it.</li>
     <li>Deadlines driven by a polled SysTick count let two LEDs run at different rates without a blocking delay.</li>
-    <li>A loop that misses a COUNTFLAG runs slow without any error, so keep the loop short.</li>
+    <li>A loop that misses a COUNTFLAG runs slow without any error, so the loop must stay short.</li>
   </ul>
 
   <div class="widget quiz" data-title="Check your understanding">
