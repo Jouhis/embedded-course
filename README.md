@@ -1,4 +1,8 @@
-Course made for my friend to teach him all about embedded stuff. Maybe you find it useful too!
+ **<https://jouhis.github.io/embedded-course/>**
+ 
+# What and Why?
+
+This course stared as a series of helping lessons for my friend who wanted to learn some embedded development. I did not know what resources to recommend even though multiple courses can be found online. I guess now we can add one more to the list. However I hope this one to be a bit different. After setting some lessons up for the days topic which was UART communication, I thought that maybe I could set more structured lessons up for him but also for myself as a resource that I could easily go back to refresh my memory on any topics and in some learn something new. I thought what topics had been most influential in my own rather short learning period in university and after going back and forth with Claude I decided to settle roghly on the structure you find now. And yes, if you're wondering this whole course is 90% vibecoded. Most of the resources and materials have been checked and verified. (Hopefully some day all! And if you have any suggestions, PR's are welcome!) Enjoy and I hope you learn something new since thats why we're all here anyways!
 
 # Embedded Systems: From Electrons to Firmware
 
