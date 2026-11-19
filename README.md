@@ -1,3 +1,5 @@
+Course made for my friend to teach him all about embedded stuff. Maybe you find it useful too!
+
 # Embedded Systems: From Electrons to Firmware
 
 An introductory embedded-development course: 121 lessons, 6 labs and 8 checkpoints, from Ohm's law
