@@ -169,3 +169,7 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
 - Moving parts (a car, a print head) need callout targets as functions, and hotspots inside the moving group.
 - Analyzer lanes read a `sig` object pushed in `sample()`; push every 2 to 5 ticks, not every frame.
 - Clicking an input while a safety stop is active should log why nothing happens, not fail silently.
+- Device CSS must not reuse the kit's class names (`hot`, `cap`, `co`, `w`, `t`, `box`, `card`, `chip`, `pin`,
+  `st`, `arr`, `var`, `log`, `lan`, `grid`, `code`): a part classed `hot` turned every hotspot opaque.
+- A demo that compares two firmware strategies (encoder or time, poll or FIFO) teaches best: show both code
+  listings with `I.code(...)` and toggle their `.g` display, and make the scene show the cost of the worse one.
