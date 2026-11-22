@@ -213,7 +213,7 @@
       rows.push(r); g.append(r);
     });
     svg.append(g);
-    return { set(on) { rows.forEach((r, i) => cls(r, on.includes(i) ? "on" : "")); } };
+    return { g, set(on) { rows.forEach((r, i) => cls(r, on.includes(i) ? "on" : "")); } };
   }
   /* Variables in RAM, one <text> per line, written as markup (use k, v, bits). */
   const k = x => `<tspan class="k">${esc(x)}</tspan>`;
