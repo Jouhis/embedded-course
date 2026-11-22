@@ -80,6 +80,7 @@
   .ins .arr{fill:none;stroke:var(--muted);stroke-opacity:.6;stroke-width:1.1}
   .ins .arr.on{stroke:var(--accent);stroke-opacity:1;stroke-width:2}
   .ins .code text{font-family:var(--mono);font-size:10.5px;fill:var(--muted)}
+  .ins .code text,.ins .var text,.ins .log text{white-space:pre}
   .ins .code rect{fill:transparent}
   .ins .code .on rect{fill:var(--accent-soft)}
   .ins .code .on text{fill:var(--fg)}
