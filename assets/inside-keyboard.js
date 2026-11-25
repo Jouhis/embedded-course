@@ -34,6 +34,8 @@
   .keyboard .dio{fill:var(--fg)}
   .keyboard .dioL{stroke:var(--fg);stroke-width:1.5}
   .keyboard .w.hiz{stroke-dasharray:3 4}
+  .keyboard .w.scan{stroke:var(--accent);stroke-opacity:.45;stroke-width:1.8}
+  .keyboard .scanhint{fill:var(--muted);font-family:var(--mono);font-size:10px;text-anchor:middle}
   .keyboard .host{fill:var(--bg);stroke:var(--muted);stroke-width:1.2}
   .keyboard .typed{fill:var(--fg);font-family:var(--mono);font-size:13px}
   .keyboard .caret{fill:var(--accent);animation:kb-blink 1s steps(1) infinite}
@@ -75,6 +77,7 @@
 
     I.chip(s, { ...CHIP, sub: "scan ISR every 0.25 ms", labelAt: [720, 300],
       left: RY.map((y, r) => [y, "ROW" + r]), bottom: [0, 1, 2, 3].map(c => [760 - 30 * c, "COL" + c]), top: [[720, "USB"]] });
+    dyn.hint = S("g"); dyn.hint.append(S("text", { class: "scanhint", x: 720, y: 348 }, "rows too fast to see:"), S("text", { class: "scanhint", x: 720, y: 362 }, "try 1/1000×")); s.append(dyn.hint);
 
     const co = I.callouts(s, [
       ["cols", 236, 6, 196, "Columns: inputs, pulled up", ["Each reads 1 until a closed key", "joins it to the driven row."], [16, 52], [310, 100]],
@@ -239,9 +242,13 @@
 
     // ---------------------------------------------------------------- drawing
     function render(now) {
-      const lows = lowCols(m.driven);
-      for (let r = 0; r < 4; r++) cls(dyn.rows[r], "w" + (r === m.driven ? " on" : " hiz"));
+      /* A row is driven for 0.25 ms of sim time. Above 1/250× that is shorter than about 60 ms on screen,
+         so a frame would catch a random row and the wires would flicker: draw the whole scan instead. */
+      const fast = 250 / speed < 60;
+      const lows = fast ? [0, 1, 2, 3].flatMap(r => lowCols(r)) : lowCols(m.driven);
+      for (let r = 0; r < 4; r++) cls(dyn.rows[r], "w" + (fast ? " scan" : r === m.driven ? " on" : " hiz"));
       for (let c = 0; c < 4; c++) cls(dyn.cols[c], "w" + (lows.includes(c) ? " on" : ""));
+      dyn.hint.style.display = fast ? "" : "none";
       for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
         const i = r * 4 + c;
         let k = "key";
@@ -256,7 +263,7 @@
       dyn.typed.textContent = m.typed;
       dyn.caret.setAttribute("x", 572 + m.typed.length * 7.8);
       cls(dyn.usb, "w bus" + (m.t - m.lastPoll < 0.6 ? " on" : ""));
-      code.set([m.line]);
+      code.set(fast ? [1, 2, 3, 4, 5] : [m.line]);
       co.update(now, labels);
       const k = I.k, v = I.v, [fr, fc] = m.focus;
       ram.set([

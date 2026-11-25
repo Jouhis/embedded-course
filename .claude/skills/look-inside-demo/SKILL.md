@@ -167,6 +167,9 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
 - Aligned columns in RAM lines need `xml:space="preserve"` (the kit sets it) and padded names.
 - Keep labels off wires: put a pin or part label beside the wire, not on its path; check the screenshot.
 - Moving parts (a car, a print head) need callout targets as functions, and hotspots inside the moving group.
+- A state that changes faster than about 60 ms of screen time (a scan row at real speed) flickers: each frame
+  catches a random value and restarts the wire's dash animation. At those speeds draw the aggregate steadily
+  (all rows in a dim `scan` style, columns lit from the matrix state) and say which speed shows the detail.
 - Analyzer lanes read a `sig` object pushed in `sample()`; push every 2 to 5 ticks, not every frame.
 - Clicking an input while a safety stop is active should log why nothing happens, not fail silently.
 - Device CSS must not reuse the kit's class names (`hot`, `cap`, `co`, `w`, `t`, `box`, `card`, `chip`, `pin`,
