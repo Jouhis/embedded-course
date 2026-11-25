@@ -235,10 +235,12 @@
       }
       for (; i < pool.length; i++) pool[i].g.style.display = "none";
       const bot = pinBot(), lvl = pinLvl(), fire = m.t - m.solT < P.pulse || m.t - m.fireT < 0.15;
-      cls(dyn.eyeB, "eye" + (bot ? " on" : "")); cls(dyn.eyeL, "eye" + (lvl ? " on" : ""));
-      cls(dyn.botW, "w" + (bot ? " on" : "")); cls(dyn.lvlW, "w" + (lvl ? " on" : ""));
+      const botH = I.steady(dyn.eyeB, bot), lvlH = I.steady(dyn.eyeL, lvl);   // fast belts: keep each cut visible
+      cls(dyn.eyeB, "eye" + (botH ? " on" : "")); cls(dyn.eyeL, "eye" + (lvlH ? " on" : ""));
+      cls(dyn.botW, "w" + (botH ? " on" : "")); cls(dyn.lvlW, "w" + (lvlH ? " on" : ""));
       cls(dyn.encW, "w" + (m.v > 2 ? " on" : "")); cls(dyn.motW, "w" + (m.duty > 0 ? " on" : ""));
-      cls(dyn.solW, "w" + (fire ? " on" : "")); cls(dyn.sol, "sol" + (fire ? " on" : ""));
+      const fireH = I.hold(dyn.sol, fire, 150);
+      cls(dyn.solW, "w" + (fireH ? " on" : "")); cls(dyn.sol, "sol" + (fireH ? " on" : ""));
       dyn.plunger.setAttribute("height", fire ? 46 : 6);
       const busOn = m.t < m.busUntil + 0.25;
       cls(dyn.busW, "w bus" + (busOn ? " on" : ""));
@@ -251,7 +253,8 @@
       dyn.binTxt.textContent = m.wrong || m.missed ? `wrong pushes ${m.wrong} · got through ${m.missed}` : "";
       cls(dyn.binTxt, "t s mid" + (m.wrong || m.missed ? " bad" : ""));
       codes.enc.g.style.display = m.mode === "enc" ? "" : "none"; codes.time.g.style.display = m.mode === "time" ? "" : "none";
-      const lit = m.t - m.isrT < 0.15 ? [0, 1, 2] : m.t - m.fireT < 0.15 ? [5, 6] : busOn ? [8] : [4, 5];
+      const want = m.t - m.isrT < 0.15 ? "0,1,2" : m.t - m.fireT < 0.15 ? "5,6" : busOn ? "8" : "4,5";
+      const lit = I.steady(codes, want, 200).split(",").map(Number);   // each highlight stays at least 0.2 s
       codes[m.mode].set(lit);
       co.update(now, labels);
       const k = I.k, v = I.v;

@@ -97,6 +97,8 @@ la.push(t, sig); la.draw(t);
 I.frame(box, { bar: [[...], [...], [...]], scene: svg, analyzer: la });
 I.loop({ tick, speed: () => speed, every: 2, step(dt) {...}, sample() {...}, render(now) {...} });
 I.register("device", mount, CSS);           // CSS: only device parts, scoped as .device .part
+I.hold(key, on, ms = 150)                   // true while on, and ms of real time after: short pulses stay visible
+I.steady(key, value, ms = 120)              // value to draw; changes only after the drawn one showed for ms
 box._demo = { m, ...actions, setLabels: v => { labels = v; } };   // for tests
 ```
 
@@ -119,9 +121,13 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
    Read the PNG. Check: no text overlaps text, no callout hides the moving part, wires do not run
    through labels, the analyzer shows the scenario, no JS errors. Then `--labels auto` for the default
    look. Use `--do` with `log()` to assert the firmware behaves (states, values) in 2 or 3 scenarios.
-   Check for flicker with the scenario running: append `scripts/flicker.js` to `--do`
+   Check for flicker and jumping text with the scenario running: append `{ $(cat scripts/flicker.js) }` and
+   `{ $(cat scripts/jitter.js) }` to `--do` (each in braces, so both fit in one run). Run it at the default and the
+   fastest speed. Text past the card's right edge is the other common glitch: measure `getBBox()` of the card's texts.
+   The flicker check, in detail: append `scripts/flicker.js` to `--do`
    (`--do "D.press(1); await W(500); $(cat .claude/skills/look-inside-demo/scripts/flicker.js)"`). It lists
-   every element whose class changed 20 or more times in 4 s; anything listed needs a steadier drawing.
+   every element whose class changed 20 or more times in 4 s, or held a state under 80 ms 3 or more times;
+   wrap the condition in `I.hold` (a pulse) or `I.steady` (a value with short gaps, a code highlight).
 6. `python -I tools/maintainer/check_course.py` must pass (it does not scan inside/, but the index is shared).
 7. Commit on the feature branch, one device per commit.
 
@@ -176,6 +182,9 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
 - The mono font has ligatures (`|=` drawn as one glyph); the kit turns them off for the SVG. Keep it that way:
   code must show what you would type.
 - Only firmware variables go in RAM. A quantity of the world (food temperature) goes in the scene.
+- Text whose position depends on a count that changes each cycle jumps up and down (the brakes' arbitration note
+  moved with 5 or 6 rows). Give such text a fixed slot, and show a representative snapshot, not every cycle.
+- Rewrite `innerHTML` only when the string changed.
 - Analyzer lanes read a `sig` object pushed in `sample()`; push every 2 to 5 ticks, not every frame.
 - Clicking an input while a safety stop is active should log why nothing happens, not fail silently.
 - Device CSS must not reuse the kit's class names (`hot`, `cap`, `co`, `w`, `t`, `box`, `card`, `chip`, `pin`,

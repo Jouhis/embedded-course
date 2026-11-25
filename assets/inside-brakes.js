@@ -145,7 +145,9 @@
         const bus = inGame.some(x => !(x.id >> b & 1)) ? 0 : 1;
         inGame.forEach(x => { if ((x.id >> b & 1) && !bus) x.out = 10 - b; });
       }
-      m.arb = live.sort((a, b) => a.id - b.id);
+      /* The panel shows the full contest, the one the dash joins every 100 ms: a panel that followed every
+         10 ms cycle would jump between 5 and 6 rows. */
+      if (m.cyc % 10 === 0 || !m.arb.length) m.arb = live.sort((a, b) => a.id - b.id);
       // frames go out in ID order; the controller receives them
       nodes.sort((a, b) => a.id - b.id).forEach((nd, k) => {
         m.txT[nd.n] = m.t + k * P.frame;
@@ -225,14 +227,15 @@
       unplugBtn.textContent = m.unplugged ? "Plug FL sensor in" : "Unplug FL sensor";
       resetBtn.disabled = !m.fault;
       // arbitration panel
-      dyn.arb.innerHTML = m.arb.map((a, r) => {
+      const arbHtml = m.arb.map((a, r) => {
         const bits = bin11(a.id).split("").map((c, b) => {
           const k = a.out < 0 || b < a.out ? "in" : b === a.out ? "lost" : "out";
           return `<tspan class="${k}">${c}</tspan>`;
         }).join("");
         const tail = a.out < 0 ? `<tspan class="won"> wins</tspan>` : `<tspan> out at bit ${a.out}</tspan>`;
         return `<text x="${SX}" y="${66 + r * 17}" xml:space="preserve"><tspan class="id">0x${a.id.toString(16).toUpperCase().padStart(3, "0")} ${a.n.padEnd(5)}</tspan> ${bits}${tail}</text>`;
-      }).join("") + `<text x="${SX}" y="${66 + m.arb.length * 17 + 4}" class="t s">losers retry at once · all sent within 1–2 ms</text>`;
+      }).join("") + `<text x="${SX}" y="${66 + 6 * 17 + 4}" class="t s">losers retry at once · all sent within 1–2 ms</text>`;
+      if (arbHtml !== dyn.arbHtml) { dyn.arb.innerHTML = arbHtml; dyn.arbHtml = arbHtml; }
       co.update(now, labels);
       const k = I.k, v = I.v, ref = m.ref;
       ram.set([

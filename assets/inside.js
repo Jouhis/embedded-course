@@ -114,6 +114,17 @@
   const esc = t => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
   /* Set a class only when it changes, so CSS animations are not restarted every frame. */
   const cls = (el, c) => { if (el.getAttribute("class") !== c) el.setAttribute("class", c); };
+  /* True while `on` is, and for `ms` of real time after: an event of a few sim milliseconds would otherwise
+     light a wire for a frame or less and read as a flicker. `key` is any object (the element itself). */
+  const holdT = new WeakMap();
+  const hold = (key, on, ms = 150) => { const now = performance.now(); if (on) holdT.set(key, now); return on || now - (holdT.has(key) ? holdT.get(key) : -1e9) < ms; };
+  /* The value to draw for `key`: it follows `v`, but only once the drawn value has been on screen for `ms`,
+     so neither edge can flash for a single frame (a light beam between closely spaced bottles). */
+  const steadyS = new WeakMap();
+  const steady = (key, v, ms = 120) => { const now = performance.now(), r = steadyS.get(key);
+    if (!r) { steadyS.set(key, { v, t: now }); return v; }
+    if (r.v !== v && now - r.t >= ms) { r.v = v; r.t = now; }
+    return r.v; };
 
   function lessonHref(n) {
     const parts = (window.COURSE_MANIFEST && window.COURSE_MANIFEST.parts) || [];
@@ -360,6 +371,6 @@
     if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
   }
 
-  window.Inside = { S, E, esc, cls, lessonHref, lessons, cap, btn, pill, seg, frame, chip, card, section, stateMachine, code,
+  window.Inside = { S, E, esc, cls, hold, steady, lessonHref, lessons, cap, btn, pill, seg, frame, chip, card, section, stateMachine, code,
                     k, v, bits, ram, uart, callouts, hotspot, analyzer, loop, register };
 })();

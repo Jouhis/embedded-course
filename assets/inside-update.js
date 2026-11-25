@@ -219,8 +219,8 @@
     function ledOn() {
       if (!m.on) return 0;
       const t = m.t;
-      if (m.state === "BOOT") return t % 0.125 < 0.06 ? 1 : 0;
-      if (m.state === "TRIAL") { const p = t % 1; return p < 0.1 || (p > 0.2 && p < 0.3) ? 1 : 0; }
+      if (m.state === "BOOT") return t % 0.25 < 0.125 ? 1 : 0;
+      if (m.state === "TRIAL") { const p = t % 1.2; return p < 0.15 || (p > 0.3 && p < 0.45) ? 1 : 0; }
       return t % 1 < 0.5 ? 1 : 0;
     }
     function sample() { la.push(m.t, { vdd: m.on ? 1 : 0, rx: m.t - m.rxT < 0.015 ? 1 : 0, er: m.t - m.erT < P.erase ? 1 : 0, pg: m.t - m.pgT < 0.008 ? 1 : 0, led: ledOn() }); }
@@ -241,7 +241,7 @@
       cls(dyn.led, "led" + (ledOn() ? " on" : ""));
       cls(dyn.psu, "psu" + (m.on ? "" : " off")); dyn.psuTxt.textContent = m.on ? "on" : "unplugged";
       cls(dyn.vddW, "w" + (m.on ? " on" : "")); cls(dyn.ledW, "w" + (ledOn() ? " on" : ""));
-      cls(dyn.uartW, "w" + (m.t - m.rxT < 0.05 ? " on" : ""));
+      cls(dyn.uartW, "w" + (I.hold(dyn.uartW, m.t - m.rxT < 0.05, 250) ? " on" : ""));
       const d = m.dl;
       const done = d ? (d.sector * P.pages + Math.max(0, d.page)) / (NS * P.pages) : 0;
       dyn.bar.setAttribute("width", 230 * done);

@@ -207,7 +207,7 @@
       cls(dyn.stepW, "w" + (moving ? " on" : "")); cls(dyn.coilW, "w bus" + (moving ? " on" : ""));
       cls(dyn.dirW, "w" + (m.dirOut ? " on" : ""));
       cls(dyn.endW, "w" + (endPin() ? "" : " on")); cls(dyn.end, "endsw" + (endPin() ? "" : " on"));
-      cls(dyn.usbW, "w bus" + (m.t - m.usbT < 0.1 ? " on" : ""));
+      cls(dyn.usbW, "w bus" + (I.hold(dyn.usbW, m.t - m.usbT < 0.1) ? " on" : ""));
       dyn.q.forEach((r, i) => cls(r, "qcell" + (i < m.q.length ? " on" : "")));
       const off = Math.abs(m.real - m.pos) > 1;
       dyn.read.innerHTML = `firmware: X <tspan class="v">${m.pos.toFixed(1)}</tspan> mm   head really at: X <tspan class="${off ? "bad" : "v"}">${m.real.toFixed(1)}</tspan> mm`;

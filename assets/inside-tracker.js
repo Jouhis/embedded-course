@@ -188,15 +188,15 @@
       const buzz = m.t < m.vibUntil;
       cls(dyn.vib, "vib" + (buzz ? " on" : "")); dyn.vibw.setAttribute("cx", 410 + (buzz ? 6 * Math.sin(now / 15) : 0));
       cls(dyn.side, "side" + (m.t - m.btnT < 0.15 ? " on" : ""));
-      cls(dyn.busW, "w bus" + (m.t < m.i2cUntil || m.t - m.litT < 0.08 ? " on" : ""));
-      cls(dyn.intW, "w" + (m.mode === "fifo" && (m.fifo.length >= P.wm || m.t - m.litT < 0.08 && m.lit[0] === 3) ? " on" : ""));
+      cls(dyn.busW, "w bus" + (I.hold(dyn.busW, m.t < m.i2cUntil || m.t - m.litT < 0.08) ? " on" : ""));
+      cls(dyn.intW, "w" + (I.hold(dyn.intW, m.mode === "fifo" && (m.fifo.length >= P.wm || m.t - m.litT < 0.08 && m.lit[0] === 3)) ? " on" : ""));
       cls(dyn.btnW, "w" + (m.t - m.btnT < 0.15 ? " on" : ""));
       cls(dyn.vibW, "w" + (buzz ? " on" : ""));
       dyn.read1.innerHTML = `average current (30 s) <tspan class="v">${m.Iavg.toFixed(3)} mA</tspan>   awake <tspan class="v">${(m.dAvg * 100).toFixed(1)} %</tspan> of the time`;
       dyn.read2.innerHTML = `100 mAh lasts about <tspan class="v">${life >= 10 ? Math.round(life) : life.toFixed(1)} days</tspan> at this rate`;
       walkBtn.textContent = m.walking ? "Stop walking" : "Start walking";
       codes.poll.g.style.display = m.mode === "poll" ? "" : "none"; codes.fifo.g.style.display = m.mode === "fifo" ? "" : "none";
-      codes[m.mode].set(m.t - m.litT < 0.06 || awake ? m.lit : [2]);
+      codes[m.mode].set(I.hold(codes, m.t - m.litT < 0.06 || awake) ? m.lit : [2]);
       co.update(now, labels);
       const k = I.k, v = I.v;
       ram.set([

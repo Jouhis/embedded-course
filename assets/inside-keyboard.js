@@ -262,7 +262,7 @@
       if (ghosts().length) co.show("ghost", 600);
       dyn.typed.textContent = m.typed;
       dyn.caret.setAttribute("x", 572 + m.typed.length * 7.8);
-      cls(dyn.usb, "w bus" + (m.t - m.lastPoll < 0.6 ? " on" : ""));
+      cls(dyn.usb, "w bus" + (I.hold(dyn.usb, m.t - m.lastPoll < 0.6) ? " on" : ""));
       code.set(fast ? [1, 2, 3, 4, 5] : [m.line]);
       co.update(now, labels);
       const k = I.k, v = I.v, [fr, fc] = m.focus;
