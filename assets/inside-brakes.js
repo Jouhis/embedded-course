@@ -156,7 +156,7 @@
     }
     /* The brake controller: every 10 ms, after the frames. */
     function firmware() {
-      if (!m.fault && m.t - m.rxT[0] > P.timeout) { m.fault = true; log("FL silent for 50 ms: ABS fault, plain braking"); co.show("fault", 6000); }
+      if (!m.fault && m.t - m.rxT[0] > P.timeout) { m.fault = true; log("FL silent 50 ms: ABS off, lamp on"); co.show("fault", 6000); }
       // reference speed: the fastest wheel, but it may fall only as fast as the accelerometer says the car slows
       const top = Math.max(...m.rx);
       m.dec = m.accel;
@@ -232,7 +232,7 @@
         }).join("");
         const tail = a.out < 0 ? `<tspan class="won"> wins</tspan>` : `<tspan> out at bit ${a.out}</tspan>`;
         return `<text x="${SX}" y="${66 + r * 17}" xml:space="preserve"><tspan class="id">0x${a.id.toString(16).toUpperCase().padStart(3, "0")} ${a.n.padEnd(5)}</tspan> ${bits}${tail}</text>`;
-      }).join("") + `<text x="${SX}" y="${66 + m.arb.length * 17 + 4}" class="t s">losers retry right after; all frames get through in 1–2 ms</text>`;
+      }).join("") + `<text x="${SX}" y="${66 + m.arb.length * 17 + 4}" class="t s">losers retry at once · all sent within 1–2 ms</text>`;
       co.update(now, labels);
       const k = I.k, v = I.v, ref = m.ref;
       ram.set([
