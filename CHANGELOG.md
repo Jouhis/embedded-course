@@ -11,6 +11,23 @@ Version numbers use MAJOR.MINOR.PATCH. The current version is in `VERSION`.
   Wokwi or on a board; at least one learner has gone through the course; and the numbering is
   frozen, so links and saved progress stay valid.
 
+## 0.1.5 (2026-11-25)
+
+- **Look inside: ten animated device demos** in `inside/`, before Part 1 or as a reminder later: a
+  keyboard, a kettle, a bottling line, a fitness tracker, a 3D printer, a car's brakes over CAN, a
+  microwave oven, an elevator, a firmware update and an electric toothbrush.
+  - Each one is a demo, not a lesson: press the device's buttons and watch its pins, signals and
+    firmware (state, RAM, UART log) change, with a logic analyzer underneath.
+  - Callouts name each part in the course's terms and link the lessons that teach it.
+  - Illustrative numbers are marked as such in each script; nothing names a real product.
+- **The course index opens with the demos**, ten cards with an icon each.
+- **Course map** replaces "What's where" and "How to use it": the steps of a lesson (read, open
+  the starter, build, run, compare) and a folder tree of the repository, with the clone, quiz,
+  bench lab, optional lesson and progress export notes kept.
+- For maintainers: the `look-inside-demo` skill in `.claude/skills` holds the demo layout, the
+  shared kit `assets/inside.js` and scripts that screenshot a demo and check it for flicker,
+  jumping text and overflowing text.
+
 ## 0.1.4 (2026-11-13)
 
 - **Every lesson, lab and bench lab rewritten in one voice.** The prose is new; the facts,
