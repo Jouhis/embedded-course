@@ -21,7 +21,7 @@
   const NS = "http://www.w3.org/2000/svg";
   const CSS = `
   .ins{padding:0;overflow:hidden}
-  .ins svg{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none}
+  .ins svg{display:block;width:100%;height:auto;user-select:none;-webkit-user-select:none;font-variant-ligatures:none;font-feature-settings:"liga" 0,"calt" 0}
   .ins .bar{display:flex;flex-wrap:wrap;gap:.6rem 1.2rem;align-items:center;justify-content:space-between;padding:.65rem .9rem;border-bottom:1px solid var(--rule);background:var(--code-bg)}
   .ins .grp{display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center;font-family:var(--sans);font-size:.78rem;color:var(--muted)}
   .ins .cap{font-family:var(--mono);font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:0 .15rem 0 .3rem}

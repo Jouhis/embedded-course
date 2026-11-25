@@ -119,6 +119,9 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
    Read the PNG. Check: no text overlaps text, no callout hides the moving part, wires do not run
    through labels, the analyzer shows the scenario, no JS errors. Then `--labels auto` for the default
    look. Use `--do` with `log()` to assert the firmware behaves (states, values) in 2 or 3 scenarios.
+   Check for flicker with the scenario running: append `scripts/flicker.js` to `--do`
+   (`--do "D.press(1); await W(500); $(cat .claude/skills/look-inside-demo/scripts/flicker.js)"`). It lists
+   every element whose class changed 20 or more times in 4 s; anything listed needs a steadier drawing.
 6. `python -I tools/maintainer/check_course.py` must pass (it does not scan inside/, but the index is shared).
 7. Commit on the feature branch, one device per commit.
 
@@ -170,6 +173,9 @@ frame), offer slow-motion speeds like `1/1000×` and say on the toolbar which on
 - A state that changes faster than about 60 ms of screen time (a scan row at real speed) flickers: each frame
   catches a random value and restarts the wire's dash animation. At those speeds draw the aggregate steadily
   (all rows in a dim `scan` style, columns lit from the matrix state) and say which speed shows the detail.
+- The mono font has ligatures (`|=` drawn as one glyph); the kit turns them off for the SVG. Keep it that way:
+  code must show what you would type.
+- Only firmware variables go in RAM. A quantity of the world (food temperature) goes in the scene.
 - Analyzer lanes read a `sig` object pushed in `sample()`; push every 2 to 5 ticks, not every frame.
 - Clicking an input while a safety stop is active should log why nothing happens, not fail silently.
 - Device CSS must not reuse the kit's class names (`hot`, `cap`, `co`, `w`, `t`, `box`, `card`, `chip`, `pin`,

@@ -43,7 +43,7 @@
     dyn.stepW = S("path", { class: "w", d: `M600 250 H${CHIP.x - 10}` });
     dyn.dirW = S("path", { class: "w", d: `M600 280 H${CHIP.x - 10}` });
     dyn.coilW = S("path", { class: "w bus", d: "M570 236 V110 H28 V136" });
-    dyn.endW = S("path", { class: "w", d: `M55 170 V560 H610 V400 H${CHIP.x - 10}` });
+    dyn.endW = S("path", { class: "w", d: `M55 170 V400 H${CHIP.x - 10}` });
     s.append(dyn.usbW, dyn.stepW, dyn.dirW, dyn.coilW, dyn.endW);
 
     // ---- host with its outgoing moves
@@ -134,6 +134,7 @@
     }
     function print() {
       if (m.printing) { m.printing = false; m.plan = []; m.q = []; m.mv = null; m.v = 0; log("print stopped"); return; }
+      if (m.homing) { log("still homing: wait for the endstop"); return; }
       if (!m.homed) { log("not homed: press Home X first"); co.show("end"); return; }
       if (m.layer >= LAYERS) { log("bed full: clear it first"); return; }
       m.printing = true; m.nextIdx = 0; log("host: print started"); co.show("host");

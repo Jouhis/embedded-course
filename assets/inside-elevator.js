@@ -171,7 +171,7 @@
     const beam = () => m.person > 0 && m.door > 0.05;
     const log = txt => uart.log(m.t, txt);
     function go(next, why) { if (m.state !== next) { log(`${m.state} → ${next}${why ? "  " + why : ""}`); m.lastEdge = m.state + ">" + next; m.state = next; } }
-    function call(f, where) {
+    function call(f, where = "car") {
       if (m.state === "E_STOP") { log("call ignored: E-stop active, press Reset"); return; }
       if (!(m.calls >> f & 1)) log(`irq: ${where} button ${f}, calls |= 1 << ${f}`);
       m.calls |= 1 << f; co.show("call");

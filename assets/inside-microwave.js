@@ -23,6 +23,7 @@
   .microwave .plate{fill:none;stroke:var(--muted);stroke-width:2}
   .microwave .food{fill:var(--good-soft);stroke:var(--good);stroke-width:1.4}
   .microwave .food.warm{fill:var(--warn-soft);stroke:var(--warn)} .microwave .food.burnt{fill:var(--bad-soft);stroke:var(--bad);stroke-width:2.4}
+  .microwave .hotf{fill:var(--bad)}
   .microwave .smoke{fill:none;stroke:var(--muted);stroke-width:2;stroke-linecap:round;opacity:.7}
   .microwave .disp{fill:var(--code-bg);stroke:var(--muted);stroke-width:1.2}
   .microwave .seg7{fill:var(--accent);font-family:var(--mono);font-size:24px;font-weight:700;text-anchor:middle}
@@ -39,7 +40,7 @@
   const CARD = { x: 840, y: 16, w: 350, h: 608 };
   const SX = CARD.x + 22, SX2 = CARD.x + 208, SW = 120, RX = CARD.x + CARD.w - 20;
   const P = { tick: 0.01, wdt: 0.1, boot: 0.3, period: 4, heat: 1.2 };
-  const PARTS = [["MAG", "magnetron", 60, 780, 605], ["TURN", "turntable", 170, 740, 590], ["LAMP", "lamp", 280, 700, 575], ["BUZZ", "buzzer", 370, 660, 560]];
+  const PARTS = [["MAG", "magnetron", 60, 780, 605], ["TURN", "turntable", 170, 740, 590], ["LAMP", "lamp", 280, 700, 575], ["BUZZ", "buzzer", 390, 660, 560]];
 
   function mount(box) {
     const s = S("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "A microwave oven wired to a microcontroller with a watchdog, and the firmware inside it" });
@@ -70,6 +71,7 @@
       dyn.keys[k] = r; s.append(r, S("text", { class: "kt", x: x + 30, y: y + 22 }, l));
     });
     dyn.pwr = S("text", { class: "t s mid", x: 475, y: 296 }); s.append(dyn.pwr);
+    dyn.foodT = S("text", { class: "t s mid", x: 475, y: 320 }); s.append(dyn.foodT);
     // parts under the oven; the magnetron's supply goes through a second door switch
     PARTS.forEach(([pin, name, x], i) => {
       const r = S("rect", { class: "part", x, y: 470, width: 90, height: 60, rx: 6 });
@@ -123,7 +125,7 @@
       { name: "DOOR", kind: "in, 1 = open", key: "door" }, { name: "MAG", kind: "relay, after switch 2", key: "mag", cls: "pwm" },
       { name: "TURN", kind: "relay", key: "turn" }, { name: "WDT", kind: "counter, 0–100 ms", key: "wdt", type: "ana", max: P.wdt, cls: "bad" },
       { name: "BUZZ", kind: "PWM out", key: "buzz", cls: "good" }] });
-    const doorBtn = I.btn("Open the door", () => door()), freezeBtn = I.btn("Freeze the firmware", () => freeze(), "stop"), powerBtn = I.btn("Unplug and replug", () => powerCycle());
+    const doorBtn = I.btn("Open door", () => door()), freezeBtn = I.btn("Freeze firmware", () => freeze(), "stop"), powerBtn = I.btn("Power cycle", () => powerCycle());
     let speed = 1, labels = "auto";
     I.frame(box, { scene: s, analyzer: la, bar: [
       [I.cap("Keys"), I.pill("+30", () => key("plus"), "+30 s"), I.pill("Pwr", () => key("power"), "power level"), I.pill("▶", () => key("start"), "start"), I.pill("■", () => key("stop"), "stop")],
@@ -210,7 +212,7 @@
       const frac = m.wdtOn ? Math.min(1, m.wdt / P.wdt) : 0;
       dyn.wdtb.setAttribute("width", Math.max(1, 120 * frac)); cls(dyn.wdtb, "wdtb" + (frac > 0.5 ? " late" : ""));
       dyn.wdtTxt.textContent = !m.wdtOn ? "disabled" : m.hung ? `no kick for ${Math.round(m.wdt * 1000)} ms` : booting ? "booting" : "kicked every 10 ms";
-      doorBtn.textContent = m.doorOpen ? "Close the door" : "Open the door";
+      doorBtn.textContent = m.doorOpen ? "Close door" : "Open door";
       freezeBtn.disabled = m.hung;
       sm.set(m.state, m.lastEdge);
       co.update(now, labels);
@@ -221,8 +223,9 @@
         `${k("uint8_t  ")}outputs      = ${I.bits((m.out.MAG) | (m.out.TURN << 1) | (m.out.LAMP << 2) | (m.out.BUZZ << 3), 4)} ${k("BUZ LMP TRN MAG")}`,
         `${k("bool     ")}door_open    = ${v(m.doorOpen ? 1 : 0)}`,
         `${k("uint16_t ")}wdt_ms       = ${v(m.wdtOn ? Math.round(Math.min(m.wdt, P.wdt) * 1000) : "off", m.hung ? "bad" : "v")}`,
-        `${k("uint8_t  ")}resets       = ${v(m.resets)}`,
-        `${k("         ")}food         = ${v(Math.round(m.T) + " °C", m.T > 130 ? "bad" : "v")}`]);
+        `${k("uint8_t  ")}resets       = ${v(m.resets)}`
+      ]);
+      dyn.foodT.textContent = `food ${Math.round(m.T)} °C`; cls(dyn.foodT, "t s mid" + (m.T > 130 ? " hotf" : ""));
       uart.render();
       la.draw(m.t);
     }

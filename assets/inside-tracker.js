@@ -15,6 +15,7 @@
   "use strict";
   const I = window.Inside, S = I.S, cls = I.cls;
   const CSS = `
+  .tracker .jn{fill:var(--muted)}
   .tracker .case{fill:var(--bg);stroke:var(--fg);stroke-width:1.8}
   .tracker .strap{fill:var(--code-bg);stroke:var(--rule);stroke-width:1.2}
   .tracker .scr{fill:var(--code-bg);stroke:var(--muted);stroke-width:1.2}
@@ -43,6 +44,7 @@
     // ---- wires first
     dyn.busW = S("path", { class: "w bus", d: `M430 200 H580 V340 M290 340 H580 M580 300 H${CHIP.x - 10}` });
     dyn.intW = S("path", { class: "w", d: `M290 370 H${CHIP.x - 10}` });
+    s.append(S("circle", { class: "jn", cx: 580, cy: 300, r: 3.5 }), S("text", { class: "t s", x: 586, y: 196 }, "OLED"), S("text", { class: "t s", x: 586, y: 336 }, "ACCEL"), S("text", { class: "t s", x: 586, y: 292 }, "I2C"));
     dyn.btnW = S("path", { class: "w", d: `M482 172 H615 V250 H${CHIP.x - 10}` });
     dyn.vibW = S("path", { class: "w", d: `M410 470 V560 H700 V${CHIP.y + CHIP.h + 10}` });
     s.append(dyn.busW, dyn.intW, dyn.btnW, dyn.vibW);

@@ -122,7 +122,7 @@
        I.cap("Labels"), I.seg([["auto", "Auto"], ["all", "All"], ["off", "Off"]], "auto", v => { labels = v; })]] });
 
     // ---------------------------------------------------------------- model
-    const m = { t: 0, v: P.v0, w: [P.v0, P.v0, P.v0, P.v0], p: [0, 0, 0, 0], valve: [0, 0, 0, 0], dist: 0, braking: false, pedal: 0, road: "dry", abs: true,
+    const m = { t: 0, v: P.v0, w: [P.v0, P.v0, P.v0, P.v0], p: [0, 0, 0, 0], valve: [0, 0, 0, 0], relT: [-9, -9, -9, -9], dist: 0, braking: false, pedal: 0, road: "dry", abs: true,
                 rx: [P.v0, P.v0, P.v0, P.v0], rxT: [0, 0, 0, 0], rxPedal: 0, fault: false, unplugged: false, cyc: 0, busUntil: 0, arb: [], txT: {}, stopLogged: true, rot: [0, 0, 0, 0], ref: P.v0, dec: 0, accel: 0 };
     const log = txt => uart.log(m.t, txt);
     function brake() { m.braking = !m.braking; if (m.braking) { m.dist = 0; m.stopLogged = false; } log(m.braking ? "driver presses the brake" : "brake released"); co.show("pedal"); }
@@ -170,6 +170,7 @@
           if (next === 1 && m.valve[i] !== 1) co.show("abs", 1500);
         }
         m.valve[i] = next;
+        if (next === 1) m.relT[i] = m.t;
       }
     }
     function physics(dt) {
@@ -207,15 +208,16 @@
       WH.forEach((w, i) => {
         cls(dyn.tyres[i], "tyre" + (locked[i] ? " lock" : ""));
         dyn.treads[i].setAttribute("stroke-dashoffset", (m.rot[i] * 40 % 10).toFixed(1));
-        const tx = (m.txT[w.n] !== undefined && m.t - m.txT[w.n] < 0.004);
-        cls(dyn.nodes[i], "node" + (i === 0 && m.unplugged ? " dead" : tx || now % 400 < 60 && m.v > 0 && !(i === 0 && m.unplugged) ? " tx" : ""));
-        cls(dyn.hyd[i], "hyd" + (m.valve[i] === 1 && m.rxPedal ? " rel" : m.p[i] > 0.05 ? " on" : ""));
+        /* Frames every 10 ms and ABS cycles of a few per second are too fast to draw one by one: a node that
+           sends regularly stays lit, and a valve that released within 0.25 s shows as modulating. */
+        cls(dyn.nodes[i], "node" + (i === 0 && m.unplugged ? " dead" : m.v > 0 || m.braking ? " tx" : ""));
+        cls(dyn.hyd[i], "hyd" + (m.rxPedal && m.t - m.relT[i] < 0.25 ? " rel" : m.p[i] > 0.05 ? " on" : ""));
         if (locked[i]) co.show("lock", 800);
       });
       cls(dyn.pedal, "node" + (m.braking ? " tx" : ""));
       cls(dyn.dash, "node" + (m.fault ? " lamp" : ""));
       cls(dyn.bus, "w bus" + (m.v > 0 || m.braking ? " on" : ""));
-      cls(dyn.valveW, "w bus" + (m.valve.some(v => v === 1) && m.rxPedal ? " on" : ""));
+      cls(dyn.valveW, "w bus" + (m.rxPedal && m.relT.some(t => m.t - t < 0.25) ? " on" : ""));
       const kmh = m.v * 3.6;
       dyn.read.innerHTML = `speed <tspan class="v">${kmh.toFixed(0)} km/h</tspan>   braking distance <tspan class="v">${m.dist.toFixed(1)} m</tspan>   road ${m.road}`;
       dyn.read2.innerHTML = locked[0] && locked[1] ? `<tspan class="bad">front wheels locked: the car cannot steer</tspan>` : m.fault ? `<tspan class="bad">ABS fault lamp on</tspan>` : "";
